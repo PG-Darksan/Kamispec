@@ -37,6 +37,7 @@ void main() {
         bullets: const ['珈琲', '焼き菓子'],
         image: png,
         imagePos: 'right',
+        imageShape: 'rect',
         shapes: <Map<String, dynamic>>[
           {'kind': 'ellipse', 'x': 72, 'y': 8, 'w': 22, 'h': 30, 'fill': 'D4AF37'},
           {'kind': 'rect', 'x': 0, 'y': 92, 'w': 100, 'h': 8, 'fill': '1E293B'},
@@ -47,6 +48,7 @@ void main() {
         bullets: const ['文字が上に乗る'],
         image: png,
         imagePos: 'full',
+        imageShape: 'rect',
         shapes: const <Map<String, dynamic>>[],
       ),
     ]);
@@ -113,6 +115,7 @@ void main() {
         bullets: const ['はみ出さない事'],
         image: null,
         imagePos: 'left',
+        imageShape: 'rect',
         shapes: const <Map<String, dynamic>>[],
       ),
     ]);
@@ -131,6 +134,45 @@ void main() {
         reason: '本文が紙の右端からはみ出している (x=$x cx=$cx)');
   });
 
+  // = ユーザー報告「会社資料のレイアウトが崩れる」。 長い見出しや行数の
+  //   多い本文でも、 枠からはみ出さないように文字を小さくする。
+  test('長い見出し / 多い本文は文字が小さくなり、 はみ出し対策が入る', () {
+    String slideOf(String title, List<String> bullets) {
+      final bytes = buildPptxFromSlidesForTest([
+        (
+          title: title,
+          bullets: bullets,
+          image: null,
+          imagePos: 'right',
+          imageShape: 'rect',
+          shapes: const <Map<String, dynamic>>[],
+        ),
+      ]);
+      final arch = ZipDecoder().decodeBytes(bytes);
+      return String.fromCharCodes(arch.files
+          .firstWhere((f) => f.name == 'ppt/slides/slide1.xml')
+          .content as List<int>);
+    }
+
+    // 短い見出しは今までどおり大きく。
+    expect(slideOf('会社紹介', const ['一行']).contains('sz="2800" b="1"'), isTrue);
+    // 長い見出しは小さくなる。
+    final long = slideOf(
+        '株式会社テラスカイ 会社紹介 クラウドの可能性を最大限に引き出すプロフェッショナル',
+        const ['一行']);
+    expect(long.contains('sz="2800" b="1"'), isFalse,
+        reason: '長い見出しが縮んでいない');
+    expect(RegExp(r'sz="(1600|2000|2400)" b="1"').hasMatch(long), isTrue);
+    // 行数が多い本文も小さくなる。
+    final many = slideOf('題', List.generate(10, (i) => '項目 \$i'));
+    expect(many.contains('sz="1800" dirty'), isFalse,
+        reason: '行数が多いのに本文が縮んでいない');
+    // はみ出し対策 (折り返し + 自動縮小) が両方に入る。
+    expect('<a:normAutofit/>'.allMatches(long).length, greaterThanOrEqualTo(2),
+        reason: '自動縮小の指定が足りない');
+    expect(long.contains('wrap="square"'), isTrue);
+  });
+
   // 線は塗る面が無いので、 fill しか書かれていなくても <a:ln> を出す。
   test('線の図形は色が付いた <a:ln> で書き出される', () {
     final bytes = buildPptxFromSlidesForTest([
@@ -139,6 +181,7 @@ void main() {
         bullets: const <String>[],
         image: null,
         imagePos: 'right',
+        imageShape: 'rect',
         shapes: <Map<String, dynamic>>[
           {'kind': 'line', 'x': 10, 'y': 50, 'w': 80, 'h': 0.5, 'fill': 'D4AF37'},
         ],
@@ -152,5 +195,56 @@ void main() {
     expect(RegExp(r'<a:ln w="\d+"><a:solidFill><a:srgbClr val="D4AF37"')
         .hasMatch(xml), isTrue,
         reason: '線に色が付いていない (何も描かれない図形になる)');
+  });
+
+  // = ユーザー要望「画像を丸でくり抜くなどのおしゃれなスライド」。
+  //   丸く抜く指定は <p:pic> の prstGeom=ellipse で書き出し、 枠は正方形に
+  //   して元の枠の中央へ置く (長方形のまま抜くと楕円になる)。
+  test('imageShape=ellipse は正方形の枠 + prstGeom ellipse で書き出される', () {
+    final png = Uint8List.fromList(const [
+      0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, //
+      0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+      0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+      0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+      0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41,
+      0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
+      0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+      0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
+      0x42, 0x60, 0x82,
+    ]);
+    final bytes = buildPptxFromSlidesForTest([
+      (
+        title: '丸い写真',
+        bullets: const ['人物や商品に'],
+        image: png,
+        imagePos: 'right',
+        imageShape: 'ellipse',
+        shapes: const <Map<String, dynamic>>[],
+      ),
+      (
+        title: '全面は抜かない',
+        bullets: const [],
+        image: png,
+        imagePos: 'full',
+        imageShape: 'ellipse',
+        shapes: const <Map<String, dynamic>>[],
+      ),
+    ]);
+    final arch = ZipDecoder().decodeBytes(bytes);
+    String part(String n) => String.fromCharCodes(
+        arch.files.firstWhere((f) => f.name == n).content as List<int>);
+    final s1 = part('ppt/slides/slide1.xml');
+    final pic = RegExp(r'<p:pic>.*?</p:pic>').firstMatch(s1)?.group(0);
+    expect(pic, isNotNull, reason: '絵が無い');
+    expect(pic!.contains('prst="ellipse"'), isTrue, reason: '丸く抜かれていない');
+    // 正方形 (元の枠 3500000x2625000 の短辺) で、 横は中央寄せ。
+    expect(pic.contains('cx="2625000" cy="2625000"'), isTrue,
+        reason: '枠が正方形になっていない');
+    expect(pic.contains('x="5617500"'), isTrue, reason: '枠が中央に寄っていない');
+    // 全面の絵は四角のまま。
+    final s2 = part('ppt/slides/slide2.xml');
+    final pic2 = RegExp(r'<p:pic>.*?</p:pic>').firstMatch(s2)?.group(0);
+    expect(pic2, isNotNull);
+    expect(pic2!.contains('prst="rect"'), isTrue, reason: '全面の絵が抜かれている');
   });
 }

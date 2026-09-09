@@ -772,6 +772,12 @@ class McpServer {
         'tool AGAIN with the SAME pageId and the SAME fileName. Never '
         'invent a new name to avoid touching the old file, and never leave '
         'the old one behind as a duplicate. '
+        'THIS INCLUDES RESTYLING: "make it prettier" / "おしゃれな資料にして" '
+        '/ "use a different design" after you just made a deck means REDO '
+        'THAT SAME FILE, not make a second one. Read it back first '
+        '(read_page -> attachmentPath -> read_device_file) so you keep the '
+        'content and only change the look. If you leave "fileName" empty and '
+        'the page holds exactly one file of that kind, that one is rewritten. '
         'It always writes the WHOLE file, so pass the complete new content: '
         'anything you leave out is gone. To see what is there now, get the '
         'file from read_page (an attachment node has attachmentName and '
@@ -789,15 +795,23 @@ class McpServer {
         'A pptx slide may ALSO carry "imagePrompt" (an ENGLISH description '
         'of a picture to draw with AI and place on that slide - be concrete '
         'about subject, colours and mood, and never ask for text or logos), '
-        '"imagePos" ("right" / "left" / "full", default "right"), and '
+        '"imagePos" ("right" / "left" / "full", default "right"), '
+        '"imageQuery" (2-4 ENGLISH keywords for a web photo search - ALWAYS '
+        'give it, because the user may have set the app to fetch photos '
+        'from the web instead of drawing them), '
+        '"imageShape" ("rect" default / "roundRect" / "ellipse" = the '
+        'picture is cropped to a circle, which looks stylish for people, '
+        'products or food on a cover or section slide), and '
         '"shapes" (up to 3 decorations per slide, each '
         '{"kind":"rect|roundRect|ellipse|line|arrow","x":..,"y":..,"w":..,'
         '"h":..,"fill":"RRGGBB","line":"RRGGBB","lineWidth":..} where '
         'x/y/w/h are PERCENTAGES of the slide). '
         'USE THEM when the user asks for a deck that should LOOK good ("a '
         'stylish cafe PowerPoint", "make it pretty") - a text-only deck is '
-        'not what they asked for. Each picture costs about 0.047 USD of the '
-        'user\'s prepaid credit and takes a while, so put one on the cover '
+        'not what they asked for. When the app is set to draw pictures with '
+        'AI, each picture costs about 0.047 USD of the '
+        'user\'s prepaid credit and takes a while (fetching from the web '
+        'is free), so put one on the cover '
         'and 2-3 key slides, not on every slide (at most 4 per call are '
         'drawn; the rest of the slides are still made, without a picture). '
         'Because it costs money, say up front that you will add N pictures. '
@@ -841,6 +855,11 @@ class McpServer {
                   'type': 'string',
                   'enum': ['right', 'left', 'full']
                 },
+                'imageQuery': {'type': 'string'},
+                'imageShape': {
+                  'type': 'string',
+                  'enum': ['rect', 'roundRect', 'ellipse']
+                },
                 'shapes': {
                   'type': 'array',
                   'items': {'type': 'object'}
@@ -883,6 +902,12 @@ class McpServer {
         'side, "topBottom" = two panes stacked, "off" = back to one pane. '
         'A 2x2 four-way split IS supported - never tell the user the app can '
         'only do 2 panes. There is no 3-pane layout. '
+        'TO MAKE ONE PANE FULL SCREEN ("make the bottom-right pane full '
+        'screen", "右下の画面を全画面にして"): call this with layout "off" '
+        'AND "cell" set to that pane (0=top-left, 1=top-right, 2=bottom-left, '
+        '3=bottom-right). The split closes and the page that was in that pane '
+        'fills the window. DO IT - do not explain how the user could do it '
+        'by hand. '
         'Optionally pass pageIds to fill the cells, in the order '
         '0 = top-left, 1 = top-right, 2 = bottom-left, 3 = bottom-right '
         '(ids come from list_pages; document and video-editor pages cannot '
@@ -900,6 +925,8 @@ class McpServer {
             'type': 'array',
             'items': {'type': 'string'}
           },
+          // 全画面にするセル (layout='off' の時だけ意味を持つ)。
+          'cell': {'type': 'integer'},
         },
         ['layout']),
     // ─── アプリの説明書 (= ユーザー要望: skills のように、 必要な時だけ
@@ -1283,6 +1310,8 @@ class McpServer {
           //   がやるので、 ここでは形だけ整える。
           'imagePrompt': '${e['imagePrompt'] ?? ''}',
           'imagePos': '${e['imagePos'] ?? ''}',
+          'imageQuery': '${e['imageQuery'] ?? ''}',
+          'imageShape': '${e['imageShape'] ?? ''}',
           'shapes': e['shapes'] is List ? e['shapes'] : const [],
         });
       } else {
@@ -2090,10 +2119,21 @@ class McpServer {
                 '[{"title":"…","bullets":["…"]}] - nothing was created.');
           }
           final reqId = a['pageId'] as String? ?? '';
+          // ★ 名前が書かれていない時、 そのページに同じ種類のファイルが
+          //   ちょうど 1 つだけあれば、 それを書き換える
+          //   (= ユーザー報告: 資料を作らせた後に「おしゃれな資料にして」
+          //   と言うと、 直すのではなく新しい pptx が出来てしまう)。
+          //   「作り直して」 の意味で言われるのが普通なので、 同じ物へ
+          //   向ける。 2 つ以上ある時は決められないので今までどおり新規。
+          var fileName = '${a['fileName'] ?? ''}'.trim();
+          if (fileName.isEmpty) {
+            final same = _provider.mcpAttachmentsOfKind(reqId, kind);
+            if (same.length == 1) fileName = same.first;
+          }
           final made = await _provider.mcpCreateFile({
             'pageId': reqId,
             'kind': kind,
-            'fileName': a['fileName'] as String? ?? '',
+            'fileName': fileName,
             'title': a['title'] as String? ?? '',
             'paragraphs': _stringList(a['paragraphs']),
             'rows': _rowsOf(a['rows']),
@@ -2179,6 +2219,7 @@ class McpServer {
             pageIds: [
               for (final e in (a['pageIds'] as List? ?? const [])) '$e'
             ],
+            cell: (a['cell'] as num?)?.toInt(),
           );
           final err = res['error'];
           if (err != null) return _err('$err');

@@ -6205,6 +6205,32 @@ class MindMapProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ── 資料に入れる絵の入手先 (= ユーザー要望: AI で描くのでなく Web から
+  //    取ってくる選択が欲しい。 著作権フリーだけか、 著作権を問わないかも
+  //    選べるように) ──
+  //    'generate' = AI が描く (今までどおり、 1 枚ごとに費用) /
+  //    'web' = 検索して見つかった写真を貼る (費用なし)。
+  String _slideImageSource = 'generate';
+  String get slideImageSource => _slideImageSource;
+  bool get slideImagesFromWeb => _slideImageSource == 'web';
+  Future<void> setSlideImageSource(String v) async {
+    _slideImageSource = v == 'web' ? 'web' : 'generate';
+    final prefs = await _prefsWithRetry();
+    await prefs.setString('slideImageSource', _slideImageSource);
+    notifyListeners();
+  }
+
+  //    'free' = 著作権フリー (CC0 / パブリックドメイン / CC) だけ /
+  //    'any' = 一般の画像検索の結果 (著作権を問わない)。
+  String _webImageLicense = 'free';
+  String get webImageLicense => _webImageLicense;
+  Future<void> setWebImageLicense(String v) async {
+    _webImageLicense = v == 'any' ? 'any' : 'free';
+    final prefs = await _prefsWithRetry();
+    await prefs.setString('webImageLicense', _webImageLicense);
+    notifyListeners();
+  }
+
   Future<void> setGeminiApiKey(String key) async {
     _geminiApiKey = key.trim();
     final prefs = await _prefsWithRetry();
@@ -17534,6 +17560,272 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Voce pode publicar ate {n} paginas por vez',
       'ru': 'Одновременно можно опубликовать до {n} страниц',
     },
+    'pptx.crop.rect': {
+      'ja': '切り抜かない', 'en': 'No crop',
+      'zh': '不裁剪', 'ko': '자르지 않음',
+      'es': 'Sin recorte', 'fr': 'Sans découpe',
+      'de': 'Kein Zuschnitt', 'pt': 'Sem corte', 'ru': 'Без обрезки',
+    },
+    'pptx.crop.roundRect': {
+      'ja': '角丸', 'en': 'Rounded',
+      'zh': '圆角', 'ko': '둥근 모서리',
+      'es': 'Redondeado', 'fr': 'Arrondi',
+      'de': 'Abgerundet', 'pt': 'Arredondado', 'ru': 'Скруглённый',
+    },
+    'pptx.crop.ellipse': {
+      'ja': '円', 'en': 'Ellipse',
+      'zh': '椭圆', 'ko': '원',
+      'es': 'Elipse', 'fr': 'Ellipse',
+      'de': 'Ellipse', 'pt': 'Elipse', 'ru': 'Эллипс',
+    },
+    'pptx.crop.triangle': {
+      'ja': '三角', 'en': 'Triangle',
+      'zh': '三角形', 'ko': '삼각형',
+      'es': 'Triángulo', 'fr': 'Triangle',
+      'de': 'Dreieck', 'pt': 'Triângulo', 'ru': 'Треугольник',
+    },
+    'pptx.crop.diamond': {
+      'ja': 'ひし形', 'en': 'Diamond',
+      'zh': '菱形', 'ko': '마름모',
+      'es': 'Rombo', 'fr': 'Losange',
+      'de': 'Raute', 'pt': 'Losango', 'ru': 'Ромб',
+    },
+    'pptx.crop.star5': {
+      'ja': '星', 'en': 'Star',
+      'zh': '星形', 'ko': '별',
+      'es': 'Estrella', 'fr': 'Étoile',
+      'de': 'Stern', 'pt': 'Estrela', 'ru': 'Звезда',
+    },
+    'pptx.crop.hexagon': {
+      'ja': '六角形', 'en': 'Hexagon',
+      'zh': '六边形', 'ko': '육각형',
+      'es': 'Hexágono', 'fr': 'Hexagone',
+      'de': 'Sechseck', 'pt': 'Hexágono', 'ru': 'Шестиугольник',
+    },
+    'pptx.crop.heart': {
+      'ja': 'ハート', 'en': 'Heart',
+      'zh': '心形', 'ko': '하트',
+      'es': 'Corazón', 'fr': 'Cœur',
+      'de': 'Herz', 'pt': 'Coração', 'ru': 'Сердце',
+    },
+    'yt.channelPickTitle': {
+      'ja': 'チャンネルをどう置きますか',
+      'en': 'How should this channel be added?',
+      'zh': '要如何添加这个频道？', 'ko': '이 채널을 어떻게 넣을까요?',
+      'es': '¿Cómo añadir este canal?', 'fr': 'Comment ajouter cette chaîne ?',
+      'de': 'Wie soll dieser Kanal hinzugefügt werden?',
+      'pt': 'Como adicionar este canal?', 'ru': 'Как добавить этот канал?',
+    },
+    'yt.channelPickChannel': {
+      'ja': 'チャンネルを 1 つ置く',
+      'en': 'Add the channel itself',
+      'zh': '添加频道本身', 'ko': '채널 자체를 넣기',
+      'es': 'Añadir el canal', 'fr': 'Ajouter la chaîne',
+      'de': 'Den Kanal selbst einfügen', 'pt': 'Adicionar o canal',
+      'ru': 'Добавить сам канал',
+    },
+    'yt.channelPickChannelDesc': {
+      'ja': '押すとチャンネルが開きます。 動画は取り込みません。',
+      'en': 'Tapping it opens the channel. No videos are imported.',
+      'zh': '点击后打开频道，不导入视频。',
+      'ko': '누르면 채널이 열립니다. 동영상은 가져오지 않습니다.',
+      'es': 'Al tocarlo se abre el canal. No se importan vídeos.',
+      'fr': 'Un appui ouvre la chaîne. Aucune vidéo importée.',
+      'de': 'Ein Tippen öffnet den Kanal. Keine Videos werden importiert.',
+      'pt': 'Ao tocar, abre o canal. Nenhum vídeo é importado.',
+      'ru': 'Нажатие открывает канал. Видео не импортируются.',
+    },
+    'yt.channelPickVideos': {
+      'ja': 'チャンネルの動画を取り込む',
+      'en': 'Import the channel videos',
+      'zh': '导入频道的视频', 'ko': '채널의 동영상 가져오기',
+      'es': 'Importar los vídeos del canal',
+      'fr': 'Importer les vidéos de la chaîne',
+      'de': 'Videos des Kanals importieren',
+      'pt': 'Importar os vídeos do canal',
+      'ru': 'Импортировать видео канала',
+    },
+    'yt.channelPickVideosDesc': {
+      'ja': '今までどおり、 動画を並べて取り込みます。',
+      'en': 'As before - the videos are pulled in as tiles.',
+      'zh': '与以往相同，把视频排列导入。',
+      'ko': '지금까지처럼 동영상을 나란히 가져옵니다.',
+      'es': 'Como antes: los vídeos se importan como fichas.',
+      'fr': 'Comme avant : les vidéos sont importées en vignettes.',
+      'de': 'Wie bisher - die Videos werden als Kacheln geholt.',
+      'pt': 'Como antes - os vídeos entram como blocos.',
+      'ru': 'Как раньше — видео добавляются плитками.',
+    },
+    'yt.channelEmbedded': {
+      'ja': 'チャンネルを置きました。 押すと開きます',
+      'en': 'Channel added - tap it to open',
+      'zh': '已添加频道，点击可打开', 'ko': '채널을 넣었습니다. 누르면 열립니다',
+      'es': 'Canal añadido: tócalo para abrirlo',
+      'fr': 'Chaîne ajoutée : appuyez pour l’ouvrir',
+      'de': 'Kanal eingefügt - zum Öffnen antippen',
+      'pt': 'Canal adicionado - toque para abrir',
+      'ru': 'Канал добавлен — нажмите, чтобы открыть',
+    },
+    'yt.history': {
+      'ja': '視聴履歴', 'en': 'Watch history',
+      'zh': '观看记录', 'ko': '시청 기록',
+      'es': 'Historial de reproducción', 'fr': 'Historique de lecture',
+      'de': 'Wiedergabeverlauf', 'pt': 'Histórico de reprodução',
+      'ru': 'История просмотра',
+    },
+    'yt.historyEmpty': {
+      'ja': '視聴履歴はまだありません', 'en': 'No watch history yet',
+      'zh': '还没有观看记录', 'ko': '아직 시청 기록이 없습니다',
+      'es': 'Aún no hay historial', 'fr': 'Pas encore d’historique',
+      'de': 'Noch kein Verlauf', 'pt': 'Ainda não há histórico',
+      'ru': 'История пока пуста',
+    },
+    'yt.historyClear': {
+      'ja': '履歴を消す', 'en': 'Clear history',
+      'zh': '清除记录', 'ko': '기록 지우기',
+      'es': 'Borrar historial', 'fr': 'Effacer l’historique',
+      'de': 'Verlauf löschen', 'pt': 'Limpar histórico',
+      'ru': 'Очистить историю',
+    },
+    'text.switchFile': {
+      'ja': '別のファイルを開く', 'en': 'Open another file',
+      'zh': '打开其他文件', 'ko': '다른 파일 열기',
+      'es': 'Abrir otro archivo', 'fr': 'Ouvrir un autre fichier',
+      'de': 'Andere Datei öffnen', 'pt': 'Abrir outro arquivo',
+      'ru': 'Открыть другой файл',
+    },
+    'text.switchDesc': {
+      'ja': 'このページに貼ってあるファイルから選べます。',
+      'en': 'Pick one of the files attached to this page.',
+      'zh': '可从本页附加的文件中选择。',
+      'ko': '이 페이지에 첨부된 파일 중에서 고를 수 있습니다.',
+      'es': 'Elige uno de los archivos adjuntos a esta página.',
+      'fr': 'Choisissez un des fichiers attachés à cette page.',
+      'de': 'Wähle eine der an diese Seite angehängten Dateien.',
+      'pt': 'Escolha um dos arquivos anexados a esta página.',
+      'ru': 'Выберите один из файлов, прикреплённых к этой странице.',
+    },
+    'text.switchNoOthers': {
+      'ja': 'このページには、 ほかに開けるファイルがありません',
+      'en': 'There are no other readable files on this page',
+      'zh': '本页没有其他可打开的文件',
+      'ko': '이 페이지에는 다른 열 수 있는 파일이 없습니다',
+      'es': 'No hay otros archivos legibles en esta página',
+      'fr': 'Aucun autre fichier lisible sur cette page',
+      'de': 'Auf dieser Seite gibt es keine weiteren lesbaren Dateien',
+      'pt': 'Não há outros arquivos legíveis nesta página',
+      'ru': 'На этой странице нет других читаемых файлов',
+    },
+    'text.switchMissing': {
+      'ja': 'そのファイルが見つかりませんでした',
+      'en': 'That file could not be found',
+      'zh': '找不到该文件', 'ko': '해당 파일을 찾을 수 없습니다',
+      'es': 'No se encontró ese archivo',
+      'fr': 'Ce fichier est introuvable',
+      'de': 'Diese Datei wurde nicht gefunden',
+      'pt': 'Esse arquivo não foi encontrado',
+      'ru': 'Этот файл не найден',
+    },
+    'text.switchUnsaved': {
+      'ja': '保存していない変更があります。 どうしますか。',
+      'en': 'There are unsaved changes. What would you like to do?',
+      'zh': '有未保存的更改，要如何处理？',
+      'ko': '저장하지 않은 변경이 있습니다. 어떻게 할까요?',
+      'es': 'Hay cambios sin guardar. ¿Qué quieres hacer?',
+      'fr': 'Des modifications ne sont pas enregistrées. Que faire ?',
+      'de': 'Es gibt ungespeicherte Änderungen. Was möchtest du tun?',
+      'pt': 'Há alterações não salvas. O que deseja fazer?',
+      'ru': 'Есть несохранённые изменения. Что сделать?',
+    },
+    'text.switchSaveFirst': {
+      'ja': '保存して開く', 'en': 'Save and open',
+      'zh': '保存后打开', 'ko': '저장하고 열기',
+      'es': 'Guardar y abrir', 'fr': 'Enregistrer et ouvrir',
+      'de': 'Speichern und öffnen', 'pt': 'Salvar e abrir',
+      'ru': 'Сохранить и открыть',
+    },
+    'text.switchDiscard': {
+      'ja': '保存せずに開く', 'en': 'Open without saving',
+      'zh': '不保存直接打开', 'ko': '저장하지 않고 열기',
+      'es': 'Abrir sin guardar', 'fr': 'Ouvrir sans enregistrer',
+      'de': 'Ohne Speichern öffnen', 'pt': 'Abrir sem salvar',
+      'ru': 'Открыть без сохранения',
+    },
+    'dev.selfCapBlocking': {
+      'ja': '今止まっているのは残高ではなく、 自分に掛けた上限 (\${cap}) です。'
+          ' チャージしても解除されません。',
+      'en': 'You are blocked by your own cap (\${cap}), not by the balance. '
+          'Charging will not lift it.',
+      'zh': '当前受限于自设上限（\${cap}），并非余额不足。充值无法解除。',
+      'ko': '지금 막고 있는 것은 잔액이 아니라 스스로 건 상한 (\${cap}) 입니다. '
+          '충전해도 풀리지 않습니다.',
+      'es': 'Te bloquea tu propio límite (\${cap}), no el saldo. Recargar no lo quita.',
+      'fr': 'C’est votre plafond (\${cap}) qui bloque, pas le solde. Recharger ne le lève pas.',
+      'de': 'Es blockiert dein eigenes Limit (\${cap}), nicht das Guthaben.',
+      'pt': 'O bloqueio é o seu próprio limite (\${cap}), não o saldo.',
+      'ru': 'Блокирует ваш собственный лимит (\${cap}), а не баланс.',
+    },
+    'dev.selfCapRelease': {
+      'ja': '上限を外して使えるようにする', 'en': 'Remove the cap',
+      'zh': '解除上限', 'ko': '상한 해제',
+      'es': 'Quitar el límite', 'fr': 'Retirer le plafond',
+      'de': 'Limit entfernen', 'pt': 'Remover o limite',
+      'ru': 'Снять лимит',
+    },
+    'dev.selfCapRemainUsd': {
+      'ja': '自分の上限 残り {usd}', 'en': 'Self cap left {usd}',
+      'zh': '自设上限 剩余 {usd}', 'ko': '자체 상한 남음 {usd}',
+      'es': 'Límite propio: queda {usd}', 'fr': 'Plafond perso : reste {usd}',
+      'de': 'Eigenes Limit: {usd} übrig', 'pt': 'Limite próprio: resta {usd}',
+      'ru': 'Свой лимит: осталось {usd}',
+    },
+    'dev.selfCapRemainIo': {
+      'ja': '自分の上限 残り {usd} 入力{in} / 出力{out}',
+      'en': 'Self cap left {usd} in {in} / out {out}',
+      'zh': '自设上限 剩余 {usd} 输入{in} / 输出{out}',
+      'ko': '자체 상한 남음 {usd} 입력{in} / 출력{out}',
+      'es': 'Límite propio {usd} ent {in} / sal {out}',
+      'fr': 'Plafond perso {usd} entrée {in} / sortie {out}',
+      'de': 'Eigenes Limit {usd} Ein {in} / Aus {out}',
+      'pt': 'Limite próprio {usd} ent {in} / saí {out}',
+      'ru': 'Свой лимит {usd} вход {in} / выход {out}',
+    },
+    'dev.selfCapReached': {
+      'ja': '自分に掛けた上限に達しました (上限 \${cap} / 使った分 \${spent})。'
+          ' 開発者モードの画面で上限を変えるか、 使った分を 0 に戻してください',
+      'en': 'Your self-imposed cap was reached (cap \${cap} / spent \${spent}). '
+          'Change it or reset the spend in the developer screen.',
+      'zh': '已达到自设上限（上限 \${cap} / 已用 \${spent}）。请在开发者界面修改或清零。',
+      'ko': '스스로 건 상한에 도달했습니다 (상한 \${cap} / 사용 \${spent}). '
+          '개발자 화면에서 변경하거나 0으로 되돌리세요.',
+      'es': 'Se alcanzó tu límite propio (límite \${cap} / gastado \${spent}).',
+      'fr': 'Votre plafond personnel est atteint (plafond \${cap} / dépensé \${spent}).',
+      'de': 'Dein selbst gesetztes Limit ist erreicht (Limit \${cap} / verbraucht \${spent}).',
+      'pt': 'Seu limite próprio foi atingido (limite \${cap} / gasto \${spent}).',
+      'ru': 'Достигнут ваш собственный лимит (лимит \${cap} / потрачено \${spent}).',
+    },
+    'pptx.autoContrastDone': {
+      'ja': '画像を入れ、 重なる文字 {n} 件を読める色に直しました',
+      'en': 'Image added; recoloured {n} text box(es) so they stay readable',
+      'zh': '已插入图片，并将 {n} 处重叠文字改为可读的颜色',
+      'ko': '이미지를 넣고, 겹치는 글자 {n} 건을 읽을 수 있는 색으로 바꿨습니다',
+      'es': 'Imagen añadida; se recolorearon {n} cuadro(s) de texto para que se lean',
+      'fr': 'Image ajoutée ; {n} zone(s) de texte recolorée(s) pour rester lisibles',
+      'de': 'Bild eingefügt; {n} Textfeld(er) für die Lesbarkeit umgefärbt',
+      'pt': 'Imagem adicionada; {n} caixa(s) de texto recolorida(s) para manter a leitura',
+      'ru': 'Изображение добавлено; перекрашено текстовых блоков: {n}',
+    },
+    'aichat.jsonOnlyReply': {
+      'ja': 'スライドの案を作りました。 下の内容で確かめてください。',
+      'en': 'A slide plan is ready - check it below.',
+      'zh': '已生成幻灯片方案，请在下方确认。',
+      'ko': '슬라이드 안을 만들었습니다. 아래에서 확인해 주세요.',
+      'es': 'La propuesta de diapositivas está lista: revísala abajo.',
+      'fr': 'La proposition de diapositives est prête : vérifiez-la ci-dessous.',
+      'de': 'Ein Folienentwurf ist fertig - unten prüfen.',
+      'pt': 'A proposta de slides está pronta - confira abaixo.',
+      'ru': 'Черновик слайдов готов — проверьте ниже.',
+    },
     'live.sharedCount': {
       'ja': '共同編集で共有中: {n} / {max} 件',
       'en': 'Shared for live editing: {n} / {max}',
@@ -19175,6 +19467,204 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Die Generierung dauert (später einzeln neu generierbar)',
       'pt': 'A geração leva tempo (você pode regenerar individualmente depois)',
       'ru': 'Генерация занимает время (позже можно пересоздать по отдельности)',
+    },
+    'ai.imageShape': {
+      'ja': '画像の形',
+      'en': 'Image shape',
+      'zh': '图片形状',
+      'ko': '이미지 모양',
+      'es': 'Forma de la imagen',
+      'fr': 'Forme de l\'image',
+      'de': 'Bildform',
+      'pt': 'Forma da imagem',
+      'ru': 'Форма изображения',
+    },
+    'ai.shapeRect': {
+      'ja': '四角',
+      'en': 'Square',
+      'zh': '方形',
+      'ko': '사각형',
+      'es': 'Cuadrado',
+      'fr': 'Carré',
+      'de': 'Rechteck',
+      'pt': 'Quadrado',
+      'ru': 'Прямоугольник',
+    },
+    'ai.shapeRound': {
+      'ja': '角丸',
+      'en': 'Rounded',
+      'zh': '圆角',
+      'ko': '둥근 모서리',
+      'es': 'Redondeado',
+      'fr': 'Arrondi',
+      'de': 'Abgerundet',
+      'pt': 'Arredondado',
+      'ru': 'Скруглённый',
+    },
+    'ai.shapeCircle': {
+      'ja': '丸',
+      'en': 'Circle',
+      'zh': '圆形',
+      'ko': '원형',
+      'es': 'Círculo',
+      'fr': 'Cercle',
+      'de': 'Kreis',
+      'pt': 'Círculo',
+      'ru': 'Круг',
+    },
+    'imgSrc.title': {
+      'ja': '資料の画像の入手先',
+      'en': 'Where slide images come from',
+      'zh': '资料图片的来源',
+      'ko': '자료 이미지의 출처',
+      'es': 'Origen de las imágenes de las diapositivas',
+      'fr': 'Origine des images des diapositives',
+      'de': 'Quelle der Folienbilder',
+      'pt': 'Origem das imagens dos slides',
+      'ru': 'Откуда брать изображения для слайдов',
+    },
+    'imgSrc.generate': {
+      'ja': 'AI で生成する',
+      'en': 'Generate with AI',
+      'zh': '用 AI 生成',
+      'ko': 'AI로 생성',
+      'es': 'Generar con IA',
+      'fr': 'Générer avec l\'IA',
+      'de': 'Mit KI erzeugen',
+      'pt': 'Gerar com IA',
+      'ru': 'Создавать с помощью ИИ',
+    },
+    'imgSrc.generateDesc': {
+      'ja': '前払いクレジットか自分の鍵で描く (1 枚ごとに費用)',
+      'en': 'Drawn with prepaid credit or your own key (each image costs)',
+      'zh': '使用预付额度或自己的密钥生成（每张收费）',
+      'ko': '선불 크레딧 또는 자신의 키로 생성 (장당 비용 발생)',
+      'es': 'Se dibuja con crédito prepago o tu propia clave (cada imagen cuesta)',
+      'fr': 'Dessinée avec le crédit prépayé ou votre clé (chaque image est payante)',
+      'de': 'Mit Guthaben oder eigenem Schlüssel erzeugt (jedes Bild kostet)',
+      'pt': 'Gerada com crédito pré-pago ou sua própria chave (cada imagem custa)',
+      'ru': 'Рисуется за предоплаченный кредит или ваш ключ (каждое изображение платное)',
+    },
+    'imgSrc.web': {
+      'ja': 'Web から取得する',
+      'en': 'Fetch from the web',
+      'zh': '从网络获取',
+      'ko': '웹에서 가져오기',
+      'es': 'Obtener de la web',
+      'fr': 'Récupérer sur le web',
+      'de': 'Aus dem Web holen',
+      'pt': 'Obter da web',
+      'ru': 'Брать из интернета',
+    },
+    'imgSrc.webDesc': {
+      'ja': '検索して見つかった写真を貼る (費用なし)',
+      'en': 'Pastes a photo found by search (no cost)',
+      'zh': '粘贴搜索到的照片（免费）',
+      'ko': '검색으로 찾은 사진을 붙임 (비용 없음)',
+      'es': 'Pega una foto encontrada por búsqueda (sin coste)',
+      'fr': 'Colle une photo trouvée par recherche (gratuit)',
+      'de': 'Fügt ein per Suche gefundenes Foto ein (kostenlos)',
+      'pt': 'Cola uma foto encontrada por pesquisa (sem custo)',
+      'ru': 'Вставляет фото, найденное поиском (бесплатно)',
+    },
+    'imgLic.title': {
+      'ja': '取得する画像の範囲',
+      'en': 'Which web images to use',
+      'zh': '获取图片的范围',
+      'ko': '가져올 이미지의 범위',
+      'es': 'Qué imágenes de la web usar',
+      'fr': 'Quelles images du web utiliser',
+      'de': 'Welche Web-Bilder verwendet werden',
+      'pt': 'Quais imagens da web usar',
+      'ru': 'Какие изображения из интернета брать',
+    },
+    'imgLic.free': {
+      'ja': '著作権フリーのみ',
+      'en': 'Copyright-free only',
+      'zh': '仅限无版权限制',
+      'ko': '저작권 프리만',
+      'es': 'Solo libres de derechos',
+      'fr': 'Libres de droits uniquement',
+      'de': 'Nur urheberrechtsfreie',
+      'pt': 'Apenas livres de direitos',
+      'ru': 'Только свободные от авторских прав',
+    },
+    'imgLic.freeDesc': {
+      'ja': 'CC0・パブリックドメイン・CC ライセンスの写真 (Openverse / Wikimedia Commons)',
+      'en': 'CC0, public-domain and Creative Commons photos (Openverse / Wikimedia Commons)',
+      'zh': 'CC0、公有领域和 CC 许可的照片（Openverse / Wikimedia Commons）',
+      'ko': 'CC0·퍼블릭 도메인·CC 라이선스 사진 (Openverse / Wikimedia Commons)',
+      'es': 'Fotos CC0, de dominio público y Creative Commons (Openverse / Wikimedia Commons)',
+      'fr': 'Photos CC0, domaine public et Creative Commons (Openverse / Wikimedia Commons)',
+      'de': 'CC0-, gemeinfreie und Creative-Commons-Fotos (Openverse / Wikimedia Commons)',
+      'pt': 'Fotos CC0, de domínio público e Creative Commons (Openverse / Wikimedia Commons)',
+      'ru': 'Фото CC0, общественное достояние и Creative Commons (Openverse / Wikimedia Commons)',
+    },
+    'imgLic.any': {
+      'ja': '著作権を問わない',
+      'en': 'Any image regardless of copyright',
+      'zh': '不限版权',
+      'ko': '저작권 무관',
+      'es': 'Cualquier imagen sin importar los derechos',
+      'fr': 'Toute image, quel que soit le droit d\'auteur',
+      'de': 'Beliebige Bilder unabhängig vom Urheberrecht',
+      'pt': 'Qualquer imagem independentemente dos direitos',
+      'ru': 'Любые изображения без учёта авторских прав',
+    },
+    'imgLic.anyDesc': {
+      'ja': '一般の画像検索の結果を使う (利用は自己責任)',
+      'en': 'Uses ordinary image-search results (use at your own responsibility)',
+      'zh': '使用普通图片搜索结果（使用责任自负）',
+      'ko': '일반 이미지 검색 결과를 사용 (사용 책임은 본인에게)',
+      'es': 'Usa resultados de búsqueda de imágenes normales (bajo tu responsabilidad)',
+      'fr': 'Utilise les résultats de recherche d\'images ordinaires (sous votre responsabilité)',
+      'de': 'Nutzt gewöhnliche Bildsuchergebnisse (Nutzung auf eigene Verantwortung)',
+      'pt': 'Usa resultados comuns de pesquisa de imagens (uso por sua conta)',
+      'ru': 'Использует обычные результаты поиска картинок (на вашу ответственность)',
+    },
+    'img.webNotFound': {
+      'ja': '条件に合う画像が Web で見つかりませんでした',
+      'en': 'No matching image was found on the web',
+      'zh': '未在网络上找到符合条件的图片',
+      'ko': '조건에 맞는 이미지를 웹에서 찾지 못했습니다',
+      'es': 'No se encontró ninguna imagen adecuada en la web',
+      'fr': 'Aucune image correspondante trouvée sur le web',
+      'de': 'Im Web wurde kein passendes Bild gefunden',
+      'pt': 'Nenhuma imagem correspondente foi encontrada na web',
+      'ru': 'Подходящее изображение в интернете не найдено',
+    },
+    'pptx.aiImageBodyWeb': {
+      'ja': 'スライド {n} 枚に Web から取得した写真を入れます (費用は掛かりません)。 よろしいですか？',
+      'en': 'Photos fetched from the web will be placed on {n} slide(s) (no cost). Continue?',
+      'zh': '将为 {n} 张幻灯片插入从网络获取的照片（免费）。是否继续？',
+      'ko': '슬라이드 {n}장에 웹에서 가져온 사진을 넣습니다 (비용 없음). 계속할까요?',
+      'es': 'Se colocarán fotos obtenidas de la web en {n} diapositiva(s) (sin coste). ¿Continuar?',
+      'fr': 'Des photos récupérées sur le web seront placées sur {n} diapositive(s) (gratuit). Continuer ?',
+      'de': 'Aus dem Web geholte Fotos werden auf {n} Folie(n) eingefügt (kostenlos). Fortfahren?',
+      'pt': 'Fotos obtidas da web serão colocadas em {n} slide(s) (sem custo). Continuar?',
+      'ru': 'Фото из интернета будут вставлены на {n} слайд(ов) (бесплатно). Продолжить?',
+    },
+    'pptx.aiImageProgressWeb': {
+      'ja': 'Web から写真を取得しています… ({i}/{n})',
+      'en': 'Fetching photos from the web… ({i}/{n})',
+      'zh': '正在从网络获取照片…（{i}/{n}）',
+      'ko': '웹에서 사진을 가져오는 중… ({i}/{n})',
+      'es': 'Obteniendo fotos de la web… ({i}/{n})',
+      'fr': 'Récupération des photos sur le web… ({i}/{n})',
+      'de': 'Fotos werden aus dem Web geholt… ({i}/{n})',
+      'pt': 'Obtendo fotos da web… ({i}/{n})',
+      'ru': 'Загрузка фото из интернета… ({i}/{n})',
+    },
+    'pane.switchFile': {
+      'ja': '同じページの他のファイル',
+      'en': 'Other files on this page',
+      'zh': '同一页面上的其他文件',
+      'ko': '같은 페이지의 다른 파일',
+      'es': 'Otros archivos de esta página',
+      'fr': 'Autres fichiers de cette page',
+      'de': 'Andere Dateien dieser Seite',
+      'pt': 'Outros arquivos desta página',
+      'ru': 'Другие файлы этой страницы',
     },
     'ai.design': {
       'ja': 'デザイン',
@@ -63006,6 +63496,57 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Voltar Ctrl+1-9 para esta lista',
       'ru': 'Вернуть Ctrl+1-9 к этому списку',
     },
+    'shortcutSlot.title': {
+      'ja': 'Ctrl+1〜9 で開くページ', 'en': 'Pages for Ctrl+1-9',
+      'zh': 'Ctrl+1-9 打开的页面', 'ko': 'Ctrl+1~9 로 여는 페이지',
+      'es': 'Páginas para Ctrl+1-9', 'fr': 'Pages pour Ctrl+1-9',
+      'de': 'Seiten für Strg+1-9', 'pt': 'Páginas para Ctrl+1-9',
+      'ru': 'Страницы для Ctrl+1-9',
+    },
+    'shortcutSlot.desc': {
+      'ja': '枠ごとに開くページを決められます。 決めた枠は、 一覧を並べ替えても'
+          '動きません。 空けたままの枠は、 今までどおり一覧の上から順です。',
+      'en': 'Pin a page to each slot. Pinned slots stay put when you reorder '
+          'the list. Slots you leave empty keep following the list order.',
+      'zh': '可为每个位置指定页面。指定后即使重新排序也不会变。留空的位置仍按列表顺序。',
+      'ko': '칸마다 열 페이지를 정할 수 있습니다. 정한 칸은 목록을 정렬해도 '
+          '움직이지 않습니다. 비워 둔 칸은 지금까지처럼 목록 순서입니다.',
+      'es': 'Fija una página en cada ranura. Las fijadas no cambian al reordenar.',
+      'fr': 'Épinglez une page par emplacement. Les emplacements épinglés ne bougent pas.',
+      'de': 'Hefte je Platz eine Seite an. Angeheftete Plätze bleiben beim Umsortieren.',
+      'pt': 'Fixe uma página em cada posição. As fixadas não mudam ao reordenar.',
+      'ru': 'Закрепите страницу за каждым слотом. Закреплённые не меняются при сортировке.',
+    },
+    'shortcutSlot.useOrder': {
+      'ja': '(一覧の順に任せる)', 'en': '(follow the list order)',
+      'zh': '(按列表顺序)', 'ko': '(목록 순서에 맡김)',
+      'es': '(seguir el orden de la lista)', 'fr': '(suivre l’ordre de la liste)',
+      'de': '(der Listenreihenfolge folgen)', 'pt': '(seguir a ordem da lista)',
+      'ru': '(по порядку списка)',
+    },
+    'shortcutSlot.auto': {
+      'ja': '今は「{name}」 (一覧の順)', 'en': 'Now: {name} (list order)',
+      'zh': '当前:「{name}」(列表顺序)', 'ko': '지금은 「{name}」 (목록 순서)',
+      'es': 'Ahora: {name} (orden de la lista)',
+      'fr': 'Actuellement : {name} (ordre de la liste)',
+      'de': 'Jetzt: {name} (Listenreihenfolge)',
+      'pt': 'Agora: {name} (ordem da lista)',
+      'ru': 'Сейчас: {name} (порядок списка)',
+    },
+    'shortcutSlot.none': {
+      'ja': '(この番号に開くページはありません)',
+      'en': '(no page for this number)',
+      'zh': '(该编号没有对应页面)', 'ko': '(이 번호에 열 페이지가 없습니다)',
+      'es': '(sin página para este número)', 'fr': '(aucune page pour ce numéro)',
+      'de': '(keine Seite für diese Nummer)', 'pt': '(sem página para este número)',
+      'ru': '(нет страницы для этого номера)',
+    },
+    'shortcutSlot.clearAll': {
+      'ja': '割り当てを全部外す', 'en': 'Clear all',
+      'zh': '全部清除', 'ko': '모두 해제',
+      'es': 'Quitar todo', 'fr': 'Tout effacer',
+      'de': 'Alle entfernen', 'pt': 'Limpar tudo', 'ru': 'Очистить всё',
+    },
     'root.shortcutAlready': {
       'ja': 'Ctrl+1〜9 は、今この一覧の上から順に開きます',
       'en': 'Ctrl+1-9 already opens this list from the top',
@@ -66965,6 +67506,96 @@ class MindMapProvider extends ChangeNotifier {
   /// 代行実行の使用量を記録する (アプリ側キーで動かした時だけ呼ぶ)。
   /// [costUsd] を渡すとその原価をそのまま積む (= Worker が計算した値)。
   /// 省略した場合は [tier] とアプリ内の料金表から概算する。
+  // ─── 開発者モード用: 自分に掛ける上限 (= ユーザー要望) ────────────
+  //
+  // = 「トークン上限に達した時に止まるかなどをテストしたいから、
+  //   パスワードから開発者モードに入る場合、 自身に割り当てるトークン
+  //   上限を設定できるようにして欲しい」。
+  //
+  // ★ なぜ手元で止めるのか。 サーバー側の上限 (devCapUsd) は、 パスワード
+  //   で開発者モードに入った本人を**わざと素通り**させている
+  //   (billing-worker.js の devCapState / addDevSpent)。 使った額すら
+  //   数えていないので、 サーバーを直しても本人では試せない。 手元で
+  //   同じ止まり方を作れば、 利用者に出る文言も含めて確かめられる。
+  //
+  // 上限は「使った額 (請求ベース、 USD)」 で持つ。 0 なら上限なし。
+  double _devSelfCapUsd = 0;
+  double _devSelfSpentUsd = 0;
+
+  /// 自分に掛けている上限 (USD)。 0 = 掛けていない。
+  double get devSelfCapUsd => _devSelfCapUsd;
+
+  /// その上限に対して今いくら使ったか。
+  double get devSelfSpentUsd => _devSelfSpentUsd;
+
+  /// 上限が効いている状態か (= 開発者モード中で、 0 より大きい上限がある)。
+  bool get devSelfCapActive => _developerMode && _devSelfCapUsd > 0;
+
+  /// もう上限に達しているか。
+  bool get devSelfCapReached =>
+      devSelfCapActive && _devSelfSpentUsd >= _devSelfCapUsd;
+
+  /// 押すたびに上限を 1 段上げる (= ユーザー要望: 1 ドルまでしか掛けられ
+  /// ないのは小さ過ぎる)。 一番上まで行ったら「なし」 に戻る。
+  static const List<double> kDevSelfCapSteps = [
+    0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 25, 50, 100,
+  ];
+
+  Future<void> stepDevSelfCapUsd() async {
+    if (!_developerMode) return;
+    final cur = _devSelfCapUsd;
+    for (final v in kDevSelfCapSteps) {
+      if (cur < v - 1e-9) {
+        await setDevSelfCapUsd(v);
+        return;
+      }
+    }
+    await setDevSelfCapUsd(0); // 一周したら上限なしへ
+  }
+
+  Future<void> setDevSelfCapUsd(double usd) async {
+    if (!_developerMode) return;
+    _devSelfCapUsd = usd < 0 ? 0 : usd;
+    notifyListeners();
+    try {
+      final prefs = await _prefsWithRetry();
+      await prefs.setDouble('dev_self_cap_usd', _devSelfCapUsd);
+    } catch (_) {}
+  }
+
+  /// 使った分を 0 に戻す (= もう一度上限まで試せるように)。
+  Future<void> resetDevSelfSpent() async {
+    _devSelfSpentUsd = 0;
+    notifyListeners();
+    try {
+      final prefs = await _prefsWithRetry();
+      await prefs.setDouble('dev_self_spent_usd', 0);
+    } catch (_) {}
+  }
+
+  Future<void> _addDevSelfSpent(double usd) async {
+    if (!devSelfCapActive || usd <= 0) return;
+    _devSelfSpentUsd += usd;
+    notifyListeners();
+    try {
+      final prefs = await _prefsWithRetry();
+      await prefs.setDouble('dev_self_spent_usd', _devSelfSpentUsd);
+    } catch (_) {}
+  }
+
+  /// 代行を呼ぶ前の関所。 上限に達していたら、 サーバーが返すのと同じ
+  /// 文言で止める (= 利用者に出る見え方をそのまま確かめられる)。
+  void _guardDevSelfCap() {
+    if (devSelfCapReached) {
+      // ★ 文言も利用者とそっくり同じにする (= ユーザー要望: 実際のユーザーが
+      //   使う画面のテストがしたい)。 開発者向けの言い回しにすると、
+      //   本番で何が出るのかを確かめられない。 上限の数字は開発者モードの
+      //   画面に出ているので、 そちらで確かめられる。
+      _notifyCreditShort();
+      throw Exception(t('credit.insufficient'));
+    }
+  }
+
   void recordAppKeyUsage({
     required int inputTokens,
     required int outputTokens,
@@ -66977,7 +67608,11 @@ class MindMapProvider extends ChangeNotifier {
     final cost = costUsd ?? calcCostUsd(tier, inputTokens, outputTokens);
     _appKeyCostUsd += cost;
     // 請求額はサーバーの値が正。 来ていなければ表示用の率で概算する。
-    _appKeyBilledUsd += billedUsd ?? billedCostUsd(cost);
+    final billed = billedUsd ?? billedCostUsd(cost);
+    _appKeyBilledUsd += billed;
+    // 自分に掛けた上限にも足す (= 開発者モードで試すため)。
+    // ignore: discarded_futures
+    _addDevSelfSpent(billed);
     // ignore: discarded_futures
     _saveUsageTotals();
     // ignore: discarded_futures
@@ -67158,6 +67793,8 @@ class MindMapProvider extends ChangeNotifier {
     _anthropicApiKey = prefs.getString('anthropic_api_key');
     _aiProvider = prefs.getString('aiProvider') ?? 'gemini';
     _imageGenModel = prefs.getString('imageGenModel') ?? 'auto';
+    _slideImageSource = prefs.getString('slideImageSource') ?? 'generate';
+    _webImageLicense = prefs.getString('webImageLicense') ?? 'free';
     // Ollama は廃止したため、 旧設定で 'ollama' が選ばれていたら gemini に戻す。
     if (_aiProvider == 'ollama') _aiProvider = 'gemini';
     // Grok (x.ai) / DeepSeek の API キーとモデル
@@ -67227,6 +67864,7 @@ class MindMapProvider extends ChangeNotifier {
     }
     // Ctrl+1〜9 のショートカット基準フォルダーの読み込み
     _shortcutFolderId = prefs.getString(_kShortcutFolderId);
+    _loadShortcutSlotPages(prefs);
     // 初回起動判定: 専用フラグ 'langPickerShown' で追跡
     // （appLanguage と分離することで、既存ユーザーもアップデート後に
     //  言語確認ダイアログを一度表示できる）
@@ -67990,6 +68628,13 @@ class MindMapProvider extends ChangeNotifier {
     ]) {
       list.removeWhere((id) => id == 'toggleBottomBar');
     }
+    // ★ バーの並びは専用ファイルの控えを正とする
+    //   (= ユーザー報告: 並べ替えたボタンが次の起動で元に戻る)。
+    //   SharedPreferences は本体とサブ窓で潰し合うので、 そこだけを
+    //   頼りにできない。 詳しくは _saveBarLayout の説明。
+    //   控えが無い (= この版で初めて起動した) 時は prefs の値のまま進み、
+    //   最初の保存でファイルが作られる。
+    await _loadBarLayout();
     // lockScale ボタン (拡大率) の表示スロット (0=左端=デフォルト)
     _lockScaleBottomSlot = prefs.getInt('lockScaleBottomSlot') ?? 0;
     _lockScaleBottomSlot = _lockScaleBottomSlot.clamp(0, 5);
@@ -68100,6 +68745,9 @@ class MindMapProvider extends ChangeNotifier {
     // 共同編集があるので、 SSL 化されていないページ共有は不要)。 過去の
     // 移行コードが再追加しても、 ここで弾かれて表示されない。
     'sharePageLan',
+    // 4 分割 (2x2) は右上の常設ボタンにあるのでカスタムからは外す
+    // (2026-09-09、= ユーザー要望)。 保存済みの並びからも取り除く。
+    'mapSplitQuad',
   };
   List<String> _filterRemovedButtons(List<String> ids) =>
       List.unmodifiable(ids.where((id) => !_removedButtonIds.contains(id)));
@@ -70939,6 +71587,7 @@ class MindMapProvider extends ChangeNotifier {
     }
     await prefs.setString('desktopHeaderButtonPlacementById',
         jsonEncode(_desktopHeaderButtonPlacementById));
+    await _saveBarLayout();
   }
 
   Future<void> _saveDesktopHeaderEnabledDockPlacements() async {
@@ -71313,10 +71962,91 @@ class MindMapProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ─── バーの並びは専用ファイルにも控える ─────────────────────────────
+  //
+  // = ユーザー報告「ドラッグで移動させたボタンが、 アプリを閉じて開き直すと
+  //   前と同じ位置に戻っている」。
+  //
+  // ★ 原因は SharedPreferences の潰し合い。 本体とサブ窓 (浮遊メモ / AI /
+  //   録画など、 別エンジンで動く窓) はそれぞれ**自分のメモリ上の写し**を
+  //   持っていて、 何か 1 つ書くたびに JSON を丸ごと書き戻す。 サブ窓が
+  //   開いた後に本体で並べ替えると、 サブ窓が古い写しを書き戻した時点で
+  //   その並びが消える。
+  //   浮遊メモの本文が消える不具合も同じ理由で、 既に専用ファイルへ
+  //   逃がしてある (main.dart の floatingMemoTextFile)。 バーの並びも
+  //   同じ手当てをする。
+  //
+  // prefs 側にも今までどおり書く (= 古い版へ戻した時のため)。 読む時は
+  //   ファイルがあればそちらを正とする。
+  Future<File> _barLayoutFile() async {
+    final dir = await getApplicationSupportDirectory();
+    return File('${dir.path}${Platform.pathSeparator}bar_layout.json');
+  }
+
+  Future<void> _saveBarLayout() async {
+    try {
+      final f = await _barLayoutFile();
+      await f.writeAsString(
+          jsonEncode({
+            'header': _customHeaderButtons,
+            'gallery': _galleryHeaderButtons,
+            'bottom': _customBottomButtons,
+            'bottomTop': _customBottomTopButtons,
+            'bottomTopSplit': _customBottomTopButtonsSplit,
+            'bottomThird': _customBottomThirdButtons,
+            'bottomFourth': _customBottomFourthButtons,
+            'placementById': _desktopHeaderButtonPlacementById,
+          }),
+          flush: true);
+    } catch (e) {
+      debugPrint('バーの並びの控えを書けませんでした: $e');
+    }
+  }
+
+  /// 控えを読み戻す。 ファイルが無ければ何もしない (= prefs の値のまま)。
+  Future<void> _loadBarLayout() async {
+    try {
+      final f = await _barLayoutFile();
+      if (!await f.exists()) return;
+      final raw = await f.readAsString();
+      if (raw.trim().isEmpty) return;
+      final m = jsonDecode(raw);
+      if (m is! Map) return;
+      void fill(List<String> dst, String key) {
+        final v = m[key];
+        if (v is! List) return;
+        dst
+          ..clear()
+          ..addAll(v.map((e) => e.toString()));
+      }
+
+      fill(_customHeaderButtons, 'header');
+      fill(_galleryHeaderButtons, 'gallery');
+      fill(_customBottomButtons, 'bottom');
+      fill(_customBottomTopButtons, 'bottomTop');
+      fill(_customBottomTopButtonsSplit, 'bottomTopSplit');
+      fill(_customBottomThirdButtons, 'bottomThird');
+      fill(_customBottomFourthButtons, 'bottomFourth');
+      final pl = m['placementById'];
+      if (pl is Map) {
+        _desktopHeaderButtonPlacementById.clear();
+        for (final e in pl.entries) {
+          final v = e.value.toString();
+          if (desktopHeaderButtonPlacements.contains(v)) {
+            _desktopHeaderButtonPlacementById[e.key.toString()] = v;
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('バーの並びの控えを読めませんでした: $e');
+    }
+  }
+
   Future<void> _saveCustomHeaderButtons() async {
     final prefs = await _prefsWithRetry();
     await prefs.setString(
         'customHeaderButtons', jsonEncode(_customHeaderButtons));
+    await _saveBarLayout();
   }
 
   /// コマンドIDをヘッダーに追加
@@ -71376,6 +72106,7 @@ class MindMapProvider extends ChangeNotifier {
     final prefs = await _prefsWithRetry();
     await prefs.setString(
         'galleryHeaderButtons', jsonEncode(_galleryHeaderButtons));
+    await _saveBarLayout();
   }
 
   Future<void> addGalleryHeaderButton(String commandId) async {
@@ -71406,6 +72137,7 @@ class MindMapProvider extends ChangeNotifier {
     final prefs = await _prefsWithRetry();
     await prefs.setString(
         'customBottomButtons', jsonEncode(_customBottomButtons));
+    await _saveBarLayout();
   }
 
   /// 下部バーにコマンドIDを追加（カスタム5枠まで、既存は拒否）
@@ -73028,6 +73760,8 @@ class MindMapProvider extends ChangeNotifier {
     // 何も選んでいない時は Dev (= 全機能 + 代行の枠) にしておく
     // (= ユーザー要望: 開発者自身はクーポンを発行しなくても色々できるように)。
     final planStr = prefs.getString('dev_impersonate_plan');
+    _devSelfCapUsd = prefs.getDouble('dev_self_cap_usd') ?? 0;
+    _devSelfSpentUsd = prefs.getDouble('dev_self_spent_usd') ?? 0;
     _devImpersonatePlan = planStr == null
         ? SubscriptionPlan.dev
         : SubscriptionPlan.values.firstWhere(
@@ -73877,6 +74611,7 @@ class MindMapProvider extends ChangeNotifier {
     'aiGrandchildMin', 'aiModelTier', 'aiProvider', 'anthropicModel',
     'deepseek_model', 'grok_model', 'openaiModel', 'openrouter_model',
     'openrouter_base_url', 'imageGenModel', 'relayModel', 'relayReasoning',
+    'slideImageSource', 'webImageLicense',
     'browser_ai_prefix', 'browser_ai_target',
     // 見た目
     'appLanguage', 'isDarkMode', 'headerColor', 'highRefreshRate',
@@ -76301,6 +77036,7 @@ class MindMapProvider extends ChangeNotifier {
   /// そのまま AI に渡したい)。 対応していないモデルではサーバー側が無視する。
   Future<String> askAiViaRelay(String prompt,
       {int? maxTokens, List<AiInputImage>? images}) async {
+    _guardDevSelfCap();
     final base = relayApiBase;
     if (base.isEmpty) throw Exception(t('relay.notConfigured'));
     // 合鍵つきの Dev ビルドはサインイン不能でも通す (Worker が合鍵で認める)。
@@ -76408,6 +77144,7 @@ class MindMapProvider extends ChangeNotifier {
   /// Worker 経由で画像を 1 枚生成する (= 前払いクレジットから 1 枚分を引く)。
   /// 本物の API キーは Worker だけが持つので、 アプリには埋め込まれない。
   Future<Uint8List> generateAiImageViaRelay(String prompt) async {
+    _guardDevSelfCap();
     final base = relayApiBase;
     if (base.isEmpty) throw Exception(t('relay.notConfigured'));
     // 合鍵つきの Dev ビルドはサインイン不能でも通す (Worker が合鍵で認める)。
@@ -76464,7 +77201,12 @@ class MindMapProvider extends ChangeNotifier {
       // 原価と請求額はそれぞれの入れ物へ。 以前は請求額を原価側へ入れて
       //   いたため、 表示のときにもう一度上乗せされていた。
       _appKeyCostUsd += (u['costUsd'] as num?)?.toDouble() ?? 0.0;
-      _appKeyBilledUsd += (u['billedUsd'] as num?)?.toDouble() ?? 0.0;
+      final billed = (u['billedUsd'] as num?)?.toDouble() ?? 0.0;
+      _appKeyBilledUsd += billed;
+      // 絵の分も自分に掛けた上限に足す (= この経路は recordAppKeyUsage を
+      //   通らないので、 ここで数えないと絵だけ上限をすり抜ける)。
+      // ignore: discarded_futures
+      _addDevSelfSpent(billed);
     }
     notifyListeners();
     return base64Decode(b64);
@@ -76637,6 +77379,214 @@ class MindMapProvider extends ChangeNotifier {
   /// プロンプトから画像を 1 枚生成して PNG/JPEG バイト列を返す。
   /// 画像生成は Gemini の image モデルのみ対応 (= 他プロバイダ選択時も
   /// Gemini キーがあれば動く)。 失敗時は分かりやすい例外を投げる。
+  // ── 資料の絵を Web から取る (= ユーザー要望) ──────────────────────────
+  //
+  //  著作権フリー: Openverse (CC0 / パブリックドメイン / CC の写真だけを
+  //    集めた検索 API、 鍵不要) → 足りなければ Wikimedia Commons。
+  //  著作権を問わない: Bing の画像検索 (HTML から元絵の URL を拾う) →
+  //    何も無ければ Openverse。
+  //  取れた物は PNG / JPEG の実体だけを通す (webp / svg / gif は弾く。
+  //  PowerPoint で開けない事があるため)。
+
+  static const String _kWebImageUa =
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/126.0 Safari/537.36';
+
+  /// Wikimedia / Openverse は連絡先の無い UA を弾くことがある。
+  static const String _kApiUa = 'HisatorNotebook/1.0 (https://kamispec.com)';
+
+  /// 資料に入れる絵を 1 枚用意する。 設定に従って AI が描くか Web から取る。
+  ///
+  /// [prompt] は AI に描かせる時の指示 (英語)。 [query] は Web 検索の語
+  /// (短い英語が望ましい)。 query が無ければ prompt の先頭から作る。
+  /// Web で見つからなくても AI で描き直しはしない (= 勝手に費用を掛けない)。
+  Future<Uint8List> makeSlideImage(
+      {required String prompt, String? query}) {
+    if (slideImagesFromWeb) {
+      final q = (query ?? '').trim();
+      return fetchWebImage(q.isNotEmpty ? q : _queryFromPrompt(prompt));
+    }
+    return generateAiImage(prompt);
+  }
+
+  /// 長い描画指示から検索語を作る (最初の句、 6 語まで)。
+  static String _queryFromPrompt(String prompt) {
+    var s = prompt.trim();
+    final cut = s.indexOf(RegExp(r'[,.\n;:()]'));
+    if (cut > 0) s = s.substring(0, cut);
+    final words =
+        s.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).toList();
+    return words.take(6).join(' ');
+  }
+
+  static bool _looksLikeRasterUrl(String url) {
+    var u = url.toLowerCase();
+    final q = u.indexOf('?');
+    if (q > 0) u = u.substring(0, q);
+    return u.endsWith('.jpg') || u.endsWith('.jpeg') || u.endsWith('.png');
+  }
+
+  /// Web から絵を 1 枚取ってくる。 [freeOnly] を省くと設定に従う。
+  Future<Uint8List> fetchWebImage(String query, {bool? freeOnly}) async {
+    final q = query.trim();
+    if (q.isEmpty) throw Exception(t('ai.needPrompt'));
+    await ensureOnline();
+    final free = freeOnly ?? (_webImageLicense != 'any');
+    final urls = <String>[];
+    Future<void> addFrom(Future<List<String>> Function() f) async {
+      try {
+        urls.addAll(await f());
+      } catch (e) {
+        debugPrint('image search failed: $e');
+      }
+    }
+
+    if (free) {
+      await addFrom(() => _searchOpenverseImages(q));
+      if (urls.length < 3) await addFrom(() => _searchCommonsImages(q));
+    } else {
+      await addFrom(() => _searchBingImages(q));
+      if (urls.isEmpty) await addFrom(() => _searchOpenverseImages(q));
+    }
+    final seen = <String>{};
+    var tried = 0;
+    for (final u in urls) {
+      if (!seen.add(u)) continue;
+      if (tried++ >= 12) break;
+      final bytes = await _downloadImageBytes(u);
+      if (bytes != null) return bytes;
+    }
+    throw Exception(t('img.webNotFound'));
+  }
+
+  Future<List<String>> _searchOpenverseImages(String q) async {
+    final uri = Uri.https('api.openverse.org', '/v1/images/', {
+      'q': q,
+      'page_size': '15',
+      'mature': 'false',
+    });
+    final res = await http.get(uri, headers: {
+      'User-Agent': _kApiUa,
+      'Accept': 'application/json',
+    }).timeout(const Duration(seconds: 15));
+    if (res.statusCode != 200) return const [];
+    final data = jsonDecode(res.body);
+    final results = data is Map ? data['results'] : null;
+    if (results is! List) return const [];
+    final out = <String>[];
+    for (final r in results) {
+      if (r is! Map) continue;
+      final url = '${r['url'] ?? ''}';
+      if (url.isEmpty) continue;
+      final ft = '${r['filetype'] ?? ''}'.toLowerCase();
+      if (!_looksLikeRasterUrl(url) &&
+          ft != 'jpg' &&
+          ft != 'jpeg' &&
+          ft != 'png') {
+        continue;
+      }
+      // 小さすぎる絵は資料に向かない。
+      final w = r['width'];
+      if (w is num && w < 400) continue;
+      out.add(url);
+    }
+    return out;
+  }
+
+  Future<List<String>> _searchCommonsImages(String q) async {
+    final uri = Uri.https('commons.wikimedia.org', '/w/api.php', {
+      'action': 'query',
+      'generator': 'search',
+      'gsrsearch': 'filetype:bitmap $q',
+      'gsrnamespace': '6',
+      'gsrlimit': '12',
+      'prop': 'imageinfo',
+      'iiprop': 'url|mime|size',
+      'iiurlwidth': '1600',
+      'format': 'json',
+    });
+    final res = await http.get(uri, headers: {'User-Agent': _kApiUa})
+        .timeout(const Duration(seconds: 15));
+    if (res.statusCode != 200) return const [];
+    final data = jsonDecode(res.body);
+    final query = data is Map ? data['query'] : null;
+    final pages = query is Map ? query['pages'] : null;
+    if (pages is! Map) return const [];
+    final entries = <Map>[
+      for (final p in pages.values)
+        if (p is Map) p
+    ];
+    int idx(Map m) => m['index'] is num ? (m['index'] as num).toInt() : 0;
+    entries.sort((a, b) => idx(a).compareTo(idx(b)));
+    final out = <String>[];
+    for (final p in entries) {
+      final ii = p['imageinfo'];
+      if (ii is! List || ii.isEmpty || ii.first is! Map) continue;
+      final info = ii.first as Map;
+      final mime = '${info['mime'] ?? ''}';
+      if (mime != 'image/jpeg' && mime != 'image/png') continue;
+      final w = info['width'];
+      if (w is num && w < 400) continue;
+      final u = '${info['thumburl'] ?? info['url'] ?? ''}';
+      if (u.isNotEmpty) out.add(u);
+    }
+    return out;
+  }
+
+  Future<List<String>> _searchBingImages(String q) async {
+    final uri = Uri.https('www.bing.com', '/images/search', {
+      'q': q,
+      'first': '1',
+      'count': '35',
+      'form': 'HDRSC2',
+    });
+    final res = await http.get(uri, headers: {
+      'User-Agent': _kWebImageUa,
+      'Accept': 'text/html',
+      'Accept-Language': 'ja,en;q=0.8',
+    }).timeout(const Duration(seconds: 15));
+    if (res.statusCode != 200) return const [];
+    // 各結果は m="{...}" の中に murl (元絵) と turl (Bing の縮小版) を持つ。
+    //   元絵を先に全部並べ、 縮小版は後ろに回す (= 1 件目が webp でも、
+    //   次の結果の元絵を先に試して画質を落とさない)。
+    final originals = <String>[];
+    final thumbs = <String>[];
+    for (final b in RegExp(r'm="\{([^"]*)\}"').allMatches(res.body)) {
+      final body =
+          b.group(1)!.replaceAll('&quot;', '"').replaceAll('&amp;', '&');
+      final murl = RegExp(r'"murl":"([^"]+)"').firstMatch(body)?.group(1);
+      final turl = RegExp(r'"turl":"([^"]+)"').firstMatch(body)?.group(1);
+      if (murl != null && _looksLikeRasterUrl(murl)) originals.add(murl);
+      if (turl != null && turl.startsWith('http')) {
+        // 元絵が webp だったり取れなかった時の控え (JPEG)。 大きめを頼む。
+        final sep = turl.contains('?') ? '&' : '?';
+        thumbs.add('$turl${sep}w=1600');
+      }
+    }
+    return [...originals, ...thumbs];
+  }
+
+  /// 1 枚落として、 PNG / JPEG の実体だけを返す (それ以外は null)。
+  Future<Uint8List?> _downloadImageBytes(String url) async {
+    try {
+      final uri = Uri.parse(url);
+      final res = await http.get(uri, headers: {
+        'User-Agent': _kWebImageUa,
+        'Accept': 'image/*,*/*;q=0.8',
+        'Referer': '${uri.scheme}://${uri.host}/',
+      }).timeout(const Duration(seconds: 20));
+      if (res.statusCode != 200) return null;
+      final b = res.bodyBytes;
+      if (b.length < 4096 || b.length > 15 * 1024 * 1024) return null;
+      final png = b[0] == 0x89 && b[1] == 0x50 && b[2] == 0x4E && b[3] == 0x47;
+      final jpg = b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF;
+      if (!png && !jpg) return null;
+      return b;
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<Uint8List> generateAiImage(String prompt) async {
     final p = prompt.trim();
     if (p.isEmpty) throw Exception(t('ai.needPrompt'));
@@ -89901,8 +90851,78 @@ $cleanQ
   /// 「フォルダーの中のマップに Ctrl+1〜9 が勝手に割り振られる」事故が起きない。
   /// 個別フォルダーを基準にしたい場合は、フォルダー右クリックから
   /// 「Ctrl+1〜9 の基準にする」を選んで明示的に設定できる。
+  // ─── Ctrl+1〜9 に開くページを自分で決める (= ユーザー要望) ────────────
+  //
+  // 今までは「一覧の上から順」 だけだった。 並べ替えると番号も動いてしまい、
+  // 「Ctrl+3 はいつもこのページ」 という覚え方ができなかった。
+  // 割り当てた枠はその指定を優先し、 空けてある枠は今までどおり上から順。
+  //
+  // 入れ物は「枠 (0〜8) → pageId」。 prefs 'shortcutSlotPages' に JSON で持つ。
+  final Map<int, String> _shortcutSlotPages = {};
+
+  /// [idx] (0 = Ctrl+1) に割り当てられたページ。 無ければ null。
+  MindMapPage? shortcutSlotAssignment(int idx) {
+    final id = _shortcutSlotPages[idx];
+    if (id == null) return null;
+    for (final p in _pages) {
+      if (p.id == id) return p;
+    }
+    return null; // 消されたページ
+  }
+
+  /// [idx] に開くページを決める。 [pageId] が null なら割り当てを外す。
+  Future<void> setShortcutSlotPage(int idx, String? pageId) async {
+    if (idx < 0 || idx > 8) return;
+    // 同じページを 2 つの枠に入れない (= どちらが効くのか分からなくなる)。
+    if (pageId != null) {
+      _shortcutSlotPages.removeWhere((_, v) => v == pageId);
+      _shortcutSlotPages[idx] = pageId;
+    } else {
+      _shortcutSlotPages.remove(idx);
+    }
+    notifyListeners();
+    try {
+      final prefs = await _prefsWithRetry();
+      await prefs.setString(
+          'shortcutSlotPages',
+          jsonEncode(
+              _shortcutSlotPages.map((k, v) => MapEntry(k.toString(), v))));
+    } catch (_) {}
+  }
+
+  /// 割り当てを全部外す (= 上から順に戻す)。
+  Future<void> clearShortcutSlotPages() async {
+    _shortcutSlotPages.clear();
+    notifyListeners();
+    try {
+      final prefs = await _prefsWithRetry();
+      await prefs.remove('shortcutSlotPages');
+    } catch (_) {}
+  }
+
+  void _loadShortcutSlotPages(SharedPreferences prefs) {
+    _shortcutSlotPages.clear();
+    try {
+      final raw = prefs.getString('shortcutSlotPages');
+      if (raw == null || raw.isEmpty) return;
+      final m = jsonDecode(raw);
+      if (m is! Map) return;
+      for (final e in m.entries) {
+        final k = int.tryParse('${e.key}');
+        final v = '${e.value}'.trim();
+        if (k != null && k >= 0 && k <= 8 && v.isNotEmpty) {
+          _shortcutSlotPages[k] = v;
+        }
+      }
+    } catch (_) {}
+  }
+
   MindMapPage? pageForShortcutSlot(int idx) {
     if (idx < 0) return null;
+    // ★ 自分で割り当てた枠が最優先 (= ユーザー要望)。 指定されたページが
+    //   消えている時は、 下の「上から順」 に落ちる。
+    final assigned = shortcutSlotAssignment(idx);
+    if (assigned != null) return assigned;
     // ★ ドロワーの表示順と一致させる (= ユーザー要望: 上から Ctrl+1,2,3…)。
     //   pagesInFolder はピン留め(お気に入り)を先頭に寄せる並びなので、
     //   ここでも同じ pagesInFolder を使わないと「一番上のマップに Ctrl+2」
@@ -92543,11 +93563,12 @@ $cleanQ
   //   いる左右 / 上下の 2 分割しか見えていなかった。 分割の実装は画面側に
   //   しか無いので、 文書ファイル作成と同じように係を預かって呼ぶ。
 
-  Future<Map<String, dynamic>> Function(String layout, List<String> pageIds)?
-      _mcpSplitViewSetter;
+  Future<Map<String, dynamic>> Function(
+      String layout, List<String> pageIds, int? cell)? _mcpSplitViewSetter;
 
   void registerMcpSplitView(
-      Future<Map<String, dynamic>> Function(String layout, List<String> pageIds)
+      Future<Map<String, dynamic>> Function(
+              String layout, List<String> pageIds, int? cell)
           setter) {
     _mcpSplitViewSetter = setter;
   }
@@ -92559,15 +93580,19 @@ $cleanQ
   /// 戻り値には「実際にどうなったか」 を入れる。 4 分割は携帯では 2 分割に
   ///   落ちるので、 頼まれた形をそのまま報告させないための約束
   ///   (= 出来ていないのに「4 分割にしました」 と答えるのを防ぐ)。
+  /// [cell] は layout='off' の時だけ意味を持つ。 その番号のセルに出ている
+  /// ページを残して 1 画面に戻す (= ユーザー要望: 「右下の画面を全画面に
+  /// して」 と頼まれたら、 やり方を教えるのではなく実際にやる)。
   Future<Map<String, dynamic>> mcpSetSplitView({
     required String layout,
     List<String> pageIds = const [],
+    int? cell,
   }) async {
     final setter = _mcpSplitViewSetter;
     if (setter == null) {
       return {'error': 'the screen is not ready yet - try again in a moment'};
     }
-    return setter(layout, pageIds);
+    return setter(layout, pageIds, cell);
   }
 
   // ─── AI からの文書ファイル作成 (= ユーザー要望: pptx / pdf / xlsx / csv
@@ -92589,6 +93614,27 @@ $cleanQ
   /// 画面側が用意されていなければ null。
   /// replaced が true なら、 新しく作らずに同じ名前のファイルの中身を
   /// 入れ替えた (= ユーザー報告: 直してと頼んだのに 2 つ目が出来ていた)。
+  /// [pageId] のページに貼ってある、 拡張子が [kind] のファイル名の一覧。
+  ///
+  /// = ユーザー報告「資料を作らせた後に『おしゃれな資料にして』 と言うと、
+  ///   さっきの物を直さずに新しい pptx が出来てしまう」。
+  ///   名前の指定が無い時に「どれを直すのか」 を決めるために使う。
+  List<String> mcpAttachmentsOfKind(String pageId, String kind) {
+    final page = mcpPageById(pageId);
+    if (page == null || kind.isEmpty) return const [];
+    final want = '.${kind.toLowerCase()}';
+    final out = <String>[];
+    for (final n in page.nodes.values) {
+      final path = (n.attachmentPath ?? '').trim();
+      if (path.isEmpty || !path.toLowerCase().endsWith(want)) continue;
+      final name = (n.attachmentName ?? '').trim().isNotEmpty
+          ? n.attachmentName!.trim()
+          : _baseName(path);
+      if (!out.contains(name)) out.add(name);
+    }
+    return out;
+  }
+
   Future<Map<String, dynamic>?> mcpCreateFile(Map<String, dynamic> spec) async {
     final builder = _mcpFileBuilder;
     if (builder == null) return null;
@@ -95554,8 +96600,18 @@ $cleanQ
     const double gap = kShelfGap;
     final double defRowH = bw * 1.1; // 行高の下限 (= 空セルの代表値)
     int maxCol = -1, maxRow = -1;
+    // ★ 表紙に隠れている要素は枠を占有しない (= +ボックスの数え方と揃える)。
+    //   隠れた要素の枠を数に入れると、 誰も居ない列と行が確保されたままに
+    //   なり、 格子が歪む (= ユーザー報告: 収納すると子要素が置かれていた
+    //   ブロックがおかしくなる)。 既に隠れている物がある古いページでも
+    //   直るよう、 ここでも見る。
+    bool live(String id) {
+      final n = page.nodes[id];
+      return n != null && n.hiddenInContainer == null;
+    }
+
     _shelfCells.forEach((id, c) {
-      if (!page.nodes.containsKey(id)) return;
+      if (!live(id)) return;
       if (c[0] > maxCol) maxCol = c[0];
       if (c[1] > maxRow) maxRow = c[1];
     });
@@ -95570,7 +96626,7 @@ $cleanQ
     final rowH = List<double>.filled(rows, defRowH);
     _shelfCells.forEach((id, c) {
       final n = page.nodes[id];
-      if (n == null) return;
+      if (n == null || n.hiddenInContainer != null) return;
       final col = c[0], row = c[1];
       if (col >= 0 && col < cols) {
         final w = n.width < bw ? bw : n.width; // #5: 下限は +ボックス幅
@@ -97254,6 +98310,30 @@ $cleanQ
       }
     }
 
+    // ★ ギャラリーでは、 隠した要素が置かれていた枠を空ける
+    //   (= ユーザー報告: 親要素に子要素を収納すると、 子要素が配置されて
+    //   いたブロックがおかしくなる)。 隠れている要素の枠を残したままだと、
+    //   誰も居ないのに列と行が確保され続け、 空いた所が +ブロックにも
+    //   戻らなかった。 表紙は先頭の要素が居た枠へ置く。
+    //   ※ 詰め直し (compactShelfCells) はしない。 その場で +ブロックに
+    //     戻す方が、 何がどこにあったか分かりやすい (表紙の作り方と同じ)。
+    if (currentPage.pageType == 'bookshelf') {
+      List<int>? target;
+      for (final id in valid) {
+        final c = _shelfCells.remove(id);
+        target ??= c == null ? null : List<int>.from(c);
+      }
+      if (target == null) {
+        final frontier = bookshelfFrontierCells();
+        target = frontier.isNotEmpty
+            ? List<int>.from(frontier.first)
+            : <int>[0, 0];
+      }
+      _shelfCells[containerId] = target;
+      _arrangeAsBookshelfBody(currentPage);
+      _saveShelfCells();
+    }
+
     _saveToStorage();
     notifyListeners();
     return containerId;
@@ -97318,6 +98398,19 @@ $cleanQ
       nodeMap[id] = n.copyWith(hiddenInContainer: null);
     }
     nodeMap.remove(containerId);
+    // ★ ギャラリーでは、 出てきた要素に枠を配り直す (= 収納で空けた分を
+    //   返す)。 配らないと全部が同じ所に重なって見える。
+    if (currentPage.pageType == 'bookshelf') {
+      _shelfCells.remove(containerId);
+      for (final id in ids) {
+        if (!nodeMap.containsKey(id)) continue;
+        final frontier = bookshelfFrontierCells();
+        _shelfCells[id] =
+            frontier.isNotEmpty ? List<int>.from(frontier.first) : <int>[0, 0];
+      }
+      _arrangeAsBookshelfBody(currentPage);
+      _saveShelfCells();
+    }
     _saveToStorage();
     notifyListeners();
   }

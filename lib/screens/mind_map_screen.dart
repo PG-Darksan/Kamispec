@@ -1235,6 +1235,22 @@ String aiRemainText(MindMapProvider provider) {
   // モデル名は同じ行の左側 (モデル選択ボタン) に出ているので、 ここでは
   // 繰り返さない (= ユーザー要望: 右に書く必要は無いので消して、 残り
   // トークン数が切れずに収まるように)。
+  // ★ 自分に掛けた上限があれば、 そちらを先に出す (= ユーザー報告:
+  //   pptx などで AI アシスタントを呼んだ時に上限が出ていない)。
+  //   Dev 枠の残りより、 今そこで止まる数の方が知りたい。
+  if (provider.devSelfCapActive) {
+    final left =
+        (provider.devSelfCapUsd - provider.devSelfSpentUsd).clamp(0.0, 1e9);
+    final usd = '\$${left.toStringAsFixed(2)}';
+    if (inRate <= 0 && outRate <= 0) {
+      return provider.t('dev.selfCapRemainUsd').replaceFirst('{usd}', usd);
+    }
+    return provider
+        .t('dev.selfCapRemainIo')
+        .replaceFirst('{usd}', usd)
+        .replaceFirst('{in}', tokAt(left, inRate))
+        .replaceFirst('{out}', tokAt(left, outRate));
+  }
   if (provider.isDevPlan) {
     final left = provider.devRemainingUsd;
     final usd = '\$${left.toStringAsFixed(2)}';
@@ -1521,24 +1537,28 @@ Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
                 math.max(inset, screenSize.width - pane.right + inset),
                 math.max(20.0, screenSize.height - pane.bottom + 20),
               ),
-        // 中身が縦に溢れると下 (考える深さ) が切れるのでスクロールさせる。
-        scrollable: true,
+        // ★ scrollable: true は使わない。
+        //
+        //   = ユーザー報告「モデルの所、 全て開くと欄が入り切らない」。
+        //   AlertDialog の scrollable は、 中身を**高さの上限なし**で
+        //   組んでから巻物に入れる。 その中で ConstrainedBox に高さを
+        //   掛けていたので、 中身は「収まった大きさ」 を名乗りつつ実際は
+        //   はみ出して描かれ、 巻物は動かず、 閉じるボタンの上にモデルの
+        //   行が重なっていた。
+        //   見出しと閉じるボタンは動かさず、 **中身だけ**を巻物にする。
+        //   (同じ形は _showYoutubeAutoGenDialog 等で既に使っている)
         title: Text(provider.t('mcp.chooseModel'),
             style: const TextStyle(color: Colors.white, fontSize: 15)),
         content: ConstrainedBox(
-          // ★ 縦にもはみ出さないようにする (= ユーザー要望: フローティング
-          //   では画面から出てしまう)。 入り切らない分は巻物になる。
-          // ★ ペインの中に出す時は上限を掛けない。 余白 (insetPadding) で
-          //   既にペインの中に収まっており、 その上で高さを縛ると
-          //   AlertDialog の巻物より内側で切られてしまい、 下にある
-          //   「考える深さ」 に永久に届かなくなる (= 上下分割や 4 分割で
-          //   ペインが低い時)。
+          // 出せる高さの上限。 ペインの中に出す時はペインの高さを基準に
+          //   する (画面いっぱいにすると、 ペインからはみ出す)。
           constraints: BoxConstraints(
-              maxHeight: pane != null
-                  ? double.infinity
-                  : math.max(220.0, screenSize.height - 180)),
+              maxHeight: math.max(
+                  200.0,
+                  (pane?.height ?? screenSize.height) - 180)),
           child: SizedBox(
           width: dialogW,
+          child: SingleChildScrollView(
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             if (models.isEmpty)
               Padding(
@@ -1613,7 +1633,7 @@ Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
                       color: Colors.white38, fontSize: 10.5, height: 1.4)),
             ),
           ]),
-        )),
+        ))),
         actions: [
           Padding(
             padding: const EdgeInsets.only(right: 8, bottom: 4),
@@ -3555,11 +3575,200 @@ class _MindMapScreenState extends State<MindMapScreen>
     ]);
   }
 
+  /// 分割ペインで開ける、 今のページに貼ってあるファイルの一覧
+  /// (= ユーザー要望: 同じページの他のファイルへ切り替えるボタン)。
+  List<({String path, String name, String mode})> _paneFilesOnCurrentPage(
+      MindMapProvider provider,
+      {String? currentPath}) {
+    final page = provider.currentPage;
+    final out = <({String path, String name, String mode})>[];
+    final seen = <String>{};
+    void add(String p) {
+      final path = p.trim();
+      if (path.isEmpty || !seen.add(path)) return;
+      final mode = _paneModeForPath(path);
+      if (mode == null) return;
+      out.add((
+        path: path,
+        name: path.split(RegExp(r'[/\\]')).last,
+        mode: mode,
+      ));
+    }
+
+    if (currentPath != null) add(currentPath);
+    if (page != null) {
+      for (final n in page.nodes.values) {
+        add(n.attachmentPath ?? '');
+      }
+    }
+    return out;
+  }
+
+  /// 拡張子からペインの表示モードを決める (開けない物は null)。
+  String? _paneModeForPath(String path) {
+    final lower = path.toLowerCase();
+    final dot = lower.lastIndexOf('.');
+    final slash = math.max(lower.lastIndexOf('/'), lower.lastIndexOf('\\'));
+    final ext = (dot > slash) ? lower.substring(dot + 1) : '';
+    if (ext == 'pdf') return 'pdf';
+    if (ext == 'xlsx' || ext == 'xls' || ext == 'csv' || ext == 'tsv') {
+      return 'xlsx';
+    }
+    if (ext == 'docx') return 'docx';
+    if (ext == 'pptx' || ext == 'ppt') return 'pptx';
+    if (ext == 'md' || ext == 'markdown') return 'md';
+    if (_kTextEditorExts.contains(ext) ||
+        lower.endsWith('dockerfile') ||
+        lower.endsWith('makefile')) {
+      return 'txt';
+    }
+    return null;
+  }
+
+  /// ペインのファイルを切り替える。 開いているビューアに未保存の変更が
+  /// あれば先に確認する (ビューアが _paneCloseGuards に登録している)。
+  Future<void> _switchPaneFile(
+      bool isLeft, ({String path, String name, String mode}) f) async {
+    final guard = _paneCloseGuards[isLeft ? 'left' : 'right']?.guard;
+    if (guard != null && !(await guard())) return;
+    if (!mounted) return;
+    if (f.mode == 'pdf') {
+      if (isLeft && _isDesktop) {
+        _splitLeftOriginNodeId = null;
+        _splitLoadLeftPdf(f.path);
+      } else {
+        setState(() {
+          _setSplitOpen(true);
+          _splitLocalOfficePath = null;
+          _splitOfficeFileName = '';
+        });
+        _splitLoadUrl(f.path);
+      }
+      return;
+    }
+    _openOfficeInSplitPanel(f.path, f.name, mode: f.mode, isLeftPanel: isLeft);
+  }
+
+  /// 「同じページの他のファイル」 へ切り替えるボタン。 2 つ以上ある時
+  /// だけ返す (1 つしか無ければ null)。
+  Widget? _buildPaneFileSwitchButton(
+      {required bool isLeft,
+      required String? currentPath,
+      bool showLabel = false}) {
+    final provider = context.read<MindMapProvider>();
+    final files = _paneFilesOnCurrentPage(provider, currentPath: currentPath);
+    if (files.length < 2) return null;
+    IconData iconFor(String mode) => switch (mode) {
+          'pdf' => Icons.picture_as_pdf_rounded,
+          'xlsx' => Icons.table_chart_rounded,
+          'docx' => Icons.description_rounded,
+          'pptx' => Icons.slideshow_rounded,
+          'md' => Icons.article_rounded,
+          _ => Icons.text_snippet_rounded,
+        };
+    Color colorFor(String mode) => switch (mode) {
+          'pdf' => const Color(0xFFFF6B6B),
+          'xlsx' => const Color(0xFF43B97F),
+          'docx' => const Color(0xFF4FC3F7),
+          'pptx' => const Color(0xFFE65100),
+          'md' => const Color(0xFF8D86FF),
+          _ => Colors.white70,
+        };
+    return PopupMenuButton<({String path, String name, String mode})>(
+      tooltip: provider.t('pane.switchFile'),
+      padding: EdgeInsets.zero,
+      color: const Color(0xFF22222E),
+      onSelected: (f) => unawaited(_switchPaneFile(isLeft, f)),
+      itemBuilder: (_) => [
+        for (final f in files)
+          PopupMenuItem<({String path, String name, String mode})>(
+            value: f,
+            height: 34,
+            enabled: f.path != currentPath,
+            child: Row(children: [
+              Icon(iconFor(f.mode), size: 16, color: colorFor(f.mode)),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(f.name,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        color: f.path == currentPath
+                            ? Colors.white38
+                            : Colors.white,
+                        fontSize: 12.5)),
+              ),
+            ]),
+          ),
+      ],
+      child: showLabel
+          ? Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                const Icon(Icons.swap_horiz_rounded,
+                    size: 16, color: Color(0xFF4FC3F7)),
+                const SizedBox(width: 6),
+                Text(provider.t('pane.switchFile'),
+                    style:
+                        const TextStyle(color: Colors.white70, fontSize: 12)),
+                const Icon(Icons.arrow_drop_down_rounded,
+                    size: 18, color: Colors.white54),
+              ]),
+            )
+          : const Padding(
+              padding: EdgeInsets.all(6),
+              child: Icon(Icons.swap_horiz_rounded,
+                  size: 18, color: Color(0xFF4FC3F7)),
+            ),
+    );
+  }
+
+  /// Office / テキスト系ファイルのペイン。 同じページに他のファイルがあれば
+  /// 上に細い帯を足して切り替えボタンを出す (= ユーザー要望)。
   Widget _buildSplitOfficeViewer(
     BuildContext ctx, {
     required String mode,
     required String path,
     required String fileName,
+    required bool isLeftPanel,
+  }) {
+    final body = _buildSplitOfficeViewerBody(ctx,
+        mode: mode,
+        path: path,
+        fileName: fileName,
+        paneGuardKey: isLeftPanel ? 'left' : 'right');
+    final switcher = _buildPaneFileSwitchButton(
+        isLeft: isLeftPanel, currentPath: path, showLabel: true);
+    if (switcher == null) return body;
+    return Column(children: [
+      Container(
+        height: 30,
+        padding: const EdgeInsets.symmetric(horizontal: 8),
+        color: const Color(0xFF1A1A30),
+        child: Row(children: [
+          switcher,
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(fileName,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white54, fontSize: 11.5)),
+          ),
+        ]),
+      ),
+      Expanded(child: body),
+    ]);
+  }
+
+  Widget _buildSplitOfficeViewerBody(
+    BuildContext ctx, {
+    required String mode,
+    required String path,
+    required String fileName,
+    required String paneGuardKey,
   }) {
     final isDark = ctx.watch<MindMapProvider>().isDarkMode;
     // ★ 分割ペインの中で保存した時も、 タイルに出している「中身のさわり」
@@ -3573,6 +3782,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           filePath: path,
           fileName: fileName,
           isDarkMode: isDark,
+          paneGuardKey: paneGuardKey,
         );
       case 'docx':
         return _DocxViewerDialog(
@@ -3580,6 +3790,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           fileName: fileName,
           isDarkMode: isDark,
           onSaved: notifySaved,
+          paneGuardKey: paneGuardKey,
         );
       case 'txt':
         // ── テキスト系ファイル (= ユーザー要望: txt も画面分割上で
@@ -3591,6 +3802,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           isDarkMode: isDark,
           compactHost: true,
           onSaved: notifySaved,
+          paneGuardKey: paneGuardKey,
         );
       case 'md':
         // ── Markdown (= ユーザー報告: 分割した画面に埋め込んで開くと
@@ -3602,6 +3814,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           fileName: fileName,
           isDarkMode: isDark,
           onSaved: notifySaved,
+          paneGuardKey: paneGuardKey,
         );
     }
   }
@@ -21323,6 +21536,77 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// チャンネル展開モードを選択するダイアログを表示。
   /// 'videos' / 'shorts' / 'both' / null(キャンセル) を返す。
   /// フィルターや自動削除設定もこのダイアログ内で行う。
+  /// チャンネルの URL を渡された時に「何を置くか」 を聞く。
+  ///
+  /// = ユーザー要望「YouTube チャンネル自体を埋め込んで、 クリックして
+  ///   チャンネルにアクセスできるようにして欲しい」。
+  /// 戻り値 'channel' = チャンネルを 1 つ置く / 'videos' = 動画を取り込む。
+  Future<String?> _askChannelEmbedKind(MindMapProvider provider) {
+    return showDialog<String>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: Text(provider.t('yt.channelPickTitle'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
+        content: SizedBox(
+          width: 380,
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            ListTile(
+              leading: const Icon(Icons.account_circle_rounded,
+                  color: Color(0xFFE53935), size: 22),
+              title: Text(provider.t('yt.channelPickChannel'),
+                  style: const TextStyle(color: Colors.white, fontSize: 13)),
+              subtitle: Text(provider.t('yt.channelPickChannelDesc'),
+                  style: const TextStyle(
+                      color: Colors.white38, fontSize: 11, height: 1.35)),
+              onTap: () => Navigator.pop(dctx, 'channel'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.video_library_rounded,
+                  color: Color(0xFF4FC3F7), size: 22),
+              title: Text(provider.t('yt.channelPickVideos'),
+                  style: const TextStyle(color: Colors.white, fontSize: 13)),
+              subtitle: Text(provider.t('yt.channelPickVideosDesc'),
+                  style: const TextStyle(
+                      color: Colors.white38, fontSize: 11, height: 1.35)),
+              onTap: () => Navigator.pop(dctx, 'videos'),
+            ),
+          ]),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dctx),
+              child: Text(provider.t('common.cancel'))),
+        ],
+      ),
+    );
+  }
+
+  /// 置いたチャンネルのタイルに、 チャンネル名を入れる。
+  /// 取れなければ何もしない (URL のままでも押せば開ける)。
+  Future<void> _backfillChannelTitle(
+      MindMapProvider provider, String url) async {
+    try {
+      final res = await http
+          .get(Uri.parse(url), headers: const {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+          })
+          .timeout(const Duration(seconds: 12));
+      if (res.statusCode != 200) return;
+      final m = RegExp(r'<meta\s+property="og:title"\s+content="([^"]+)"')
+          .firstMatch(res.body);
+      final name = m?.group(1)?.trim() ?? '';
+      if (name.isEmpty || !mounted) return;
+      final page = provider.currentPage;
+      for (final n in page.nodes.values) {
+        if (n.youtubeUrl == url || n.linkUrl == url) {
+          provider.updateNodeTitle(n.id, name);
+          break;
+        }
+      }
+    } catch (_) {/* 取れなくても困らない */}
+  }
+
   Future<String?> _pickChannelMode() async {
     final provider = context.read<MindMapProvider>();
     return showDialog<String>(
@@ -23270,6 +23554,29 @@ class _MindMapScreenState extends State<MindMapScreen>
       }
       final channelInfo = _extractChannelInfo(url);
       if (channelInfo != null) {
+        // ★ 先に「何を置くか」 を聞く (= ユーザー要望: YouTube チャンネル
+        //   自体を埋め込んで、 押したらチャンネルへ行けるように)。
+        //   今までは必ず動画を取り込んでいたので、 チャンネルそのものを
+        //   1 つの要素として置く道が無かった。
+        final what = await _askChannelEmbedKind(provider);
+        if (what == null || !mounted) return;
+        if (what == 'channel') {
+          // チャンネルを 1 タイルとして置く。 押すとチャンネルが開く。
+          provider.addVideoToBookshelf(url, cell: cell);
+          // 題名はチャンネル名で埋める (取れなければ URL のまま)。
+          unawaited(_backfillChannelTitle(provider, url));
+          if (mounted) {
+            _appSnack(
+              context,
+              SnackBar(
+                content: Text(provider.t('yt.channelEmbedded')),
+                backgroundColor: const Color(0xFF43B97F),
+                duration: const Duration(seconds: 2),
+              ),
+            );
+          }
+          return;
+        }
         _pickChannelMode().then((mode) {
           if (mode == null || !mounted) return;
           provider.setChannelMode(mode);
@@ -25038,9 +25345,13 @@ class _MindMapScreenState extends State<MindMapScreen>
                               overflow: TextOverflow.ellipsis,
                               maxLines: 2,
                             ),
+                            // ★ 日付も出す (= ユーザー要望: ダウンロード
+                            //   一覧に日付を振って欲しい)。 「3 日前」 だけ
+                            //   だと、 いつ落とした物か後から分からない。
                             subtitle: Text(
                               '${_humanReadableBytes(size)}'
-                              '${ts > 0 ? "  •  ${_relativeTime(ts)}" : ""}',
+                              '${ts > 0 ? "  •  ${_absoluteDateTime(ts)}"
+                                  "  (${_relativeTime(ts)})" : ""}',
                               style: const TextStyle(
                                   color: Colors.white38, fontSize: 11),
                             ),
@@ -25310,6 +25621,15 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// UNIX ミリ秒タイムスタンプを「3 分前 / 2 時間前 / 1 日前」のような
   /// 相対表現に変換する。1 週間以上は yyyy/MM/dd 表記。
+  /// 落とした日時を「2026/09/09 14:32」 の形で返す
+  /// (= ユーザー要望: ダウンロード一覧に日付を振って欲しい)。
+  String _absoluteDateTime(int msSinceEpoch) {
+    final d = DateTime.fromMillisecondsSinceEpoch(msSinceEpoch);
+    String two(int v) => v.toString().padLeft(2, '0');
+    return '${d.year}/${two(d.month)}/${two(d.day)} '
+        '${two(d.hour)}:${two(d.minute)}';
+  }
+
   String _relativeTime(int unixMs) {
     final now = DateTime.now().millisecondsSinceEpoch;
     final diff = now - unixMs;
@@ -42506,18 +42826,11 @@ class _MindMapScreenState extends State<MindMapScreen>
       'icon': Icons.horizontal_split_rounded,
       'color': Color(0xFF4FC3F7),
     },
-    // ── 4 分割 (2x2) ──
-    // = ユーザー報告「4 画面分割にしてと頼んだら『2 画面分割しかできない』
-    //   と言われた」。 2x2 の分割は前からあるのに、 ここに id が無いせいで
-    //   AI アシスタント (list_app_commands は この一覧を返す) からは
-    //   左右 / 上下の 2 分割しか見えていなかった。
-    //   パソコンだけの機能なので、 携帯では左右 2 分割に落ちる。
-    {
-      'id': 'mapSplitQuad',
-      'labelKey': 'map.splitQuad',
-      'icon': Icons.grid_view_rounded,
-      'color': Color(0xFF4FC3F7),
-    },
+    // 注: 4 分割 (2x2) はカスタムボタンに置かない (= ユーザー要望: 右上に
+    //   上下左右 2 分割と 2x2 のボタンが既にあるので要らない)。 AI からは
+    //   set_split_view の layout:'quad' で呼べるので、 コマンド一覧に無くて
+    //   困ることはない。 case 'mapSplitQuad' は残してある (= キー割り当てや
+    //   古い設定から呼ばれても動くように)。
     // 注: 'mapSplit' (前回のレイアウトで開閉) はコマンドとして残してある。
     // 注: 旧 'pickupPractice' (ナンパ練習) はユーザー要望で機能ごと削除。
     // 保存済みレイアウトからは provider の _removedButtonIds が取り除く。
@@ -52852,7 +53165,13 @@ class _MindMapScreenState extends State<MindMapScreen>
     //    なのに決済画面に遷移してしまう)。 ここへ来たという事は Worker が
     //    本人を Dev と認めなかった時なので、 何が起きたかだけ伝える。 ──
     final devProvider = context.read<MindMapProvider>();
-    if (devProvider.developerMode || devProvider.isDevPlan) {
+    // ★ ただし「自分に掛けた上限」 で止まった時は、 利用者と**同じ見え方**に
+    //   する (= ユーザー要望: 実際のユーザーが使う画面のテストがしたい)。
+    //   下の通常経路へ落として、 同じ文言 + トークン購入の画面を出す。
+    //   ここを通していたせいで、 上限で止まったのに「開発者枠として
+    //   認められませんでした」 という無関係な案内が出ていた。
+    if ((devProvider.developerMode || devProvider.isDevPlan) &&
+        !devProvider.devSelfCapReached) {
       final now = DateTime.now();
       final last = _creditShortShownAt;
       if (last != null && now.difference(last) < const Duration(seconds: 20)) {
@@ -53014,6 +53333,70 @@ class _MindMapScreenState extends State<MindMapScreen>
                         ],
                       ),
                     ),
+                    // ★ 自分に掛けた上限で止まっている時は、 真っ先に
+                    //   それを伝える (= チャージしても解除されないため)。
+                    //   会話欄の文言は利用者と同じにしてあるので、 ここで
+                    //   断らないと「残高が足りない」 と勘違いして、 要らない
+                    //   チャージをしてしまう (= 実際に起きた)。
+                    if (provider.devSelfCapReached) ...[
+                      const SizedBox(height: 8),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFFB347).withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                              color: const Color(0xFFFFB347)
+                                  .withValues(alpha: 0.55)),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(children: [
+                              const Icon(Icons.speed_rounded,
+                                  color: Color(0xFFFFB347), size: 16),
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: Text(
+                                  provider
+                                      .t('dev.selfCapBlocking')
+                                      .replaceFirst(
+                                          '{cap}',
+                                          provider.devSelfCapUsd
+                                              .toStringAsFixed(2)),
+                                  style: const TextStyle(
+                                      color: Color(0xFFFFD08A),
+                                      fontSize: 11.5,
+                                      height: 1.45),
+                                ),
+                              ),
+                            ]),
+                            const SizedBox(height: 6),
+                            Align(
+                              alignment: Alignment.centerLeft,
+                              child: TextButton.icon(
+                                style: TextButton.styleFrom(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 8),
+                                    minimumSize: const Size(0, 30)),
+                                icon: const Icon(Icons.lock_open_rounded,
+                                    size: 15, color: Color(0xFFFFB347)),
+                                label: Text(provider.t('dev.selfCapRelease'),
+                                    style: const TextStyle(
+                                        color: Color(0xFFFFB347),
+                                        fontSize: 11.5)),
+                                onPressed: () async {
+                                  await provider.setDevSelfCapUsd(0);
+                                  await provider.resetDevSelfSpent();
+                                  setD(() {});
+                                },
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 8),
                     // ── 残りトークン目安 + 使用トークン量 (= ユーザー要望:
                     //    チャージ後に残りと使った分が見えるように) ──
@@ -53070,19 +53453,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   fontWeight: FontWeight.w600,
                                   height: 1.4),
                             ),
-                            const SizedBox(height: 4),
-                            Text(
-                              provider
-                                  .t('credit.usedTokens')
-                                  .replaceFirst('{in}', tok(inTok))
-                                  .replaceFirst('{out}', tok(outTok))
-                                  .replaceFirst(
-                                      '{usd}', billed.toStringAsFixed(2)),
-                              style: const TextStyle(
-                                  color: Colors.white60,
-                                  fontSize: 11,
-                                  height: 1.4),
-                            ),
+                            // ★「今月の使用」 は出さない (= ユーザー要望:
+                            //   出し渋られているように見えるため)。 残りと
+                            //   累計だけを見せる。
                             const SizedBox(height: 2),
                             Text(
                               provider
@@ -55055,6 +55428,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                           ),
                         ),
                         const SizedBox(width: 6),
+                        // ── 同じページの他のファイルへ (= ユーザー要望) ──
+                        _buildPaneFileSwitchButton(
+                                isLeft: true,
+                                currentPath: _splitLeftLocalPdfPath) ??
+                            const SizedBox.shrink(),
                         // ── URL 入力ボタン (= mode 切替) ──
                         IconButton(
                           icon: const Icon(Icons.link_rounded,
@@ -55343,6 +55721,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                               mode: _splitLeftMode,
                               path: _splitLeftLocalOfficePath!,
                               fileName: _splitLeftOfficeFileName,
+                              isLeftPanel: true,
                             ),
                           )
                         : _splitLeftMode == 'web' &&
@@ -56104,6 +56483,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                             ),
                           ),
                           const SizedBox(width: 6),
+                          // ── 同じページの他のファイルへ (= ユーザー要望) ──
+                          _buildPaneFileSwitchButton(
+                                  isLeft: false,
+                                  currentPath: _splitLocalPdfPath) ??
+                              const SizedBox.shrink(),
                           // ── ページ番号入力 (PDF 時のみ表示) ──
                           if (_splitMode == 'pdf' && _splitPdfTotalPages > 0)
                             SizedBox(
@@ -56534,6 +56918,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           mode: _splitMode,
           path: _splitLocalOfficePath!,
           fileName: _splitOfficeFileName,
+          isLeftPanel: false,
         ),
       );
     }
@@ -62807,12 +63192,37 @@ class _MindMapScreenState extends State<MindMapScreen>
   ///   「4 分割にしました」 と答えさせないための約束
   ///   (= ユーザー報告の裏返し: 出来ない事を出来ると言うのも困る)。
   Future<Map<String, dynamic>> _setSplitViewForMcp(
-      String layout, List<String> pageIds) async {
+      String layout, List<String> pageIds, int? cell) async {
     final provider = context.read<MindMapProvider>();
     switch (layout) {
       case 'off':
-        if (_mapSplitOpen) _closeMapSplit();
-        return {'layout': 'off', 'cells': 1};
+        {
+          // ★「右下の画面を全画面にして」 = そのセルのページを残して閉じる
+          //   (= ユーザー報告: やり方を教えてくるだけで実際にやってくれない)。
+          //   セルの指定が無ければ、 今編集しているセルをそのまま残す。
+          if (!_mapSplitOpen) return {'layout': 'off', 'cells': 1};
+          final visible = _visibleSplitSlots();
+          final keep = (cell != null && visible.contains(cell))
+              ? cell
+              : _mapSplitEditorSlot;
+          if (cell != null && !visible.contains(cell)) {
+            return {
+              'error': 'there is no cell $cell right now - the split has '
+                  '${visible.length} cell(s), numbered '
+                  '${visible.join(', ')} (0=top-left, 1=top-right, '
+                  '2=bottom-left, 3=bottom-right).',
+            };
+          }
+          final kept = _resolveSplitCellPage(provider, keep) ??
+              (provider.pages.isEmpty ? null : provider.currentPage);
+          _closeMapSplitKeeping(keep);
+          return {
+            'layout': 'off',
+            'cells': 1,
+            'keptCell': keep,
+            if (kept != null) 'page': kept.name,
+          };
+        }
       default:
         break;
     }
@@ -62899,7 +63309,16 @@ class _MindMapScreenState extends State<MindMapScreen>
       animation: session,
       builder: (_, __) {
         // 開いている間はチャット欄の中に出ているので、 札は出さない。
-        if (!session.busy || _mcpChatVisible) return const SizedBox.shrink();
+        // ★ 分割ペインや浮遊窓に埋め込んで開いている時も出さない
+        //   (= ユーザー報告: 会話欄に「作業中… 停止」 があるのに、 その横に
+        //   もう 1 つ「AI 処理中 停止」 が出る)。 埋め込みで開く道は
+        //   _mcpChatVisible を立てないので、 セルの中身も見て判断する。
+        final embeddedOpen =
+            _mapSplitCellTool.values.contains('aiAssistant') ||
+                _floatingPanelSingletons.containsKey('assistant');
+        if (!session.busy || _mcpChatVisible || embeddedOpen) {
+          return const SizedBox.shrink();
+        }
         // ★ 要素から始めた指示なら、 その要素のそばに出す
         //   (= ユーザー要望: 処理中の文字を要素の近くに)。
         //   画面の外へ出ていたら、 今までどおり右下へ逃がす。
@@ -63241,20 +63660,37 @@ class _MindMapScreenState extends State<MindMapScreen>
       //    imagePrompt が付いていたら、 その場で AI に絵を描かせて貼る
       //    (= ユーザー要望: おしゃれなカフェのパワポと頼んでも珈琲の画像が
       //    入らず味気ない)。 1 枚ずつクレジットを使うので枚数を抑える。
-      const maxAiPics = 4;
+      // 絵の枚数の上限。 AI が描く時は費用が掛かるので 4 枚、 Web から
+      //   取る設定 (= ユーザー要望) なら費用が無いので 8 枚まで。
+      final fromWeb = provider.slideImagesFromWeb;
+      final maxAiPics = fromWeb ? 8 : 4;
       var picsMade = 0;
-      final slides = <({String title, List<String> bullets, Uint8List? image, String imagePos, List<Map<String, dynamic>> shapes})>[];
+      final slides = <_AiSlideRec>[];
       for (final sl in (spec['slides'] as List? ?? const [])) {
         if (sl is! Map) continue;
         final prompt = '${sl['imagePrompt'] ?? ''}'.trim();
+        // Web 検索用の短い語 (無ければ題名で探す)。
+        final query = '${sl['imageQuery'] ?? ''}'.trim();
+        // 切り抜く形 (丸など)。
+        var shape = '${sl['imageShape'] ?? 'rect'}'.trim();
+        if (shape == 'circle' || shape == 'oval' || shape == 'round') {
+          shape = 'ellipse';
+        }
+        if (!kPptxCropShapes.any((c) => c.kind == shape)) shape = 'rect';
         Uint8List? pic;
         if (kind == 'pptx' &&
             prompt.isNotEmpty &&
             picsMade < maxAiPics &&
-            (provider.hasGeminiKey || provider.canUseAiRelay)) {
+            (fromWeb || provider.hasGeminiKey || provider.canUseAiRelay)) {
           try {
-            pic = await provider.generateAiImage(
-                '$prompt\n\nNo text, no letters, no watermark, no logo.');
+            pic = await provider.makeSlideImage(
+                prompt:
+                    '$prompt\n\nNo text, no letters, no watermark, no logo.',
+                query: query.isNotEmpty ? query : '${sl['title'] ?? ''}');
+            // 丸などに抜く時は正方形に切り出す (楕円にしない)。
+            if (shape != 'rect' && shape != 'roundRect') {
+              pic = await _squareCropImageBytes(pic);
+            }
             picsMade++;
           } catch (e) {
             // 描けなくても文字だけで作る (= 全部やめない)。
@@ -63270,6 +63706,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           image: pic,
           imagePos:
               const {'right', 'left', 'full'}.contains(pos) ? pos : 'right',
+          imageShape: shape,
           shapes: <Map<String, dynamic>>[
             for (final sh in (sl['shapes'] as List? ?? const []))
               if (sh is Map) sh.cast<String, dynamic>()
@@ -67417,34 +67854,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                       //   どこが対象かは押した時の説明で伝わる。
                       icon: const Icon(Icons.keyboard_command_key,
                           color: Colors.white70, size: 16),
-                      onPressed: () async {
-                        // 既に一覧が対象なら、 状態は変えずに知らせるだけ
-                        // (押しても何も変わらないのに切り替わったように
-                        //  見えるのを止める = ユーザー指摘)。
-                        if (isRootShortcut) {
-                          _appSnack(
-                              context,
-                              SnackBar(
-                                backgroundColor: const Color(0xFF3A3A55),
-                                duration: const Duration(seconds: 3),
-                                content: Text(
-                                    provider.t('root.shortcutAlready'),
-                                    style:
-                                        const TextStyle(color: Colors.white)),
-                              ));
-                          return;
-                        }
-                        await provider.setShortcutFolder(null);
-                        if (!mounted) return;
-                        _appSnack(
-                            context,
-                            SnackBar(
-                              backgroundColor: const Color(0xFF6C63FF),
-                              duration: const Duration(seconds: 2),
-                              content: Text(provider.t('root.shortcutSet'),
-                                  style: const TextStyle(color: Colors.white)),
-                            ));
-                      },
+                      // ★ 押したら「どのページを Ctrl+1〜9 で開くか」 を
+                      //   自分で決められる画面を出す (= ユーザー要望)。
+                      //   今までは基準フォルダーを一覧へ戻すだけだった。
+                      onPressed: () =>
+                          unawaited(_showShortcutSlotDialog(provider)),
                     );
                   }),
                 // ── 複数選択を始める / やめる (= ユーザー要望: モバイルには
@@ -73367,7 +73781,13 @@ class _MindMapScreenState extends State<MindMapScreen>
                 ]),
               ),
             ),
-          if (!_hidePaneHeaders)
+          // ★ 道具 (AI アシスタント / メモ 等) や埋め込んだファイルを出して
+          //   いるセルには、 ページ名の札を出さない (= ユーザー要望:
+          //   機能を画面分割で開いた時に左上のページ名が要らない)。
+          //   道具は自前の見出しを持っているので、 札はその上に重なるだけ。
+          //   Web (🌐) の札は、 埋め込んだページを閉じる / 浮かせる唯一の
+          //   入口なので残す。
+          if (!_hidePaneHeaders && toolId == null && embedded == null)
           Positioned(
             left: 6,
             top: 6,
@@ -74104,6 +74524,24 @@ class _MindMapScreenState extends State<MindMapScreen>
                   setS(() {});
                 },
               ),
+
+            // ── 資料に入れる絵の入手先 (= ユーザー要望: AI 生成か Web 取得か、
+            //    Web なら著作権フリーのみか問わないかを設定で選ぶ) ──
+            _settingsTile(
+              icon: provider.slideImagesFromWeb
+                  ? Icons.public_rounded
+                  : Icons.auto_awesome_rounded,
+              color: const Color(0xFFBA68C8),
+              title: provider.t('imgSrc.title'),
+              subtitle: provider.slideImagesFromWeb
+                  ? '${provider.t('imgSrc.web')} · '
+                      '${provider.t(provider.webImageLicense == 'any' ? 'imgLic.any' : 'imgLic.free')}'
+                  : provider.t('imgSrc.generate'),
+              onTap: () async {
+                await showSlideImageSourceDialog(ctx, provider);
+                setS(() {});
+              },
+            ),
 
             // ── 要素から検索を立ち上げた時の開き方 (= ユーザー要望: 要素から
             //    google 検索や youtube 検索を立ち上げた時の挙動を設定できる
@@ -92090,6 +92528,136 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
   }
 
+  /// Ctrl+1〜9 に開くページを、 枠ごとに自分で決める画面 (= ユーザー要望)。
+  ///
+  /// 空けてある枠は今までどおり「一覧の上から順」。 割り当てた枠だけが
+  /// その指定で開く。 並べ替えても番号が動かないので、 覚えて使える。
+  Future<void> _showShortcutSlotDialog(MindMapProvider provider) async {
+    await showDialog<void>(
+      context: context,
+      builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
+        final pages = provider.pages;
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1E1E32),
+          title: Row(children: [
+            const Icon(Icons.keyboard_command_key,
+                color: Color(0xFF6C63FF), size: 18),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(provider.t('shortcutSlot.title'),
+                  style: const TextStyle(color: Colors.white, fontSize: 15)),
+            ),
+          ]),
+          content: ConstrainedBox(
+            constraints: BoxConstraints(
+                maxHeight:
+                    math.max(240.0, MediaQuery.sizeOf(dctx).height - 220)),
+            child: SizedBox(
+              width: 460,
+              child: SingleChildScrollView(
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: Text(provider.t('shortcutSlot.desc'),
+                          style: const TextStyle(
+                              color: Colors.white54,
+                              fontSize: 11.5,
+                              height: 1.45)),
+                    ),
+                  ),
+                  for (var i = 0; i < 9; i++)
+                    Builder(builder: (_) {
+                      final assigned = provider.shortcutSlotAssignment(i);
+                      final auto = provider.pageForShortcutSlot(i);
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Row(children: [
+                          Container(
+                            width: 62,
+                            padding: const EdgeInsets.symmetric(vertical: 4),
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF2A2A44),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text('Ctrl+${i + 1}',
+                                style: const TextStyle(
+                                    color: Colors.white70, fontSize: 11.5)),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: DropdownButtonHideUnderline(
+                              child: DropdownButton<String?>(
+                                isExpanded: true,
+                                dropdownColor: const Color(0xFF2A2A44),
+                                value: assigned?.id,
+                                hint: Text(
+                                  auto == null
+                                      ? provider.t('shortcutSlot.none')
+                                      : provider
+                                          .t('shortcutSlot.auto')
+                                          .replaceFirst('{name}', auto.name),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                      color: Colors.white38, fontSize: 12),
+                                ),
+                                items: [
+                                  DropdownMenuItem<String?>(
+                                    value: null,
+                                    child: Text(
+                                        provider.t('shortcutSlot.useOrder'),
+                                        style: const TextStyle(
+                                            color: Colors.white38,
+                                            fontSize: 12)),
+                                  ),
+                                  for (final pg in pages)
+                                    DropdownMenuItem<String?>(
+                                      value: pg.id,
+                                      child: Text(pg.name,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 12)),
+                                    ),
+                                ],
+                                onChanged: (v) async {
+                                  await provider.setShortcutSlotPage(i, v);
+                                  setD(() {});
+                                },
+                              ),
+                            ),
+                          ),
+                        ]),
+                      );
+                    }),
+                ]),
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () async {
+                await provider.clearShortcutSlotPages();
+                setD(() {});
+              },
+              child: Text(provider.t('shortcutSlot.clearAll'),
+                  style: const TextStyle(color: Color(0xFFE57373))),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(dctx),
+              child: Text(provider.t('btn.close'),
+                  style: const TextStyle(color: Colors.white60)),
+            ),
+          ],
+        );
+      }),
+    );
+  }
+
   // ─── Ctrl+1〜9 のページ切り替えヘルパー ─────────────────────────────────────
 
   /// LogicalKeyboardKey から 0-indexed のページインデックスを返す（1→0, 2→1 ... 9→8）
@@ -94079,6 +94647,130 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 'FREE: 各種類 1 ページ / 画面分割 無制限 / ロック 1 回\n'
                                 'PRO: ページ無制限 / ロック無制限 / Web の自動操作\n'
                                 'MAX: PRO の全機能 + クラウド同期・共有 + PDF の AI 要約',
+                                style: TextStyle(
+                                    color: Colors.white38,
+                                    fontSize: 10,
+                                    height: 1.5),
+                              ),
+                            ],
+                          ),
+                        ),
+
+                        const SizedBox(height: 20),
+
+                        // ── 自分に掛ける AI の上限 (= ユーザー要望:
+                        //    上限に達した時に止まるかを試したい) ──
+                        //    サーバー側の上限は開発者本人を素通りさせる
+                        //    作りなので、 手元で同じ止まり方を作る。
+                        _devSection('自分に掛ける AI の上限',
+                            Icons.speed_rounded, const Color(0xFFFFB347)),
+                        const SizedBox(height: 8),
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF12161F),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.white12),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                provider.devSelfCapUsd <= 0
+                                    ? '上限なし (いつもどおり使えます)'
+                                    : '上限 \$${provider.devSelfCapUsd.toStringAsFixed(2)}'
+                                        ' / 使った分 \$'
+                                        '${provider.devSelfSpentUsd.toStringAsFixed(2)}',
+                                style: TextStyle(
+                                    color: provider.devSelfCapReached
+                                        ? const Color(0xFFE57373)
+                                        : Colors.white70,
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600),
+                              ),
+                              const SizedBox(height: 8),
+                              Row(children: [
+                                // 押すたびに増える (= ユーザー要望: 1 ドル
+                                //   までしか掛けられないのは小さ過ぎる)。
+                                //   0.05 → 0.1 → 0.25 → 0.5 → 1 → 2.5 → 5
+                                //   → 10 → 25 → 50 → 100 → なし に戻る。
+                                Expanded(
+                                  child: ElevatedButton.icon(
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor:
+                                          provider.devSelfCapUsd > 0
+                                              ? const Color(0xFFFFB347)
+                                              : const Color(0xFF1A2030),
+                                      foregroundColor:
+                                          provider.devSelfCapUsd > 0
+                                              ? Colors.black87
+                                              : Colors.white70,
+                                      side: BorderSide(
+                                          color: provider.devSelfCapUsd > 0
+                                              ? const Color(0xFFFFB347)
+                                              : Colors.white24),
+                                      padding: const EdgeInsets.symmetric(
+                                          vertical: 10),
+                                      minimumSize: const Size(0, 38),
+                                    ),
+                                    icon: const Icon(Icons.add_rounded,
+                                        size: 16),
+                                    onPressed: () async {
+                                      await provider.stepDevSelfCapUsd();
+                                      if (!sctx.mounted) return;
+                                      setD(() {});
+                                    },
+                                    label: Text(
+                                      provider.devSelfCapUsd <= 0
+                                          ? '上限を掛ける'
+                                          : '上限 \$'
+                                              '${provider.devSelfCapUsd.toStringAsFixed(2)}',
+                                      style: const TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w700),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 6),
+                                OutlinedButton(
+                                  style: OutlinedButton.styleFrom(
+                                    foregroundColor: Colors.white70,
+                                    side: const BorderSide(
+                                        color: Colors.white24),
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 12, vertical: 10),
+                                    minimumSize: const Size(0, 38),
+                                  ),
+                                  onPressed: () async {
+                                    await provider.setDevSelfCapUsd(0);
+                                    if (!sctx.mounted) return;
+                                    setD(() {});
+                                  },
+                                  child: const Text('なし',
+                                      style: TextStyle(fontSize: 12)),
+                                ),
+                              ]),
+                              const SizedBox(height: 6),
+                              Align(
+                                alignment: Alignment.centerLeft,
+                                child: TextButton.icon(
+                                  onPressed: () async {
+                                    await provider.resetDevSelfSpent();
+                                    if (!sctx.mounted) return;
+                                    setD(() {});
+                                  },
+                                  icon: const Icon(Icons.refresh_rounded,
+                                      size: 14, color: Color(0xFF4FC3F7)),
+                                  label: const Text('使った分を 0 に戻す',
+                                      style: TextStyle(
+                                          color: Color(0xFF4FC3F7),
+                                          fontSize: 11)),
+                                ),
+                              ),
+                              const Text(
+                                '上限に達すると、 AI の呼び出しが利用者と同じ'
+                                '文言で止まります (絵の生成も含む)。\n'
+                                '開発者モードを抜けると効きません。',
                                 style: TextStyle(
                                     color: Colors.white38,
                                     fontSize: 10,
@@ -110180,7 +110872,8 @@ video{width:100%;height:100%;object-fit:contain;display:block;}
         } catch (_) {}
       }
       if (_isYoutubeUrl(committedUrl)) {
-        _YoutubeNavHistory.recordVisit(committedUrl);
+        // 題名も一緒に控える (= 履歴の一覧で URL だけだと分からない)。
+        _YoutubeNavHistory.recordVisit(committedUrl, title: owner.title);
       }
       _onPageLoaded();
     }
@@ -115095,6 +115788,25 @@ try {
                 onPressed: () {
                   _controller.executeScript(
                       'try{window.history.forward();}catch(e){}');
+                },
+              ),
+              // ── 視聴履歴 (= ユーザー要望: 50 件まで残して、 そこから
+              //    たどれるように)。 選ぶとその所を開き直す。 ──
+              IconButton(
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                iconSize: 18,
+                tooltip: context.read<MindMapProvider>().t('yt.history'),
+                icon: const Icon(Icons.history_rounded,
+                    color: Colors.white70),
+                onPressed: () async {
+                  final provider = context.read<MindMapProvider>();
+                  final url = await _YoutubeNavHistory.pick(context, provider,
+                      useRootNavigator: false);
+                  if (url == null || !mounted) return;
+                  if (_winActiveTab >= 0 && _winActiveTab < _winTabs.length) {
+                    _winLoadForTab(_winTabs[_winActiveTab], url);
+                  }
                 },
               ),
               const SizedBox(width: 4),
@@ -204833,8 +205545,10 @@ class _PdfMemoPanelState extends State<_PdfMemoPanel> {
         IconButton(
           tooltip:
               context.read<MindMapProvider>().t('pmemo.createFolderOrMove'),
+          // ★ 色を他のボタンと揃える (= ユーザー報告: ここだけ色が付いて
+          //   いて浮いている)。
           icon: const Icon(Icons.create_new_folder_rounded,
-              color: Color(0xFF6C63FF), size: 20),
+              color: Colors.white70, size: 20),
           onPressed: () => _showFolderManageDialog(ctx, provider, memos),
         ),
         if (widget.onAddHere != null)
@@ -204907,8 +205621,11 @@ class _PdfMemoPanelState extends State<_PdfMemoPanel> {
         if (widget.onClosePanel != null)
           IconButton(
             tooltip: provider.t('pdfMemo.tooltipClosePanel'),
-            icon: const Icon(Icons.chevron_right_rounded,
-                color: Colors.white70, size: 22),
+            // ★ 「>」 は開く方に見えるので × にする (= ユーザー要望:
+            //   メモ欄を閉じるボタンを付けて欲しい。 実は前からあったが、
+            //   閉じるボタンだと気付けない形だった)。
+            icon: const Icon(Icons.close_rounded,
+                color: Colors.white70, size: 20),
             onPressed: widget.onClosePanel,
           ),
       ],
@@ -208489,6 +209206,9 @@ class _SpreadsheetEditorDialog extends StatefulWidget {
   final void Function(String path, String name, {bool isLeftPanel})?
       onSplitOpen;
 
+  /// 分割ペインに埋め込まれている時のペイン名 ('left' / 'right')。
+  final String? paneGuardKey;
+
   const _SpreadsheetEditorDialog({
     required this.filePath,
     required this.fileName,
@@ -208496,6 +209216,7 @@ class _SpreadsheetEditorDialog extends StatefulWidget {
     this.onSaved,
     this.onRenamed,
     this.onSplitOpen,
+    this.paneGuardKey,
   });
 
   @override
@@ -209063,10 +209784,15 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
     super.initState();
     _detectKind();
     _loadFile();
+    _registerPaneCloseGuard(widget.paneGuardKey, this, () async {
+      if (!mounted) return true;
+      return _confirmDiscard();
+    });
   }
 
   @override
   void dispose() {
+    _unregisterPaneCloseGuard(widget.paneGuardKey, this);
     _sheetToastTimer?.cancel();
     _editCtrl.dispose();
     _editFocus.dispose();
@@ -218823,6 +219549,10 @@ class _PptxImage {
   /// 描画時にこの順で重ねることで、 PowerPoint と同じ重なり順を再現。
   final int layer;
 
+  /// 図形に合わせたトリミング (= `<p:pic>` の prstGeom)。 'rect' 以外は
+  /// kPptxCropShapes の形で切り抜いて描く (丸く抜いた写真など)。
+  final String cropShape;
+
   _PptxImage({
     required this.mediaName,
     required this.offX,
@@ -218831,6 +219561,7 @@ class _PptxImage {
     required this.extCy,
     this.rotation = 0,
     this.layer = 2,
+    this.cropShape = 'rect',
   });
 }
 
@@ -219128,6 +219859,12 @@ class _PptxAiImageRequest {
   /// 変更案のサムネイルに出している仮枠の id。 絵が入ったら消す。
   final int placeholderShapeId;
 
+  /// Web から取る時の検索語 (短い英語)。 無ければ prompt から作る。
+  final String query;
+
+  /// 切り抜く形 ('rect' / 'roundRect' / 'ellipse' など kPptxCropShapes)。
+  final String cropShape;
+
   const _PptxAiImageRequest({
     required this.prompt,
     required this.offX,
@@ -219135,7 +219872,99 @@ class _PptxAiImageRequest {
     required this.extCx,
     required this.extCy,
     required this.placeholderShapeId,
+    this.query = '',
+    this.cropShape = 'rect',
   });
+}
+
+/// 画像を切り抜ける形の一覧 (= PowerPoint の prstGeom と同じ名前)。
+/// 左から順に画面のボタンへ並べる。 'rect' は「切り抜かない」。
+const List<({String kind, IconData icon})> kPptxCropShapes = [
+  (kind: 'rect', icon: Icons.crop_square_rounded),
+  (kind: 'roundRect', icon: Icons.rounded_corner_rounded),
+  (kind: 'ellipse', icon: Icons.circle_outlined),
+  (kind: 'triangle', icon: Icons.change_history_rounded),
+  (kind: 'diamond', icon: Icons.diamond_outlined),
+  (kind: 'star5', icon: Icons.star_outline_rounded),
+  (kind: 'hexagon', icon: Icons.hexagon_outlined),
+  (kind: 'heart', icon: Icons.favorite_border_rounded),
+];
+
+/// 切り抜きの形を実際の輪郭にする。 画面の切り抜きに使う。
+class _PptxCropClipper extends CustomClipper<Path> {
+  final String kind;
+  const _PptxCropClipper(this.kind);
+
+  @override
+  Path getClip(Size size) {
+    final w = size.width, h = size.height;
+    final path = Path();
+    switch (kind) {
+      case 'ellipse':
+        path.addOval(Rect.fromLTWH(0, 0, w, h));
+        break;
+      case 'roundRect':
+        path.addRRect(RRect.fromRectAndRadius(Rect.fromLTWH(0, 0, w, h),
+            Radius.circular(math.min(w, h) * 0.18)));
+        break;
+      case 'triangle':
+        path.moveTo(w / 2, 0);
+        path.lineTo(w, h);
+        path.lineTo(0, h);
+        path.close();
+        break;
+      case 'diamond':
+        path.moveTo(w / 2, 0);
+        path.lineTo(w, h / 2);
+        path.lineTo(w / 2, h);
+        path.lineTo(0, h / 2);
+        path.close();
+        break;
+      case 'hexagon':
+        path.moveTo(w * 0.25, 0);
+        path.lineTo(w * 0.75, 0);
+        path.lineTo(w, h / 2);
+        path.lineTo(w * 0.75, h);
+        path.lineTo(w * 0.25, h);
+        path.lineTo(0, h / 2);
+        path.close();
+        break;
+      case 'star5':
+        {
+          final cx = w / 2, cy = h / 2;
+          final ro = math.min(w, h) / 2;
+          final ri = ro * 0.42;
+          for (var i = 0; i < 10; i++) {
+            final r = i.isEven ? ro : ri;
+            final a = -math.pi / 2 + i * math.pi / 5;
+            final x = cx + r * math.cos(a) * (w / math.min(w, h));
+            final y = cy + r * math.sin(a) * (h / math.min(w, h));
+            if (i == 0) {
+              path.moveTo(x, y);
+            } else {
+              path.lineTo(x, y);
+            }
+          }
+          path.close();
+        }
+        break;
+      case 'heart':
+        {
+          path.moveTo(w / 2, h * 0.95);
+          path.cubicTo(-w * 0.25, h * 0.55, w * 0.15, -h * 0.1, w / 2, h * 0.28);
+          path.cubicTo(
+              w * 0.85, -h * 0.1, w * 1.25, h * 0.55, w / 2, h * 0.95);
+          path.close();
+        }
+        break;
+      default: // rect = 切り抜かない
+        path.addRect(Rect.fromLTWH(0, 0, w, h));
+    }
+    return path;
+  }
+
+  @override
+  bool shouldReclip(covariant _PptxCropClipper old) => old.kind != kind;
 }
 
 class _PptxNewImage {
@@ -219159,6 +219988,13 @@ class _PptxNewImage {
 
   /// サムネイル (略図) 描画用のデコード済み画像。
   ui.Image? decoded;
+
+  /// 切り抜く形 (= ユーザー要望: pptx で図形の切り抜きができるように)。
+  /// 'rect' (切り抜かない) / 'roundRect' / 'ellipse' / 'triangle' /
+  /// 'diamond' / 'star5' / 'hexagon' / 'heart'。
+  /// PowerPoint の「図形に合わせてトリミング」 と同じで、 保存時は
+  /// `<p:pic>` の `<a:prstGeom prst="...">` として書き出す。
+  String cropShape = 'rect';
 
   _PptxNewImage({
     required this.id,
@@ -219241,6 +220077,13 @@ class _PptxThumbPainter extends CustomPainter {
     for (final ni in slide.newImages) {
       final rect = r(ni.offX, ni.offY, ni.extCx, ni.extCy);
       final im = ni.decoded;
+      canvas.save();
+      // 切り抜きの形 (丸など) はサムネイルでも同じに見せる。
+      if (ni.cropShape != 'rect') {
+        canvas.clipPath(_PptxCropClipper(ni.cropShape)
+            .getClip(rect.size)
+            .shift(rect.topLeft));
+      }
       if (im != null) {
         canvas.drawImageRect(
             im,
@@ -219250,6 +220093,7 @@ class _PptxThumbPainter extends CustomPainter {
       } else {
         canvas.drawRect(rect, Paint()..color = const Color(0xFFDDDDDD));
       }
+      canvas.restore();
     }
     // ── 挿入図形 ──
     for (final s in slide.drawShapes) {
@@ -219348,17 +220192,30 @@ class _PptxThumbPainter extends CustomPainter {
       if (txt.isEmpty) continue;
       final fs =
           (((t.fontSize ?? 1800) / 100.0) * scale * 1.333).clamp(1.5, 40.0);
+      // 太字・書体・寄せは編集画面と同じ物を使う (= 見本と実物の折り返し
+      //   がずれない)。 太字は幅が広く、 細字で測ると 1 行に収まって見える。
+      bool bold = false;
+      String? algn;
+      for (final p in t.paragraphs) {
+        algn ??= p.align;
+        if (p.runs.any((r) => r.bold == true)) bold = true;
+      }
       final tp = TextPainter(
         text: TextSpan(
           text: txt,
           style: TextStyle(
             fontSize: fs.toDouble(),
+            fontFamily: t.fontFamily,
+            fontWeight: bold ? FontWeight.bold : null,
             color: t.fontColor != null
                 ? Color(0xFF000000 | t.fontColor!)
                 : Colors.black87,
             height: 1.2,
           ),
         ),
+        textAlign: algn == 'ctr'
+            ? TextAlign.center
+            : (algn == 'r' ? TextAlign.right : TextAlign.left),
         textDirection: TextDirection.ltr,
         maxLines: 10,
         ellipsis: '…',
@@ -219587,10 +220444,18 @@ class _PptxStaticSlide extends StatelessWidget {
       width: w,
       height: h,
       child: IgnorePointer(
-        child: Image.memory(ni.bytes,
-            fit: BoxFit.fill,
-            gaplessPlayback: true,
-            errorBuilder: (_, __, ___) => const SizedBox.shrink()),
+        child: ni.cropShape == 'rect'
+            ? Image.memory(ni.bytes,
+                fit: BoxFit.fill,
+                gaplessPlayback: true,
+                errorBuilder: (_, __, ___) => const SizedBox.shrink())
+            : ClipPath(
+                clipper: _PptxCropClipper(ni.cropShape),
+                child: Image.memory(ni.bytes,
+                    fit: BoxFit.fill,
+                    gaplessPlayback: true,
+                    errorBuilder: (_, __, ___) => const SizedBox.shrink()),
+              ),
       ),
     );
   }
@@ -219789,16 +220654,23 @@ const String _kPptxAiRoleLine = '''
   ]}}
 ```
 ・slides は今あるスライドの 1 枚目から順に対応する (足りない分は追加される)。
-・layout は title / section / bullets / twoColumn / closing のどれか。
+・layout は title / section / bullets / twoColumn / closing / free のどれか。
+・free = 決まった型を使わず、 自分で置き場所を決める (下の【型に縛られない作り方】)。
 
 【写真・イラストを入れる (1 枚のスライドに 1 つまで)】
-スライドの中に "image" を足すと、 その場で AI が絵を描いて貼ります。
+スライドの中に "image" を足すと、 その場で絵を用意して貼ります
+(利用者の設定により、 AI が描くか Web の写真を取ってくるかが変わる)。
 ```json
 {"layout":"bullets","title":"…","bullets":["…"],
- "image":{"prompt":"warm cozy cafe interior, latte art on wooden table, soft morning light","pos":"right"}}
+ "image":{"prompt":"warm cozy cafe interior, latte art on wooden table, soft morning light",
+          "query":"cozy cafe latte","pos":"right","shape":"ellipse"}}
 ```
 ・prompt は**英語**で、 被写体・色・雰囲気を具体的に。 文字やロゴは描かせない。
+・query は Web 検索用の短い**英語** (2〜4 語)。 必ず付ける。
 ・pos は right / left / full のどれか (既定は right)。 full は全面の背景。
+・shape は rect (既定・四角) / roundRect (角丸) / ellipse (丸く切り抜く)。
+  人物・商品・料理の写真は ellipse にすると洒落て見える。 表紙や中扉で
+  1 枚だけ丸く抜くのが効果的。 full の時は無視される。
 ・"カフェらしく" "写真を入れて" のように**見た目を頼まれた時**に使う。
 ・絵は 1 枚ずつ利用者のクレジットを使うので、 表紙と要になる 2〜3 枚だけに
   絞る。 全部のスライドには入れない。 文字だけで良い資料には入れない。
@@ -219813,6 +220685,25 @@ const String _kPptxAiRoleLine = '''
   対する % 値。 fill / line は RRGGBB、 lineWidth は pt。
 ・文字と重ねない。 アクセント色か下地に近い色だけを使う。
 
+【決まった型に縛られない作り方 (layout:"free")】
+上の 5 つの型は位置が決め打ちなので、 どの資料も同じ見た目になります。
+**見た目を工夫したい時は "free" を使ってください。** 文字も図形も、
+スライドに対する % で好きな所に置けます。
+```json
+{"layout":"free",
+ "shapes":[{"kind":"rect","x":0,"y":0,"w":38,"h":100,"fill":"1B4332"}],
+ "texts":[
+   {"text":"見出し","x":44,"y":18,"w":50,"h":18,"size":40,"color":"FFFFFF","bold":true},
+   {"text":"説明の文","x":44,"y":40,"w":50,"h":40,"size":18,"color":"E2E8F0","align":"l"}
+ ]}
+```
+・texts の項目: text / x / y / w / h (% 値) / size (pt) / color (RRGGBB) /
+  bold (true|false) / align ("l" 左・"ctr" 中央・"r" 右) / font。
+・"free" の時は題名も箇条書きも自動では置きません。 texts に自分で書きます。
+・"image" と "shapes" は他の型と同じように使えます。
+・**同じ資料の中で型を混ぜてよい**。 表紙だけ free で大胆に、 中身は
+  bullets で読みやすく、 という作り方が一番きれいにまとまります。
+
 【見た目の決まりごと】
 ・色は 3 色まで。 下地 1 色 + 文字 1 色 + アクセント 1 色。 派手な色を広い面積に使わない。
 ・下地と文字は必ず明暗をはっきり分ける (暗い下地なら文字は明るく)。
@@ -219820,6 +220711,9 @@ const String _kPptxAiRoleLine = '''
 ・表紙 (title) と締め (closing) は言葉を絞り、 余白を大きく取る。
 ・話が変わる所には section を挟む。 全体で 5〜8 枚が目安。
 ・和文は Meiryo / Yu Gothic UI / Noto Sans JP のいずれか。 書体は資料全体で 1 つに揃える。
+・**毎回同じ配置にしない**。 頼まれた題材に合う組み立てを考える。 左に色の帯を
+  立てる / 数字を大きく見せる / 全面の写真に短い言葉を重ねる など、
+  型 (free) と飾り (shapes) を組み合わせて資料ごとに表情を変える。
 
 【色や書体だけを変えたい時】
 ```json
@@ -219908,12 +220802,17 @@ class _PptxViewerDialog extends StatefulWidget {
   final void Function(String path, String name, {bool isLeftPanel})?
       onSplitOpen;
 
+  /// 分割ペインに埋め込まれている時のペイン名 ('left' / 'right')。
+  /// ファイル切替の前に未保存確認を出すために登録する。
+  final String? paneGuardKey;
+
   const _PptxViewerDialog({
     required this.filePath,
     required this.fileName,
     this.isDarkMode = true,
     this.onRenamed,
     this.onSplitOpen,
+    this.paneGuardKey,
   });
 
   @override
@@ -221083,11 +221982,16 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
       if (!mounted) return true;
       return _confirmPptxDiscard();
     };
+    _registerPaneCloseGuard(widget.paneGuardKey, this, () async {
+      if (!mounted) return true;
+      return _confirmPptxDiscard();
+    });
   }
 
   @override
   void dispose() {
     kUnsavedCloseGuards.remove(identityHashCode(this));
+    _unregisterPaneCloseGuard(widget.paneGuardKey, this);
     _noticeEntry?.remove();
     _noticeEntry = null;
     _thumbScroll.dispose();
@@ -221568,6 +222472,13 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
             }
           }
 
+          // 図形に合わせたトリミング (= 丸く抜いた写真など)。 <p:pic> の
+          //   prstGeom を見る。 無ければ四角。
+          final cropM =
+              RegExp(r'<a:prstGeom\s+prst="([^"]+)"').firstMatch(inner);
+          final crop = cropM?.group(1) ?? 'rect';
+          final cropShape =
+              kPptxCropShapes.any((c) => c.kind == crop) ? crop : 'rect';
           result.add(_PptxImage(
             mediaName: mediaName,
             offX: offX,
@@ -221576,6 +222487,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
             extCy: extCy,
             rotation: rotation,
             layer: layer,
+            cropShape: cropShape,
           ));
         }
 
@@ -223881,6 +224793,123 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
   ///
   /// 背景色が決まっていない時は、 敷いてあるテンプレートの背景や、
   /// 画面いっぱいに置かれた図形の色から推測する。
+  /// 画像を小さくして生の画素にする (= 輝度を測るためだけ)。
+  ///
+  /// ページ背景の明暗判定 (_computeBgImageDark) と同じ作り。 48x48 まで
+  /// 縮めてから読むので、 大きな写真でも数ミリ秒で終わる。
+  static Future<({Uint8List rgba, int w, int h})?> _smallRgbaOf(
+      Uint8List bytes) async {
+    try {
+      final codec = await ui.instantiateImageCodec(bytes,
+          targetWidth: 48, targetHeight: 48);
+      final frame = await codec.getNextFrame();
+      final data =
+          await frame.image.toByteData(format: ui.ImageByteFormat.rawRgba);
+      final w = frame.image.width;
+      final h = frame.image.height;
+      frame.image.dispose();
+      if (data == null || w <= 0 || h <= 0) return null;
+      return (rgba: data.buffer.asUint8List(), w: w, h: h);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 画像の一部分の明るさ (0..255)。 [frac] は画像に対する相対の矩形。
+  static double _lumOfRegion(
+      ({Uint8List rgba, int w, int h}) im, Rect frac) {
+    final x0 = (frac.left * im.w).floor().clamp(0, im.w - 1);
+    final x1 = (frac.right * im.w).ceil().clamp(x0 + 1, im.w);
+    final y0 = (frac.top * im.h).floor().clamp(0, im.h - 1);
+    final y1 = (frac.bottom * im.h).ceil().clamp(y0 + 1, im.h);
+    var sum = 0.0;
+    var n = 0;
+    for (var y = y0; y < y1; y++) {
+      for (var x = x0; x < x1; x++) {
+        final i = (y * im.w + x) * 4;
+        if (i + 2 >= im.rgba.length) continue;
+        sum += 0.299 * im.rgba[i] +
+            0.587 * im.rgba[i + 1] +
+            0.114 * im.rgba[i + 2];
+        n++;
+      }
+    }
+    return n == 0 ? 255 : sum / n;
+  }
+
+  static double _lumOfRgb(int rgb) =>
+      0.299 * ((rgb >> 16) & 0xFF) +
+      0.587 * ((rgb >> 8) & 0xFF) +
+      0.114 * (rgb & 0xFF);
+
+  /// 貼った絵に重なった文字を、 読める色 (白か黒) に直す。
+  ///
+  /// = ユーザー要望「白文字で書いているのに白画像が渡されて全く読めない
+  ///   場合があるため、 文字が読める色に自動的に変わるようにして欲しい」。
+  ///
+  /// 触るのは**絵にしっかり重なっていて、 今の色では読めない**文字だけ。
+  ///   ・重なりが枠の 40% 未満 → 触らない (端をかすめただけ)
+  ///   ・今の文字色と下地の明暗の差が 90 以上 → 触らない (もう読める)
+  /// ★ ラン (文字の切れ端) の色はシェイプの色より優先されるので、
+  ///   シェイプ側だけ直しても効かない。 ランにも同じ色を入れる。
+  ///
+  /// 戻り値は直した文字枠の数。
+  int _autoContrastTextOverImage(_PptxSlide slide, _PptxNewImage ni,
+      ({Uint8List rgba, int w, int h}) im) {
+    if (ni.extCx <= 0 || ni.extCy <= 0) return 0;
+    final imgL = ni.offX.toDouble();
+    final imgT = ni.offY.toDouble();
+    final imgR = imgL + ni.extCx;
+    final imgB = imgT + ni.extCy;
+    var fixed = 0;
+    for (final t in slide.textShapes) {
+      if (t.extCx <= 0 || t.extCy <= 0) continue;
+      final sl = t.offX.toDouble();
+      final st = t.offY.toDouble();
+      final sr = sl + t.extCx;
+      final sb = st + t.extCy;
+      final ow = math.min(sr, imgR) - math.max(sl, imgL);
+      final oh = math.min(sb, imgB) - math.max(st, imgT);
+      if (ow <= 0 || oh <= 0) continue;
+      final ratio = (ow * oh) / (t.extCx * t.extCy);
+      if (ratio < 0.4) continue; // かすっただけ
+      // 重なっている所の下地の明るさ (画像は枠いっぱいに伸ばして描く)。
+      final frac = Rect.fromLTRB(
+        ((math.max(sl, imgL) - imgL) / ni.extCx).clamp(0.0, 1.0),
+        ((math.max(st, imgT) - imgT) / ni.extCy).clamp(0.0, 1.0),
+        ((math.min(sr, imgR) - imgL) / ni.extCx).clamp(0.0, 1.0),
+        ((math.min(sb, imgB) - imgT) / ni.extCy).clamp(0.0, 1.0),
+      );
+      final bg = _lumOfRegion(im, frac);
+      // 今の実効文字色。 ラン → シェイプ → 下地なりの既定 の順。
+      int? cur;
+      for (final para in t.paragraphs) {
+        for (final r in para.runs) {
+          if (r.fontColor != null) {
+            cur = r.fontColor;
+            break;
+          }
+        }
+        if (cur != null) break;
+      }
+      cur ??= t.fontColor;
+      final curLum =
+          cur == null ? (_isDarkSlide(slide) ? 255.0 : 30.0) : _lumOfRgb(cur);
+      if ((curLum - bg).abs() >= 90) continue; // もう読める
+      final want = bg < 128 ? 0xFFFFFF : 0x000000;
+      if (cur == want) continue;
+      t.fontColor = want;
+      for (final para in t.paragraphs) {
+        for (final r in para.runs) {
+          r.fontColor = want;
+        }
+      }
+      fixed++;
+    }
+    if (fixed > 0) slide.dirty = true;
+    return fixed;
+  }
+
   bool _isDarkSlide(_PptxSlide slide) {
     int? bg = slide.bgColor ?? _activeMaster?.bgColor;
     if (bg == null) {
@@ -224604,6 +225633,8 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
       decoded = frame.image;
       aspect = decoded.width / decoded.height;
     } catch (_) {}
+    // 重なる文字を読める色に直すための下ごしらえ (= ユーザー要望)。
+    final lum = await _smallRgbaOf(bytes);
     if (!mounted) return;
     _pushHistory();
     final slide = _slides[_currentIndex];
@@ -224627,15 +225658,24 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
       extCy: cy,
       decoded: decoded,
     );
+    var recolored = 0;
     setState(() {
       slide.newImages.add(imgObj);
       slide.dirty = true;
+      if (lum != null) {
+        recolored = _autoContrastTextOverImage(slide, imgObj, lum);
+      }
       _selectedNewImageId = imgObj.id;
       _selectedShapeId = null;
       _selectedDrawShapeId = null;
       _selectedTableGroupId = null;
     });
-    _showSnack('✓ 画像を挿入しました (保存で PPTX に埋め込まれます)');
+    _showSnack(recolored > 0
+        ? context
+            .read<MindMapProvider>()
+            .t('pptx.autoContrastDone')
+            .replaceFirst('{n}', '$recolored')
+        : '✓ 画像を挿入しました (保存で PPTX に埋め込まれます)');
   }
 
   void _deleteNewImage(_PptxNewImage ni) {
@@ -224987,8 +226027,13 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
     final title = str('title');
     final subtitle = str('subtitle');
     final bullets = lines('bullets');
+    // 見出しとその下の罫 (bullets 型)。 罫の長さは最後に文字幅へ合わせる。
+    (_PptxTextShape, _PptxDrawShape)? titleRuleFor;
 
-    switch (layout) {
+    // 'free' は決まった型を組まない (= 下の texts / shapes だけで作る)。
+    switch (layout == 'free' ? '__none__' : layout) {
+      case '__none__':
+        break;
       case 'title':
         // 表紙: 文字は少なく、 余白を大きく。 アクセントは細い帯 1 本。
         slide.drawShapes.add(_mkAiRect(nextId(),
@@ -225115,7 +226160,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
         slide.drawShapes.add(_mkAiRect(nextId(),
             x: 0, y: 0, w: 100, h: 1.1, fill: th.accent));
         if (title.isNotEmpty) {
-          slide.textShapes.add(_mkAiText(nextId(), title,
+          final titleShape = _mkAiText(nextId(), title,
               x: 7,
               y: 8,
               w: 86,
@@ -225123,10 +226168,14 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
               sizePt: th.titleSize,
               color: th.titleColor,
               font: th.font,
-              bold: true));
-          // 見出しの下に短い罫。
-          slide.drawShapes.add(_mkAiRect(nextId(),
-              x: 7, y: 22, w: 7, h: 0.7, fill: th.accent));
+              bold: true);
+          slide.textShapes.add(titleShape);
+          // 見出しの下の罫。 長さは最後に見出しの文字幅へ合わせる
+          //   (= ユーザー要望: 題名の長さまで適切に伸ばす)。
+          final rule = _mkAiRect(nextId(),
+              x: 7, y: 22, w: 7, h: 0.7, fill: th.accent);
+          slide.drawShapes.add(rule);
+          titleRuleFor = (titleShape, rule);
         }
         if (bullets.isNotEmpty) {
           slide.textShapes.add(_mkAiText(
@@ -225148,6 +226197,37 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
               color: th.bodyColor,
               font: th.font));
         }
+    }
+    // ── 自由配置の文字 (= ユーザー要望: 型に囚われない資料を作りたい) ──
+    //    layout:"free" では題名も箇条書きも自動では置かない。 ここで
+    //    書かれたぶんだけを、 言われた場所へ置く。
+    final freeTexts = sp['texts'];
+    if (freeTexts is List) {
+      for (final t in freeTexts) {
+        if (t is! Map) continue;
+        final body = '${t['text'] ?? ''}'.trim();
+        if (body.isEmpty) continue;
+        double pct(dynamic v, double def) =>
+            v is num ? v.toDouble().clamp(0.0, 100.0) : def;
+        final sz = t['size'];
+        final al = '${t['align'] ?? 'l'}';
+        final fnt = '${t['font'] ?? ''}'.trim();
+        slide.textShapes.add(_mkAiText(
+          nextId(),
+          body,
+          x: pct(t['x'], 8),
+          y: pct(t['y'], 20),
+          w: math.max(6.0, pct(t['w'], 84)),
+          h: math.max(4.0, pct(t['h'], 20)),
+          sizePt: (sz is num && sz > 6 && sz < 200)
+              ? sz.round()
+              : th.bodySize,
+          color: _pptxParseHex(t['color']) ?? th.bodyColor,
+          font: fnt.isEmpty ? th.font : fnt,
+          align: const {'l', 'ctr', 'r'}.contains(al) ? al : 'l',
+          bold: t['bold'] == true,
+        ));
+      }
     }
     // ── 飾りの図形 (= ユーザー要望: 図形が挿入されず味気ない) ──
     //    先頭へ入れて、 見出しの帯や文字より後ろに敷く。
@@ -225171,6 +226251,15 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
       final prompt = '${imgSpec['prompt'] ?? ''}'.trim();
       var pos = '${imgSpec['pos'] ?? 'right'}'.trim();
       if (pos != 'full' && pos != 'left') pos = 'right';
+      // Web 検索用の短い語 (= 設定が「Web から取得」 の時に使う)。
+      final query = '${imgSpec['query'] ?? ''}'.trim();
+      // 切り抜く形 (= ユーザー要望: 丸く抜いた写真などの洒落た資料)。
+      var shape = '${imgSpec['shape'] ?? 'rect'}'.trim();
+      if (shape == 'circle' || shape == 'oval' || shape == 'round') {
+        shape = 'ellipse';
+      }
+      if (!kPptxCropShapes.any((c) => c.kind == shape)) shape = 'rect';
+      if (pos == 'full') shape = 'rect';
       // ★ 2 段組みは左右とも本文で埋まっているので、 脇に絵を入れる隙間が
       //   無い。 入れても札の下に隠れて見えないまま 1 枚分の課金だけが
       //   起きるので、 紙いっぱい (背景) に回す。
@@ -225192,6 +226281,18 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
           iy = 26;
           iw = 40;
           ih = 60;
+        }
+        // 丸などに抜く時は枠を正方形にして、 元の枠の中央に置く
+        //   (長方形のまま抜くと楕円になる)。 角丸は元の比率のまま。
+        var bx = ix, by = iy, bw = iw, bh = ih;
+        if (shape != 'rect' && shape != 'roundRect') {
+          final sideEmu = math.min(_pxEmu(iw), _pyEmu(ih));
+          final sideW = sideEmu / _slideWidthEmu * 100;
+          final sideH = sideEmu / _slideHeightEmu * 100;
+          bx = ix + (iw - sideW) / 2;
+          by = iy + (ih - sideH) / 2;
+          bw = sideW;
+          bh = sideH;
         }
         // ★ 絵の上に不透明な札が乗っていると、 絵は永久に見えない
         //   (アプリも PowerPoint も、 図形は絵より手前に描く)。
@@ -225215,15 +226316,17 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
         slide.drawShapes.insert(
             0,
             _mkAiRect(phId,
-                x: ix, y: iy, w: iw, h: ih, fill: th.surface,
-                kind: 'roundRect'));
+                x: bx, y: by, w: bw, h: bh, fill: th.surface,
+                kind: shape == 'ellipse' ? 'ellipse' : 'roundRect'));
         slide.aiImage = _PptxAiImageRequest(
           prompt: prompt,
-          offX: _pxEmu(ix),
-          offY: _pyEmu(iy),
-          extCx: _pxEmu(iw),
-          extCy: _pyEmu(ih),
+          offX: _pxEmu(bx),
+          offY: _pyEmu(by),
+          extCx: _pxEmu(bw),
+          extCy: _pyEmu(bh),
           placeholderShapeId: phId,
+          query: query,
+          cropShape: shape,
         );
         // 絵を右 / 左に置く時は、 本文が絵に掛からないように寄せる。
         //
@@ -225254,7 +226357,110 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
         }
       }
     }
+    // ── 文字を枠に収める (= ユーザー報告: 見本では収まっていた題名が、
+    //    反映すると 2 行に折れて副題に重なる)。 見本と実物で同じ計算を
+    //    通し、 収まらない時は文字を小さくする。 絵の横で枠を狭めた後に
+    //    やるのが肝心 (狭めてから折り返しが変わる)。
+    _fitAiTextShapesToBoxes(slide);
+    // 見出し下の罫を見出しの文字幅に合わせる (= ユーザー要望)。
+    final tr = titleRuleFor;
+    if (tr != null) {
+      final wPx = _measureAiTextWidth(tr.$1);
+      final pct = (wPx / (_slideWidthEmu / 9525) * 100).clamp(7.0, 86.0);
+      tr.$2.extCx = _pxEmu(pct);
+    }
     return slide;
+  }
+
+  /// AI が組んだ文字枠 1 個を、 編集画面 (`_buildShapeText`) と同じ組み方
+  /// で測る。 1px = 9525 EMU、 1pt = 1.333px (編集画面の scale=1 と同じ)。
+  TextPainter _aiTextPainter(_PptxTextShape t, double pt, double maxW) {
+    final px = pt * 1.333;
+    final base = TextStyle(fontSize: px, fontFamily: t.fontFamily, height: 1.2);
+    final spans = <InlineSpan>[];
+    for (var p = 0; p < t.paragraphs.length; p++) {
+      if (p > 0) spans.add(const TextSpan(text: '\n'));
+      for (final r in t.paragraphs[p].runs) {
+        spans.add(TextSpan(
+          text: r.text,
+          style: TextStyle(
+            fontSize: px,
+            fontFamily: r.fontFamily ?? t.fontFamily,
+            fontWeight: r.bold == true ? FontWeight.bold : null,
+            fontStyle: r.italic == true ? FontStyle.italic : null,
+            height: 1.2,
+          ),
+        ));
+      }
+    }
+    final tp = TextPainter(
+      text: spans.isEmpty
+          ? TextSpan(text: t.text, style: base)
+          : TextSpan(style: base, children: spans),
+      textDirection: TextDirection.ltr,
+    )..layout(maxWidth: math.max(4.0, maxW));
+    return tp;
+  }
+
+  /// 枠の中で描かれる文字の幅 (px、 1px = 9525 EMU)。
+  double _measureAiTextWidth(_PptxTextShape t) {
+    final tp = _aiTextPainter(
+        t, (t.fontSize ?? 1800) / 100.0, t.extCx / 9525.0 - 6);
+    final w = tp.width;
+    tp.dispose();
+    return w;
+  }
+
+  /// 文字が枠の高さに収まるまで小さくする (最小は元の 45%、 10pt 以上)。
+  ///
+  /// 編集画面は枠の内側に 3px の余白 (枠線 1 + padding 2) を取るので、
+  /// その分を引いて測る。 保存時は spAutoFit なので PowerPoint 側でも
+  /// ほぼ同じ大きさで収まる。
+  void _fitAiTextShapesToBoxes(_PptxSlide s) {
+    for (final t in s.textShapes) {
+      if (t.text.trim().isEmpty) continue;
+      final boxW = t.extCx / 9525.0 - 6;
+      final boxH = t.extCy / 9525.0 - 6;
+      if (boxW <= 8 || boxH <= 8) continue;
+      var pt = (t.fontSize ?? 1800) / 100.0;
+      final minPt = math.max(10.0, pt * 0.45);
+      while (true) {
+        final tp = _aiTextPainter(t, pt, boxW);
+        final h = tp.height;
+        tp.dispose();
+        if (h <= boxH || pt <= minPt) break;
+        pt = math.max(minPt, pt - (pt > 24 ? 2 : 1));
+      }
+      t.fontSize = (pt * 100).round();
+      for (final p in t.paragraphs) {
+        for (final r in p.runs) {
+          r.fontSize = null; // 枠の大きさに従う
+        }
+      }
+    }
+  }
+
+  /// 変更案の見本。 編集画面と**同じ描画** (`_PptxStaticSlide`) を縮小して
+  /// 出す (= ユーザー報告: 見本では崩れていないのに反映すると崩れる。
+  /// 以前の略図は太字も書体も無視して測っていたので、 実物より短く
+  /// 見えていた)。
+  Widget _slidePreviewWidget(_PptxSlide s) {
+    const w = 960.0;
+    final h = w * _slideHeightEmu / _slideWidthEmu;
+    return FittedBox(
+      fit: BoxFit.contain,
+      child: SizedBox(
+        width: w,
+        height: h,
+        child: _PptxStaticSlide(
+          slide: s,
+          media: _media,
+          master: _activeMaster,
+          slideWidthEmu: _slideWidthEmu,
+          slideHeightEmu: _slideHeightEmu,
+        ),
+      ),
+    );
   }
 
   /// 組み立てた内容を実際のスライドへ移す。 足りなければ白紙を足す。
@@ -225441,7 +226647,10 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
       });
     }
 
-    if (!provider.hasGeminiKey && !provider.canUseAiRelay) {
+    // Web から取る設定なら鍵もクレジットも要らない。
+    if (!provider.slideImagesFromWeb &&
+        !provider.hasGeminiKey &&
+        !provider.canUseAiRelay) {
       _showSnack(provider.t('credit.insufficient'));
       dropPlaceholders(targets);
       return;
@@ -225454,7 +226663,9 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
             style: const TextStyle(color: Colors.white, fontSize: 15)),
         content: Text(
           provider
-              .t('pptx.aiImageBody')
+              .t(provider.slideImagesFromWeb
+                  ? 'pptx.aiImageBodyWeb'
+                  : 'pptx.aiImageBody')
               .replaceFirst('{n}', '${targets.length}'),
           style: const TextStyle(color: Colors.white70, fontSize: 13),
         ),
@@ -225482,13 +226693,23 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
       if (req == null) continue;
       if (!mounted) return;
       _showSnack(provider
-          .t('pptx.aiImageProgress')
+          .t(provider.slideImagesFromWeb
+              ? 'pptx.aiImageProgressWeb'
+              : 'pptx.aiImageProgress')
           .replaceFirst('{i}', '${i + 1}')
           .replaceFirst('{n}', '${targets.length}'));
       try {
-        final bytes = await provider.generateAiImage('${req.prompt}\n\n'
-            'No text, no letters, no watermark, no logo.');
+        // 設定に従って AI が描くか Web から取る (= ユーザー要望)。
+        var bytes = await provider.makeSlideImage(
+            prompt: '${req.prompt}\n\n'
+                'No text, no letters, no watermark, no logo.',
+            query: req.query);
         if (!mounted) return;
+        // 丸などに抜く時は正方形に切り出してから (楕円にしない)。
+        if (req.cropShape != 'rect' && req.cropShape != 'roundRect') {
+          bytes = await _squareCropImageBytes(bytes);
+          if (!mounted) return;
+        }
         // 縦横比を保って、 用意した枠の中に収める (= 引き伸ばさない)。
         ui.Image? decoded;
         var cx = req.extCx;
@@ -225504,22 +226725,29 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
             cy = (cx / aspect).round();
           }
         } catch (_) {}
+        final lum = await _smallRgbaOf(bytes);
         if (!mounted) return;
         setState(() {
           // 仮枠を外して、 描けた絵をその場所へ入れる。
           sl.drawShapes.removeWhere((d) => d.id == req.placeholderShapeId);
-          sl.newImages.add(_PptxNewImage(
+          // Web の写真は JPEG が多い。 実体に合わせた拡張子で保存する
+          //   (Content_Types に image/jpeg として登録される)。
+          final ext = _imageExtOf(bytes);
+          final ni = _PptxNewImage(
             id: _nextShapeId(),
             bytes: bytes,
-            ext: 'png',
+            ext: ext,
             mediaName: 'hnai_${DateTime.now().millisecondsSinceEpoch}_'
-                '${req.placeholderShapeId}.png',
+                '${req.placeholderShapeId}.$ext',
             offX: req.offX + ((req.extCx - cx) / 2).round(),
             offY: req.offY + ((req.extCy - cy) / 2).round(),
             extCx: cx,
             extCy: cy,
             decoded: decoded,
-          ));
+          )..cropShape = req.cropShape;
+          sl.newImages.add(ni);
+          // 絵に重なった文字を読める色へ (= ユーザー要望)。
+          if (lum != null) _autoContrastTextOverImage(sl, ni, lum);
           sl.aiImage = null;
           sl.dirty = true;
         });
@@ -225616,13 +226844,8 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                                     Positioned.fill(
                                       child: ClipRRect(
                                         borderRadius: BorderRadius.circular(3),
-                                        child: CustomPaint(
-                                          painter: _PptxThumbPainter(
-                                              changes[i].preview,
-                                              _slideWidthEmu,
-                                              _slideHeightEmu),
-                                          child: const SizedBox.expand(),
-                                        ),
+                                        child: _slidePreviewWidget(
+                                            changes[i].preview),
                                       ),
                                     ),
                                     const Positioned(
@@ -225722,11 +226945,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                         BoxShadow(color: Colors.black54, blurRadius: 24)
                       ],
                     ),
-                    child: CustomPaint(
-                      painter: _PptxThumbPainter(
-                          slide, _slideWidthEmu, _slideHeightEmu),
-                      child: const SizedBox.expand(),
-                    ),
+                    child: _slidePreviewWidget(slide),
                   ),
                 ),
               ),
@@ -225969,6 +227188,14 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
         final bytes = await provider.generateAiImage(instruction);
         if (!mounted) return;
         final fill = await _patchColorAround(r);
+        // 絵に重なる文字を読める色へ (= ユーザー要望)。 ついでに縮小画像も
+        //   持たせて、 サムネイルが灰色の板でなく実物になるようにする。
+        final lum = await _smallRgbaOf(bytes);
+        ui.Image? decodedForThumb;
+        try {
+          final c = await ui.instantiateImageCodec(bytes);
+          decodedForThumb = (await c.getNextFrame()).image;
+        } catch (_) {}
         if (!mounted) return;
         _pushHistory();
         setState(() {
@@ -225985,7 +227212,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
             lineWidthPt100: 0,
           ));
           final id = _nextShapeId() + 1;
-          slide.newImages.add(_PptxNewImage(
+          final ni = _PptxNewImage(
             id: id,
             bytes: bytes,
             ext: 'png',
@@ -225995,7 +227222,10 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
             offY: emu.offY,
             extCx: emu.extCx,
             extCy: emu.extCy,
-          ));
+            decoded: decodedForThumb,
+          );
+          slide.newImages.add(ni);
+          if (lum != null) _autoContrastTextOverImage(slide, ni, lum);
           slide.dirty = true;
           _selectedNewImageId = id;
         });
@@ -226797,6 +228027,24 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
       if (ts.fontFamily != null && ts.fontFamily!.isNotEmpty) {
         replaced = _injectTypefaceIntoFirstRpr(replaced, ts.fontFamily!);
       }
+      // ★ 文字色を反映する。 ここが無いと、 変えた色が .pptx に残らない
+      //   (= 絵に合わせて読める色に直しても、 保存すると元の色に戻る)。
+      //   手で色を変えた時にも同じ穴があった。
+      //   ランに色があればそれを、 無ければシェイプの色を書く。
+      int? effColor;
+      for (final para in ts.paragraphs) {
+        for (final r in para.runs) {
+          if (r.fontColor != null) {
+            effColor = r.fontColor;
+            break;
+          }
+        }
+        if (effColor != null) break;
+      }
+      effColor ??= ts.fontColor;
+      if (effColor != null) {
+        replaced = _injectColorIntoFirstRpr(replaced, effColor);
+      }
       return replaced;
     });
 
@@ -226816,7 +228064,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
           '<a:stretch><a:fillRect/></a:stretch></p:blipFill>'
           '<p:spPr><a:xfrm><a:off x="${ni.offX}" y="${ni.offY}"/>'
           '<a:ext cx="${ni.extCx}" cy="${ni.extCy}"/></a:xfrm>'
-          '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>'
+          '<a:prstGeom prst="${ni.cropShape}"><a:avLst/></a:prstGeom>'
           '</p:spPr></p:pic>';
       // ★ 紙いっぱいに敷いた絵 (= 全面の背景) は**一番下**へ。
       //   spTree は後ろに書いた物ほど手前に出るので、 他と同じように
@@ -226827,8 +228075,26 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
           ni.offY <= 1000 &&
           ni.extCx >= _slideWidthEmu - 1000 &&
           ni.extCy >= _slideHeightEmu - 1000;
+      // ★ 文字と重なる絵も先に書く (= 文字の後ろへ回す)。
+      //   spTree は後に書いた物ほど手前に出るので、 最後に書くと
+      //   PowerPoint で開いた時に絵が文字を覆ってしまう。 アプリの中では
+      //   文字が絵の上に出ているので、 見え方が食い違っていた
+      //   (= 「白文字が読めない」 を色で直しても、 向こうでは隠れたまま)。
+      bool overlapsText(_PptxNewImage ni) {
+        for (final t in slide.textShapes) {
+          if (t.text.trim().isEmpty) continue;
+          final ow = math.min(t.offX + t.extCx, ni.offX + ni.extCx) -
+              math.max(t.offX, ni.offX);
+          final oh = math.min(t.offY + t.extCy, ni.offY + ni.extCy) -
+              math.max(t.offY, ni.offY);
+          if (ow > 0 && oh > 0) return true;
+        }
+        return false;
+      }
+
+      bool behindText(_PptxNewImage ni) => isBackdrop(ni) || overlapsText(ni);
       for (final ni in slide.newImages) {
-        if (isBackdrop(ni)) buf.write(picXml(ni));
+        if (behindText(ni)) buf.write(picXml(ni));
       }
       for (final ns in newShapes) {
         buf.write(_buildNewSpXml(ns));
@@ -226841,7 +228107,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
       // ── 挿入画像 (= ユーザー要望: ファイル添付)。 rels は
       //    _savePptxFile 側で rIdHN{id} として登録される。 ──
       for (final ni in slide.newImages) {
-        if (isBackdrop(ni)) continue; // 上で書いた
+        if (behindText(ni)) continue; // 上で書いた
         buf.write('<p:pic><p:nvPicPr>'
             '<p:cNvPr id="${ni.id}" name="HNImage${ni.id}"/>'
             '<p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr>'
@@ -226850,7 +228116,9 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
             '<a:stretch><a:fillRect/></a:stretch></p:blipFill>'
             '<p:spPr><a:xfrm><a:off x="${ni.offX}" y="${ni.offY}"/>'
             '<a:ext cx="${ni.extCx}" cy="${ni.extCy}"/></a:xfrm>'
-            '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>'
+            // 切り抜く形 (= ユーザー要望)。 PowerPoint の
+            //   「図形に合わせてトリミング」 と同じ書き方。
+            '<a:prstGeom prst="${ni.cropShape}"><a:avLst/></a:prstGeom>'
             '</p:spPr></p:pic>');
       }
       // </p:spTree> の直前に挿入
@@ -227236,9 +228504,12 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
           //   して」 への対応。 r.fontColor が指定されていれば
           //   <a:solidFill><a:srgbClr val="HEX"/></a:solidFill> で書き出す。
           //   PowerPoint で開いた時に同じ色で表示される。
-          if (r.fontColor != null) {
-            final hex =
-                r.fontColor!.toRadixString(16).padLeft(6, '0').toUpperCase();
+          //   ★ ランに色が無ければシェイプの色を書く (= 新規シェイプ側の
+          //     _buildNewSpXml と同じ扱い)。 揃えないと、 シェイプだけに
+          //     色が入っている枠の色が保存で落ちる。
+          final ecol = r.fontColor ?? ts.fontColor;
+          if (ecol != null) {
+            final hex = ecol.toRadixString(16).padLeft(6, '0').toUpperCase();
             buf.write('<a:solidFill><a:srgbClr val="$hex"/></a:solidFill>');
           }
           if (family != null && family.isNotEmpty) {
@@ -227263,6 +228534,39 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
   /// 既存 sp XML の最初の <a:rPr/> に typeface 指定 (<a:latin/ea/cs>) を
   /// 挿入する。 既存に <a:latin> があれば置換、 無ければ rPr を展開して
   /// 追加する。
+  /// 最初の `<a:rPr>` に文字色 (`<a:solidFill>`) を差し込む。
+  ///
+  /// ★ これが無いと、 変えた文字色が .pptx に残らない。 既存シェイプの
+  ///   「単純」 な書き出し経路は `<a:t>` と大きさと書体しか差し替えて
+  ///   おらず、 色を書く所がどこにも無かった (= 手で色を変えた時も
+  ///   保存すると戻っていた)。
+  /// `<a:solidFill>` は図形の塗り (`<p:spPr>`) や枠線 (`<a:ln>`) にも
+  ///   出てくるので、 **最初の `<a:rPr>` の中だけ**を書き換える。
+  String _injectColorIntoFirstRpr(String spXml, int rgb) {
+    final hex = rgb.toRadixString(16).padLeft(6, '0').toUpperCase();
+    final fillTag = '<a:solidFill><a:srgbClr val="$hex"/></a:solidFill>';
+    // 1. 開いた <a:rPr ...> ... </a:rPr> があれば、 その中だけを直す。
+    final pairReg = RegExp(r'<a:rPr\b([^>]*)>([\s\S]*?)</a:rPr>');
+    final pm = pairReg.firstMatch(spXml);
+    if (pm != null) {
+      final attrs = pm.group(1) ?? '';
+      var inner = pm.group(2) ?? '';
+      inner = inner.replaceAll(
+          RegExp(r'<a:solidFill>[\s\S]*?</a:solidFill>'), '');
+      return spXml.replaceFirst(
+          pm.group(0)!, '<a:rPr$attrs>$fillTag$inner</a:rPr>');
+    }
+    // 2. 自己閉じの <a:rPr .../> を開いて入れる。
+    final selfReg = RegExp(r'<a:rPr\b([^/>]*?)/>');
+    final sm = selfReg.firstMatch(spXml);
+    if (sm != null) {
+      final attrs = sm.group(1) ?? '';
+      return spXml.replaceFirst(
+          sm.group(0)!, '<a:rPr$attrs>$fillTag</a:rPr>');
+    }
+    return spXml;
+  }
+
   String _injectTypefaceIntoFirstRpr(String spXml, String family) {
     final escFamily = _escapeXml(family);
     final latinTag = '<a:latin typeface="$escFamily"/>'
@@ -227722,7 +229026,11 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
       // 中央のボタン列 (≒390px) + 左のファイル名 (≒320px) +
       // 右の保存/AI 等 (≒330px) が並ぶので、 1 段に収まるのは 1150px 以上。
       // それ未満は 2 段にする (= ユーザー報告: 分割するとまだ重なる)。
-      final narrowHeader = hbc.maxWidth < 1150;
+      // ★ 1150 だと分割ペイン (1200〜1500px) で中央のボタン列が右側の
+      //   前へ / 次へ と重なって押せなかった (= ユーザー報告)。 左の題名
+      //   (約 390px) + 中央の列 (約 420px) + 右の列 (約 600px) が並ぶには
+      //   1600px 要るので、 それ未満は 2 段にする。
+      final narrowHeader = hbc.maxWidth < 1600;
       final Widget centerRow = Center(
                     child: SingleChildScrollView(
                       scrollDirection: Axis.horizontal,
@@ -229392,7 +230700,14 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
         },
         child: Stack(clipBehavior: Clip.none, children: [
           Positioned.fill(
-            child: Image.memory(ni.bytes, fit: BoxFit.fill),
+            // 切り抜く形が指定されていれば、 その形で抜く
+            // (= ユーザー要望: pptx で図形の切り抜き)。
+            child: ni.cropShape == 'rect'
+                ? Image.memory(ni.bytes, fit: BoxFit.fill)
+                : ClipPath(
+                    clipper: _PptxCropClipper(ni.cropShape),
+                    child: Image.memory(ni.bytes, fit: BoxFit.fill),
+                  ),
           ),
           if (selected) ...[
             Positioned.fill(
@@ -229443,6 +230758,43 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                   child: _pptxSquareHandle(),
                 ),
               ),
+            // ── 切り抜く形を選ぶ (= ユーザー要望: pptx で図形の切り抜き) ──
+            //    選んでいる間だけ、 画像の上に小さく並べる。
+            Positioned(
+              top: -14,
+              left: 8,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 3),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1E1E32),
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(color: Colors.white24),
+                ),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  for (final c in kPptxCropShapes)
+                    Tooltip(
+                      message: context
+                          .read<MindMapProvider>()
+                          .t('pptx.crop.${c.kind}'),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(999),
+                        onTap: () => setState(() {
+                          ni.cropShape = c.kind;
+                          _slides[_currentIndex].dirty = true;
+                        }),
+                        child: Padding(
+                          padding: const EdgeInsets.all(3),
+                          child: Icon(c.icon,
+                              size: 14,
+                              color: ni.cropShape == c.kind
+                                  ? const Color(0xFF6C63FF)
+                                  : Colors.white54),
+                        ),
+                      ),
+                    ),
+                ]),
+              ),
+            ),
             // ── 削除ボタン ──
             Positioned(
               top: -14,
@@ -229605,6 +230957,11 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
       errorBuilder: (_, __, ___) => const SizedBox.shrink(),
       gaplessPlayback: true,
     );
+    // 図形に合わせたトリミング (丸など)。
+    if (img.cropShape != 'rect') {
+      child = ClipPath(
+          clipper: _PptxCropClipper(img.cropShape), child: child);
+    }
     // 回転がある場合は Transform で包む。 PPTX の rot は 1/60000 度単位、
     // 時計回り正の値。 Flutter の Transform.rotate はラジアン、 時計回り正。
     if (img.rotation != 0) {
@@ -232366,6 +233723,9 @@ class _TextEditorDialog extends StatefulWidget {
   final void Function(String path, String name, {bool isLeftPanel})?
       onSplitOpen;
 
+  /// 分割ペインに埋め込まれている時のペイン名 ('left' / 'right')。
+  final String? paneGuardKey;
+
   const _TextEditorDialog({
     required this.filePath,
     required this.fileName,
@@ -232376,6 +233736,7 @@ class _TextEditorDialog extends StatefulWidget {
     this.onRenamed,
     this.onSplitOpen,
     this.compactHost = false,
+    this.paneGuardKey,
   });
 
   /// フローティング窓・分割ペインなど狭い場所で開かれているか。
@@ -233359,11 +234720,16 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
       if (!mounted) return true;
       return _confirmDiscard();
     };
+    _registerPaneCloseGuard(widget.paneGuardKey, this, () async {
+      if (!mounted) return true;
+      return _confirmDiscard();
+    });
   }
 
   @override
   void dispose() {
     kUnsavedCloseGuards.remove(identityHashCode(this));
+    _unregisterPaneCloseGuard(widget.paneGuardKey, this);
     final b = _mcpBinding;
     if (b != null) _providerRef?.mcpUnbindTextFile(b);
     _editCtrl.dispose();
@@ -233546,6 +234912,172 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
   void _stopReadAloud() {
     _reader?.stop();
     if (mounted) setState(() => _readerVisible = false);
+  }
+
+  /// 同じページに貼ってある別のファイルへ、 この窓のまま切り替える。
+  ///
+  /// = ユーザー要望「複数のテキストファイルや json、 マークダウンファイルの
+  ///   中身を確認する時に毎回開いて閉じてを繰り返すのは面倒だから、
+  ///   ヘッダーに別のファイルに切り替えるボタンを付けて欲しい」
+  ///   + 「パソコンの中から自由に探すというより、 同じページ内に埋め込んだ
+  ///   ファイルを切り替える形にして欲しい」。
+  ///
+  /// 出すのは**このページに貼ってある**文字で読めるファイルだけ。
+  /// 書きかけがあれば先に確かめる (= 切り替えて消えたら困る)。
+  Future<void> _switchToOtherFile() async {
+    final provider = context.read<MindMapProvider>();
+    // ── 同じページの添付から、 文字で読める物を集める ──
+    const readable = {
+      'txt', 'md', 'markdown', 'json', 'csv', 'tsv', 'log',
+      'yaml', 'yml', 'xml', 'html', 'htm', 'ini', 'conf', 'cfg', 'env',
+      'dart', 'js', 'ts', 'py', 'java', 'kt', 'c', 'h', 'cpp', 'cs',
+      'go', 'rb', 'rs', 'php', 'sh', 'bat', 'ps1', 'sql', 'toml',
+    };
+    // 開いているファイルが乗っているページ (= 貼った元) を探す。
+    MindMapPage? host;
+    if (widget.nodeId != null) {
+      for (final pg in provider.pages) {
+        if (pg.nodes.containsKey(widget.nodeId)) {
+          host = pg;
+          break;
+        }
+      }
+    }
+    host ??= provider.pages.isEmpty ? null : provider.currentPage;
+    final items = <({String path, String name})>[];
+    if (host != null) {
+      for (final n in host.nodes.values) {
+        final path = (n.attachmentPath ?? '').trim();
+        if (path.isEmpty) continue;
+        final ext = path.split('.').last.toLowerCase();
+        if (!readable.contains(ext)) continue;
+        if (items.any((e) => e.path == path)) continue;
+        final name = (n.attachmentName ?? '').trim().isNotEmpty
+            ? n.attachmentName!.trim()
+            : path.split(RegExp(r'[/\\]')).last;
+        items.add((path: path, name: name));
+      }
+    }
+    items.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    if (items.length <= 1) {
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+        content: Text(provider.t('text.switchNoOthers'),
+            style: const TextStyle(fontSize: 12)),
+        duration: const Duration(seconds: 3),
+      ));
+      return;
+    }
+    // ── どれに切り替えるか選ぶ ──
+    final picked = await showDialog<String>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E2E),
+        title: Text(provider.t('text.switchFile'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
+        content: SizedBox(
+          width: 380,
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text(provider.t('text.switchDesc'),
+                    style: const TextStyle(
+                        color: Colors.white54, fontSize: 11.5, height: 1.4)),
+              ),
+            ),
+            Flexible(
+              child: SingleChildScrollView(
+                child: Column(children: [
+                  for (final it in items)
+                    ListTile(
+                      dense: true,
+                      leading: Icon(
+                          it.path == _currentFilePath
+                              ? Icons.radio_button_checked_rounded
+                              : Icons.description_outlined,
+                          size: 18,
+                          color: it.path == _currentFilePath
+                              ? const Color(0xFF6C63FF)
+                              : Colors.white54),
+                      title: Text(it.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              color: it.path == _currentFilePath
+                                  ? const Color(0xFF9FA8FF)
+                                  : Colors.white,
+                              fontSize: 13)),
+                      onTap: it.path == _currentFilePath
+                          ? null
+                          : () => Navigator.pop(dctx, it.path),
+                    ),
+                ]),
+              ),
+            ),
+          ]),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dctx),
+              child: Text(provider.t('common.cancel'))),
+        ],
+      ),
+    );
+    if (picked == null || !mounted || picked == _currentFilePath) return;
+    if (!File(picked).existsSync()) {
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+        content: Text(provider.t('text.switchMissing'),
+            style: const TextStyle(fontSize: 12)),
+        duration: const Duration(seconds: 3),
+      ));
+      return;
+    }
+    // ── 書きかけの確認は、 行き先が決まってから ──
+    if (_dirty) {
+      final keep = await showDialog<bool>(
+        context: context,
+        builder: (dctx) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E2E),
+          title: Text(provider.t('text.switchFile'),
+              style: const TextStyle(color: Colors.white, fontSize: 15)),
+          content: Text(provider.t('text.switchUnsaved'),
+              style: const TextStyle(color: Colors.white70, fontSize: 13)),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(dctx, null),
+                child: Text(provider.t('common.cancel'))),
+            TextButton(
+                onPressed: () => Navigator.pop(dctx, false),
+                child: Text(provider.t('text.switchDiscard'),
+                    style: const TextStyle(color: Color(0xFFE57373)))),
+            FilledButton(
+                onPressed: () => Navigator.pop(dctx, true),
+                child: Text(provider.t('text.switchSaveFirst'))),
+          ],
+        ),
+      );
+      if (keep == null || !mounted) return; // やめる
+      if (keep) {
+        await _save();
+        if (!mounted) return;
+      }
+    }
+    setState(() {
+      _currentFilePath = picked;
+      _currentFileName =
+          items.firstWhere((e) => e.path == picked).name;
+      _loading = true;
+      _loadError = null;
+      _editingIdx = null;
+      _selAnchorLine = null;
+      _selFocusLine = null;
+      _dirty = false;
+      _lines.clear();
+    });
+    await _loadFile();
+    if (!mounted) return;
+    widget.onRenamed?.call(_currentFilePath, _currentFileName);
   }
 
   // ─── 読み込み ───────────────────────────────────────────────────
@@ -234969,6 +236501,18 @@ $currentText
             tooltip: context.read<MindMapProvider>().t('tip.saveOverwrite'),
             icon: const Icon(Icons.save_rounded, color: Color(0xFF6C63FF)),
             onPressed: _save,
+          ),
+          // ── 別のファイルに切り替える (= ユーザー要望: 複数のテキスト /
+          //    json / マークダウンの中身を見る時に、 いちいち開いて閉じてを
+          //    繰り返すのが面倒)。 閉じずにこの窓のまま中身だけ入れ替える。
+          IconButton(
+            tooltip: context.read<MindMapProvider>().t('text.switchFile'),
+            // ★ 左右の矢印はパネルの入れ替えに見えるので、 書類を選ぶ絵に
+            //   替える (= ユーザー報告: AI チャットとメモ欄を入れ替える
+            //   ボタンだと錯覚する)。
+            icon: Icon(Icons.file_open_rounded,
+                color: fg.withValues(alpha: 0.75)),
+            onPressed: _loading ? null : () => unawaited(_switchToOtherFile()),
           ),
           // ── 左 / 右に分割 (= ユーザー要望: JSON 等のテキストにも左右分割
           //    ボタンを付けて欲しい)。 表計算 (xlsx) と同じ並び・同じ形。
@@ -238197,6 +239741,196 @@ class _PdfExporter {
 // (= タイムライン/カレンダーと同じデータ)。 日付をタップするとその日の
 // 時間単位ビュー (人×時間) に切り替わる。 予定の追加/共有は既存の
 // グループカレンダー機能 (Firebase) をそのまま使う。
+/// AI が作る資料 1 枚分 (= 書き出し部品 buildPptxFromSlides の入力)。
+/// imageShape は絵の切り抜き ('rect' / 'roundRect' / 'ellipse')。
+typedef _AiSlideRec = ({
+  String title,
+  List<String> bullets,
+  Uint8List? image,
+  String imagePos,
+  String imageShape,
+  List<Map<String, dynamic>> shapes
+});
+
+/// 分割ペインのファイルを切り替える前に呼ぶ未保存確認 ('left' / 'right' →
+/// 確認)。 owner は登録した State の identityHashCode。 新しいビューアが
+/// 登録した後に古い方の dispose が走っても消さないための印。
+final Map<String, ({int owner, Future<bool> Function() guard})>
+    _paneCloseGuards = {};
+
+void _registerPaneCloseGuard(
+    String? key, Object owner, Future<bool> Function() guard) {
+  if (key == null) return;
+  _paneCloseGuards[key] = (owner: identityHashCode(owner), guard: guard);
+}
+
+void _unregisterPaneCloseGuard(String? key, Object owner) {
+  if (key == null) return;
+  if (_paneCloseGuards[key]?.owner == identityHashCode(owner)) {
+    _paneCloseGuards.remove(key);
+  }
+}
+
+/// 絵を正方形に切り出して PNG にする (= 丸く切り抜く時に楕円にならない
+/// ように)。 失敗したら元のまま返す。
+Future<Uint8List> _squareCropImageBytes(Uint8List bytes) async {
+  try {
+    final codec = await ui.instantiateImageCodec(bytes);
+    final frame = await codec.getNextFrame();
+    final im = frame.image;
+    final w = im.width, h = im.height;
+    if (w == h) return bytes;
+    final side = math.min(w, h);
+    final sx = ((w - side) / 2).floorToDouble();
+    final sy = ((h - side) / 2).floorToDouble();
+    final rec = ui.PictureRecorder();
+    final canvas = Canvas(rec);
+    canvas.drawImageRect(
+        im,
+        Rect.fromLTWH(sx, sy, side.toDouble(), side.toDouble()),
+        Rect.fromLTWH(0, 0, side.toDouble(), side.toDouble()),
+        Paint()..filterQuality = FilterQuality.high);
+    final out = await rec.endRecording().toImage(side, side);
+    final data = await out.toByteData(format: ui.ImageByteFormat.png);
+    if (data == null) return bytes;
+    return data.buffer.asUint8List();
+  } catch (_) {
+    return bytes;
+  }
+}
+
+/// バイト列の種類 ('png' / 'jpeg')。 Web から取った写真は JPEG が多い。
+String _imageExtOf(Uint8List b) =>
+    (b.length > 3 && b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF)
+        ? 'jpeg'
+        : 'png';
+
+/// 資料に入れる絵の入手先 (AI 生成 / Web) と、 Web の時の範囲 (著作権
+/// フリーのみ / 問わない) を選ぶ画面 (= ユーザー要望)。 設定画面と
+/// AI スタジオの両方から呼ぶ。
+Future<void> showSlideImageSourceDialog(
+    BuildContext ctx, MindMapProvider provider) {
+  return showDialog<void>(
+    context: ctx,
+    builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
+      final web = provider.slideImagesFromWeb;
+      Widget row({
+        required bool selected,
+        required bool enabled,
+        required IconData icon,
+        required String title,
+        required String desc,
+        required VoidCallback onTap,
+      }) {
+        return ListTile(
+          dense: true,
+          enabled: enabled,
+          leading: Icon(
+              selected
+                  ? Icons.radio_button_checked_rounded
+                  : Icons.radio_button_off_rounded,
+              color: !enabled
+                  ? Colors.white24
+                  : (selected ? const Color(0xFFBA68C8) : Colors.white54),
+              size: 20),
+          title: Row(children: [
+            Icon(icon,
+                size: 16, color: enabled ? Colors.white70 : Colors.white24),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(title,
+                  style: TextStyle(
+                      color: enabled ? Colors.white : Colors.white38,
+                      fontSize: 13)),
+            ),
+          ]),
+          subtitle: Text(desc,
+              style: TextStyle(
+                  color: enabled ? Colors.white54 : Colors.white24,
+                  fontSize: 11)),
+          onTap: enabled ? onTap : null,
+        );
+      }
+
+      Widget heading(String s) => Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 2),
+            child: Text(s,
+                style: const TextStyle(
+                    color: Color(0xFFBA68C8),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700)),
+          );
+
+      return AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        titlePadding: const EdgeInsets.fromLTRB(20, 18, 20, 0),
+        contentPadding: const EdgeInsets.fromLTRB(4, 6, 4, 4),
+        title: Text(provider.t('imgSrc.title'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
+        content: SizedBox(
+          width: 460,
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            row(
+              selected: !web,
+              enabled: true,
+              icon: Icons.auto_awesome_rounded,
+              title: provider.t('imgSrc.generate'),
+              desc: provider.t('imgSrc.generateDesc'),
+              onTap: () async {
+                await provider.setSlideImageSource('generate');
+                setD(() {});
+              },
+            ),
+            row(
+              selected: web,
+              enabled: true,
+              icon: Icons.public_rounded,
+              title: provider.t('imgSrc.web'),
+              desc: provider.t('imgSrc.webDesc'),
+              onTap: () async {
+                await provider.setSlideImageSource('web');
+                setD(() {});
+              },
+            ),
+            heading(provider.t('imgLic.title')),
+            row(
+              selected: provider.webImageLicense != 'any',
+              enabled: web,
+              icon: Icons.verified_outlined,
+              title: provider.t('imgLic.free'),
+              desc: provider.t('imgLic.freeDesc'),
+              onTap: () async {
+                await provider.setWebImageLicense('free');
+                setD(() {});
+              },
+            ),
+            row(
+              selected: provider.webImageLicense == 'any',
+              enabled: web,
+              icon: Icons.image_search_rounded,
+              title: provider.t('imgLic.any'),
+              desc: provider.t('imgLic.anyDesc'),
+              onTap: () async {
+                await provider.setWebImageLicense('any');
+                setD(() {});
+              },
+            ),
+          ]),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx),
+            child: Text(provider.t('btn.close'),
+                style: const TextStyle(color: Colors.white70)),
+          ),
+        ],
+      );
+    }),
+  );
+}
+
 class _SlideDraft {
   final TextEditingController title;
   final List<TextEditingController> bullets;
@@ -238208,14 +239942,17 @@ class _SlideDraft {
         bullets = bullets.map((b) => TextEditingController(text: b)).toList(),
         imgLoading = false;
 
-  ({String title, List<String> bullets, Uint8List? image, String imagePos, List<Map<String, dynamic>> shapes}) toRecord() => (
+  _AiSlideRec toRecord(
+          {String imageShape = 'rect', Uint8List? imageOverride}) =>
+      (
         title: title.text.trim(),
         bullets: bullets
             .map((c) => c.text.trim())
             .where((t) => t.isNotEmpty)
             .toList(),
-        image: image,
+        image: imageOverride ?? image,
         imagePos: 'right',
+        imageShape: imageShape,
         shapes: const <Map<String, dynamic>>[],
       );
 
@@ -238387,6 +240124,9 @@ class _AiStudioPageViewState extends State<_AiStudioPageView>
   bool _slideLoading = false;
   String? _slideError;
   bool _includeImages = true; // 画像も加える (= ユーザー要望、 トグル可)
+  // 絵の切り抜き ('rect' / 'roundRect' / 'ellipse')。 = ユーザー要望:
+  //   丸でくり抜くなどの洒落たスライド。
+  String _imageShape = 'rect';
   bool _batchImgLoading = false;
   int _themeIndex = 0; // 内蔵テーマ選択
   String? _templateXml; // テンプレート .pptx から抽出した theme1.xml
@@ -238515,7 +240255,10 @@ class _AiStudioPageViewState extends State<_AiStudioPageView>
   Future<void> _generateImageFor(_SlideDraft d) async {
     // 画像もアプリ側キー (前払いクレジット) で動くので、 自分のキーの
     // 有無では止めない (= ユーザー要望)。 使えない時は provider が理由を投げる。
-    if (!widget.provider.hasGeminiKey && !widget.provider.canUseAiRelay) {
+    // Web から取る設定なら鍵もクレジットも要らない (= ユーザー要望)。
+    if (!widget.provider.slideImagesFromWeb &&
+        !widget.provider.hasGeminiKey &&
+        !widget.provider.canUseAiRelay) {
       _snack(widget.provider.t('credit.insufficient'),
           const Color(0xFFE53935));
       return;
@@ -238526,7 +240269,8 @@ class _AiStudioPageViewState extends State<_AiStudioPageView>
       final prompt = 'プレゼン資料に挿入する上品でシンプルなイラスト/図。'
           'テーマ「$topic」、スライド「${d.title.text.trim()}」の内容を表す。'
           '文字や表は入れない。 余白のある明るい配色。';
-      final bytes = await widget.provider.generateAiImage(prompt);
+      final bytes = await widget.provider.makeSlideImage(
+          prompt: prompt, query: '$topic ${d.title.text.trim()}');
       if (!mounted) return;
       setState(() => d.image = bytes);
     } catch (e) {
@@ -238600,10 +240344,15 @@ class _AiStudioPageViewState extends State<_AiStudioPageView>
   }
 
   Future<void> _savePptx() async {
-    final slides = _drafts
-        .map((d) => d.toRecord())
-        .where((r) => r.title.isNotEmpty || r.bullets.isNotEmpty)
-        .toList();
+    // 丸などに抜く時は絵を正方形に切り出してから渡す (楕円にしない)。
+    final circle = _imageShape != 'rect' && _imageShape != 'roundRect';
+    final slides = <_AiSlideRec>[];
+    for (final d in _drafts) {
+      Uint8List? img = d.image;
+      if (img != null && circle) img = await _squareCropImageBytes(img);
+      final r = d.toRecord(imageShape: _imageShape, imageOverride: img);
+      if (r.title.isNotEmpty || r.bullets.isNotEmpty) slides.add(r);
+    }
     if (slides.isEmpty) return;
     final bytes = _OfficeFileTemplate.buildPptxFromSlides(
       slides,
@@ -238865,6 +240614,73 @@ class _AiStudioPageViewState extends State<_AiStudioPageView>
           value: _includeImages,
           onChanged: (v) => setState(() => _includeImages = v),
         ),
+        // ── 絵の入手先 (AI 生成 / Web) と切り抜きの形 (= ユーザー要望) ──
+        if (_includeImages) ...[
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+            leading: Icon(
+                widget.provider.slideImagesFromWeb
+                    ? Icons.public_rounded
+                    : Icons.auto_awesome_rounded,
+                color: const Color(0xFFBA68C8),
+                size: 20),
+            title: Text(widget.provider.t('imgSrc.title'),
+                style: const TextStyle(color: Colors.white, fontSize: 13)),
+            subtitle: Text(
+                widget.provider.slideImagesFromWeb
+                    ? '${widget.provider.t('imgSrc.web')} · '
+                        '${widget.provider.t(widget.provider.webImageLicense == 'any' ? 'imgLic.any' : 'imgLic.free')}'
+                    : widget.provider.t('imgSrc.generate'),
+                style: const TextStyle(color: Colors.white38, fontSize: 11)),
+            trailing: const Icon(Icons.chevron_right_rounded,
+                color: Colors.white38),
+            onTap: () async {
+              await showSlideImageSourceDialog(context, widget.provider);
+              if (mounted) setState(() {});
+            },
+          ),
+          Padding(
+            padding: const EdgeInsets.only(top: 2, bottom: 6),
+            child: Row(children: [
+              Text(widget.provider.t('ai.imageShape'),
+                  style:
+                      const TextStyle(color: Colors.white70, fontSize: 12)),
+              const SizedBox(width: 10),
+              for (final (k, labelKey, icon) in const [
+                ('rect', 'ai.shapeRect', Icons.crop_square_rounded),
+                ('roundRect', 'ai.shapeRound', Icons.rounded_corner_rounded),
+                ('ellipse', 'ai.shapeCircle', Icons.circle_outlined),
+              ])
+                Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: OutlinedButton.icon(
+                    onPressed: () => setState(() => _imageShape = k),
+                    icon: Icon(icon, size: 15),
+                    label: Text(widget.provider.t(labelKey),
+                        style: const TextStyle(fontSize: 11.5)),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: _imageShape == k
+                          ? Colors.white
+                          : Colors.white70,
+                      backgroundColor: _imageShape == k
+                          ? const Color(0xFF7B1FA2)
+                          : Colors.transparent,
+                      side: BorderSide(
+                          color: _imageShape == k
+                              ? const Color(0xFFBA68C8)
+                              : Colors.white24),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 4),
+                      minimumSize: const Size(0, 28),
+                      visualDensity: VisualDensity.compact,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                  ),
+                ),
+            ]),
+          ),
+        ],
         // ── デザイン: 内蔵テーマ (見本付き) + テンプレート (= ユーザー要望) ──
         Padding(
           padding: EdgeInsets.only(top: 4, bottom: 4),
@@ -239313,7 +241129,7 @@ class _AiStudioPageViewState extends State<_AiStudioPageView>
 /// 「出来た pptx が開ける形か」 を確かめるためだけに 1 本だけ口を開ける。
 @visibleForTesting
 Uint8List buildPptxFromSlidesForTest(
-        List<({String title, List<String> bullets, Uint8List? image, String imagePos, List<Map<String, dynamic>> shapes})> slides) =>
+        List<_AiSlideRec> slides) =>
     _OfficeFileTemplate.buildPptxFromSlides(slides);
 
 class _OfficeFileTemplate {
@@ -239339,7 +241155,7 @@ class _OfficeFileTemplate {
     String type, {
     List<List<String>>? rows,
     List<String>? paragraphs,
-    List<({String title, List<String> bullets, Uint8List? image, String imagePos, List<Map<String, dynamic>> shapes})>? slides,
+    List<_AiSlideRec>? slides,
     String? title,
   }) async {
     switch (type.toLowerCase()) {
@@ -239374,7 +241190,7 @@ class _OfficeFileTemplate {
         //   見栄えがはっきり劣っていた。
         //   絵と飾りの図形もそのまま通す (= ユーザー要望: 珈琲の画像や図形が
         //   挿入されず味気ない)。 絵は呼び出し側 (_buildMcpFile) が用意する。
-        return buildPptxFromSlides(slides ?? const <({String title, List<String> bullets, Uint8List? image, String imagePos, List<Map<String, dynamic>> shapes})>[]);
+        return buildPptxFromSlides(slides ?? const <_AiSlideRec>[]);
       case 'pdf':
         return _buildPdf(title: title, paragraphs: paragraphs, rows: rows);
       default:
@@ -239857,7 +241673,7 @@ class _OfficeFileTemplate {
   /// = ユーザー要望「おしゃれなカフェのパワポにしてとお願いしても珈琲の
   ///   画像や図形が挿入されず味気ない」。
   static Uint8List buildPptxFromSlides(
-      List<({String title, List<String> bullets, Uint8List? image, String imagePos, List<Map<String, dynamic>> shapes})> slides,
+      List<_AiSlideRec> slides,
       {String? themeXml,
       _PptxTheme? theme}) {
     final th = theme ?? _kPptxThemes.first;
@@ -239869,12 +241685,13 @@ class _OfficeFileTemplate {
         .replaceAll('"', '&quot;');
 
     final list = slides.isEmpty
-        ? <({String title, List<String> bullets, Uint8List? image, String imagePos, List<Map<String, dynamic>> shapes})>[
+        ? <_AiSlideRec>[
             (
               title: 'スライド',
               bullets: <String>[],
               image: null,
               imagePos: 'right',
+              imageShape: 'rect',
               shapes: const <Map<String, dynamic>>[],
             )
           ]
@@ -239934,7 +241751,7 @@ class _OfficeFileTemplate {
           '$fillXml$lineXml</p:spPr></p:sp>';
     }
 
-    String slideXml(({String title, List<String> bullets, Uint8List? image, String imagePos, List<Map<String, dynamic>> shapes}) s) {
+    String slideXml(_AiSlideRec s) {
       final hasImg = s.image != null;
       // ★ 置き場所は「絵が本当にある時」 だけ効かせる。
       //   絵が無いのに left だと本文が右へ寄り、 幅はそのままなので
@@ -239944,6 +241761,45 @@ class _OfficeFileTemplate {
       final full = hasImg && s.imagePos == 'full';
       final leftImg = hasImg && s.imagePos == 'left';
       final bodyCx = (hasImg && !full) ? 4400000 : 8046720;
+      // ── 文字の大きさは中身の量で決める (= ユーザー報告: 会社資料の
+      //    レイアウトが崩れる)。 決め打ちだと、 長い見出しは帯からはみ出し、
+      //    行数の多い本文は枠の外へ流れていた。
+      //    ★ 見た目の幅は「全角 1 文字 = 2 桁」 で数える。 日本語は
+      //      文字数が少なくても幅を食うため。
+      int visualLen(String t) {
+        var n = 0;
+        for (final c in t.runes) {
+          n += (c < 0x80) ? 1 : 2;
+        }
+        return n;
+      }
+
+      // 見出し: 帯 (高さ 1300000 EMU ≒ 1.4 インチ) に 2 行までで収める。
+      final titleLen = visualLen(s.title);
+      final titleSz = titleLen <= 24
+          ? 2800
+          : titleLen <= 36
+              ? 2400
+              : titleLen <= 52
+                  ? 2000
+                  : 1600;
+      // 本文: 行数と一番長い行の両方を見る。
+      var widest = 0;
+      for (final b in s.bullets) {
+        final v = visualLen(b);
+        if (v > widest) widest = v;
+      }
+      // 絵を横に置くと本文の幅は約半分になるので、 その分きつく見る。
+      final narrow = hasImg && !full;
+      final widthBudget = narrow ? 34 : 64;
+      var bodySz = 1800;
+      if (s.bullets.length > 8 || widest > widthBudget * 2) {
+        bodySz = 1300;
+      } else if (s.bullets.length > 6 || widest > widthBudget * 1.5) {
+        bodySz = 1500;
+      } else if (s.bullets.length > 4 || widest > widthBudget) {
+        bodySz = 1600;
+      }
       final body = StringBuffer();
       if (s.bullets.isEmpty) {
         body.write('<a:p><a:endParaRPr lang="ja-JP"/></a:p>');
@@ -239951,7 +241807,7 @@ class _OfficeFileTemplate {
         for (final b in s.bullets) {
           body.write('<a:p>'
               '<a:pPr><a:buFont typeface="Arial"/><a:buChar char="•"/></a:pPr>'
-              '<a:r><a:rPr lang="ja-JP" sz="1800" dirty="0">'
+              '<a:r><a:rPr lang="ja-JP" sz="$bodySz" dirty="0">'
               '<a:solidFill><a:schemeClr val="tx1"/></a:solidFill></a:rPr>'
               '<a:t>${esc(b)}</a:t></a:r></a:p>');
         }
@@ -239973,13 +241829,28 @@ class _OfficeFileTemplate {
         picW = 3500000;
         picH = 2625000;
       }
+      // 切り抜く形 (= ユーザー要望: 丸く抜いた写真などの洒落た資料)。
+      //   丸系は正方形の枠にして元の枠の中央へ置く (楕円にしない。 絵の
+      //   本体は呼び出し側が正方形に切り出している)。 全面の絵は抜かない。
+      final shape0 = s.imageShape;
+      final shape = (full || !kPptxCropShapes.any((c) => c.kind == shape0))
+          ? 'rect'
+          : shape0;
+      var px = picX, py = picY, pw = picW, ph = picH;
+      if (shape != 'rect' && shape != 'roundRect') {
+        final side = math.min(picW, picH);
+        px = picX + ((picW - side) / 2).round();
+        py = picY + ((picH - side) / 2).round();
+        pw = side;
+        ph = side;
+      }
       final pic = hasImg
           ? '<p:pic>'
               '<p:nvPicPr><p:cNvPr id="4" name="Image"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr>'
               '<p:blipFill><a:blip r:embed="rId2"/><a:stretch><a:fillRect/></a:stretch></p:blipFill>'
-              '<p:spPr><a:xfrm><a:off x="$picX" y="$picY"/>'
-              '<a:ext cx="$picW" cy="$picH"/></a:xfrm>'
-              '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>'
+              '<p:spPr><a:xfrm><a:off x="$px" y="$py"/>'
+              '<a:ext cx="$pw" cy="$ph"/></a:xfrm>'
+              '<a:prstGeom prst="$shape"><a:avLst/></a:prstGeom></p:spPr></p:pic>'
           : '';
       // 飾りの図形。 見出しや本文より先に置いて、 後ろに敷く。
       final deco = StringBuffer();
@@ -240008,8 +241879,11 @@ class _OfficeFileTemplate {
           '<p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="9144000" cy="1300000"/></a:xfrm>'
           '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>'
           '<a:solidFill><a:schemeClr val="accent1"/></a:solidFill></p:spPr>'
-          '<p:txBody><a:bodyPr anchor="ctr" lIns="548640" rIns="548640"/><a:lstStyle/>'
-          '<a:p><a:r><a:rPr lang="ja-JP" sz="2800" b="1" dirty="0">'
+          // wrap="square" + normAutofit で、 長い見出しでも枠の中に収まる。
+          '<p:txBody><a:bodyPr anchor="ctr" wrap="square" '
+          'lIns="548640" rIns="548640" tIns="45720" bIns="45720">'
+          '<a:normAutofit/></a:bodyPr><a:lstStyle/>'
+          '<a:p><a:r><a:rPr lang="ja-JP" sz="$titleSz" b="1" dirty="0">'
           '<a:solidFill><a:schemeClr val="bg1"/></a:solidFill></a:rPr>'
           '<a:t>${esc(s.title)}</a:t></a:r></a:p></p:txBody></p:sp>'
           // 本文 (箇条書き)
@@ -240018,7 +241892,9 @@ class _OfficeFileTemplate {
           '<p:spPr><a:xfrm><a:off x="$bodyX" y="1650000"/>'
           '<a:ext cx="$bodyCx" cy="4850000"/></a:xfrm>'
           '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr>'
-          '<p:txBody><a:bodyPr/><a:lstStyle/>$body</p:txBody></p:sp>'
+          '<p:txBody><a:bodyPr wrap="square" '
+          'lIns="0" rIns="91440" tIns="45720" bIns="45720">'
+          '<a:normAutofit/></a:bodyPr><a:lstStyle/>$body</p:txBody></p:sp>'
           '$overlayPic'
           '</p:spTree></p:cSld></p:sld>';
     }
@@ -240080,10 +241956,13 @@ class _OfficeFileTemplate {
             'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" '
             'Target="../slideLayouts/slideLayout1.xml"/>');
       if (s.image != null) {
-        media['ppt/media/image$i.png'] = s.image!;
+        // Web から取った写真は JPEG が多い。 実体に合わせた拡張子にする
+        //   (Content_Types には png / jpeg の両方を登録済み)。
+        final ext = _imageExtOf(s.image!);
+        media['ppt/media/image$i.$ext'] = s.image!;
         rels.write('<Relationship Id="rId2" '
             'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" '
-            'Target="../media/image$i.png"/>');
+            'Target="../media/image$i.$ext"/>');
       }
       rels.write('</Relationships>');
       files['ppt/slides/_rels/slide$i.xml.rels'] = rels.toString();
@@ -240169,40 +242048,74 @@ class _OfficeFileTemplate {
 // - 同じ URL が再訪問された場合は順位を最新に更新 (= 重複なし)。
 // - 上限 3 件を超えたら、 古いものから削除。
 class _YoutubeNavHistory {
-  static const String _kKey = 'mokumoku_youtube_nav_history_v1';
-  static const int _kMaxItems = 3;
+  /// 新しい入れ物 (題名と日時つき、 JSON の並び)。
+  static const String _kKeyV2 = 'mokumoku_youtube_nav_history_v2';
 
-  /// 履歴を取得 (新しい順)。 空ならそのまま空リスト。
-  static Future<List<String>> history() async {
+  /// 昔の入れ物 (URL だけの並び)。 読み込み時に一度だけ引き継ぐ。
+  static const String _kKey = 'mokumoku_youtube_nav_history_v1';
+
+  /// 残す数 (= ユーザー要望: 視聴履歴を 50 件まで残して、 そこから
+  /// たどれるように)。 昔は「最後に開いた所へ戻る」 ためだけの 3 件だった。
+  static const int _kMaxItems = 50;
+
+  /// 履歴 (新しい順)。 各項目は {url, title, at}。
+  static Future<List<Map<String, dynamic>>> entries() async {
     try {
       final sp = await SharedPreferences.getInstance();
-      return sp.getStringList(_kKey) ?? const [];
+      final raw = sp.getString(_kKeyV2);
+      if (raw != null && raw.isNotEmpty) {
+        final arr = jsonDecode(raw);
+        if (arr is List) {
+          return [
+            for (final e in arr)
+              if (e is Map && '${e['url'] ?? ''}'.isNotEmpty)
+                e.map((k, v) => MapEntry(k.toString(), v))
+          ];
+        }
+      }
+      // 昔の URL だけの控えを引き継ぐ (題名と日時は分からない)。
+      final oldList = sp.getStringList(_kKey) ?? const <String>[];
+      return [
+        for (final u in oldList)
+          if (u.isNotEmpty) {'url': u, 'title': '', 'at': 0}
+      ];
     } catch (_) {
       return const [];
     }
   }
 
+  /// 履歴の URL だけ (新しい順)。
+  static Future<List<String>> history() async =>
+      [for (final e in await entries()) '${e['url']}'];
+
   /// 最新の URL を取得。 履歴がなければ null。
   static Future<String?> latest() async {
-    final h = await history();
-    return h.isEmpty ? null : h.first;
+    final h = await entries();
+    return h.isEmpty ? null : '${h.first['url']}';
   }
 
-  /// URL を訪問履歴に追加。 既に同じ URL があれば最前に移動。
-  /// 最大 3 件を超えたら末尾から削除。
-  static Future<void> recordVisit(String url) async {
+  /// 訪れた所を控える。 同じ URL は最前へ動かす (= 重複を作らない)。
+  /// 上限を超えた分は古い方から捨てる。
+  static Future<void> recordVisit(String url, {String title = ''}) async {
     if (url.isEmpty) return;
     try {
-      final sp = await SharedPreferences.getInstance();
-      final list = (sp.getStringList(_kKey) ?? const <String>[]).toList();
-      // 既存のものは削除して、 先頭に追加 (= 重複防止 + 最新化)
-      list.removeWhere((e) => e == url);
-      list.insert(0, url);
-      // 上限を適用
+      final list = (await entries()).toList();
+      // 既にある物は題名だけ新しくして、 先頭へ動かす。
+      final at = DateTime.now().millisecondsSinceEpoch;
+      var keep = title.trim();
+      list.removeWhere((e) {
+        if ('${e['url']}' != url) return false;
+        if (keep.isEmpty) keep = '${e['title'] ?? ''}'.trim();
+        return true;
+      });
+      list.insert(0, {'url': url, 'title': keep, 'at': at});
       while (list.length > _kMaxItems) {
         list.removeLast();
       }
-      await sp.setStringList(_kKey, list);
+      final sp = await SharedPreferences.getInstance();
+      await sp.setString(_kKeyV2, jsonEncode(list));
+      // 昔の控えはもう使わないので片付ける。
+      await sp.remove(_kKey);
     } catch (_) {/* 失敗時は無視 (= 履歴が更新されないだけ) */}
   }
 
@@ -240210,8 +242123,102 @@ class _YoutubeNavHistory {
   static Future<void> clear() async {
     try {
       final sp = await SharedPreferences.getInstance();
+      await sp.remove(_kKeyV2);
       await sp.remove(_kKey);
     } catch (_) {}
+  }
+
+  /// 履歴から 1 件選ぶ画面。 選ばれた URL を返す (やめたら null)。
+  ///
+  /// = ユーザー要望「YouTube 視聴履歴を 50 件まで残して、 そこから
+  ///   アクセスできるようにして欲しい」。
+  static Future<String?> pick(BuildContext context, MindMapProvider provider,
+      {bool useRootNavigator = true}) async {
+    final list = await entries();
+    if (!context.mounted) return null;
+    if (list.isEmpty) {
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+        content: Text(provider.t('yt.historyEmpty'),
+            style: const TextStyle(fontSize: 12)),
+        duration: const Duration(seconds: 3),
+      ));
+      return null;
+    }
+    String when(Object? at) {
+      final ms = (at as num?)?.toInt() ?? 0;
+      if (ms <= 0) return '';
+      final d = DateTime.fromMillisecondsSinceEpoch(ms);
+      String two(int v) => v.toString().padLeft(2, '0');
+      return '${d.year}/${two(d.month)}/${two(d.day)} '
+          '${two(d.hour)}:${two(d.minute)}';
+    }
+
+    return showDialog<String>(
+      context: context,
+      useRootNavigator: useRootNavigator,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: Row(children: [
+          const Icon(Icons.history_rounded,
+              color: Color(0xFFFF6B6B), size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(provider.t('yt.history'),
+                style: const TextStyle(color: Colors.white, fontSize: 15)),
+          ),
+          Text('${list.length}',
+              style: const TextStyle(color: Colors.white38, fontSize: 11)),
+        ]),
+        content: ConstrainedBox(
+          constraints: BoxConstraints(
+              maxHeight:
+                  math.max(220.0, MediaQuery.sizeOf(dctx).height - 200)),
+          child: SizedBox(
+            width: 460,
+            child: SingleChildScrollView(
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                for (final e in list)
+                  ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.play_circle_outline_rounded,
+                        color: Color(0xFFFF6B6B), size: 20),
+                    title: Text(
+                      '${e['title'] ?? ''}'.trim().isEmpty
+                          ? '${e['url']}'
+                          : '${e['title']}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          color: Colors.white, fontSize: 13),
+                    ),
+                    subtitle: Text(
+                      when(e['at']),
+                      style: const TextStyle(
+                          color: Colors.white38, fontSize: 10.5),
+                    ),
+                    onTap: () => Navigator.pop(dctx, '${e['url']}'),
+                  ),
+              ]),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              await clear();
+              if (dctx.mounted) Navigator.pop(dctx);
+            },
+            child: Text(provider.t('yt.historyClear'),
+                style: const TextStyle(color: Color(0xFFE57373))),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dctx),
+            child: Text(provider.t('btn.close'),
+                style: const TextStyle(color: Colors.white60)),
+          ),
+        ],
+      ),
+    );
   }
 }
 
@@ -241010,6 +243017,9 @@ class _DocxViewerDialog extends StatefulWidget {
   final void Function(String path, String name, {bool isLeftPanel})?
       onSplitOpen;
 
+  /// 分割ペインに埋め込まれている時のペイン名 ('left' / 'right')。
+  final String? paneGuardKey;
+
   const _DocxViewerDialog({
     required this.filePath,
     required this.fileName,
@@ -241017,6 +243027,7 @@ class _DocxViewerDialog extends StatefulWidget {
     this.onRenamed,
     this.onSaved,
     this.onSplitOpen,
+    this.paneGuardKey,
   });
 
   @override
@@ -241141,11 +243152,16 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
       if (!mounted) return true;
       return _confirmDiscard();
     };
+    _registerPaneCloseGuard(widget.paneGuardKey, this, () async {
+      if (!mounted) return true;
+      return _confirmDiscard();
+    });
   }
 
   @override
   void dispose() {
     kUnsavedCloseGuards.remove(identityHashCode(this));
+    _unregisterPaneCloseGuard(widget.paneGuardKey, this);
     _noticeEntry?.remove();
     _noticeEntry = null;
     _editCtrl.dispose();
@@ -250471,17 +252487,136 @@ class _FloatingWebWindowState extends State<_FloatingWebWindow> {
 /// AI の返事から、 アプリが読むための JSON を取り除いて「人が読む文章」
 /// だけにする (= ユーザー要望: 生成されるテキストの中に json のような
 /// 内部的な数値を含めない)。 JSON 自体は適用処理の方で使う。
+/// 検査用の入口 (= test/ai_json_strip_test.dart から呼ぶ)。
+@visibleForTesting
+String stripAiJsonBlocksForTest(String raw) => _stripAiJsonBlocks(raw);
+
 String _stripAiJsonBlocks(String raw) {
-  var out = raw;
-  // ```json ... ``` のフェンス
-  out = out.replaceAll(
-      RegExp(r'```[a-zA-Z]*\s*\{[\s\S]*?\}\s*```'), '');
-  // フェンス無しで最後にぶら下がっている JSON
-  final bare = RegExp(r'(^|\n)\s*\{\s*"(deck|design)"[\s\S]*$');
-  out = out.replaceAll(bare, '');
-  // 余った空行を畳む
-  out = out.replaceAll(RegExp(r'\n{3,}'), '\n\n').trim();
-  return out.isEmpty ? raw.trim() : out;
+  var out = _stripJsonFences(raw);
+  out = _stripBareJson(out);
+  // ★ 全部消えた時に**生の JSON を返さない**。 以前はここで raw に
+  //   戻していたので、 pptx のように「返事が JSON だけ」 の時は結局
+  //   会話欄に JSON がそのまま出ていた (= ユーザー報告)。
+  //   空のまま返し、 見せ方は呼び出し側で決める。
+  return out.replaceAll(RegExp(r'\n{3,}'), '\n\n').trim();
+}
+
+/// 会話欄に出す文。 JSON を外した結果が空 (= 返事が JSON だけ) の時は、
+/// 生の JSON ではなく短い案内を出す (= ユーザー要望)。
+String _aiChatVisibleText(String raw, MindMapProvider provider) {
+  final body = _stripAiJsonBlocks(raw);
+  if (body.isNotEmpty) return body;
+  return provider.t('aichat.jsonOnlyReply');
+}
+
+/// ``` で囲まれた塊のうち、 中身が JSON のものだけを取り除く。
+///
+/// ★ 中身が `{` / `[` で始まる時だけ消す。 説明のためのコード (dart など)
+///   まで消してしまわないため。 閉じの ``` が無い (= 返事が途中で切れた)
+///   場合も、 そこから末尾までを消す。
+String _stripJsonFences(String raw) {
+  final buf = StringBuffer();
+  var i = 0;
+  while (true) {
+    final open = raw.indexOf('```', i);
+    if (open < 0) {
+      buf.write(raw.substring(i));
+      break;
+    }
+    // ``` の後ろの言語名と改行を読み飛ばす。
+    var p = open + 3;
+    while (p < raw.length && raw[p] != '\n' && raw[p] != '`') {
+      p++;
+    }
+    if (p < raw.length && raw[p] == '\n') p++;
+    final close = raw.indexOf('```', p);
+    final body = (close < 0 ? raw.substring(p) : raw.substring(p, close)).trim();
+    final isJson = body.startsWith('{') || body.startsWith('[');
+    if (isJson) {
+      buf.write(raw.substring(i, open));
+      if (close < 0) {
+        i = raw.length; // 閉じが無い = ここから末尾まで捨てる
+        break;
+      }
+      i = close + 3;
+    } else {
+      // JSON でない塊はそのまま残す。
+      final tail = close < 0 ? raw.length : close + 3;
+      buf.write(raw.substring(i, tail));
+      i = tail;
+      if (close < 0) break;
+    }
+  }
+  return buf.toString();
+}
+
+/// フェンス無しで書かれた JSON を取り除く。
+///
+/// 行頭の `{` / `[` から括弧の釣り合う所までを 1 かたまりとして見て、
+/// JSON として読めたら消す。 文字列の中の括弧は数えない。
+/// 釣り合わないまま末尾に着いた時 (= 途中で切れた返事) も消す。
+String _stripBareJson(String raw) {
+  final out = StringBuffer();
+  var i = 0;
+  while (i < raw.length) {
+    final ch = raw[i];
+    final atLineStart = i == 0 || raw[i - 1] == '\n';
+    if ((ch == '{' || ch == '[') && atLineStart) {
+      final endIdx = _matchJsonEnd(raw, i);
+      final body = raw.substring(i, endIdx < 0 ? raw.length : endIdx);
+      // 「鍵: 値」 の形が見えるものだけを JSON と見なす (= 文章中の括弧を
+      //   巻き込まないため)。
+      final looksJson = RegExp(r'"\s*:\s*').hasMatch(body);
+      if (looksJson) {
+        var ok = endIdx < 0; // 切れている物は無条件で捨てる
+        if (!ok) {
+          try {
+            final v = jsonDecode(body);
+            ok = v is Map || v is List;
+          } catch (_) {
+            ok = false;
+          }
+        }
+        if (ok) {
+          i = endIdx < 0 ? raw.length : endIdx;
+          continue;
+        }
+      }
+    }
+    out.write(ch);
+    i++;
+  }
+  return out.toString();
+}
+
+/// [start] の括弧に対応する閉じ括弧の**次**の位置。 釣り合わなければ -1。
+int _matchJsonEnd(String raw, int start) {
+  var depth = 0;
+  var inStr = false;
+  var esc = false;
+  for (var i = start; i < raw.length; i++) {
+    final c = raw[i];
+    if (inStr) {
+      if (esc) {
+        esc = false;
+      } else if (c == r'\') {
+        esc = true;
+      } else if (c == '"') {
+        inStr = false;
+      }
+      continue;
+    }
+    if (c == '"') {
+      inStr = true;
+    } else if (c == '{' || c == '[') {
+      depth++;
+    } else if (c == '}' || c == ']') {
+      depth--;
+      if (depth == 0) return i + 1;
+      if (depth < 0) return -1;
+    }
+  }
+  return -1;
 }
 
 class _AiDocChatPanel extends StatefulWidget {
@@ -250574,6 +252709,20 @@ class _AiDocChatPanelState extends State<_AiDocChatPanel> {
   void initState() {
     super.initState();
     unawaited(_loadLog());
+    // 残りの目安を出すために、 モデル一覧と残高を取り直す
+    // (= ユーザー要望: 残りトークン数の表記)。 MCP チャットと同じ手順。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final p = context.read<MindMapProvider>();
+      if (p.relayModels.isEmpty) {
+        unawaited(p.refreshRelayModels().then((_) {
+          if (mounted) setState(() {});
+        }));
+      }
+      unawaited(p.refreshCreditBalance().then((_) {
+        if (mounted) setState(() {});
+      }));
+    });
   }
 
   @override
@@ -250829,6 +252978,10 @@ class _AiDocChatPanelState extends State<_AiDocChatPanel> {
     } finally {
       if (mounted) setState(() => _busy = false);
       unawaited(_saveLog());
+      // 使った分を反映する (= 残りの数がその場で減るように)。
+      unawaited(provider.refreshCreditBalance().then((_) {
+        if (mounted) setState(() {});
+      }));
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (_scroll.hasClients) {
           _scroll.jumpTo(_scroll.position.maxScrollExtent);
@@ -250936,12 +253089,6 @@ class _AiDocChatPanelState extends State<_AiDocChatPanel> {
             ),
           ]),
         ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
-          child: const Align(
-              alignment: Alignment.centerLeft,
-              child: _AiModelReasoningRow()),
-        ),
         Expanded(
           child: _chat.isEmpty
               ? Center(
@@ -250983,7 +253130,9 @@ class _AiDocChatPanelState extends State<_AiDocChatPanel> {
                             ),
                             child: SelectableText(
                                 // 内部用の JSON は見せない (= ユーザー要望)。
-                                isUser ? m.text : _stripAiJsonBlocks(m.text),
+                                isUser
+                                    ? m.text
+                                    : _aiChatVisibleText(m.text, provider),
                                 style: const TextStyle(
                                     color: Colors.white,
                                     fontSize: 12,
@@ -251064,8 +253213,16 @@ class _AiDocChatPanelState extends State<_AiDocChatPanel> {
               ]),
             ),
           ),
+        // ── 使うモデルと残りの目安を、 入力欄のすぐ上に置く
+        //    (= ユーザー要望: プロンプト欄の直ぐに LLM モデルの切り替え
+        //    ボタンを付けて欲しい / 残りトークン数の表記が無い)。
+        //    以前は見出しの下 (会話の一番上) にあり、 打つ時に目に入らなかった。
         Padding(
-          padding: const EdgeInsets.fromLTRB(6, 4, 6, 8),
+          padding: const EdgeInsets.fromLTRB(8, 0, 8, 4),
+          child: const _AiModelReasoningRow(showRemain: true),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(6, 0, 6, 8),
           child: Row(children: [
             IconButton(
               tooltip: provider.t('aichat.attach'),
@@ -251724,7 +253881,11 @@ Future<String?> _showLatexInsertDialog(BuildContext context,
 /// を選択するボタンがない)。 選択は provider に即保存され、 他の AI 機能と
 /// 共通の設定として効く。
 class _AiModelReasoningRow extends StatefulWidget {
-  const _AiModelReasoningRow();
+  /// 右側に「残りの目安」 を出すか (= ユーザー要望: 残りトークン数の表記)。
+  /// 出す時は横いっぱいに広がるので、 Align で包まずにそのまま置く。
+  final bool showRemain;
+
+  const _AiModelReasoningRow({this.showRemain = false});
 
   @override
   State<_AiModelReasoningRow> createState() => _AiModelReasoningRowState();
@@ -251756,7 +253917,7 @@ class _AiModelReasoningRowState extends State<_AiModelReasoningRow> {
     // ── 使うモデル + 考える深さ。 押すと共通のモデル選択画面が開く
     //    (= ユーザー要望: Gemini だけでなく ChatGPT / Claude も使える
     //    ように。 AI チャット / AI 編集と同じ relayModel を共有)。 ──
-    return InkWell(
+    final chip = InkWell(
       borderRadius: BorderRadius.circular(8),
       onTap: () => unawaited(showAiModelDialog(context, provider,
           onChanged: () => mounted ? setState(() {}) : null)),
@@ -251783,6 +253944,29 @@ class _AiModelReasoningRowState extends State<_AiModelReasoningRow> {
         ]),
       ),
     );
+    if (!widget.showRemain) {
+      return Align(alignment: Alignment.centerLeft, child: chip);
+    }
+    // 残りの目安。 見せ方は MCP チャットの帯に合わせる。
+    final short =
+        !provider.isDevPlan && provider.creditBalanceUsd <= 0;
+    return Row(children: [
+      chip,
+      const SizedBox(width: 8),
+      Expanded(
+        child: Text(
+          short ? provider.t('credit.insufficient') : aiRemainText(provider),
+          textAlign: TextAlign.right,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+              color: short
+                  ? const Color(0xFFE57373)
+                  : const Color(0xFF9CCC65),
+              fontSize: 10.5),
+        ),
+      ),
+    ]);
   }
 }
 
