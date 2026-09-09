@@ -506,7 +506,14 @@ class McpServer {
         'which page, what kind of picture, and whether a built-in template '
         '(free, via set_page_background) would do, then generate. '
         'Optionally set opacityPercent (0-100, default 70) and '
-        'fit (cover/contain/tile, default cover).',
+        'fit (cover/contain/tile, default cover). '
+        'WHICH PAGE: unless the user named another one, this means the page '
+        'they are looking at RIGHT NOW - the one list_pages marks '
+        'isCurrent:true - NOT a page you happened to create earlier in this '
+        'conversation. Leave pageId out and the current page is used. '
+        'Markdown and video-editor pages have no background at all; asking '
+        'for one there is refused - ask the user which page they meant '
+        'instead of picking one yourself. Say which page you changed.',
         {
           'pageId': {'type': 'string'},
           'prompt': {'type': 'string'},
@@ -516,7 +523,8 @@ class McpServer {
             'enum': ['cover', 'contain', 'tile']
           },
         },
-        ['pageId', 'prompt']),
+        // pageId は省ける (= 省いたら「今開いているページ」)。
+        ['prompt']),
     _tool(
         'set_page_background',
         'Set the page background from an existing picture, or remove it. '
@@ -533,7 +541,15 @@ class McpServer {
         'and the tone (hueDegrees -180..180, saturationPercent 0-200, '
         'brightnessPercent 50-150). A value outside its range is clamped, not '
         'rejected - the result echoes back what was actually applied, so '
-        'report those numbers rather than the ones you asked for.',
+        'report those numbers rather than the ones you asked for. '
+        'WHICH PAGE: unless the user named another one, this means the page '
+        'they are looking at RIGHT NOW - the one list_pages marks '
+        'isCurrent:true - NOT a page you happened to create earlier in this '
+        'conversation. Leave pageId out and the current page is used. '
+        'Markdown and video-editor pages have no background at all; asking '
+        'for one there is refused - ask the user which page they meant '
+        'instead of picking one yourself. The result carries pageName: say '
+        'which page you changed.',
         {
           'pageId': {'type': 'string'},
           'template': {'type': 'string'},
@@ -548,7 +564,8 @@ class McpServer {
           'saturationPercent': {'type': 'integer'},
           'brightnessPercent': {'type': 'integer'},
         },
-        ['pageId']),
+        // pageId は省ける (= 省いたら「今開いているページ」)。
+        const []),
     _tool(
         'connect_nodes',
         'Connect nodes with arrow lines. PREFER the batch form: pass '
@@ -769,6 +786,21 @@ class McpServer {
         'table. '
         '"pptx" -> pass "slides" (array of objects: '
         '{"title": "...", "bullets": ["...", "..."]}). '
+        'A pptx slide may ALSO carry "imagePrompt" (an ENGLISH description '
+        'of a picture to draw with AI and place on that slide - be concrete '
+        'about subject, colours and mood, and never ask for text or logos), '
+        '"imagePos" ("right" / "left" / "full", default "right"), and '
+        '"shapes" (up to 3 decorations per slide, each '
+        '{"kind":"rect|roundRect|ellipse|line|arrow","x":..,"y":..,"w":..,'
+        '"h":..,"fill":"RRGGBB","line":"RRGGBB","lineWidth":..} where '
+        'x/y/w/h are PERCENTAGES of the slide). '
+        'USE THEM when the user asks for a deck that should LOOK good ("a '
+        'stylish cafe PowerPoint", "make it pretty") - a text-only deck is '
+        'not what they asked for. Each picture costs about 0.047 USD of the '
+        'user\'s prepaid credit and takes a while, so put one on the cover '
+        'and 2-3 key slides, not on every slide (at most 4 per call are '
+        'drawn; the rest of the slides are still made, without a picture). '
+        'Because it costs money, say up front that you will add N pictures. '
         'Pass a pageId of a MIND MAP or GALLERY page so the file can be '
         'pinned there (free-note / video pages cannot hold file tiles). '
         'Returns {path, replaced, attachedToPageId}. When "replaced" is '
@@ -803,6 +835,16 @@ class McpServer {
                   'type': 'array',
                   'items': {'type': 'string'}
                 },
+                // 絵と飾りの図形 (= ユーザー要望: 味気ない資料にしない)。
+                'imagePrompt': {'type': 'string'},
+                'imagePos': {
+                  'type': 'string',
+                  'enum': ['right', 'left', 'full']
+                },
+                'shapes': {
+                  'type': 'array',
+                  'items': {'type': 'object'}
+                },
               },
             },
           },
@@ -831,6 +873,35 @@ class McpServer {
           'id': {'type': 'string'},
         },
         ['id']),
+    // ─── 画面分割 (= ユーザー報告: 「4 画面分割にして」 と頼んだのに
+    //     「2 画面分割しかできない」 と断られた。 2x2 は前からある) ───────
+    _tool(
+        'set_split_view',
+        'Arrange the app window into split panes. '
+        'layout: "quad" = 2x2, FOUR panes at once (desktop only; on a phone '
+        'it falls back to a 2-pane split), "leftRight" = two panes side by '
+        'side, "topBottom" = two panes stacked, "off" = back to one pane. '
+        'A 2x2 four-way split IS supported - never tell the user the app can '
+        'only do 2 panes. There is no 3-pane layout. '
+        'Optionally pass pageIds to fill the cells, in the order '
+        '0 = top-left, 1 = top-right, 2 = bottom-left, 3 = bottom-right '
+        '(ids come from list_pages; document and video-editor pages cannot '
+        'go in a pane). Cells you leave out are filled with other pages '
+        'automatically. Calling it twice with the same layout is safe - it '
+        'does not toggle the split back off; use "off" to close it. '
+        'ALWAYS read the returned "layout" / "cells" and report THAT, not '
+        'what you asked for.',
+        {
+          'layout': {
+            'type': 'string',
+            'enum': ['off', 'leftRight', 'topBottom', 'quad']
+          },
+          'pageIds': {
+            'type': 'array',
+            'items': {'type': 'string'}
+          },
+        },
+        ['layout']),
     // ─── アプリの説明書 (= ユーザー要望: skills のように、 必要な時だけ
     //     詳しい仕様を読ませる。 常時渡す要約は AGENTS.md 側) ────────────
     _tool(
@@ -1175,6 +1246,19 @@ class McpServer {
         'isError': true,
       };
 
+  /// 渡された pageId。 空なら「今開いているページ」。
+  ///
+  /// = ユーザー要望「現在開いているページに対して適用するか、 適用できない
+  ///   なら確認取るようにして欲しい」。 pageId を書き忘れた時に、 前に
+  ///   作ったページへ当てずっぽうで書き込むより、 目の前のページを指す方が
+  ///   まだ意図に近い。
+  String _pageIdOrCurrent(Object? raw) {
+    final id = '${raw ?? ''}'.trim();
+    if (id.isNotEmpty) return id;
+    final pages = _provider.pages;
+    return pages.isEmpty ? '' : _provider.currentPage.id;
+  }
+
   /// 2 次元配列の引数を表に直す。
   static List<List<String>> _rowsOf(Object? v) {
     if (v is! List) return const [];
@@ -1193,6 +1277,13 @@ class McpServer {
         out.add({
           'title': '${e['title'] ?? ''}',
           'bullets': _stringList(e['bullets']),
+          // ★ 絵と図形の指定を捨てない (= 以前はここで題名と箇条書きだけに
+          //   組み直していたので、 AI が絵を頼んでも画面側まで届かなかった)。
+          //   中身の検分は画面側 (_drawShapeFromSpec / buildPptxFromSlides)
+          //   がやるので、 ここでは形だけ整える。
+          'imagePrompt': '${e['imagePrompt'] ?? ''}',
+          'imagePos': '${e['imagePos'] ?? ''}',
+          'shapes': e['shapes'] is List ? e['shapes'] : const [],
         });
       } else {
         out.add({'title': '${e ?? ''}', 'bullets': const <String>[]});
@@ -1551,14 +1642,26 @@ class McpServer {
         }
       case 'generate_page_background':
         {
+          // ★ 指定が無ければ「今開いているページ」 (= ユーザー要望:
+          //   現在開いているページに適用するか、 出来ないなら確認を取る)。
+          final genPageId = _pageIdOrCurrent(a['pageId']);
+          // 絵を描かせる前に、 背景を出せるページか確かめる。 出せない所へ
+          //   描くと 1 枚分のクレジットを捨てる事になる。
+          final genRefusal = _provider.mcpBackgroundRefusal(genPageId);
+          if (genRefusal != null) return _err(genRefusal);
           try {
             final path = await _provider.mcpGeneratePageBackground(
-              a['pageId'] as String? ?? '',
+              genPageId,
               a['prompt'] as String? ?? '',
               opacityPercent: (a['opacityPercent'] as num?)?.toInt(),
               fit: a['fit'] as String?,
             );
-            return _ok({'background': path});
+            final genPage = _provider.mcpPageById(genPageId);
+            return _ok({
+              'background': path,
+              'pageId': genPageId,
+              if (genPage != null) 'pageName': genPage.name,
+            });
           } catch (e) {
             return _err('$e');
           }
@@ -1595,16 +1698,27 @@ class McpServer {
         }
       case 'set_page_background':
         {
-          final bgPageId = a['pageId'] as String? ?? '';
-          // ★ 無いファイルを渡された時に、 まとめ書きの文面 (「ページが
-          //   見つからない…」) が返って原因を取り違えていた
-          //   (= 動作確認で判明)。 clear / template が先に効くので、
-          //   それらが無い時だけ実在を見る (provider と同じ優先順位)。
-          if (_provider.mcpPageById(bgPageId) == null) {
-            return _err('no page has the id "$bgPageId" - call list_pages.');
-          }
+          // ★ 指定が無ければ「今開いているページ」 (= ユーザー要望)。
+          final bgPageId = _pageIdOrCurrent(a['pageId']);
+          // ★ 背景を描かない種別 (マークダウン / 動画エディター) は、
+          //   入れても何も出ないので断る。 断り文には「今開いているページ」
+          //   を添えてあるので、 AI はそれを使って利用者に確かめられる
+          //   (= ユーザー報告: マークダウンのページの背景を変えてきた)。
+          final bgRefusal = _provider.mcpBackgroundRefusal(bgPageId);
+          if (bgRefusal != null) return _err(bgRefusal);
           final bgTpl = (a['template'] as String? ?? '').trim();
           final bgImg = (a['imagePath'] as String? ?? '').trim();
+          // ★ 紙 (フリーノート / 便箋) には出来合いの絵柄を貼れない。
+          //   provider が false を返すだけだと、 まとめ書きの文面
+          //   (「ページが見つからない…」) になって理由が伝わらない。
+          final bgPageType =
+              _provider.mcpPageById(bgPageId)?.pageType ?? 'normal';
+          if (bgTpl.isNotEmpty &&
+              (bgPageType == 'paint' || bgPageType == 'document')) {
+            return _err('the built-in background templates only work on map '
+                'and gallery pages. On a free note / notepad page, pass '
+                'imagePath, or use generate_page_background to draw one.');
+          }
           if (a['clear'] != true &&
               bgTpl.isEmpty &&
               bgImg.isNotEmpty &&
@@ -1632,7 +1746,12 @@ class McpServer {
           final bgPage = _provider.mcpPageById(bgPageId);
           return _ok({
             'updated': true,
+            // ★ どのページを変えたかを必ず返す。 返事に名前を書かせれば、
+            //   狙いが外れていても利用者がその場で気付ける
+            //   (= ユーザー報告: 別のページの背景を変えられていた)。
+            'pageId': bgPageId,
             if (bgPage != null) ...{
+              'pageName': bgPage.name,
               'background': bgPage.backgroundImagePath,
               'opacityPercent': bgPage.backgroundOpacityPercent,
               'fit': bgPage.backgroundFit,
@@ -2052,6 +2171,18 @@ class McpServer {
               'the valid ids. Note: deleting a page is delete_page, changing '
               'a page kind is set_page_type, and putting buttons on the '
               'header is set_header_buttons - those are tools, not commands.');
+        }
+      case 'set_split_view':
+        {
+          final res = await _provider.mcpSetSplitView(
+            layout: '${a['layout'] ?? ''}'.trim(),
+            pageIds: [
+              for (final e in (a['pageIds'] as List? ?? const [])) '$e'
+            ],
+          );
+          final err = res['error'];
+          if (err != null) return _err('$err');
+          return _ok(res);
         }
       case 'list_app_docs':
         return _ok(_provider.mcpListAppDocs());

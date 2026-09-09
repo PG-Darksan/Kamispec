@@ -17534,6 +17534,36 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Voce pode publicar ate {n} paginas por vez',
       'ru': 'Одновременно можно опубликовать до {n} страниц',
     },
+    'live.sharedCount': {
+      'ja': '共同編集で共有中: {n} / {max} 件',
+      'en': 'Shared for live editing: {n} / {max}',
+      'zh': '共同编辑共享中: {n} / {max}',
+      'ko': '공동 편집으로 공유 중: {n} / {max}',
+      'es': 'Compartidas para edición en vivo: {n} / {max}',
+      'fr': 'Partagées en édition collaborative : {n} / {max}',
+      'de': 'Gemeinsam bearbeitet: {n} / {max}',
+      'pt': 'Compartilhadas para edição ao vivo: {n} / {max}',
+      'ru': 'В совместном редактировании: {n} / {max}',
+    },
+    'live.tooMany': {
+      'ja': '同時に共同編集できるのは {n} 件までです。 '
+          'どれかの共有をやめると、 その分また共有できます',
+      'en': 'You can share up to {n} pages for live editing at once. '
+          'Stop sharing one to free a slot.',
+      'zh': '最多同时共同编辑 {n} 个。停止其中一个的共享即可空出名额',
+      'ko': '동시에 공동 편집할 수 있는 것은 {n}건까지입니다. '
+          '어느 하나의 공유를 중지하면 그만큼 다시 공유할 수 있습니다',
+      'es': 'Puedes compartir hasta {n} páginas para edición en vivo a la vez. '
+          'Deja de compartir una para liberar un espacio.',
+      'fr': 'Vous pouvez partager jusqu’à {n} pages en édition collaborative. '
+          'Arrêtez-en un partage pour libérer une place.',
+      'de': 'Bis zu {n} Seiten gleichzeitig gemeinsam bearbeiten. '
+          'Beende eine Freigabe, um einen Platz frei zu machen.',
+      'pt': 'Você pode compartilhar até {n} páginas para edição ao vivo. '
+          'Pare de compartilhar uma para liberar espaço.',
+      'ru': 'Одновременно можно совместно редактировать до {n} страниц. '
+          'Прекратите одну публикацию, чтобы освободить место.',
+    },
     'pub.notConfigured': {
       'ja': '公開先のサーバーが設定されていません',
       'en': 'The publishing server is not configured',
@@ -47724,6 +47754,112 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Verificando as funções disponíveis',
       'ru': 'Проверка доступных функций',
     },
+    'bg.notOnThisPage': {
+      'ja': 'このページには背景がありません',
+      'en': 'This kind of page has no background',
+      'zh': '此类页面没有背景',
+      'ko': '이 종류의 페이지에는 배경이 없습니다',
+      'es': 'Este tipo de página no tiene fondo',
+      'fr': 'Ce type de page n’a pas de fond',
+      'de': 'Diese Art von Seite hat keinen Hintergrund',
+      'pt': 'Este tipo de página não tem fundo',
+      'ru': 'У страницы этого типа нет фона',
+    },
+    'pptx.aiImageBusy': {
+      'ja': '絵を描いている間は取り込めません。 終わるまでお待ちください',
+      'en': 'Pictures are still being drawn - wait until that finishes',
+      'zh': '正在生成图片，请等待完成后再操作',
+      'ko': '그림을 그리는 중입니다. 끝날 때까지 기다려 주세요',
+      'es': 'Se están dibujando las imágenes: espera a que termine',
+      'fr': 'Les images sont en cours de création : patientez',
+      'de': 'Bilder werden noch erzeugt - bitte warten',
+      'pt': 'As imagens ainda estão sendo criadas - aguarde',
+      'ru': 'Изображения ещё создаются — подождите',
+    },
+    'pptx.aiImageTitle': {
+      'ja': '絵を描いて入れますか？',
+      'en': 'Generate the pictures?',
+      'zh': '要生成图片吗？',
+      'ko': '그림을 생성할까요?',
+      'es': '¿Generar las imágenes?',
+      'fr': 'Générer les images ?',
+      'de': 'Bilder erzeugen?',
+      'pt': 'Gerar as imagens?',
+      'ru': 'Создать изображения?',
+    },
+    'pptx.aiImageBody': {
+      'ja': 'スライド {n} 枚に絵を入れます。 1 枚ごとに前払いクレジットを'
+          '使います (1 枚おおよそ 0.047 USD)。 少し時間がかかります。',
+      'en': 'Pictures will be drawn for {n} slide(s). Each one uses prepaid '
+          'credit (about 0.047 USD per picture) and takes a little while.',
+      'zh': '将为 {n} 张幻灯片生成图片。每张约消耗 0.047 USD 的预付额度，需要一些时间。',
+      'ko': '{n} 장의 슬라이드에 그림을 넣습니다. 한 장당 선불 크레딧(약 0.047 USD)을 사용하며 시간이 조금 걸립니다.',
+      'es': 'Se dibujarán imágenes para {n} diapositiva(s). Cada una consume '
+          'crédito prepago (unos 0,047 USD) y tarda un poco.',
+      'fr': 'Des images seront dessinées pour {n} diapositive(s). Chacune '
+          'consomme du crédit prépayé (environ 0,047 USD) et prend un moment.',
+      'de': 'Für {n} Folie(n) werden Bilder erzeugt. Jedes verbraucht '
+          'Guthaben (ca. 0,047 USD) und dauert einen Moment.',
+      'pt': 'Serão criadas imagens para {n} slide(s). Cada uma consome '
+          'crédito pré-pago (cerca de 0,047 USD) e demora um pouco.',
+      'ru': 'Изображения будут созданы для {n} слайд(ов). Каждое расходует '
+          'предоплаченный баланс (около 0,047 USD) и занимает время.',
+    },
+    'pptx.aiImageGo': {
+      'ja': '描く', 'en': 'Generate',
+      'zh': '生成', 'ko': '생성',
+      'es': 'Generar', 'fr': 'Générer',
+      'de': 'Erzeugen', 'pt': 'Gerar', 'ru': 'Создать',
+    },
+    'pptx.aiImageProgress': {
+      'ja': '絵を描いています… ({i}/{n})',
+      'en': 'Drawing pictures… ({i}/{n})',
+      'zh': '正在生成图片…（{i}/{n}）',
+      'ko': '그림을 그리는 중… ({i}/{n})',
+      'es': 'Dibujando imágenes… ({i}/{n})',
+      'fr': 'Dessin des images… ({i}/{n})',
+      'de': 'Bilder werden erzeugt… ({i}/{n})',
+      'pt': 'Criando imagens… ({i}/{n})',
+      'ru': 'Создание изображений… ({i}/{n})',
+    },
+    'pptx.aiImageDone': {
+      'ja': '絵を {n} 枚入れました (保存で確定)',
+      'en': 'Added {n} picture(s) (save to keep them)',
+      'zh': '已插入 {n} 张图片（保存后生效）',
+      'ko': '그림 {n} 장을 넣었습니다 (저장하면 확정)',
+      'es': 'Se añadieron {n} imagen(es) (guarda para conservarlas)',
+      'fr': '{n} image(s) ajoutée(s) (enregistrez pour les conserver)',
+      'de': '{n} Bild(er) eingefügt (zum Behalten speichern)',
+      'pt': '{n} imagem(ns) adicionada(s) (salve para manter)',
+      'ru': 'Добавлено изображений: {n} (сохраните, чтобы оставить)',
+    },
+    'mcp.actPageBackground': {
+      'ja': '{name} の背景を変える', 'en': 'Changing the background of {name}',
+      'zh': '更改 {name} 的背景', 'ko': '{name} 의 배경 변경',
+      'es': 'Cambiando el fondo de {name}',
+      'fr': 'Changement du fond de {name}',
+      'de': 'Hintergrund von {name} ändern',
+      'pt': 'Alterando o fundo de {name}',
+      'ru': 'Смена фона страницы {name}',
+    },
+    'mcp.actGenerateBackground': {
+      'ja': '{name} の背景を描く', 'en': 'Drawing a background for {name}',
+      'zh': '为 {name} 绘制背景', 'ko': '{name} 의 배경 그리기',
+      'es': 'Dibujando un fondo para {name}',
+      'fr': 'Dessin d’un fond pour {name}',
+      'de': 'Hintergrund für {name} zeichnen',
+      'pt': 'Desenhando um fundo para {name}',
+      'ru': 'Рисование фона для {name}',
+    },
+    'mcp.actSplitView': {
+      'ja': '画面を分割', 'en': 'Splitting the view',
+      'zh': '分割画面', 'ko': '화면 분할',
+      'es': 'Dividiendo la vista',
+      'fr': 'Partage de l’écran',
+      'de': 'Ansicht teilen',
+      'pt': 'Dividindo a tela',
+      'ru': 'Разделение экрана',
+    },
     'mcp.preamble': {
       'ja': 'AI への前提条件', 'en': 'Standing instructions',
       'zh': 'AI 前提条件', 'ko': 'AI 전제 조건',
@@ -72795,6 +72931,19 @@ class MindMapProvider extends ChangeNotifier {
   bool get isMaxUnlocked =>
       currentPlan == SubscriptionPlan.max || currentPlan == SubscriptionPlan.dev;
 
+  /// Max 限定の機能を**実際に実行**して良いか。
+  ///
+  /// = ユーザー報告「開発者モードで Max プランなのにマークダウンを公開
+  ///   しようとしたら『Max プランだけ』 と出てできなかった」。
+  ///   開発者モードでは `currentPlan` が「演じるプラン」 になるので、
+  ///   Free / Pro を演じて確かめている最中は Max 限定の機能が閉じる。
+  ///   見た目 (ペイウォールの出し分け) は `isMaxUnlocked` のままにして
+  ///   演じるプランを尊重し、 **実行の可否だけ**開発者本人に開ける。
+  ///   `isDevPlan` が既に同じ扱いをしている (代行 AI の入口)。
+  ///   勝手に使えるわけではなく、 サーバー側は Google が署名した
+  ///   custom claim {developer:true} で本人か確かめる。
+  bool get canUseMaxFeature => isMaxUnlocked || _developerMode;
+
   /// Dev プラン (= 決済を通さずに AI を呼べる枠) が有効か。
   /// 開発者モードそのものとは別物 (開発者モードはパスワードで入る管理機能)。
   /// Dev 枠 (= 決済を通さずに AI 代行を使える枠) を持っているか。
@@ -75508,6 +75657,13 @@ class MindMapProvider extends ChangeNotifier {
   // 静的ページとして配る。 **必ず期限が付く** (最長 30 日)。 期限が来れば
   // サーバー側 (KV の TTL) が勝手に消すので、 消し忘れが残らない。
 
+  /// 同時に Web 公開できるページの数 (= ユーザー要望: 20 件まで)。
+  ///
+  /// ★ 正本はサーバー (Worker の PUB_MAX_PER_USER)。 ここはサーバーが数を
+  ///   返さなかった時に文面へ出すための控えなので、 変える時は両方直す。
+  ///   公開をやめる / 期限が切れると、 その分すぐ空く。
+  static const int kWebPublishMaxPages = 20;
+
   /// 公開できる状態か (中継先が設定されていて、 サインインできている)。
   bool get canPublishHtmlPage => relayApiBase.isNotEmpty;
 
@@ -75527,7 +75683,7 @@ class MindMapProvider extends ChangeNotifier {
   }) async {
     // ★ Web への公開は Max プラン限定 (= ユーザー要望)。 サーバー側
     //   (/pub/create) でも同じ判定をしているので、 ここを迂回しても通らない。
-    if (!isMaxUnlocked) throw Exception(t('paywall.maxRequiredPublish'));
+    if (!canUseMaxFeature) throw Exception(t('paywall.maxRequiredPublish'));
     final base = relayApiBase;
     if (base.isEmpty) throw Exception(t('pub.notConfigured'));
     await _ensureFreshToken();
@@ -75559,8 +75715,10 @@ class MindMapProvider extends ChangeNotifier {
       final err = '${j['error'] ?? ''}';
       if (err == 'too large') throw Exception(t('pub.tooLarge'));
       if (err == 'too many') {
-        throw Exception(
-            t('pub.tooMany').replaceFirst('{n}', '${j['max'] ?? 30}'));
+        // 数はサーバーが正本 (= 上限を変えたらサーバーだけ直せばよい)。
+        //   返ってこない時のための控えは kWebPublishMaxPages。
+        throw Exception(t('pub.tooMany')
+            .replaceFirst('{n}', '${j['max'] ?? kWebPublishMaxPages}'));
       }
       throw Exception(err.isEmpty ? 'HTTP ${res.statusCode}' : err);
     }
@@ -82472,8 +82630,12 @@ $cleanQ
   /// 背景画像を解除 (= グリッドのみに戻す)。
   Future<void> setPageBackgroundImage(String pageId, String? path,
       {bool applyToAll = false}) async {
+    // ★「全ページに適用」 でも、 背景を描かないページ (マークダウン /
+    //   動画エディター) には入れない。 入れても見えないのに、 ページを
+    //   消す時だけ「中身がある」 扱いになって確認を出してくる
+    //   (= _pageHasPlacedContent が背景の有無も数えているため)。
     final targets = applyToAll
-        ? _pages
+        ? _pages.where((p) => _pageTypeShowsBackground(p.pageType)).toList()
         : _pages.where((page) => page.id == pageId).toList();
     if (targets.isEmpty) return;
     _pushUndo();
@@ -85123,13 +85285,29 @@ $cleanQ
   /// 以前の publishPageToWeb は閲覧用の HTML を Storage へ上げてリンクを
   /// 発行していたが、 これはコードを確保して管理用の記録 (published/{code})
   /// だけを書く。 参加はアプリで共有コードを入れる形に一本化。
+  /// 同時に共同編集できるページの数 (= ユーザー要望: 20 件まで)。
+  ///
+  /// 数えているのは「今この人が共有しているページ」。 共有をやめれば
+  /// (unpublishPage) その場で 1 つ空く。 Web 公開の方 (最大 20) とは別枠。
+  static const int kLiveShareMaxPages = 20;
+
+  /// 今いくつ共同編集で共有しているか。
+  int get liveSharedPageCount => _publishedPages.length;
+
   Future<String> registerLivePage({
     required String pageId,
     required String title,
     String permission = 'edit',
   }) async {
-    if (!isMaxUnlocked) {
+    if (!canUseMaxFeature) {
       throw Exception(t('paywall.maxRequiredLive'));
+    }
+    // ── 同時に共同編集できるのは kLiveShareMaxPages 件まで (= ユーザー要望) ──
+    //   共有をやめれば (unpublishPage) その分すぐ空く。
+    if (!_publishedPages.containsKey(pageId) &&
+        _publishedPages.length >= kLiveShareMaxPages) {
+      throw Exception(t('live.tooMany')
+          .replaceFirst('{n}', '$kLiveShareMaxPages'));
     }
     if (!_firebaseEnabled) {
       await _initFirebase();
@@ -85432,7 +85610,7 @@ $cleanQ
     // 10 万回あたり \$0.06 なので、 1 人が月 100 時間つなぐと \$0.25 前後、
     // 数人が常時つなぐと無視できない額になる。 クラウド同期と同じ扱いで
     // 上位プラン限定にする。
-    if (!isMaxUnlocked) {
+    if (!canUseMaxFeature) {
       throw Exception(t('paywall.maxRequiredLive'));
     }
     await stopLiveSession();
@@ -91079,6 +91257,53 @@ $cleanQ
     }
   }
 
+  /// 背景 (壁紙) を出せるページの種類。
+  ///
+  /// = ユーザー報告「マークダウンのページを作らせた後、 別のマインドマップ
+  ///   を開いて『背景画像を変えて』 と頼んだら、 マークダウンの方の背景を
+  ///   変えてきた。 そもそもマークダウンには背景が無いので何も起きない」。
+  ///   背景を描いているのはキャンバス (マップ / ギャラリー) と、 紙のある
+  ///   フリーノート / 文書だけ。 マークダウンと動画エディターは背景を
+  ///   描かないので、 入れても画面には何も出ない。
+  static const Set<String> kBackgroundCapablePageTypes = {
+    'normal',
+    'bookshelf',
+    'paint',
+    'document',
+    // 'aiStudio' は画面側に分岐が無く _buildCanvas に落ちるので、 壁紙は
+    //   出る。 作る手立てが無い (kMcpPageTypes に入っていない) 種別だが、
+    //   万一残っているページを断らないように入れておく。
+    'aiStudio',
+  };
+
+  static bool _pageTypeShowsBackground(String? type) =>
+      kBackgroundCapablePageTypes.contains(type ?? 'normal');
+
+  /// [pageId] に背景を入れられない理由。 入れられるなら null。
+  ///
+  /// ★ 断る時は「今開いているページ」 を必ず添える。 そうしないと AI は
+  ///   別のページを勝手に選び直すか、 出来ないと言って終わってしまう
+  ///   (= ユーザー要望: 今開いているページに適用するか、 適用できないなら
+  ///   確認を取ってほしい)。
+  String? mcpBackgroundRefusal(String pageId) {
+    final page = mcpPageById(pageId);
+    final cur = _pages.isEmpty ? null : currentPage;
+    final here = cur == null
+        ? ''
+        : ' The page the user is looking at right now is "${cur.name}" '
+            '(id ${cur.id}, type ${cur.pageType ?? 'normal'}).';
+    if (page == null) {
+      return 'no page has the id "$pageId" - call list_pages.$here';
+    }
+    if (_pageTypeShowsBackground(page.pageType)) return null;
+    final type = page.pageType ?? 'normal';
+    return 'the page "${page.name}" is a "$type" page, and that kind of page '
+        'does not draw a background at all - setting one would do nothing.'
+        '$here Do NOT silently pick another page: ask the user which page '
+        'they meant (the one they are on now, or somewhere else), then run '
+        'this again with that pageId.';
+  }
+
   /// AI からページの背景を変える (= ユーザー要望: 背景画像も AI で操作したい)。
   ///
   /// 指定できるのは次のどれか。
@@ -91102,6 +91327,10 @@ $cleanQ
   }) async {
     final page = mcpPageById(pageId);
     if (page == null) return false;
+    // ★ 背景を描かない種別 (マークダウン / 動画エディター) は断る。
+    //   入れても画面には出ないので、 成功と返すと「変えました」 と嘘を
+    //   つく事になる (= ユーザー報告)。
+    if (!_pageTypeShowsBackground(page.pageType)) return false;
     // ★ フリーノートは page.backgroundImagePath を読まない (= 何も起きない
     //   のに成功と返していた)。 紙 (シート) の背景へ回す。
     if (page.pageType == 'paint' || page.pageType == 'document') {
@@ -91159,7 +91388,9 @@ $cleanQ
     notifyListeners();
     await _saveToStorageLocal();
     _triggerAutoSync();
-    _requestMcpFocus(pageId);
+    // ★ 解決後の id を渡す。 pageId が空 (= 今のページ) の時、 生の引数を
+    //   渡すと画面側の indexWhere が -1 になり、 変えたページへ飛べない。
+    _requestMcpFocus(page.id);
     return true;
   }
 
@@ -91179,6 +91410,11 @@ $cleanQ
   }) async {
     final page = mcpPageById(pageId);
     if (page == null) throw Exception('page not found');
+    // ★ 絵を描かせる**前に**断る。 背景を描かない種別に入れても画面には
+    //   出ないので、 先に生成すると 1 枚分のクレジットを捨てる事になる
+    //   (= ユーザー報告: マークダウンのページの背景を変えてきた)。
+    final refusal = mcpBackgroundRefusal(pageId);
+    if (refusal != null) throw Exception(refusal);
     final p = prompt.trim();
     if (p.isEmpty) throw Exception('prompt is required');
     // フリーノートは縦長の紙なので、 形も合わせて頼む (= 横長で頼むと
@@ -91205,6 +91441,7 @@ $cleanQ
       if (!ok) {
         throw Exception('could not set the free-note paper background');
       }
+      _requestMcpFocus(page.id);
       return path;
     }
     page.backgroundImagePath = path;
@@ -91219,7 +91456,7 @@ $cleanQ
     notifyListeners();
     await _saveToStorageLocal();
     _triggerAutoSync();
-    _requestMcpFocus(pageId);
+    _requestMcpFocus(page.id);
     return path;
   }
 
@@ -92297,6 +92534,40 @@ $cleanQ
       debugPrint('mcpAddVideoEditorItem failed: $e');
       return null;
     }
+  }
+
+  // ─── AI から画面分割を組む (= ユーザー報告: 「4 画面分割にして」 と頼んだ
+  //     のに「2 画面分割しかできない」 と断られた) ─────────────────────
+  //
+  // 2x2 の 4 分割は前からあるのに、 AI からは list_app_commands に載って
+  //   いる左右 / 上下の 2 分割しか見えていなかった。 分割の実装は画面側に
+  //   しか無いので、 文書ファイル作成と同じように係を預かって呼ぶ。
+
+  Future<Map<String, dynamic>> Function(String layout, List<String> pageIds)?
+      _mcpSplitViewSetter;
+
+  void registerMcpSplitView(
+      Future<Map<String, dynamic>> Function(String layout, List<String> pageIds)
+          setter) {
+    _mcpSplitViewSetter = setter;
+  }
+
+  /// 画面分割を [layout] の形にする。
+  /// layout は 'off' / 'leftRight' / 'topBottom' / 'quad'。
+  /// [pageIds] を渡すと、 0=左上 1=右上 2=左下 3=右下 の順に割り当てる。
+  ///
+  /// 戻り値には「実際にどうなったか」 を入れる。 4 分割は携帯では 2 分割に
+  ///   落ちるので、 頼まれた形をそのまま報告させないための約束
+  ///   (= 出来ていないのに「4 分割にしました」 と答えるのを防ぐ)。
+  Future<Map<String, dynamic>> mcpSetSplitView({
+    required String layout,
+    List<String> pageIds = const [],
+  }) async {
+    final setter = _mcpSplitViewSetter;
+    if (setter == null) {
+      return {'error': 'the screen is not ready yet - try again in a moment'};
+    }
+    return setter(layout, pageIds);
   }
 
   // ─── AI からの文書ファイル作成 (= ユーザー要望: pptx / pdf / xlsx / csv

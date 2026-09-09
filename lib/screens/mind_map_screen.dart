@@ -31884,6 +31884,14 @@ class _MindMapScreenState extends State<MindMapScreen>
       //   useRootNavigator: true なので、 そのままだとアプリ全体の真ん中に
       //   出てしまう (= フラッシュカードと同じ不具合)。
       bool inPane = false}) async {
+    // ★ 背景を描かないページ (マークダウン / 動画エディター) では開かない。
+    //   開いても何も起きず、 AI 生成を押すと英語の断り文がそのまま出て
+    //   しまう (= AI 向けの文面なので利用者に見せる物ではない)。
+    if (!MindMapProvider.kBackgroundCapablePageTypes
+        .contains(provider.currentPage.pageType ?? 'normal')) {
+      _showLockToast(provider.t('bg.notOnThisPage'));
+      return;
+    }
     var applyToAllPages = false;
     // テンプレート一覧のスクロールバー用 (= ユーザー要望: スクロールバーを
     // 入れて欲しい)。 ダイアログを閉じたら破棄する。
@@ -42498,6 +42506,18 @@ class _MindMapScreenState extends State<MindMapScreen>
       'icon': Icons.horizontal_split_rounded,
       'color': Color(0xFF4FC3F7),
     },
+    // ── 4 分割 (2x2) ──
+    // = ユーザー報告「4 画面分割にしてと頼んだら『2 画面分割しかできない』
+    //   と言われた」。 2x2 の分割は前からあるのに、 ここに id が無いせいで
+    //   AI アシスタント (list_app_commands は この一覧を返す) からは
+    //   左右 / 上下の 2 分割しか見えていなかった。
+    //   パソコンだけの機能なので、 携帯では左右 2 分割に落ちる。
+    {
+      'id': 'mapSplitQuad',
+      'labelKey': 'map.splitQuad',
+      'icon': Icons.grid_view_rounded,
+      'color': Color(0xFF4FC3F7),
+    },
     // 注: 'mapSplit' (前回のレイアウトで開閉) はコマンドとして残してある。
     // 注: 旧 'pickupPractice' (ナンパ練習) はユーザー要望で機能ごと削除。
     // 保存済みレイアウトからは provider の _removedButtonIds が取り除く。
@@ -45471,6 +45491,12 @@ class _MindMapScreenState extends State<MindMapScreen>
       case 'mapSplitTB':
         // ignore: discarded_futures
         _applyMapSplitMode(panes: 2, stacked: true);
+        break;
+      case 'mapSplitQuad':
+        // 4 分割 (2x2)。 携帯では 2x2 が実用的でないので、
+        // _applyMapSplitMode の中で左右 2 分割に落ちる。
+        // ignore: discarded_futures
+        _applyMapSplitMode(panes: 4, stacked: false);
         break;
       // 旧 'pickupPractice' (ナンパ練習) はユーザー要望で削除 —
       // 保存済みレイアウトに残っていても何も起動しない。
@@ -62746,6 +62772,9 @@ class _MindMapScreenState extends State<MindMapScreen>
       (id) => _executeHeaderCommand(id, provider),
     );
     provider.registerMcpFileBuilder(_buildMcpFile);
+    // 画面分割を AI から組めるようにする (= ユーザー報告: 「4 画面分割に
+    //   して」 と頼んだのに「2 画面分割しかできない」 と断られた)。
+    provider.registerMcpSplitView(_setSplitViewForMcp);
     // AI が端末のファイルを読む時は、 必ず本人に確かめる (= ユーザー要望:
     //   許可を求める形にすれば読んで良い)。
     provider.registerMcpFileReadConfirm(_confirmMcpFileRead);
@@ -62766,6 +62795,97 @@ class _MindMapScreenState extends State<MindMapScreen>
             }
       ]));
     });
+  }
+
+  /// AI アシスタントから画面分割を組む。
+  ///
+  /// [layout] は 'off' / 'leftRight' / 'topBottom' / 'quad'。
+  /// [pageIds] を渡すと 0=左上 1=右上 2=左下 3=右下 の順に割り当てる。
+  ///
+  /// ★ 戻り値には「頼まれた形」 ではなく「実際にそうなった形」 を入れる。
+  ///   4 分割はパソコンだけの機能なので、 携帯では 2 分割に落ちる。 そのまま
+  ///   「4 分割にしました」 と答えさせないための約束
+  ///   (= ユーザー報告の裏返し: 出来ない事を出来ると言うのも困る)。
+  Future<Map<String, dynamic>> _setSplitViewForMcp(
+      String layout, List<String> pageIds) async {
+    final provider = context.read<MindMapProvider>();
+    switch (layout) {
+      case 'off':
+        if (_mapSplitOpen) _closeMapSplit();
+        return {'layout': 'off', 'cells': 1};
+      default:
+        break;
+    }
+    // ★ 分割に向かないページ (便箋 / 動画エディター) を開いている時は、
+    //   開いた分割が次の描画で自動的に畳まれる (_closeSplitIfPageNotEligible)。
+    //   そのまま「4 分割にしました」 と返すと、 画面は 1 枚のままなのに
+    //   AI が出来たと答えてしまう (= 今回直した「出来ていないのに成功と
+    //   返す」 のと同じ間違い)。 先に断る。
+    if (provider.pages.isNotEmpty &&
+        !_splitEligiblePage(provider.currentPage)) {
+      return {
+        'error': 'the page open right now ("${provider.currentPage.name}", '
+            'a "${provider.currentPage.pageType ?? 'normal'}" page) cannot be '
+            'shown in a split pane, so the split would close again straight '
+            'away. Nothing was changed. Ask the user to switch to a map, '
+            'gallery, free-note or markdown page first.',
+      };
+    }
+    switch (layout) {
+      case 'leftRight':
+        await _applyMapSplitMode(panes: 2, stacked: false, toggle: false);
+        break;
+      case 'topBottom':
+        await _applyMapSplitMode(panes: 2, stacked: true, toggle: false);
+        break;
+      case 'quad':
+        await _applyMapSplitMode(panes: 4, stacked: false, toggle: false);
+        break;
+      default:
+        return {
+          'error': 'unknown layout "$layout" - use off / leftRight / '
+              'topBottom / quad',
+        };
+    }
+    if (!mounted) return {'error': 'the screen went away'};
+    // ── 指定されたページをセルへ入れる ──
+    final slots = _visibleSplitSlots();
+    final notPlaced = <String>[];
+    for (var i = 0; i < pageIds.length && i < slots.length; i++) {
+      final id = pageIds[i].trim();
+      if (id.isEmpty) continue;
+      final page = provider.pages.where((p) => p.id == id).firstOrNull;
+      if (page == null || !_splitEligiblePage(page)) {
+        notPlaced.add(id);
+        continue;
+      }
+      _openPageInSplitSlot(provider, page, slots[i]);
+    }
+    if (!mounted) return {'error': 'the screen went away'};
+    // ── 実際にどうなったかを返す ──
+    final now = !_mapSplitOpen
+        ? 'off'
+        : (_mapSplitQuad
+            ? 'quad'
+            : (_mapSplitStacked ? 'topBottom' : 'leftRight'));
+    final visible = _visibleSplitSlots();
+    return {
+      'layout': now,
+      'cells': _mapSplitOpen ? visible.length : 1,
+      'quadSupported': _isDesktop,
+      if (layout == 'quad' && now != 'quad')
+        'note': 'a 2x2 split is desktop only - this device fell back to a '
+            '2-pane split. Tell the user that.',
+      'pages': [
+        for (final k in visible)
+          (k == _mapSplitEditorSlot
+                  ? provider.currentPage
+                  : _resolveSplitCellPage(provider, k))
+              ?.name ??
+              '',
+      ],
+      if (notPlaced.isNotEmpty) 'couldNotPlace': notPlaced,
+    };
   }
 
   /// AI アシスタントを閉じている間だけ出す、 小さな「処理中 / 停止」 の札。
@@ -63117,16 +63237,45 @@ class _MindMapScreenState extends State<MindMapScreen>
       final paragraphs = <String>[
         for (final p in (spec['paragraphs'] as List? ?? const [])) '$p'
       ];
-      final slides = <({String title, List<String> bullets})>[
-        for (final sl in (spec['slides'] as List? ?? const []))
-          if (sl is Map)
-            (
-              title: '${sl['title'] ?? ''}',
-              bullets: <String>[
-                for (final b in (sl['bullets'] as List? ?? const [])) '$b'
-              ],
-            )
-      ];
+      // ── スライド (pptx) ──
+      //    imagePrompt が付いていたら、 その場で AI に絵を描かせて貼る
+      //    (= ユーザー要望: おしゃれなカフェのパワポと頼んでも珈琲の画像が
+      //    入らず味気ない)。 1 枚ずつクレジットを使うので枚数を抑える。
+      const maxAiPics = 4;
+      var picsMade = 0;
+      final slides = <({String title, List<String> bullets, Uint8List? image, String imagePos, List<Map<String, dynamic>> shapes})>[];
+      for (final sl in (spec['slides'] as List? ?? const [])) {
+        if (sl is! Map) continue;
+        final prompt = '${sl['imagePrompt'] ?? ''}'.trim();
+        Uint8List? pic;
+        if (kind == 'pptx' &&
+            prompt.isNotEmpty &&
+            picsMade < maxAiPics &&
+            (provider.hasGeminiKey || provider.canUseAiRelay)) {
+          try {
+            pic = await provider.generateAiImage(
+                '$prompt\n\nNo text, no letters, no watermark, no logo.');
+            picsMade++;
+          } catch (e) {
+            // 描けなくても文字だけで作る (= 全部やめない)。
+            debugPrint('mcp pptx image failed: $e');
+          }
+        }
+        final pos = '${sl['imagePos'] ?? 'right'}'.trim();
+        slides.add((
+          title: '${sl['title'] ?? ''}',
+          bullets: <String>[
+            for (final b in (sl['bullets'] as List? ?? const [])) '$b'
+          ],
+          image: pic,
+          imagePos:
+              const {'right', 'left', 'full'}.contains(pos) ? pos : 'right',
+          shapes: <Map<String, dynamic>>[
+            for (final sh in (sl['shapes'] as List? ?? const []))
+              if (sh is Map) sh.cast<String, dynamic>()
+          ],
+        ));
+      }
       final title = '${spec['title'] ?? ''}';
 
       final bytes = await _OfficeFileTemplate.buildWithContent(
@@ -74699,9 +74848,15 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// 分割レイアウトを [panes] / [stacked] のモードに切り替える。 既にその
   /// モードなら分割を閉じる (= トグル)。
+  ///
+  /// [toggle] を false にすると「その形にする」 だけになり、 既にその形の
+  /// 時は何もしない (閉じない)。 ボタンは押すたびに開閉してほしいので既定
+  /// は true のまま、 AI アシスタントからの指示だけ false で呼ぶ
+  /// (= 「4 分割にして」 と 2 度頼まれた時に、 2 度目で閉じてしまわない)。
   Future<void> _applyMapSplitMode({
     required int panes,
     required bool stacked,
+    bool toggle = true,
   }) async {
     final quad = panes == 4 && _isDesktop;
     final already = _mapSplitOpen &&
@@ -74709,7 +74864,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             ? _mapSplitQuad
             : (!_mapSplitQuad && _mapSplitStacked == stacked));
     if (already) {
-      _toggleMapSplitFromHeader(); // 同じボタンをもう一度 → 閉じる
+      if (toggle) _toggleMapSplitFromHeader(); // 同じボタンをもう一度 → 閉じる
       return;
     }
     setState(() {
@@ -84648,7 +84803,8 @@ class _MindMapScreenState extends State<MindMapScreen>
             MindMapProvider.isLiveSharablePageType(p.pageType))
         .toList();
     if (pages.isEmpty) return;
-    if (!provider.isMaxUnlocked) {
+    // ★ 実行の可否は canUseMaxFeature で見る (= 開発者モードの本人も通す)。
+    if (!provider.canUseMaxFeature) {
       _appSnack(
         ctx,
         SnackBar(
@@ -84658,6 +84814,26 @@ class _MindMapScreenState extends State<MindMapScreen>
         ),
       );
       return;
+    }
+    // ── 同時に共有できる数を先に確かめる (= ユーザー要望: 20 件まで) ──
+    //    1 枚ずつ失敗させると、 途中まで共有されて分かりにくい。
+    {
+      final already = provider.liveSharedPageCount;
+      final adding =
+          pages.where((p) => provider.publishedCodeFor(p.id) == null).length;
+      if (already + adding > MindMapProvider.kLiveShareMaxPages) {
+        _appSnack(
+          ctx,
+          SnackBar(
+            backgroundColor: const Color(0xFFE57373),
+            content: Text(
+                provider.t('live.tooMany').replaceFirst(
+                    '{n}', '${MindMapProvider.kLiveShareMaxPages}'),
+                style: const TextStyle(color: Colors.white)),
+          ),
+        );
+        return;
+      }
     }
     // ── 共有の権限を先に選ばせる (= ユーザー要望: まとめて共有に権限の
     //    項目が無い) ──
@@ -85494,6 +85670,21 @@ class _MindMapScreenState extends State<MindMapScreen>
                 Text(provider.t('publish.desc'),
                     style: const TextStyle(
                         color: Colors.white54, fontSize: 11.5, height: 1.45)),
+                // ── 今いくつ共有しているか (= ユーザー要望: 20 件まで) ──
+                //    共有をやめればその分すぐ空くので、 数を見せておく。
+                const SizedBox(height: 6),
+                Text(
+                    provider
+                        .t('live.sharedCount')
+                        .replaceFirst('{n}', '${provider.liveSharedPageCount}')
+                        .replaceFirst(
+                            '{max}', '${MindMapProvider.kLiveShareMaxPages}'),
+                    style: TextStyle(
+                        color: provider.liveSharedPageCount >=
+                                MindMapProvider.kLiveShareMaxPages
+                            ? const Color(0xFFFFAB91)
+                            : Colors.white38,
+                        fontSize: 11)),
                 // ── Max プラン限定 (= ユーザー要望: Max のライセンスを
                 //    持っている者同士がサーバーに繋いでアプリ内で作業する
                 //    機能にして欲しい) ──
@@ -85897,7 +86088,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                   backgroundColor: const Color(0xFF43B97F),
                   foregroundColor: Colors.white),
               onPressed:
-                  (busy || !provider.isMaxUnlocked) ? null : doPublish,
+                  (busy || !provider.canUseMaxFeature) ? null : doPublish,
               icon: Icon(
                   !isShared ? Icons.public_rounded : Icons.sync_rounded,
                   size: 16),
@@ -88655,7 +88846,7 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   void _showSyncDialog(BuildContext ctx, MindMapProvider provider) {
     // ── クラウド同期は Max プラン以上限定 (= ユーザー要望) ──
-    if (!provider.isMaxUnlocked) {
+    if (!provider.canUseMaxFeature) {
       _showMaxRequiredDialog(provider,
           body: provider.t('paywall.maxRequiredCloudSync'));
       return;
@@ -122962,7 +123153,9 @@ class _GanttPageViewState extends State<_GanttPageView> {
   void _restartCollabTimer() {
     _collabTimer?.cancel();
     _collabTimer = null;
-    if (!_collabOn || _p.currentGroupId == null || !_p.isMaxUnlocked) return;
+    if (!_collabOn || _p.currentGroupId == null || !_p.canUseMaxFeature) {
+      return;
+    }
     _collabTimer = Timer.periodic(_kCollabInterval, (_) {
       if (!mounted) return;
       if (!_collabOn || _p.currentGroupId == null) {
@@ -123020,7 +123213,7 @@ class _GanttPageViewState extends State<_GanttPageView> {
       return;
     }
     // Max プランだけの特典 (= ユーザー要望)。
-    if (!_p.isMaxUnlocked) {
+    if (!_p.canUseMaxFeature) {
       _snack(_p.t('paywall.maxRequiredCloudSync'), const Color(0xFFE53935));
       return;
     }
@@ -218915,6 +219108,36 @@ class _PptxDrawLinePainter extends CustomPainter {
 /// アプリ内で挿入した画像 (= ユーザー要望: ファイル添付で画像ファイルなどを
 /// 埋め込めるように)。 保存時に `ppt/media/` + rels + `<p:pic>` として
 /// 書き出すので、 PowerPoint で開いても同じ画像が表示される。
+/// AI が「このスライドのここに絵を入れたい」 と言ってきた時の指示。
+///
+/// = ユーザー要望「おしゃれなカフェのパワポにしてとお願いしても珈琲の画像や
+///   図形が挿入されず味気ない」。
+///   絵は 1 枚ずつお金 (前払いクレジット) がかかるので、 変更案を作る時点
+///   では**描かない**。 利用者が「この内容で変更する」 を押して、 枚数と
+///   費用を確かめた後にまとめて描く。
+class _PptxAiImageRequest {
+  /// 何を描くか (英語推奨)。
+  final String prompt;
+
+  /// 置く場所 (EMU)。
+  final int offX;
+  final int offY;
+  final int extCx;
+  final int extCy;
+
+  /// 変更案のサムネイルに出している仮枠の id。 絵が入ったら消す。
+  final int placeholderShapeId;
+
+  const _PptxAiImageRequest({
+    required this.prompt,
+    required this.offX,
+    required this.offY,
+    required this.extCx,
+    required this.extCy,
+    required this.placeholderShapeId,
+  });
+}
+
 class _PptxNewImage {
   /// スライド内で一意の shape id (= cNvPr id。 _nextShapeId で採番)。
   int id;
@@ -219179,8 +219402,258 @@ class _PptxAnchorDotsPainter extends CustomPainter {
       old.points != points;
 }
 
+/// スライド 1 枚を「見るだけ」 で描く共通の部品。
+///
+/// = ユーザー報告「pptx ファイルで発表者モードにすると背景の画像等が全部
+///   消えて文字だけになってしまう」。
+///   発表者モードは編集キャンバスとは別の「簡易版」 の描画を持っていて、
+///   画像と文字の 2 層しか描いていなかった。 テンプレの背景 (色・帯・
+///   三角形)、 マスター、 貼った画像、 表、 挿入図形、 手書きが全部
+///   落ちていたので、 白地に黒文字だけになっていた。
+///
+/// ここで編集キャンバス (`_buildSlideContent`) と**同じ重ね順**を 1 か所に
+/// まとめ、 発表者モードはこれを使う。 二度と片方だけ直る事が無いように、
+/// 描き方そのものは `_PptxViewerDialogState` の static を呼んでいる。
+///
+/// 重ね順 (下→上):
+///   1. 紙 (白) → 2. スライドの背景色 → 3. マスター → 4. 装飾図形
+///   → 5. 元の画像 → 6. 貼った画像 → 7. 表 → 8. 挿入図形 → 9. 文字
+class _PptxStaticSlide extends StatelessWidget {
+  final _PptxSlide slide;
+  final Map<String, Uint8List> media;
+  final _PptxMaster? master;
+  final int slideWidthEmu;
+  final int slideHeightEmu;
+
+  const _PptxStaticSlide({
+    required this.slide,
+    required this.media,
+    required this.slideWidthEmu,
+    required this.slideHeightEmu,
+    this.master,
+  });
+
+  /// 文字の枠 (表示専用)。 `_buildCanvasShape` の描画部分と同じ計算。
+  static Widget _textRO(
+      _PptxTextShape shape, double cw, double ch, int wEmu, int hEmu) {
+    final left = (shape.offX / wEmu) * cw;
+    final top = (shape.offY / hEmu) * ch;
+    final width = (shape.extCx / wEmu) * cw;
+    final rawHeight = (shape.extCy / hEmu) * ch;
+    final ptSize = (shape.fontSize ??
+            _PptxViewerDialogState._pptxDefaultSizeFor(shape.placeholderType)) /
+        100.0;
+    final scale = cw / (wEmu / 9525);
+    final renderFontSize = (ptSize * scale * 1.333).clamp(8.0, 200.0);
+    // 枠の高さは編集側と同じ理屈で詰める (= 縦の位置がずれないように)。
+    final lineCount =
+        shape.text.isEmpty ? 1 : shape.text.split('\n').length.clamp(1, 999);
+    final neededHeight = lineCount * renderFontSize * 1.4 + 12;
+    final keepBoxHeight = shape.anchor == 'ctr' || shape.anchor == 'b';
+    final autoSized = shape.isNew && shape.tableGroupId == null;
+    final height = (keepBoxHeight || autoSized)
+        ? rawHeight
+        : math.min(rawHeight, neededHeight);
+    final text = _PptxViewerDialogState._anchorWrapShapeText(
+      shape,
+      _PptxViewerDialogState._buildShapeText(
+        shape: shape,
+        renderFontSize: renderFontSize,
+        scale: scale,
+      ),
+    );
+    // ★ 表のセル (= アプリで挿入した表 / AI の表テンプレート) は
+    //   slide.textShapes に入っていて、 塗りと罫線を自分で持っている。
+    //   これを描かないと、 見出しの色も枠線も消えて「浮いた文字」 だけに
+    //   なる。 しかも見出しの文字色は白なので、 白い紙の上で見えなくなる
+    //   (= 発表者モードの直しで取りこぼすと、 かえって悪くなる所)。
+    //   編集キャンバス (_buildCanvasShape) と同じ見え方に揃える。
+    final hasCellPaint =
+        shape.cellFillColor != null || shape.cellLineColor != null;
+    return Positioned(
+      left: left,
+      top: top,
+      width: width,
+      height: height,
+      child: IgnorePointer(
+        child: hasCellPaint
+            ? Container(
+                decoration: BoxDecoration(
+                  color: shape.cellFillColor != null
+                      ? Color(0xFF000000 | shape.cellFillColor!)
+                      : Colors.transparent,
+                  border: shape.cellLineColor != null
+                      ? Border.all(
+                          color: Color(0xFF000000 | shape.cellLineColor!))
+                      : null,
+                ),
+                padding: const EdgeInsets.all(2),
+                child: text,
+              )
+            : text,
+      ),
+    );
+  }
+
+  /// 挿入図形 / 手書き (表示専用)。 編集側 `_buildCanvasDrawShape` の
+  /// 「見た目」 の部分だけを写した物 (掴む所やハンドルは要らない)。
+  static Widget _drawShapeRO(
+      _PptxDrawShape s, double cw, double ch, int wEmu, int hEmu) {
+    final sw = wEmu.toDouble();
+    final sh = hEmu.toDouble();
+    final left = s.offX / sw * cw;
+    final top = s.offY / sh * ch;
+    final w = math.max(8.0, s.extCx / sw * cw);
+    final h = math.max(8.0, s.extCy / sh * ch);
+    final lineWpx = math.max(1.0, (s.lineWidthPt100 / 100) * cw * 12700 / sw);
+    final fill = s.fillColor == null
+        ? Colors.transparent
+        : Color(0xFF000000 | s.fillColor!);
+    final lineC = Color(0xFF000000 | s.lineColor);
+    Widget visual;
+    switch (s.kind) {
+      case 'ellipse':
+        visual = Container(
+          decoration: BoxDecoration(
+            color: fill,
+            borderRadius: BorderRadius.all(Radius.elliptical(w / 2, h / 2)),
+            border: Border.all(color: lineC, width: lineWpx),
+          ),
+        );
+        break;
+      case 'roundRect':
+        visual = Container(
+          decoration: BoxDecoration(
+            color: fill,
+            borderRadius: BorderRadius.circular(math.min(w, h) * 0.18),
+            border: Border.all(color: lineC, width: lineWpx),
+          ),
+        );
+        break;
+      case 'ink':
+        visual = CustomPaint(
+          painter: _PptxInkPainter(
+            points: s.points,
+            offXEmu: s.offX,
+            offYEmu: s.offY,
+            emuPerPxX: sw / cw,
+            emuPerPxY: sh / ch,
+            color: lineC,
+            width: lineWpx,
+          ),
+          child: const SizedBox.expand(),
+        );
+        break;
+      case 'line':
+      case 'arrow':
+        visual = CustomPaint(
+          painter: _PptxDrawLinePainter(
+              color: lineC, width: lineWpx, arrow: s.kind == 'arrow'),
+          child: const SizedBox.expand(),
+        );
+        break;
+      default:
+        visual = Container(
+          decoration: BoxDecoration(
+            color: fill,
+            border: Border.all(color: lineC, width: lineWpx),
+          ),
+        );
+    }
+    return Positioned(
+      left: left,
+      top: top,
+      width: w,
+      height: h,
+      child: IgnorePointer(
+        child: Transform.rotate(
+          angle: s.rotationDeg * math.pi / 180.0,
+          child: visual,
+        ),
+      ),
+    );
+  }
+
+  /// 後から貼った画像 (表示専用)。
+  static Widget _newImageRO(
+      _PptxNewImage ni, double cw, double ch, int wEmu, int hEmu) {
+    final left = ni.offX / wEmu * cw;
+    final top = ni.offY / hEmu * ch;
+    final w = math.max(8.0, ni.extCx / wEmu * cw);
+    final h = math.max(8.0, ni.extCy / hEmu * ch);
+    return Positioned(
+      left: left,
+      top: top,
+      width: w,
+      height: h,
+      child: IgnorePointer(
+        child: Image.memory(ni.bytes,
+            fit: BoxFit.fill,
+            gaplessPlayback: true,
+            errorBuilder: (_, __, ___) => const SizedBox.shrink()),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(builder: (_, c) {
+      final cw = c.maxWidth;
+      final ch = c.maxHeight;
+      if (cw <= 0 || ch <= 0) return const SizedBox.shrink();
+      final m = master;
+      return Stack(clipBehavior: Clip.hardEdge, children: [
+        // 1. 紙。 背景色が無いスライドは白のまま (= 今までと同じ見え方)。
+        const Positioned.fill(child: ColoredBox(color: Colors.white)),
+        // 2. スライドの背景色
+        if (slide.bgColor != null)
+          Positioned.fill(
+            child: ColoredBox(color: Color(0xFF000000 | slide.bgColor!)),
+          ),
+        // 3. マスター (= 共通の背景)
+        if (m != null)
+          Positioned.fill(
+            child: Stack(clipBehavior: Clip.hardEdge, children: [
+              if (m.bgColor != null)
+                Positioned.fill(
+                  child: ColoredBox(color: Color(0xFF000000 | m.bgColor!)),
+                ),
+              for (final mds in m.drawShapes) _drawShapeRO(mds, cw, ch, slideWidthEmu, slideHeightEmu),
+              for (final mts in m.textShapes) _textRO(mts, cw, ch, slideWidthEmu, slideHeightEmu),
+            ]),
+          ),
+        // 4. 装飾図形 (= テンプレの帯 / 三角形。 ここが消えると味気なくなる)
+        for (final deco in slide.decoShapes)
+          _PptxViewerDialogState.decoShapeRO(
+              deco, cw, ch, slideWidthEmu, slideHeightEmu),
+        // 5. 元の pptx に入っていた画像
+        for (final img in slide.images)
+          _PptxViewerDialogState.slideImageRO(
+              img, media, cw, ch, slideWidthEmu, slideHeightEmu),
+        // 6. 後から貼った画像
+        for (final ni in slide.newImages)
+          _newImageRO(ni, cw, ch, slideWidthEmu, slideHeightEmu),
+        // 7. 表
+        for (final cell in slide.tableShapes)
+          _PptxViewerDialogState.tableCellRO(
+              cell, cw, ch, slideWidthEmu, slideHeightEmu),
+        // 8. 挿入図形 / 手書き
+        for (final ds in slide.drawShapes)
+          _drawShapeRO(ds, cw, ch, slideWidthEmu, slideHeightEmu),
+        // 9. 文字
+        for (final shape in slide.textShapes)
+          _textRO(shape, cw, ch, slideWidthEmu, slideHeightEmu),
+      ]);
+    });
+  }
+}
+
 class _PptxSlide {
   final int index;
+
+  /// AI が「ここに絵を入れたい」 と言ってきた指示 (= 生成待ち)。
+  /// 採用された後に実際に描いて [newImages] へ入れ、 ここは null に戻す。
+  _PptxAiImageRequest? aiImage;
 
   /// アプリ内で挿入した図形 (= ユーザー要望)。 スライドごとに独立。
   final List<_PptxDrawShape> drawShapes = [];
@@ -219317,6 +219790,28 @@ const String _kPptxAiRoleLine = '''
 ```
 ・slides は今あるスライドの 1 枚目から順に対応する (足りない分は追加される)。
 ・layout は title / section / bullets / twoColumn / closing のどれか。
+
+【写真・イラストを入れる (1 枚のスライドに 1 つまで)】
+スライドの中に "image" を足すと、 その場で AI が絵を描いて貼ります。
+```json
+{"layout":"bullets","title":"…","bullets":["…"],
+ "image":{"prompt":"warm cozy cafe interior, latte art on wooden table, soft morning light","pos":"right"}}
+```
+・prompt は**英語**で、 被写体・色・雰囲気を具体的に。 文字やロゴは描かせない。
+・pos は right / left / full のどれか (既定は right)。 full は全面の背景。
+・"カフェらしく" "写真を入れて" のように**見た目を頼まれた時**に使う。
+・絵は 1 枚ずつ利用者のクレジットを使うので、 表紙と要になる 2〜3 枚だけに
+  絞る。 全部のスライドには入れない。 文字だけで良い資料には入れない。
+
+【飾りの図形を置く (1 枚に 3 個まで)】
+スライドの中に "shapes" を足すと、 帯や丸を敷けます。
+```json
+{"layout":"title","title":"…",
+ "shapes":[{"kind":"ellipse","x":72,"y":8,"w":22,"h":30,"fill":"D4AF37"}]}
+```
+・kind は rect / roundRect / ellipse / line / arrow。 x/y/w/h はスライドに
+  対する % 値。 fill / line は RRGGBB、 lineWidth は pt。
+・文字と重ねない。 アクセント色か下地に近い色だけを使う。
 
 【見た目の決まりごと】
 ・色は 3 色まで。 下地 1 色 + 文字 1 色 + アクセント 1 色。 派手な色を広い面積に使わない。
@@ -224406,6 +224901,40 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
     return shape;
   }
 
+  /// AI が書いてきた図形 1 個分の指定を読む。
+  ///
+  /// x/y/w/h はスライドに対する % 値。 変な値でもスライドの外へ出ないよう
+  /// 丸める。 `design` 形式と `deck` の各スライドの両方から使う
+  /// (= 片方だけ直る事が無いように 1 か所にまとめた)。
+  _PptxDrawShape? _drawShapeFromSpec(Map<String, dynamic> sh, int id) {
+    const kinds = {'rect', 'roundRect', 'ellipse', 'line', 'arrow'};
+    final kind0 = sh['kind'];
+    final kind = (kind0 is String && kinds.contains(kind0)) ? kind0 : 'rect';
+    double pct(dynamic v, double def) =>
+        v is num ? v.toDouble().clamp(0.0, 100.0) : def;
+    final x = (pct(sh['x'], 10) / 100 * _slideWidthEmu).round();
+    final y = (pct(sh['y'], 10) / 100 * _slideHeightEmu).round();
+    final w =
+        math.max(60000, (pct(sh['w'], 30) / 100 * _slideWidthEmu).round());
+    final h =
+        math.max(60000, (pct(sh['h'], 10) / 100 * _slideHeightEmu).round());
+    final fill = _pptxParseHex(sh['fill']);
+    return _PptxDrawShape(
+      id: id,
+      kind: kind,
+      offX: math.min(x, _slideWidthEmu - 60000),
+      offY: math.min(y, _slideHeightEmu - 60000),
+      extCx: w,
+      extCy: h,
+      fillColor: fill,
+      lineColor: _pptxParseHex(sh['line']) ?? fill ?? 0x1E88E5,
+      lineWidthPt100: (sh['lineWidth'] is num
+              ? ((sh['lineWidth'] as num).toDouble() * 100)
+              : 100)
+          .round(),
+    );
+  }
+
   _PptxDrawShape _mkAiRect(
     int id, {
     required double x,
@@ -224620,6 +225149,111 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
               font: th.font));
         }
     }
+    // ── 飾りの図形 (= ユーザー要望: 図形が挿入されず味気ない) ──
+    //    先頭へ入れて、 見出しの帯や文字より後ろに敷く。
+    final extraShapes = sp['shapes'];
+    if (extraShapes is List) {
+      var added = 0;
+      for (final sh in extraShapes) {
+        if (sh is! Map || added >= 3) continue; // 1 枚 3 個まで
+        final made =
+            _drawShapeFromSpec(sh.cast<String, dynamic>(), nextId());
+        if (made == null) continue;
+        slide.drawShapes.insert(0, made);
+        added++;
+      }
+    }
+    // ── 絵の指示 (= ユーザー要望: 珈琲の画像が入らない) ──
+    //    ここでは描かない (お金がかかる)。 置き場所だけ決めて、 仮の枠を
+    //    サムネイルに出しておく。 実際に描くのは採用された後。
+    final imgSpec = sp['image'];
+    if (imgSpec is Map) {
+      final prompt = '${imgSpec['prompt'] ?? ''}'.trim();
+      var pos = '${imgSpec['pos'] ?? 'right'}'.trim();
+      if (pos != 'full' && pos != 'left') pos = 'right';
+      // ★ 2 段組みは左右とも本文で埋まっているので、 脇に絵を入れる隙間が
+      //   無い。 入れても札の下に隠れて見えないまま 1 枚分の課金だけが
+      //   起きるので、 紙いっぱい (背景) に回す。
+      if (layout == 'twoColumn' && pos != 'full') pos = 'full';
+      if (prompt.isNotEmpty) {
+        final double ix, iy, iw, ih;
+        if (pos == 'full') {
+          ix = 0;
+          iy = 0;
+          iw = 100;
+          ih = 100;
+        } else if (pos == 'left') {
+          ix = 4;
+          iy = 26;
+          iw = 40;
+          ih = 60;
+        } else {
+          ix = 56;
+          iy = 26;
+          iw = 40;
+          ih = 60;
+        }
+        // ★ 絵の上に不透明な札が乗っていると、 絵は永久に見えない
+        //   (アプリも PowerPoint も、 図形は絵より手前に描く)。
+        //   絵の place と大きく重なる塗り札は先に外す。 細い帯 (アクセント)
+        //   は重なりが小さいので残る。
+        double overlapRatio(_PptxDrawShape d) {
+          final dx = d.offX / _slideWidthEmu * 100;
+          final dy = d.offY / _slideHeightEmu * 100;
+          final dw = d.extCx / _slideWidthEmu * 100;
+          final dh = d.extCy / _slideHeightEmu * 100;
+          final ow = math.min(dx + dw, ix + iw) - math.max(dx, ix);
+          final oh = math.min(dy + dh, iy + ih) - math.max(dy, iy);
+          if (ow <= 0 || oh <= 0 || dw <= 0 || dh <= 0) return 0;
+          return (ow * oh) / (dw * dh);
+        }
+
+        slide.drawShapes
+            .removeWhere((d) => d.fillColor != null && overlapRatio(d) > 0.5);
+        final phId = nextId();
+        // 仮枠 (= 絵が入る場所)。 うっすらアクセント色で示す。
+        slide.drawShapes.insert(
+            0,
+            _mkAiRect(phId,
+                x: ix, y: iy, w: iw, h: ih, fill: th.surface,
+                kind: 'roundRect'));
+        slide.aiImage = _PptxAiImageRequest(
+          prompt: prompt,
+          offX: _pxEmu(ix),
+          offY: _pyEmu(iy),
+          extCx: _pxEmu(iw),
+          extCy: _pyEmu(ih),
+          placeholderShapeId: phId,
+        );
+        // 絵を右 / 左に置く時は、 本文が絵に掛からないように寄せる。
+        //
+        // ★ 動かすのは**本文だけ**。 見出しは横いっぱいに置いてあるので、
+        //   一緒に寄せると題名まで真ん中から動いて不格好になる。
+        //   絵は y=26% から下に入るので、 それより下の枠だけを対象にする。
+        // ★ 左右どちらの指定でも同じ理屈で扱う。 片側だけ手を入れていた
+        //   ため、 反対側の本文が絵の下に潜ったり、 別の本文と重なったり
+        //   していた。
+        if (pos != 'full') {
+          // 本文が使ってよい横の範囲 (%)。
+          final freeLeft = pos == 'left' ? ix + iw + 4 : 7.0;
+          final freeRight = pos == 'left' ? 93.0 : ix - 4;
+          for (final t in slide.textShapes) {
+            final ty = t.offY / _slideHeightEmu * 100;
+            if (ty < 25) continue; // 見出しは触らない
+            var tx = t.offX / _slideWidthEmu * 100;
+            var tw = t.extCx / _slideWidthEmu * 100;
+            if (tx < freeLeft) {
+              tw -= (freeLeft - tx);
+              tx = freeLeft;
+            }
+            if (tx + tw > freeRight) tw = freeRight - tx;
+            if (tw < 8) continue; // これ以上狭めると読めない
+            t.offX = _pxEmu(tx);
+            t.extCx = _pxEmu(tw);
+          }
+        }
+      }
+    }
     return slide;
   }
 
@@ -224634,6 +225268,13 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
       ..clear()
       ..addAll(built.drawShapes);
     dst.bgColor = built.bgColor;
+    // ★ 絵の指示も移す。 移さないと「描きます」 と言った絵が
+    //   どこにも残らない (= 生成の段で対象が見つからなくなる)。
+    dst.aiImage = built.aiImage;
+    // 作り直したスライドに前の AI の絵が残っていると、 新しい配置の下に
+    //   古い写真が重なる。 AI が入れた分 (mediaName が hnai_ で始まる物)
+    //   だけ捨てる。 利用者が自分で貼った画像は残す。
+    dst.newImages.removeWhere((ni) => ni.mediaName.startsWith('hnai_'));
     dst.dirty = true;
   }
 
@@ -224747,6 +225388,12 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
   /// 変更案を見せて、 採用するものを選んでもらってから反映する。
   Future<void> _applyAiResultWithPreview(String aiResult) async {
     if (_slides.isEmpty || !mounted) return;
+    // ★ 絵を描いている間は取り込まない。 途中で作り直すと、 描き終わった
+    //   絵が捨てられたうえに同じスライドをもう一度描いて二重に課金される。
+    if (_aiImagesRunning) {
+      _showSnack(context.read<MindMapProvider>().t('pptx.aiImageBusy'));
+      return;
+    }
     final changes = _buildAiChanges(aiResult);
     if (changes.isEmpty) return;
     final accepted = await _showPptxAiPlanDialog(changes);
@@ -224758,6 +225405,143 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
       }
     });
     _showSnack('✓ ${accepted.length} 件を反映しました (保存で確定)');
+    // ★ 絵の指示が付いていたら、 ここでまとめて描く (= ユーザー要望:
+    //   おしゃれなカフェのパワポと頼んだのに珈琲の画像が入らない)。
+    //   お金がかかるので、 枚数を見せて確かめてから。
+    await _generatePendingAiImages();
+  }
+
+  /// AI が「ここに絵を入れたい」 と言ってきた分を、 まとめて描いて貼る。
+  ///
+  /// 1 枚ずつ前払いクレジットを使うので、 先に枚数を出して確かめる。
+  /// 途中で失敗しても、 描けた分はそのまま残す (= 全部やり直しにしない)。
+  /// 絵を描いている最中か。 描いている間に次の変更案を通されると、 同じ
+  /// スライドを 2 度描いて**2 回課金**し、 先に描けた絵まで消える
+  /// (_applyBuiltSlide が hnai_ の画像を捨てるため)。
+  bool _aiImagesRunning = false;
+
+  Future<void> _generatePendingAiImages() async {
+    if (!mounted || _aiImagesRunning) return;
+    final targets = <_PptxSlide>[
+      for (final sl in _slides)
+        if (sl.aiImage != null) sl
+    ];
+    if (targets.isEmpty) return;
+    final provider = context.read<MindMapProvider>();
+    // 描かないと決まった時に、 場所取りの箱を片付ける。 残すと絵の入る所に
+    //   ただの色板が敷かれたままになる。
+    void dropPlaceholders(Iterable<_PptxSlide> list) {
+      setState(() {
+        for (final sl in list) {
+          final req = sl.aiImage;
+          if (req == null) continue;
+          sl.drawShapes.removeWhere((d) => d.id == req.placeholderShapeId);
+          sl.aiImage = null;
+        }
+      });
+    }
+
+    if (!provider.hasGeminiKey && !provider.canUseAiRelay) {
+      _showSnack(provider.t('credit.insufficient'));
+      dropPlaceholders(targets);
+      return;
+    }
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E2E),
+        title: Text(provider.t('pptx.aiImageTitle'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
+        content: Text(
+          provider
+              .t('pptx.aiImageBody')
+              .replaceFirst('{n}', '${targets.length}'),
+          style: const TextStyle(color: Colors.white70, fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dctx, false),
+              child: Text(provider.t('common.cancel'))),
+          FilledButton(
+              onPressed: () => Navigator.pop(dctx, true),
+              child: Text(provider.t('pptx.aiImageGo'))),
+        ],
+      ),
+    );
+    if (ok != true) {
+      if (mounted) dropPlaceholders(targets);
+      return;
+    }
+    if (!mounted) return;
+    var made = 0;
+    _aiImagesRunning = true;
+    try {
+    for (var i = 0; i < targets.length; i++) {
+      final sl = targets[i];
+      final req = sl.aiImage;
+      if (req == null) continue;
+      if (!mounted) return;
+      _showSnack(provider
+          .t('pptx.aiImageProgress')
+          .replaceFirst('{i}', '${i + 1}')
+          .replaceFirst('{n}', '${targets.length}'));
+      try {
+        final bytes = await provider.generateAiImage('${req.prompt}\n\n'
+            'No text, no letters, no watermark, no logo.');
+        if (!mounted) return;
+        // 縦横比を保って、 用意した枠の中に収める (= 引き伸ばさない)。
+        ui.Image? decoded;
+        var cx = req.extCx;
+        var cy = req.extCy;
+        try {
+          final codec = await ui.instantiateImageCodec(bytes);
+          final frame = await codec.getNextFrame();
+          decoded = frame.image;
+          final aspect = decoded.width / decoded.height;
+          if (cx / cy > aspect) {
+            cx = (cy * aspect).round();
+          } else {
+            cy = (cx / aspect).round();
+          }
+        } catch (_) {}
+        if (!mounted) return;
+        setState(() {
+          // 仮枠を外して、 描けた絵をその場所へ入れる。
+          sl.drawShapes.removeWhere((d) => d.id == req.placeholderShapeId);
+          sl.newImages.add(_PptxNewImage(
+            id: _nextShapeId(),
+            bytes: bytes,
+            ext: 'png',
+            mediaName: 'hnai_${DateTime.now().millisecondsSinceEpoch}_'
+                '${req.placeholderShapeId}.png',
+            offX: req.offX + ((req.extCx - cx) / 2).round(),
+            offY: req.offY + ((req.extCy - cy) / 2).round(),
+            extCx: cx,
+            extCy: cy,
+            decoded: decoded,
+          ));
+          sl.aiImage = null;
+          sl.dirty = true;
+        });
+        made++;
+      } catch (e) {
+        if (!mounted) return;
+        dropPlaceholders([sl]);
+        final msg = '$e'.replaceFirst('Exception: ', '');
+        _showSnack('${provider.t('bg.aiFailed')}: $msg');
+        // クレジット切れなら残りを試しても同じなので、 ここで止める。
+        if (msg.contains(provider.t('credit.insufficient'))) {
+          dropPlaceholders(targets);
+          break;
+        }
+      }
+    }
+    } finally {
+      _aiImagesRunning = false;
+    }
+    if (mounted && made > 0) {
+      _showSnack(provider.t('pptx.aiImageDone').replaceFirst('{n}', '$made'));
+    }
   }
 
   /// 変更案のプレビュー。 戻り値 = 採用する案の番号 (null = やめる)。
@@ -226023,6 +226807,29 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
         slide.drawShapes.isNotEmpty ||
         slide.newImages.isNotEmpty) {
       final buf = StringBuffer();
+      // ── 画像 1 枚分の <p:pic> ──
+      String picXml(_PptxNewImage ni) => '<p:pic><p:nvPicPr>'
+          '<p:cNvPr id="${ni.id}" name="HNImage${ni.id}"/>'
+          '<p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr>'
+          '<p:nvPr/></p:nvPicPr>'
+          '<p:blipFill><a:blip r:embed="rIdHN${ni.id}"/>'
+          '<a:stretch><a:fillRect/></a:stretch></p:blipFill>'
+          '<p:spPr><a:xfrm><a:off x="${ni.offX}" y="${ni.offY}"/>'
+          '<a:ext cx="${ni.extCx}" cy="${ni.extCy}"/></a:xfrm>'
+          '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>'
+          '</p:spPr></p:pic>';
+      // ★ 紙いっぱいに敷いた絵 (= 全面の背景) は**一番下**へ。
+      //   spTree は後ろに書いた物ほど手前に出るので、 他と同じように
+      //   最後に書くと、 PowerPoint で開いた時に写真が題名も本文も覆って
+      //   しまう (アプリの中では背面に描いているので、 見え方が食い違う)。
+      bool isBackdrop(_PptxNewImage ni) =>
+          ni.offX <= 1000 &&
+          ni.offY <= 1000 &&
+          ni.extCx >= _slideWidthEmu - 1000 &&
+          ni.extCy >= _slideHeightEmu - 1000;
+      for (final ni in slide.newImages) {
+        if (isBackdrop(ni)) buf.write(picXml(ni));
+      }
       for (final ns in newShapes) {
         buf.write(_buildNewSpXml(ns));
       }
@@ -226034,6 +226841,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
       // ── 挿入画像 (= ユーザー要望: ファイル添付)。 rels は
       //    _savePptxFile 側で rIdHN{id} として登録される。 ──
       for (final ni in slide.newImages) {
+        if (isBackdrop(ni)) continue; // 上で書いた
         buf.write('<p:pic><p:nvPicPr>'
             '<p:cNvPr id="${ni.id}" name="HNImage${ni.id}"/>'
             '<p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr>'
@@ -228686,13 +229494,20 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
   ///   - 単色 (BoxDecoration.color)
   ///   - 線形グラデ (LinearGradient + angle)
   Widget _buildCanvasDecoShape(
-      _PptxDecoShape deco, double canvasW, double canvasH) {
+          _PptxDecoShape deco, double canvasW, double canvasH) =>
+      decoShapeRO(deco, canvasW, canvasH, _slideWidthEmu, _slideHeightEmu);
+
+  /// 装飾図形 (= テンプレの帯 / 三角形) の描画。 編集の仕掛けが無いので、
+  /// 発表者モードや静止描画からも同じ物を使う (= 二重に書くと片方だけ
+  /// 直る。 ユーザー報告「発表者モードにすると背景が消えて文字だけ」)。
+  static Widget decoShapeRO(_PptxDecoShape deco, double canvasW,
+      double canvasH, int slideWidthEmu, int slideHeightEmu) {
     final fill = deco.fill;
     if (fill == null) return const SizedBox.shrink();
-    final left = (deco.offX / _slideWidthEmu) * canvasW;
-    final top = (deco.offY / _slideHeightEmu) * canvasH;
-    final width = (deco.extCx / _slideWidthEmu) * canvasW;
-    final height = (deco.extCy / _slideHeightEmu) * canvasH;
+    final left = (deco.offX / slideWidthEmu) * canvasW;
+    final top = (deco.offY / slideHeightEmu) * canvasH;
+    final width = (deco.extCx / slideWidthEmu) * canvasW;
+    final height = (deco.extCy / slideHeightEmu) * canvasH;
     if (width <= 0 || height <= 0) return const SizedBox.shrink();
 
     // 形状ごとの BoxShape / BorderRadius
@@ -228760,13 +229575,25 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
     );
   }
 
-  Widget _buildCanvasImage(_PptxImage img, double canvasW, double canvasH) {
-    final bytes = _media[img.mediaName];
+  Widget _buildCanvasImage(_PptxImage img, double canvasW, double canvasH) =>
+      slideImageRO(
+          img, _media, canvasW, canvasH, _slideWidthEmu, _slideHeightEmu);
+
+  /// 元の pptx に入っていた画像 (= <p:pic>) の描画。 こちらも編集の仕掛けが
+  /// 無いので静止描画と共用する。
+  static Widget slideImageRO(
+      _PptxImage img,
+      Map<String, Uint8List> media,
+      double canvasW,
+      double canvasH,
+      int slideWidthEmu,
+      int slideHeightEmu) {
+    final bytes = media[img.mediaName];
     if (bytes == null) return const SizedBox.shrink();
-    final left = (img.offX / _slideWidthEmu) * canvasW;
-    final top = (img.offY / _slideHeightEmu) * canvasH;
-    final width = (img.extCx / _slideWidthEmu) * canvasW;
-    final height = (img.extCy / _slideHeightEmu) * canvasH;
+    final left = (img.offX / slideWidthEmu) * canvasW;
+    final top = (img.offY / slideHeightEmu) * canvasH;
+    final width = (img.extCx / slideWidthEmu) * canvasW;
+    final height = (img.extCy / slideHeightEmu) * canvasH;
     // サイズが極端に小さい場合は描画しない (誤抽出ガード)
     if (width <= 0 || height <= 0) return const SizedBox.shrink();
     Widget child = Image.memory(
@@ -228812,12 +229639,17 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
   }
 
   Widget _buildCanvasTableCell(
-      _PptxTextShape cell, double canvasW, double canvasH) {
-    final left = (cell.offX / _slideWidthEmu) * canvasW;
-    final top = (cell.offY / _slideHeightEmu) * canvasH;
-    final width = (cell.extCx / _slideWidthEmu) * canvasW;
-    final height = (cell.extCy / _slideHeightEmu) * canvasH;
-    final scale = canvasW / (_slideWidthEmu / 9525);
+          _PptxTextShape cell, double canvasW, double canvasH) =>
+      tableCellRO(cell, canvasW, canvasH, _slideWidthEmu, _slideHeightEmu);
+
+  /// 表の 1 セル (表示専用)。 静止描画と共用する。
+  static Widget tableCellRO(_PptxTextShape cell, double canvasW,
+      double canvasH, int slideWidthEmu, int slideHeightEmu) {
+    final left = (cell.offX / slideWidthEmu) * canvasW;
+    final top = (cell.offY / slideHeightEmu) * canvasH;
+    final width = (cell.extCx / slideWidthEmu) * canvasW;
+    final height = (cell.extCy / slideHeightEmu) * canvasH;
+    final scale = canvasW / (slideWidthEmu / 9525);
     final ptSize = (cell.fontSize ?? 1400) / 100.0;
     final renderFontSize = (ptSize * scale * 1.333).clamp(6.0, 200.0);
     return Positioned(
@@ -229864,7 +230696,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
   /// paragraphs (= ラン構造) が存在する場合は RichText で各ランごとに
   /// fontFamily / fontSize / bold / italic / underline を反映。
   /// 空ならシェイプ全体に shape.fontSize / fontFamily を適用した Text。
-  Widget _buildShapeText({
+  static Widget _buildShapeText({
     required _PptxTextShape shape,
     required double renderFontSize,
     required double scale,
@@ -229958,7 +230790,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
 
   /// 縦アンカー (= `<a:bodyPr anchor>`) を再現するラッパー。
   /// anchor が ctr / b の時だけ、 枠の中でテキストを縦中央 / 下寄せにする。
-  Widget _anchorWrapShapeText(_PptxTextShape shape, Widget text) {
+  static Widget _anchorWrapShapeText(_PptxTextShape shape, Widget text) {
     final a = shape.anchor;
     if (a != 'ctr' && a != 'b') return text;
     return Align(
@@ -231297,6 +232129,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
         slides: _slides,
         startIndex: _currentIndex,
         media: _media,
+        master: _activeMaster,
         slideWidthEmu: _slideWidthEmu,
         slideHeightEmu: _slideHeightEmu,
         isDarkMode: widget.isDarkMode,
@@ -237375,13 +238208,15 @@ class _SlideDraft {
         bullets = bullets.map((b) => TextEditingController(text: b)).toList(),
         imgLoading = false;
 
-  ({String title, List<String> bullets, Uint8List? image}) toRecord() => (
+  ({String title, List<String> bullets, Uint8List? image, String imagePos, List<Map<String, dynamic>> shapes}) toRecord() => (
         title: title.text.trim(),
         bullets: bullets
             .map((c) => c.text.trim())
             .where((t) => t.isNotEmpty)
             .toList(),
         image: image,
+        imagePos: 'right',
+        shapes: const <Map<String, dynamic>>[],
       );
 
   void dispose() {
@@ -238472,6 +239307,15 @@ class _AiStudioPageViewState extends State<_AiStudioPageView>
 //
 // 既存の内蔵エディタ ( _DocxViewerDialog / _PptxViewerDialog /
 // _SpreadsheetEditorDialog ) で開いて編集可能なレベルの中身にする。
+/// 検査用の入口 (= test/pptx_writer_test.dart から呼ぶ)。
+///
+/// 書き出しの本体 `_OfficeFileTemplate` は非公開なので、 アプリを起動せずに
+/// 「出来た pptx が開ける形か」 を確かめるためだけに 1 本だけ口を開ける。
+@visibleForTesting
+Uint8List buildPptxFromSlidesForTest(
+        List<({String title, List<String> bullets, Uint8List? image, String imagePos, List<Map<String, dynamic>> shapes})> slides) =>
+    _OfficeFileTemplate.buildPptxFromSlides(slides);
+
 class _OfficeFileTemplate {
   // ─── 中身つきのファイルを作る (= ユーザー要望: AI から pptx / pdf /
   //     xlsx / csv などを作れるように) ────────────────────────────────
@@ -238495,7 +239339,7 @@ class _OfficeFileTemplate {
     String type, {
     List<List<String>>? rows,
     List<String>? paragraphs,
-    List<({String title, List<String> bullets})>? slides,
+    List<({String title, List<String> bullets, Uint8List? image, String imagePos, List<Map<String, dynamic>> shapes})>? slides,
     String? title,
   }) async {
     switch (type.toLowerCase()) {
@@ -238528,10 +239372,9 @@ class _OfficeFileTemplate {
         //   する (= ユーザー要望: テキストだけでなくお洒落に)。 以前はここだけ
         //   白地に黒文字の素の版 (_buildPptx) を使っていたので、 同じ内容でも
         //   見栄えがはっきり劣っていた。
-        return buildPptxFromSlides([
-          for (final sl in (slides ?? const <({String title, List<String> bullets})>[]))
-            (title: sl.title, bullets: sl.bullets, image: null),
-        ]);
+        //   絵と飾りの図形もそのまま通す (= ユーザー要望: 珈琲の画像や図形が
+        //   挿入されず味気ない)。 絵は呼び出し側 (_buildMcpFile) が用意する。
+        return buildPptxFromSlides(slides ?? const <({String title, List<String> bullets, Uint8List? image, String imagePos, List<Map<String, dynamic>> shapes})>[]);
       case 'pdf':
         return _buildPdf(title: title, paragraphs: paragraphs, rows: rows);
       default:
@@ -239007,8 +239850,14 @@ class _OfficeFileTemplate {
   /// 各スライド = タイトル(アクセントバー) + 本文(箇条書き) + 任意の挿絵画像。
   /// [themeXml] が与えられればそれを theme1.xml として使う (テンプレート由来)。
   /// 無ければ [theme] (内蔵プリセット) から配色/フォントを生成する。
+  /// スライドの並びから .pptx を組み立てる。
+  ///
+  /// 各スライドは題名・箇条書きに加えて、 絵 (`image`、 置き場所は
+  /// `imagePos` = right / left / full) と飾りの図形 (`shapes`) を持てる。
+  /// = ユーザー要望「おしゃれなカフェのパワポにしてとお願いしても珈琲の
+  ///   画像や図形が挿入されず味気ない」。
   static Uint8List buildPptxFromSlides(
-      List<({String title, List<String> bullets, Uint8List? image})> slides,
+      List<({String title, List<String> bullets, Uint8List? image, String imagePos, List<Map<String, dynamic>> shapes})> slides,
       {String? themeXml,
       _PptxTheme? theme}) {
     final th = theme ?? _kPptxThemes.first;
@@ -239020,16 +239869,81 @@ class _OfficeFileTemplate {
         .replaceAll('"', '&quot;');
 
     final list = slides.isEmpty
-        ? <({String title, List<String> bullets, Uint8List? image})>[
-            (title: 'スライド', bullets: <String>[], image: null)
+        ? <({String title, List<String> bullets, Uint8List? image, String imagePos, List<Map<String, dynamic>> shapes})>[
+            (
+              title: 'スライド',
+              bullets: <String>[],
+              image: null,
+              imagePos: 'right',
+              shapes: const <Map<String, dynamic>>[],
+            )
           ]
         : slides;
     final n = list.length;
 
-    String slideXml(
-        ({String title, List<String> bullets, Uint8List? image}) s) {
+    // スライドの大きさ (= _buildPptxParts の <p:sldSz> と揃える)。
+    const slideW = 9144000;
+    const slideH = 6858000;
+
+    /// 飾りの図形 1 個を <p:sp> にする。 x/y/w/h はスライドに対する % 値。
+    String shapeXml(Map<String, dynamic> sh, int id) {
+      const geoms = {
+        'rect': 'rect',
+        'roundRect': 'roundRect',
+        'ellipse': 'ellipse',
+        'line': 'line',
+        'arrow': 'rightArrow',
+      };
+      final kind0 = '${sh['kind'] ?? 'rect'}';
+      final prst = geoms[kind0] ?? 'rect';
+      double pct(dynamic v, double def) =>
+          v is num ? v.toDouble().clamp(0.0, 100.0) : def;
+      int? hex(dynamic v) {
+        if (v is! String) return null;
+        final t = v.replaceAll('#', '').trim();
+        return t.length == 6 ? int.tryParse(t, radix: 16) : null;
+      }
+
+      final x = (pct(sh['x'], 10) / 100 * slideW).round();
+      final y = (pct(sh['y'], 10) / 100 * slideH).round();
+      final w = math.max(60000, (pct(sh['w'], 30) / 100 * slideW).round());
+      final h = math.max(60000, (pct(sh['h'], 10) / 100 * slideH).round());
+      final fill = hex(sh['fill']);
+      // ★ 線 / 矢印には塗る面が無い。 line を書き忘れた指定 (= 手引きの
+      //   例が fill しか書いていないので普通に起きる) だと、 何も描かれない
+      //   図形が出来ていた。 塗りの色を線の色に回す。
+      final isStroke = prst == 'line';
+      final line = hex(sh['line']) ?? (isStroke ? fill : null);
+      final lwPt = sh['lineWidth'] is num
+          ? (sh['lineWidth'] as num).toDouble()
+          : 0.0;
+      final fillXml = (fill == null || isStroke)
+          ? '<a:noFill/>'
+          : '<a:solidFill><a:srgbClr val="${fill.toRadixString(16).padLeft(6, '0').toUpperCase()}"/></a:solidFill>';
+      final lineXml = line == null
+          ? ''
+          : '<a:ln w="${((lwPt <= 0 ? 1.5 : lwPt) * 12700).round()}">'
+              '<a:solidFill><a:srgbClr val="${line.toRadixString(16).padLeft(6, '0').toUpperCase()}"/></a:solidFill>'
+              '${prst == 'line' ? '<a:tailEnd type="none"/>' : ''}</a:ln>';
+      return '<p:sp><p:nvSpPr>'
+          '<p:cNvPr id="$id" name="Deco$id"/><p:cNvSpPr/><p:nvPr/>'
+          '</p:nvSpPr>'
+          '<p:spPr><a:xfrm><a:off x="$x" y="$y"/>'
+          '<a:ext cx="$w" cy="$h"/></a:xfrm>'
+          '<a:prstGeom prst="$prst"><a:avLst/></a:prstGeom>'
+          '$fillXml$lineXml</p:spPr></p:sp>';
+    }
+
+    String slideXml(({String title, List<String> bullets, Uint8List? image, String imagePos, List<Map<String, dynamic>> shapes}) s) {
       final hasImg = s.image != null;
-      final bodyCx = hasImg ? 4400000 : 8046720;
+      // ★ 置き場所は「絵が本当にある時」 だけ効かせる。
+      //   絵が無いのに left だと本文が右へ寄り、 幅はそのままなので
+      //   紙の右端から 3.3M EMU はみ出して箇条書きが切れていた。
+      //   絵が無くなる道は普通にある (imagePrompt を書かなかった / 生成に
+      //   失敗した / 1 回の上限 4 枚を超えた)。
+      final full = hasImg && s.imagePos == 'full';
+      final leftImg = hasImg && s.imagePos == 'left';
+      final bodyCx = (hasImg && !full) ? 4400000 : 8046720;
       final body = StringBuffer();
       if (s.bullets.isEmpty) {
         body.write('<a:p><a:endParaRPr lang="ja-JP"/></a:p>');
@@ -239042,14 +239956,42 @@ class _OfficeFileTemplate {
               '<a:t>${esc(b)}</a:t></a:r></a:p>');
         }
       }
+      final int picX, picY, picW, picH;
+      if (full) {
+        picX = 0;
+        picY = 0;
+        picW = slideW;
+        picH = slideH;
+      } else if (leftImg) {
+        picX = 460000;
+        picY = 1750000;
+        picW = 3500000;
+        picH = 2625000;
+      } else {
+        picX = 5180000;
+        picY = 1750000;
+        picW = 3500000;
+        picH = 2625000;
+      }
       final pic = hasImg
           ? '<p:pic>'
               '<p:nvPicPr><p:cNvPr id="4" name="Image"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr>'
               '<p:blipFill><a:blip r:embed="rId2"/><a:stretch><a:fillRect/></a:stretch></p:blipFill>'
-              '<p:spPr><a:xfrm><a:off x="5180000" y="1750000"/>'
-              '<a:ext cx="3500000" cy="2625000"/></a:xfrm>'
+              '<p:spPr><a:xfrm><a:off x="$picX" y="$picY"/>'
+              '<a:ext cx="$picW" cy="$picH"/></a:xfrm>'
               '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>'
           : '';
+      // 飾りの図形。 見出しや本文より先に置いて、 後ろに敷く。
+      final deco = StringBuffer();
+      var decoId = 10;
+      for (final sh in s.shapes.take(3)) {
+        deco.write(shapeXml(sh, decoId++));
+      }
+      // 全面の絵は一番下 (= 背景) に置く。
+      final backdrop = (hasImg && full) ? pic : '';
+      final overlayPic = (hasImg && !full) ? pic : '';
+      // 本文の左端。 絵を左に置いた時は右へ寄せる。
+      final bodyX = leftImg ? 4400000 : 548640;
       return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
           '<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
           'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
@@ -239057,6 +239999,9 @@ class _OfficeFileTemplate {
           '<p:cSld><p:spTree>'
           '<p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>'
           '<p:grpSpPr/>'
+          // 全面の絵 (= 背景) → 飾りの図形 → 見出し → 本文 → 挿し絵 の順。
+          '$backdrop'
+          '$deco'
           // アクセントカラーのタイトルバー (= おしゃれ要素)
           '<p:sp><p:nvSpPr><p:cNvPr id="2" name="TitleBar"/>'
           '<p:cNvSpPr/><p:nvPr/></p:nvSpPr>'
@@ -239070,11 +240015,11 @@ class _OfficeFileTemplate {
           // 本文 (箇条書き)
           '<p:sp><p:nvSpPr><p:cNvPr id="3" name="Body"/>'
           '<p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr/></p:nvSpPr>'
-          '<p:spPr><a:xfrm><a:off x="548640" y="1650000"/>'
+          '<p:spPr><a:xfrm><a:off x="$bodyX" y="1650000"/>'
           '<a:ext cx="$bodyCx" cy="4850000"/></a:xfrm>'
           '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr>'
           '<p:txBody><a:bodyPr/><a:lstStyle/>$body</p:txBody></p:sp>'
-          '$pic'
+          '$overlayPic'
           '</p:spTree></p:cSld></p:sld>';
     }
 
@@ -248083,6 +249028,10 @@ class _PresenterModeDialog extends StatefulWidget {
   final int slideHeightEmu;
   final bool isDarkMode;
 
+  /// 登録されているマスター (= 共通の背景)。 渡さないと、 テンプレートで
+  /// 入れた背景が発表中だけ消える。
+  final _PptxMaster? master;
+
   const _PresenterModeDialog({
     required this.slides,
     required this.startIndex,
@@ -248090,6 +249039,7 @@ class _PresenterModeDialog extends StatefulWidget {
     required this.slideWidthEmu,
     required this.slideHeightEmu,
     required this.isDarkMode,
+    this.master,
   });
 
   @override
@@ -248626,15 +249576,32 @@ class _PresenterModeDialogState extends State<_PresenterModeDialog> {
                           // RepaintBoundary で囲み、 聴衆ウィンドウへ PNG として
                           //   渡す (= メモはこの領域に含まれないので共有しても
                           //   メモは見えない)。
-                          child: RepaintBoundary(
-                            key: _slideCaptureKey,
-                            child: Stack(children: [
-                              Positioned.fill(
-                                child: _buildPresenterSlide(slide,
-                                    isCurrent: true),
+                          // ★ スライドの縦横比を保つ。 これが無いと 16:9 の
+                          //   資料が枠いっぱいに引き伸ばされ、 図形や文字が
+                          //   横に潰れて見える (右下の「次のスライド」 は
+                          //   前から AspectRatio で包まれていて、 左右で
+                          //   見え方が食い違っていた)。
+                          //   RepaintBoundary は AspectRatio の**内側**に
+                          //   置く。 外側だと聴衆ウィンドウへ送る PNG に
+                          //   黒い余白まで入ってしまう。
+                          child: Center(
+                            child: AspectRatio(
+                              aspectRatio: widget.slideHeightEmu == 0
+                                  ? 16 / 9
+                                  : widget.slideWidthEmu /
+                                      widget.slideHeightEmu,
+                              child: RepaintBoundary(
+                                key: _slideCaptureKey,
+                                child: Stack(children: [
+                                  Positioned.fill(
+                                    child: _buildPresenterSlide(slide,
+                                        isCurrent: true),
+                                  ),
+                                  Positioned.fill(
+                                      child: _buildAnnotationOverlay()),
+                                ]),
                               ),
-                              Positioned.fill(child: _buildAnnotationOverlay()),
-                            ]),
+                            ),
                           ),
                         ),
                         const SizedBox(height: 8),
@@ -248762,8 +249729,15 @@ class _PresenterModeDialogState extends State<_PresenterModeDialog> {
     );
   }
 
-  /// 発表者モード内のスライド描画 (= 簡易版、 既存 _buildCanvasShape の
-  /// レンダリングロジックを流用しない代わりに必要最小限の表示)。
+  /// 発表者モード内のスライド描画。
+  ///
+  /// ★ 編集キャンバスと同じ `_PptxStaticSlide` を使う。
+  ///   以前はここに「簡易版」 の描画があり、 画像と文字の 2 層しか描いて
+  ///   いなかったため、 テンプレの背景・マスター・貼った画像・表・図形・
+  ///   手書きが全部消えて白地に黒文字だけになっていた
+  ///   (= ユーザー報告「発表者モードにすると背景の画像等が全部消えて
+  ///   文字だけになってしまう」)。 二度と片方だけ直らないよう、
+  ///   描画は 1 か所に寄せてある。
   Widget _buildPresenterSlide(_PptxSlide slide, {required bool isCurrent}) {
     return Container(
       decoration: BoxDecoration(
@@ -248780,94 +249754,13 @@ class _PresenterModeDialogState extends State<_PresenterModeDialog> {
       ),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(isCurrent ? 6 : 4),
-        child: LayoutBuilder(builder: (ctx, constraints) {
-          final w = constraints.maxWidth;
-          final h = constraints.maxHeight;
-          // EMU → px 変換
-          final scaleX = w / widget.slideWidthEmu;
-          final scaleY = h / widget.slideHeightEmu;
-          return Stack(clipBehavior: Clip.hardEdge, children: [
-            // 画像
-            for (final img in slide.images)
-              if (widget.media[img.mediaName] != null)
-                Positioned(
-                  left: img.offX * scaleX,
-                  top: img.offY * scaleY,
-                  width: img.extCx * scaleX,
-                  height: img.extCy * scaleY,
-                  child: IgnorePointer(
-                    child: Image.memory(
-                      widget.media[img.mediaName]!,
-                      fit: BoxFit.fill,
-                      errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-                      gaplessPlayback: true,
-                    ),
-                  ),
-                ),
-            // テキスト
-            for (final s in slide.textShapes)
-              Positioned(
-                left: s.offX * scaleX,
-                top: s.offY * scaleY,
-                width: s.extCx * scaleX,
-                height: s.extCy * scaleY,
-                child: _buildPresenterText(s, w),
-              ),
-          ]);
-        }),
-      ),
-    );
-  }
-
-  Widget _buildPresenterText(_PptxTextShape shape, double canvasW) {
-    // pt → px 変換 (= _buildCanvasShape と同じ係数)
-    final ptSize = (shape.fontSize ?? 1800) / 100.0;
-    final scale = canvasW / (widget.slideWidthEmu / 9525);
-    final renderFontSize = (ptSize * scale * 1.333).clamp(8.0, 200.0);
-    final defaultStyle = TextStyle(
-      color: Colors.black87,
-      fontSize: renderFontSize,
-      fontFamily: shape.fontFamily,
-      height: 1.2,
-    );
-    if (shape.paragraphs.isEmpty) {
-      return Padding(
-        padding: const EdgeInsets.all(2),
-        child: Text(shape.text,
-            style: defaultStyle,
-            overflow: TextOverflow.visible,
-            softWrap: true),
-      );
-    }
-    final spans = <InlineSpan>[];
-    for (int pi = 0; pi < shape.paragraphs.length; pi++) {
-      if (pi > 0) spans.add(const TextSpan(text: '\n'));
-      for (final r in shape.paragraphs[pi].runs) {
-        double? runFontSize;
-        if (r.fontSize != null) {
-          final pt = r.fontSize! / 100.0;
-          runFontSize = (pt * scale * 1.333).clamp(8.0, 200.0);
-        }
-        spans.add(TextSpan(
-          text: r.text,
-          style: TextStyle(
-            color: Colors.black87,
-            fontSize: runFontSize ?? renderFontSize,
-            fontFamily: r.fontFamily ?? shape.fontFamily,
-            fontWeight: r.bold == true ? FontWeight.bold : null,
-            fontStyle: r.italic == true ? FontStyle.italic : null,
-            decoration: r.underline == true ? TextDecoration.underline : null,
-            height: 1.2,
-          ),
-        ));
-      }
-    }
-    return Padding(
-      padding: const EdgeInsets.all(2),
-      child: RichText(
-        text: TextSpan(style: defaultStyle, children: spans),
-        overflow: TextOverflow.visible,
-        softWrap: true,
+        child: _PptxStaticSlide(
+          slide: slide,
+          media: widget.media,
+          master: widget.master,
+          slideWidthEmu: widget.slideWidthEmu,
+          slideHeightEmu: widget.slideHeightEmu,
+        ),
       ),
     );
   }
@@ -252875,7 +253768,17 @@ class _McpChatSession extends ChangeNotifier {
         'のではなく、 その場で作るのが既定のやり方です。 '
         '画像 1 枚分のクレジットを使います。 '
         '既にある画像を指定したい / 背景を外したい時だけ '
-        'set_page_background を使ってください。\n'
+        'set_page_background を使ってください。 '
+        // ── どのページの背景かを取り違えない (= ユーザー報告: 直前に
+        //    作らせたマークダウンのページの背景を変えてきた) ──
+        '★ 背景を変えるのは、 名指しされない限り**利用者が今見て '
+        'いるページ** (list_pages の isCurrent が true の 1 枚) です。 '
+        'この会話でさっき自分が作ったページではありません。 pageId を '
+        '省けば今のページになります。 マークダウンや動画エディターの '
+        'ページには背景が無いので断られます。 その時は別のページを '
+        '勝手に選ばず、 どのページの事か利用者に聞いてください。 '
+        '終わったら、 どのページの背景を変えたのかを名前で伝えて '
+        'ください。\n'
         '★「フラッシュカードを開いて」「無音カメラを起動して」 のように '
         'アプリの機能を使いたい指示には、 ページを作らず '
         'run_app_command でその機能を開いてください '
@@ -253101,6 +254004,23 @@ class _McpChatSession extends ChangeNotifier {
             a('fileName').isNotEmpty
                 ? a('fileName')
                 : '${a('kind').toUpperCase()} ファイル');
+      // ★ どのページの背景を触っているのかを会話欄に出す
+      //   (= ユーザー報告: 別のページの背景を変えられていたのに、 会話欄には
+      //   道具の名前しか出ていなかったので気付けなかった)。
+      case 'set_page_background':
+      case 'generate_page_background':
+        {
+          final pg = provider.mcpPageById(a('pageId'));
+          final nm = pg?.name ??
+              (provider.pages.isEmpty ? '' : provider.currentPage.name);
+          return provider
+              .t(name == 'generate_page_background'
+                  ? 'mcp.actGenerateBackground'
+                  : 'mcp.actPageBackground')
+              .replaceFirst('{name}', nm);
+        }
+      case 'set_split_view':
+        return provider.t('mcp.actSplitView');
       case 'list_app_commands':
         return provider.t('mcp.actListCommands');
       case 'run_app_command':

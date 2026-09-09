@@ -991,7 +991,10 @@ async function handleInquiryBlock(request, env) {
 //   ・こちらの保管量も自然に頭打ちになる
 //   既定は 7 日。 アプリのクラウド保存 (無料 7 日 / 有料 30 日) と揃えてある。
 const PUB_MAX_BYTES = 2 * 1024 * 1024; // 1 ページ 2MB まで
-const PUB_MAX_PER_USER = 30; // 1 人が同時に公開できる数
+// 1 人が同時に公開できる数 (= ユーザー要望: 20 件まで)。
+// 公開をやめる / 期限が切れると、 その分すぐ空く。
+// アプリ側の控えは MindMapProvider.kWebPublishMaxPages。
+const PUB_MAX_PER_USER = 20;
 const PUB_MAX_DAYS = 30;
 const PUB_DEFAULT_DAYS = 7;
 
@@ -1129,7 +1132,13 @@ function pubNotFound() {
 /// 公開する。 本文 (html) と表題、 何日置くかを受け取る。
 /// Web への公開ができる人か (= Max プラン限定。 ユーザー要望)。
 /// Dev 枠と ADMIN_UIDS は検証のために通す。
-async function canPublishToWeb(env, uid) {
+async function canPublishToWeb(env, uid, developer) {
+  // ★ 開発者モードに入っている本人は通す (= ユーザー報告: 開発者モードで
+  //   Max なのに「Max プランだけ」 と断られた)。 developer は Google が
+  //   署名した ID トークンの custom claim なので、 アプリを書き換えても
+  //   偽れない。 ADMIN_UIDS は端末を変えると匿名 uid ごと外れてしまうため、
+  //   こちらが本当の門になる (問い合わせ一覧と同じ考え方)。
+  if (developer === true) return true;
   if (isAdminUid(env, uid)) return true;
   let ent = null;
   try {
@@ -1143,11 +1152,11 @@ async function canPublishToWeb(env, uid) {
 }
 
 async function handlePubCreate(request, env, url) {
-  const uid = await authUid(request, env);
+  const { uid, developer } = await authIdentity(request, env);
   if (!uid) return unauthorized();
   // ★ 公開は Max プラン限定。 アプリ側でも塞いでいるが、 直接叩かれても
   //   通らないようにここでも確かめる (保管費用が掛かるため)。
-  if (!(await canPublishToWeb(env, uid))) {
+  if (!(await canPublishToWeb(env, uid, developer))) {
     return json({ error: 'max plan required', code: 'max_required' }, 403);
   }
   let body;
@@ -1178,7 +1187,14 @@ async function handlePubCreate(request, env, url) {
 
   // 同じ id を渡されたら、 その本人のページだけ差し替える (= 更新)。
   let id = String(body.id || '').replace(/[^a-z0-9]/g, '');
-  const index = await readPubIndex(env, uid);
+  // ★ 期限切れは枠を占めない (= ユーザー要望: 公開をやめた分の値は回復する)。
+  //   本体 (KV) は TTL で勝手に消えるのに、 控えの方は残るので、 一覧を
+  //   開かないまま日が経つと「公開していないのに枠が埋まっている」 状態に
+  //   なっていた。 数える前に落とす。
+  const rawIndex = await readPubIndex(env, uid);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const index = rawIndex.filter((e) => (e.expiresAt || 0) > nowSec);
+  if (index.length !== rawIndex.length) await writePubIndex(env, uid, index);
   if (id) {
     if (!index.some((e) => e.id === id)) return json({ error: 'not found' }, 404);
   } else {
