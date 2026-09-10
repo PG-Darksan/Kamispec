@@ -22731,6 +22731,72 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Mostrar / ocultar a pre-visualizacao',
       'ru': 'Показать / скрыть предпросмотр',
     },
+    'md.tableToPage': {
+      'ja': '本文の表を他のページへ入れる',
+      'en': 'Send a table from this text to another page',
+      'zh': '把正文中的表格放到其他页面',
+      'ko': '본문의 표를 다른 페이지에 넣기',
+      'es': 'Enviar una tabla a otra página',
+      'fr': 'Envoyer un tableau vers une autre page',
+      'de': 'Tabelle auf eine andere Seite legen',
+      'pt': 'Enviar uma tabela para outra página',
+      'ru': 'Отправить таблицу на другую страницу',
+    },
+    'md.tablePick': {
+      'ja': 'どの表を入れますか',
+      'en': 'Which table?',
+      'zh': '选择表格',
+      'ko': '어느 표를 넣을까요',
+      'es': '¿Qué tabla?',
+      'fr': 'Quel tableau ?',
+      'de': 'Welche Tabelle?',
+      'pt': 'Qual tabela?',
+      'ru': 'Какую таблицу?',
+    },
+    'md.tableTarget': {
+      'ja': 'どのページに入れますか',
+      'en': 'Which page?',
+      'zh': '放到哪个页面',
+      'ko': '어느 페이지에 넣을까요',
+      'es': '¿En qué página?',
+      'fr': 'Sur quelle page ?',
+      'de': 'Auf welche Seite?',
+      'pt': 'Em qual página?',
+      'ru': 'На какую страницу?',
+    },
+    'md.tableSent': {
+      'ja': '「{name}」 に表を入れました',
+      'en': 'The table was added to "{name}"',
+      'zh': '已把表格放入「{name}」',
+      'ko': '「{name}」에 표를 넣었습니다',
+      'es': 'La tabla se añadió a «{name}»',
+      'fr': 'Le tableau a été ajouté à « {name} »',
+      'de': 'Die Tabelle wurde zu „{name}“ hinzugefügt',
+      'pt': 'A tabela foi adicionada a "{name}"',
+      'ru': 'Таблица добавлена на «{name}»',
+    },
+    'md.tableSendFailed': {
+      'ja': '表を入れられませんでした',
+      'en': 'Could not add the table',
+      'zh': '无法放入表格',
+      'ko': '표를 넣지 못했습니다',
+      'es': 'No se pudo añadir la tabla',
+      'fr': 'Impossible d\'ajouter le tableau',
+      'de': 'Tabelle konnte nicht hinzugefügt werden',
+      'pt': 'Não foi possível adicionar a tabela',
+      'ru': 'Не удалось добавить таблицу',
+    },
+    'md.tableNoTarget': {
+      'ja': '入れられるページがありません',
+      'en': 'There is no page to add it to',
+      'zh': '没有可放入的页面',
+      'ko': '넣을 수 있는 페이지가 없습니다',
+      'es': 'No hay ninguna página donde añadirla',
+      'fr': 'Aucune page où l\'ajouter',
+      'de': 'Keine Seite zum Einfügen vorhanden',
+      'pt': 'Não há página para adicionar',
+      'ru': 'Нет страницы для добавления',
+    },
     'md.copy': {
       'ja': '本文をコピー', 'en': 'Copy the source', 'zh': '复制正文',
       'ko': '본문 복사', 'es': 'Copiar el texto', 'fr': 'Copier le texte',
@@ -63206,6 +63272,28 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Transferir para outra página',
       'ru': 'Перенести на другую страницу',
     },
+    'multi.selectLinks': {
+      'ja': 'リンク {n}',
+      'en': 'Links {n}',
+      'zh': '连线 {n}',
+      'ko': '링크 {n}',
+      'es': 'Enlaces {n}',
+      'fr': 'Liens {n}',
+      'de': 'Linien {n}',
+      'pt': 'Ligações {n}',
+      'ru': 'Связи {n}',
+    },
+    'multi.linksSelected': {
+      'ja': 'リンクを {n} 本選びました',
+      'en': 'Selected {n} links',
+      'zh': '已选择 {n} 条连线',
+      'ko': '링크 {n}개를 선택했습니다',
+      'es': 'Se seleccionaron {n} enlaces',
+      'fr': '{n} liens sélectionnés',
+      'de': '{n} Linien ausgewählt',
+      'pt': '{n} ligações selecionadas',
+      'ru': 'Выбрано связей: {n}',
+    },
     'multi.group': {
       'ja': 'グループ化',
       'en': 'Group',
@@ -94565,6 +94653,51 @@ $cleanQ
       return true;
     } catch (e) {
       debugPrint('mcpInsertPaintBackLayerImage failed: $e');
+      return false;
+    }
+  }
+
+  /// フリーノートの「文字の層」 に文章を足す (= ユーザー要望: マークダウンの
+  /// 表をフリーノートへ入れられるように)。 今の紙の文字の後ろに継ぎ足す。
+  Future<bool> mcpAppendPaintDocText(String pageId, String text) async {
+    final page = mcpPageById(pageId);
+    if (page == null) return false;
+    if (page.pageType != 'paint' && page.pageType != 'document') return false;
+    final body = text.trimRight();
+    if (body.isEmpty) return false;
+    try {
+      final prefs = await _prefsWithRetry();
+      final key = 'paint_${page.id}';
+      dynamic decoded;
+      final raw = prefs.getString(key);
+      if (raw != null && raw.trim().isNotEmpty) {
+        try {
+          decoded = jsonDecode(raw);
+        } catch (_) {}
+      }
+      if (decoded != null && _mcpPaintSheetOf(decoded).sheet.isEmpty) {
+        return false;
+      }
+      final sheet = _mcpPaintSheetOf(decoded);
+      decoded = sheet.doc;
+      final s = sheet.sheet;
+      // 既にある文字の後ろへ継ぎ足す (Quill の delta は insert の並び)。
+      final cur = s['doc'];
+      final ops = <dynamic>[];
+      if (cur is List) ops.addAll(cur);
+      final head = ops.isEmpty ? '' : '\n';
+      ops.add({'insert': '$head$body\n'});
+      s['doc'] = ops;
+      await prefs.setString(key, jsonEncode(decoded));
+      _paintReloadTick++;
+      _mcpContentTick++;
+      _bumpPaintBodyTick(page.id);
+      markLiveBodyDirty(page.id);
+      notifyListeners();
+      _requestMcpFocus(page.id);
+      return true;
+    } catch (e) {
+      debugPrint('mcpAppendPaintDocText failed: $e');
       return false;
     }
   }

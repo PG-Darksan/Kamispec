@@ -461,6 +461,12 @@ const List<IconData> kPageIconChoices = <IconData>[
   Icons.palette_rounded,
   Icons.camera_alt_rounded,
   Icons.flag_rounded,
+  // ── ファイルの種類 (= ユーザー要望: 新規ファイルで作ったページに、
+  //    その種類のアイコンが付くように)。 番号がずれないよう末尾に足す。 ──
+  Icons.slideshow_rounded,
+  Icons.table_chart_rounded,
+  Icons.description_rounded,
+  Icons.picture_as_pdf_rounded,
 ];
 
 /// ページアイコンで選べる色 (= ユーザー要望: ページのアイコンの色も
@@ -39147,9 +39153,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     },
                                   ),
 
-                                const Divider(
-                                    color: Colors.white12, height: 24),
-
+                                // ★ ここに区切りは置かない (= ユーザー指摘:
+                                //   PC設定と全メモだけ別枠なのは意味がない)。
+                                //   上の一覧と続けて並べる。
                                 // ── 動作設定 ──
                                 // デスクトップではヘッダー右上 (分割ボタンの
                                 //   隣) のボタンから開くので、 設定シートには
@@ -72058,7 +72064,14 @@ class _MindMapScreenState extends State<MindMapScreen>
       _mapSplitCellTool.remove(slot);
       _syncNarrowPaneRatio();
     });
-    if (openedByUs && _mapSplitCellTool.isEmpty && _mapSplitCellWeb.isEmpty) {
+    // ★ 隣の画面でファイルやページを開いている時は、 分割を畳まない
+    //   (= ユーザー報告: AI アシスタントを閉じると pptx まで閉じられる)。
+    //   畳んでよいのは「この道具のために開いた分割で、 他に何も無い」 時だけ。
+    final otherOccupied = _mapSplitCellTool.isNotEmpty ||
+        _mapSplitCellWeb.isNotEmpty ||
+        _mapSplitCellFile.isNotEmpty ||
+        _mapSplitCells.any((p) => p != null);
+    if (openedByUs && !otherOccupied) {
       _closeMapSplit();
     }
   }
@@ -89194,6 +89207,35 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 文章作成 (ドキュメント) ページ新規作成 (= ユーザー要望: 罫線付きで Word の
   /// ような文章が書けるページ)。 名前は聞かず既定名で即作成。
   /// Markdown / Mermaid ページの新規作成 (= ユーザー要望)。
+  /// ファイルの種類に合う、 ページ一覧のアイコン (kPageIconChoices の番号)。
+  /// 無ければ null (= 種類ごとの既定のまま)。
+  static int? _pageIconIndexForFileType(String type) {
+    IconData? want;
+    switch (type.toLowerCase()) {
+      case 'pptx':
+        want = Icons.slideshow_rounded;
+        break;
+      case 'xlsx':
+      case 'csv':
+        want = Icons.table_chart_rounded;
+        break;
+      case 'docx':
+        want = Icons.description_rounded;
+        break;
+      case 'txt':
+      case 'json':
+      case 'md':
+        want = Icons.article_rounded;
+        break;
+      case 'pdf':
+        want = Icons.picture_as_pdf_rounded;
+        break;
+    }
+    if (want == null) return null;
+    final i = kPageIconChoices.indexOf(want);
+    return i >= 0 ? i : null;
+  }
+
   void _addMarkdownPageDialog(BuildContext context, MindMapProvider provider) {
     // ★ 「新規マークダウン」 は「新規ファイル」 に (= ユーザー要望): Markdown の
     //   ページも pptx / xlsx / csv / txt / json などのファイルも、 同じ窓の
@@ -89238,6 +89280,12 @@ class _MindMapScreenState extends State<MindMapScreen>
           name: name, folderId: _targetFolderForNewPage(provider));
       page = provider.currentPage;
       id = provider.mcpAddGalleryItem(page.id, text: name);
+      // ★ ページ一覧のアイコンを、 作ったファイルの種類に合わせる
+      //   (= ユーザー要望: マインドマップのアイコンのままだと分からない)。
+      final iconIdx = _pageIconIndexForFileType(type);
+      if (iconIdx != null) {
+        unawaited(provider.setPageIcon(page.id, iconIdx));
+      }
     }
     if (id == null) return;
     final destPath = await _createAndAttachFile(provider, id, type, name);
@@ -94542,6 +94590,15 @@ class _MindMapScreenState extends State<MindMapScreen>
         onBulkDownload: onBulkDownload,
         bulkDownloadIcon: bulkDlIcon,
         bulkDownloadColor: bulkDlColor,
+        // ── 選んだ要素どうしを結ぶ線 (= ユーザー要望: 範囲で選んでも線は
+        //    選ばれないので、 線だけを選び直せるように) ──
+        linkCount: _linksAmongSelection(provider).length,
+        onSelectLinks: _linksAmongSelection(provider).isEmpty
+            ? null
+            : () {
+                _removeOverlay();
+                _selectOnlyLinksAmongSelection(provider);
+              },
         // ★ このバーを閉じたら選択も選択モードも一緒に終わりにする
         //   (= ユーザー要望: 「〜個選択中」 が閉じると同時に選択モードも
         //   解除されるように)。 以前はバーを消すだけで、 選択と選択モードが
@@ -94804,6 +94861,37 @@ class _MindMapScreenState extends State<MindMapScreen>
   // ─── 複数ノード一括編集 ───────────────────────────────────────────────────────
 
   /// 複数ノード一括編集ボトムシート（AppBarボタン & Ctrl離しで起動）
+  /// 今選んでいる要素どうしを結ぶ線 (= 両端とも選択の中にある線)。
+  List<NodeConnection> _linksAmongSelection(MindMapProvider provider) {
+    final ids = _rangeSelectedIds;
+    if (ids.length < 2) return const [];
+    final page = provider.currentPage;
+    return [
+      for (final c in page.connections)
+        if (ids.contains(c.fromId) && ids.contains(c.toId)) c
+    ];
+  }
+
+  /// 線だけを選んだ状態にする (= ユーザー要望: リンクだけを選べるように)。
+  /// 要素の選択は解いて、 線の操作 (色 / 太さ / 削除) に移れるようにする。
+  void _selectOnlyLinksAmongSelection(MindMapProvider provider) {
+    final links = _linksAmongSelection(provider);
+    if (links.isEmpty) return;
+    setState(() {
+      _selectedConnections
+        ..clear()
+        ..addAll(links);
+      _rangeSelectedIds.clear();
+      _rangeSelectedDecorationIds.clear();
+      _rangeSelectMode = false;
+      _rangeStart = null;
+      _rangeEnd = null;
+    });
+    _showLockToast(provider
+        .t('multi.linksSelected')
+        .replaceFirst('{n}', '${links.length}'));
+  }
+
   void _showBulkEditSheet(BuildContext ctx, MindMapProvider provider) {
     if (_rangeSelectedIds.isEmpty) return;
     showModalBottomSheet(
@@ -136884,6 +136972,158 @@ $body''';
 
   /// 今のタブを .md に書き出して、 選んだページへノードとして埋め込む
   /// (= ユーザー要望: 新規で作った Markdown ページを他のページに追加)。
+  /// 本文に書かれている表 (| … | … | の形) を全部取り出す。
+  /// 返すのは (見出しの行を含む) セルの並び。
+  List<List<List<String>>> _markdownTables() {
+    final text = _tabs.isEmpty
+        ? ''
+        : (_ctrl.text.isNotEmpty ? _ctrl.text : (_cur?.text ?? ''));
+    if (!text.contains('|')) return const [];
+    final out = <List<List<String>>>[];
+    List<List<String>>? cur;
+    bool isSep(String l) =>
+        RegExp(r'^\s*\|?[\s:|-]+\|[\s:|-]*$').hasMatch(l) && l.contains('-');
+    List<String> cells(String l) {
+      var s = l.trim();
+      if (s.startsWith('|')) s = s.substring(1);
+      if (s.endsWith('|')) s = s.substring(0, s.length - 1);
+      return [for (final c in s.split('|')) c.trim()];
+    }
+
+    for (final line in text.split('\n')) {
+      final t = line.trim();
+      if (t.startsWith('|') && t.endsWith('|') && t.length > 2) {
+        if (isSep(t)) continue; // 見出しの下の区切り行は捨てる
+        (cur ??= <List<String>>[]).add(cells(t));
+        continue;
+      }
+      if (cur != null) {
+        if (cur.length >= 2) out.add(cur);
+        cur = null;
+      }
+    }
+    if (cur != null && cur.length >= 2) out.add(cur);
+    return out;
+  }
+
+  /// 表を選んで、 マップ / ギャラリー / フリーノートへ入れる (= ユーザー要望)。
+  Future<void> _sendMarkdownTableToPage() async {
+    final p = widget.provider;
+    _syncCurrentTab();
+    final tables = _markdownTables();
+    if (tables.isEmpty) return;
+    // 表が複数あれば、 どれを送るか選ぶ。
+    var pick = 0;
+    if (tables.length > 1) {
+      final v = await showDialog<int>(
+        context: context,
+        builder: (dctx) => SimpleDialog(
+          backgroundColor: const Color(0xFF1E1E32),
+          title: Text(p.t('md.tablePick'),
+              style: const TextStyle(color: Colors.white, fontSize: 15)),
+          children: [
+            for (var i = 0; i < tables.length; i++)
+              SimpleDialogOption(
+                onPressed: () => Navigator.pop(dctx, i),
+                child: Text(
+                    '${i + 1}. ${tables[i].first.take(3).join(' / ')}'
+                    '  (${tables[i].length - 1} 行)',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: Colors.white, fontSize: 13)),
+              ),
+          ],
+        ),
+      );
+      if (v == null || !mounted) return;
+      pick = v;
+    }
+    final cells = tables[pick];
+    // 入れ先のページを選ぶ (マップ / ギャラリー / フリーノート)。
+    final targets = p.pages
+        .where((pg) =>
+            pg.pageType == 'normal' ||
+            pg.pageType == 'bookshelf' ||
+            pg.pageType == 'paint')
+        .toList();
+    if (targets.isEmpty) {
+      _appSnackTop(context, p.t('md.tableNoTarget'), const Color(0xFF37474F));
+      return;
+    }
+    final target = await showDialog<MindMapPage>(
+      context: context,
+      builder: (dctx) => SimpleDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: Text(p.t('md.tableTarget'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
+        children: [
+          for (final pg in targets)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(dctx, pg),
+              child: Row(children: [
+                pageListIcon(p, pg),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(pg.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          color: Colors.white, fontSize: 13.5)),
+                ),
+              ]),
+            ),
+        ],
+      ),
+    );
+    if (target == null || !mounted) return;
+    if (target.pageType == 'paint') {
+      // フリーノートには「文字」 として入れる (表の枠は罫線で表す)。
+      final ok = await p.mcpAppendPaintDocText(
+          target.id, _tableAsPlainText(cells));
+      if (!mounted) return;
+      _appSnackTop(
+          context,
+          ok
+              ? p.t('md.tableSent').replaceFirst('{name}', target.name)
+              : p.t('md.tableSendFailed'),
+          ok ? const Color(0xFF2E7D32) : const Color(0xFFB71C1C));
+      return;
+    }
+    // マップ / ギャラリーには表の要素として入れる。
+    final id = p.mcpAddTableNode(target.id, rows: cells, headerRow: true);
+    if (!mounted) return;
+    _appSnackTop(
+        context,
+        id == null
+            ? p.t('md.tableSendFailed')
+            : p.t('md.tableSent').replaceFirst('{name}', target.name),
+        id == null ? const Color(0xFFB71C1C) : const Color(0xFF2E7D32));
+  }
+
+  /// 表を、 等幅で読める文字に直す (フリーノート用)。
+  static String _tableAsPlainText(List<List<String>> cells) {
+    final cols = cells.fold<int>(0, (m, r) => math.max(m, r.length));
+    final w = List<int>.filled(cols, 0);
+    for (final r in cells) {
+      for (var c = 0; c < r.length; c++) {
+        if (r[c].length > w[c]) w[c] = r[c].length;
+      }
+    }
+    String line(List<String> r) => [
+          for (var c = 0; c < cols; c++)
+            (c < r.length ? r[c] : '').padRight(w[c])
+        ].join('  |  ');
+    final out = StringBuffer();
+    for (var i = 0; i < cells.length; i++) {
+      out.writeln(line(cells[i]));
+      if (i == 0) {
+        out.writeln([for (var c = 0; c < cols; c++) '-' * w[c]].join('--+--'));
+      }
+    }
+    return out.toString().trimRight();
+  }
+
   Future<void> _addToOtherPage() async {
     final p = widget.provider;
     _syncCurrentTab();
@@ -137261,6 +137501,10 @@ $body''';
                 () => unawaited(_openDraftList())),
             // (リンクを挿入するボタンは削除 = ユーザー要望: AI に指示して
             //  直してもらえば済むため)
+            // ── 本文の表を、 他のページへ入れる (= ユーザー要望) ──
+            if (_markdownTables().isNotEmpty)
+              _btn(Icons.table_view_rounded, provider.t('md.tableToPage'),
+                  () => unawaited(_sendMarkdownTableToPage())),
             _btn(Icons.copy_rounded, provider.t('md.copy'), _copyAll),
             // ネットに公開する (= ユーザー要望: プレビュー画面をサーバーへ)。
             //   公開中はアイコンの形 (塗り) だけで表す。 色は白で統一。
@@ -174276,11 +174520,18 @@ class _MultiNodeActionOverlay extends StatelessWidget {
 
   /// 「一括DL」: 選択ノードの添付 / YouTube 動画の一括ダウンロード
   /// (対象が無い時は null → ボタン非表示。 旧: ヘッダー右上から移設)。
+  /// 選んだ要素どうしを結ぶ線 (リンク) だけを選び直す (= ユーザー要望)。
+  /// 線が 1 本も無い時は null (ボタンを出さない)。
+  final VoidCallback? onSelectLinks;
+  final int linkCount;
+
   final VoidCallback? onBulkDownload;
   final IconData bulkDownloadIcon;
   final Color bulkDownloadColor;
 
   const _MultiNodeActionOverlay({
+    this.onSelectLinks,
+    this.linkCount = 0,
     required this.screenPos,
     required this.count,
     required this.onClose,
@@ -174342,6 +174593,16 @@ class _MultiNodeActionOverlay extends StatelessWidget {
         size: btnSize,
         onTap: onDuplicate,
       ),
+      if (onSelectLinks != null)
+        multiBtn(
+          icon: Icons.timeline_rounded,
+          label: provider
+              .t('multi.selectLinks')
+              .replaceFirst('{n}', '$linkCount'),
+          color: const Color(0xFF29B6F6),
+          size: btnSize,
+          onTap: onSelectLinks!,
+        ),
       multiBtn(
         icon: Icons.drive_file_move_rounded,
         label: provider.t('multi.copy'),
@@ -223950,6 +224211,18 @@ const String _kPptxAiRoleLine = '''
 ・絵は 1 枚ずつ利用者のクレジットを使うので、 表紙と要になる 2〜3 枚だけに
   絞る。 全部のスライドには入れない。 文字だけで良い資料には入れない。
 
+【読み上げ用の原稿 (発表者メモ) を書く】
+スライドに "notes" を足すと、 そのスライドの**発表者メモ**に入ります。
+画面の下の「Notes (発表者メモ)」 と発表者モードに出ます。
+```json
+{"layout":"bullets","title":"…","bullets":["…"],
+ "notes":"ここで話す言葉をそのまま書く。 2〜4 文、 読み上げてちょうどよい長さ。"}
+```
+・「原稿を書いて」 「読み上げ用の台本を」 と頼まれたら、 **今あるスライドを
+  そのまま使い**、 各スライドに "notes" だけを足した deck を返す
+  (title や bullets は今の内容をそのまま書き写す。 勝手に作り直さない)。
+・話し言葉で書く。 箇条書きの棒読みにしない。 1 枚あたり 100〜200 字が目安。
+
 【動き (アニメーション) を付ける】
 スライドに "anim" を足すと、 そのスライドの文字と絵が
 **クリックのたびに 1 つずつ**出てきます。
@@ -230256,6 +230529,13 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
     //    通し、 収まらない時は文字を小さくする。 絵の横で枠を狭めた後に
     //    やるのが肝心 (狭めてから折り返しが変わる)。
     _fitAiTextShapesToBoxes(slide);
+    // ── 読み上げ用の原稿 (= ユーザー要望: 発表者メモを AI に書かせたい) ──
+    //    "notes" があれば、 そのスライドの発表者メモに入れる。
+    final notes = (sp['notes'] ?? sp['script'] ?? '').toString().trim();
+    if (notes.isNotEmpty) {
+      slide.notes = notes;
+      slide.notesDirty = true;
+    }
     // ── 動き (= ユーザー要望: AI アシスタントからアニメーションを付ける) ──
     //    スライドの "anim" は、 このスライドの文字と絵に順番 (クリックのたび
     //    に 1 つ) で掛ける。 free 型では文字 / 図形ごとの "anim" が優先。
@@ -230398,6 +230678,20 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
       if (boxW <= 8 || boxH <= 8) continue;
       var pt = (t.fontSize ?? 1800) / 100.0;
       final minPt = math.max(10.0, pt * 0.45);
+      // ★ 見出し (大きい字で改行を含まない文) は、 語の途中で折り返すと
+      //   読みにくい (= ユーザー報告: 「シリーズ」 の「シリ」 で改行される)。
+      //   1 行に収まるまで小さくしてみる。 最小まで縮めても収まらない時だけ
+      //   折り返す。
+      final oneLine = !t.text.contains('\n') && pt >= 20;
+      if (oneLine) {
+        while (pt > minPt) {
+          final tp = _aiTextPainter(t, pt, boxW * 4);
+          final w = tp.width;
+          tp.dispose();
+          if (w <= boxW) break;
+          pt = math.max(minPt, pt - (pt > 24 ? 2 : 1));
+        }
+      }
       while (true) {
         final tp = _aiTextPainter(t, pt, boxW);
         final h = tp.height;
@@ -230455,6 +230749,11 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
     //   古い写真が重なる。 AI が入れた分 (mediaName が hnai_ で始まる物)
     //   だけ捨てる。 利用者が自分で貼った画像は残す。
     dst.newImages.removeWhere((ni) => ni.mediaName.startsWith('hnai_'));
+    // ★ 読み上げ用の原稿も移す (= ユーザー要望: 発表者メモを AI に書かせる)。
+    if (built.notes.trim().isNotEmpty) {
+      dst.notes = built.notes;
+      dst.notesDirty = true;
+    }
     // ★ 動きも一緒に移す (= ユーザー要望: AI からアニメーションを付ける)。
     //   指定が無かった時は今の設定をそのまま残す。
     if (built.anims.isNotEmpty) {
@@ -264211,6 +264510,7 @@ class _FlashcardStudyDialogState extends State<_FlashcardStudyDialog> {
     );
   }
 }
+
 
 
 
