@@ -492,7 +492,10 @@ class McpServer {
         'generate_page_background',
         'Draw a NEW background image with AI and set it as the page '
         'background. On a FREE NOTE / notepad page ("paint" / "document") the '
-        'picture becomes the paper background of the CURRENT SHEET - that is '
+        'picture is NOT a fixed background: it is placed on the CURRENT SHEET '
+        'as a normal image element on the back-most layer, sized to the paper, '
+        'so the user can later select, move, resize or delete it with the '
+        'select tool - that is '
         'the '
         'right tool when the user says "draw a picture on this free note". '
         'This is the preferred way to change a background: '

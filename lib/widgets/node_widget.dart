@@ -1660,7 +1660,15 @@ class _NodeWidgetState extends State<NodeWidget> {
                                       child: videoId != null
                                           ? Image.network(
                                               NodeWidget.thumbnailUrl(videoId),
-                                              fit: BoxFit.contain,
+                                              // ★ ショートは 9:16 の枠に 16:9 の
+                                              //   サムネ (左右が黒帯) を入れる
+                                              //   ので、 contain だと上下に大きな
+                                              //   余白が出ていた (= ユーザー報告)。
+                                              //   cover で黒帯の分だけ切り、 映像を
+                                              //   枠いっぱいに (はみ出しは枠で切る)。
+                                              fit: isShort
+                                                  ? BoxFit.cover
+                                                  : BoxFit.contain,
                                               alignment: Alignment.center,
                                               errorBuilder: (_, __, ___) =>
                                                   Container(

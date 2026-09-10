@@ -1138,6 +1138,32 @@ enum SubscriptionPlan { free, pro, max, dev }
 
 /// AI に一緒に渡す画像 1 枚 (= ユーザー要望: カメラで撮った写真を AI に
 /// 見せたい)。 代行サーバー経由なので base64 にして送る。
+/// ファイルの共同編集の書類 (published/<F…>) の中身。
+class FileLiveInfo {
+  final String code;
+  final String name;
+  final String fileUrl;
+  final int fileRev;
+  final String fileBy;
+  final String fileByName;
+  final String lockBy;
+  final String lockName;
+  final int lockAtMs;
+  final String updateTime;
+  const FileLiveInfo({
+    required this.code,
+    required this.name,
+    required this.fileUrl,
+    required this.fileRev,
+    required this.fileBy,
+    required this.fileByName,
+    required this.lockBy,
+    required this.lockName,
+    required this.lockAtMs,
+    required this.updateTime,
+  });
+}
+
 class AiInputImage {
   /// 'image/jpeg' などの MIME。 サーバー側で許可された型だけが通る。
   final String mime;
@@ -3734,7 +3760,7 @@ class MindMapProvider extends ChangeNotifier {
   /// あればそれで、 無ければ「敷いてあるか」 だけで比べる。
   static String _paintSheetScalarSig(Map m) {
     final out = <String, dynamic>{};
-    for (final k in const ['n', 'sz', 'cw', 'ch', 'rule', 'bg']) {
+    for (final k in const ['n', 'sz', 'cw', 'ch', 'rule', 'bg', 'doc']) {
       if (m.containsKey(k)) out[k] = _paintCanonical(m[k]);
     }
     final bgUrl = (m['bgiLu'] ?? '').toString();
@@ -22284,16 +22310,49 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Markdown',
       'ru': 'Markdown',
     },
-    'drawer.newMarkdownPage': {
-      'ja': '新規マークダウン',
+    'drawer.newFileTitle': {
+      'ja': '何を作りますか',
+      'en': 'What do you want to create?',
+      'zh': '要创建什么？',
+      'ko': '무엇을 만들까요?',
+      'es': '¿Qué quieres crear?',
+      'fr': 'Que voulez-vous créer ?',
+      'de': 'Was möchtest du erstellen?',
+      'pt': 'O que você quer criar?',
+      'ru': 'Что создать?',
+    },
+    'drawer.newFileMarkdown': {
+      'ja': 'Markdown / 図 (Mermaid) のページ',
       'en': 'Markdown / diagram (Mermaid) page',
       'zh': 'Markdown / 图表（Mermaid）页面',
-      'ko': 'Markdown / 다이어그램(Mermaid) 페이지',
-      'es': 'Pagina Markdown / diagrama (Mermaid)',
+      'ko': 'Markdown / 도표(Mermaid) 페이지',
+      'es': 'Página Markdown / diagrama (Mermaid)',
       'fr': 'Page Markdown / diagramme (Mermaid)',
       'de': 'Markdown-/Diagramm-Seite (Mermaid)',
-      'pt': 'Pagina Markdown / diagrama (Mermaid)',
-      'ru': 'Страница Markdown / диаграмм (Mermaid)',
+      'pt': 'Página Markdown / diagrama (Mermaid)',
+      'ru': 'Страница Markdown / диаграмма (Mermaid)',
+    },
+    'drawer.newFileOffice': {
+      'ja': 'ファイル (PowerPoint / Excel / CSV / テキスト / JSON …)。 今のページに置いて開きます',
+      'en': 'A file (PowerPoint / Excel / CSV / text / JSON …), placed on this page and opened',
+      'zh': '文件（PowerPoint / Excel / CSV / 文本 / JSON…），放到当前页面并打开',
+      'ko': '파일 (PowerPoint / Excel / CSV / 텍스트 / JSON …). 지금 페이지에 두고 엽니다',
+      'es': 'Un archivo (PowerPoint / Excel / CSV / texto / JSON…), colocado en esta página y abierto',
+      'fr': 'Un fichier (PowerPoint / Excel / CSV / texte / JSON…), placé sur cette page et ouvert',
+      'de': 'Eine Datei (PowerPoint / Excel / CSV / Text / JSON …), auf dieser Seite abgelegt und geöffnet',
+      'pt': 'Um arquivo (PowerPoint / Excel / CSV / texto / JSON…), colocado nesta página e aberto',
+      'ru': 'Файл (PowerPoint / Excel / CSV / текст / JSON…), размещается на этой странице и открывается',
+    },
+    'drawer.newMarkdownPage': {
+      'ja': '新規ファイル (Markdown / PowerPoint / Excel / CSV / テキスト / JSON)',
+      'en': 'New file (Markdown page or PowerPoint / Excel / CSV / text / JSON)',
+      'zh': '新建文件（Markdown 页面或 PowerPoint / Excel / CSV / 文本 / JSON）',
+      'ko': '새 파일 (Markdown 페이지 또는 PowerPoint / Excel / CSV / 텍스트 / JSON)',
+      'es': 'Nuevo archivo (página Markdown o PowerPoint / Excel / CSV / texto / JSON)',
+      'fr': 'Nouveau fichier (page Markdown ou PowerPoint / Excel / CSV / texte / JSON)',
+      'de': 'Neue Datei (Markdown-Seite oder PowerPoint / Excel / CSV / Text / JSON)',
+      'pt': 'Novo arquivo (página Markdown ou PowerPoint / Excel / CSV / texto / JSON)',
+      'ru': 'Новый файл (страница Markdown или PowerPoint / Excel / CSV / текст / JSON)',
     },
     'cmd.newMarkdownPage': {
       'ja': 'Markdown ページを作成', 'en': 'Create a Markdown page',
@@ -42458,6 +42517,226 @@ class MindMapProvider extends ChangeNotifier {
     },
     // ── 文書モード (= ユーザー要望: Word のような文書が書けるモード) ──
     // 文書モードを抜けて手書きページへ戻る (= ユーザー要望: 戻るボタンが無い)
+    'paint.modeHand': {
+      'ja': '手書きモード',
+      'en': 'Drawing mode',
+      'zh': '手写模式',
+      'ko': '손글씨 모드',
+      'es': 'Modo dibujo',
+      'fr': 'Mode dessin',
+      'de': 'Zeichenmodus',
+      'pt': 'Modo desenho',
+      'ru': 'Режим рисования',
+    },
+    'paint.docPlaceholder': {
+      'ja': 'ここに文字を打てます (手書きに戻すと、 この上から描けます)',
+      'en': 'Type here (switch back to drawing to draw over it)',
+      'zh': '在此输入文字（返回手写后可在其上绘制）',
+      'ko': '여기에 글자를 입력할 수 있습니다 (손글씨로 돌아가면 그 위에 그릴 수 있습니다)',
+      'es': 'Escribe aquí (vuelve al dibujo para dibujar encima)',
+      'fr': 'Tapez ici (revenez au dessin pour dessiner par-dessus)',
+      'de': 'Hier tippen (zurück zum Zeichnen, um darüber zu zeichnen)',
+      'pt': 'Digite aqui (volte ao desenho para desenhar por cima)',
+      'ru': 'Печатайте здесь (вернитесь к рисованию, чтобы рисовать поверх)',
+    },
+    'paint.bgToBackLayer': {
+      'ja': '背景の絵を要素にする (奥のレイヤーへ)',
+      'en': 'Turn the background picture into an element (back layer)',
+      'zh': '把背景图片变成元素（最底层）',
+      'ko': '배경 그림을 요소로 (맨 뒤 레이어)',
+      'es': 'Convertir el fondo en un elemento (capa trasera)',
+      'fr': 'Transformer l\'image de fond en élément (calque arrière)',
+      'de': 'Hintergrundbild zu einem Element machen (hinterste Ebene)',
+      'pt': 'Transformar o fundo em elemento (camada de trás)',
+      'ru': 'Сделать фон элементом (задний слой)',
+    },
+    'paint.bgToBackLayerDone': {
+      'ja': '背景の絵を奥のレイヤーの要素にしました。 選択ツールで掴めます',
+      'en': 'The background is now an element on the back layer; grab it with the select tool',
+      'zh': '背景已成为最底层的元素，可用选择工具拖动',
+      'ko': '배경이 맨 뒤 레이어의 요소가 되었습니다. 선택 도구로 잡을 수 있습니다',
+      'es': 'El fondo ahora es un elemento de la capa trasera; se puede mover con la herramienta de selección',
+      'fr': 'Le fond est maintenant un élément du calque arrière ; saisissez-le avec l\'outil de sélection',
+      'de': 'Der Hintergrund ist jetzt ein Element der hintersten Ebene; mit dem Auswahlwerkzeug greifbar',
+      'pt': 'O fundo agora é um elemento da camada de trás; pegue-o com a ferramenta de seleção',
+      'ru': 'Фон стал элементом заднего слоя; его можно взять инструментом выделения',
+    },
+    'paint.grade': {
+      'ja': 'AI で採点',
+      'en': 'Grade with AI',
+      'zh': 'AI 评分',
+      'ko': 'AI 채점',
+      'es': 'Calificar con IA',
+      'fr': 'Corriger avec l\'IA',
+      'de': 'Mit KI bewerten',
+      'pt': 'Corrigir com IA',
+      'ru': 'Проверить с ИИ',
+    },
+    'paint.gradeDesc': {
+      'ja': '貼った問題と書き込んだ解答を AI が読み取り、 各問の正誤と得点を返します。 解説を付けるかも選べます。',
+      'en': 'The AI reads the pasted questions and your written answers, then returns right/wrong per question and a score. You can add explanations.',
+      'zh': 'AI 读取粘贴的题目和写下的答案，返回每题的对错和得分。可选择附上讲解。',
+      'ko': 'AI가 붙여 넣은 문제와 적은 답을 읽어 문항별 정오와 점수를 돌려줍니다. 해설을 붙일지도 고를 수 있습니다.',
+      'es': 'La IA lee las preguntas pegadas y tus respuestas escritas, y devuelve acierto/error por pregunta y una puntuación. Puedes añadir explicaciones.',
+      'fr': 'L\'IA lit les questions collées et vos réponses écrites, puis renvoie juste/faux par question et une note. Vous pouvez ajouter des explications.',
+      'de': 'Die KI liest die eingefügten Aufgaben und deine Antworten und gibt richtig/falsch je Aufgabe und eine Punktzahl zurück. Erklärungen sind optional.',
+      'pt': 'A IA lê as questões coladas e as respostas escritas e devolve certo/errado por questão e a pontuação. Você pode incluir explicações.',
+      'ru': 'ИИ читает вставленные задания и ваши ответы, возвращает верно/неверно по каждому и оценку. Можно добавить пояснения.',
+    },
+    'paint.gradeExplain': {
+      'ja': '解説も付ける',
+      'en': 'Include explanations',
+      'zh': '附上讲解',
+      'ko': '해설도 붙이기',
+      'es': 'Incluir explicaciones',
+      'fr': 'Inclure des explications',
+      'de': 'Erklärungen hinzufügen',
+      'pt': 'Incluir explicações',
+      'ru': 'Добавить пояснения',
+    },
+    'paint.gradeAllPages': {
+      'ja': '全 {n} ページをまとめて採点する',
+      'en': 'Grade all {n} pages together',
+      'zh': '一起评分全部 {n} 页',
+      'ko': '전체 {n} 페이지를 함께 채점',
+      'es': 'Calificar las {n} páginas juntas',
+      'fr': 'Corriger les {n} pages ensemble',
+      'de': 'Alle {n} Seiten zusammen bewerten',
+      'pt': 'Corrigir todas as {n} páginas',
+      'ru': 'Проверить все {n} страниц вместе',
+    },
+    'paint.gradeNote': {
+      'ja': '採点の基準 / 配点 (任意)',
+      'en': 'Grading criteria / points (optional)',
+      'zh': '评分标准 / 分值（可选）',
+      'ko': '채점 기준 / 배점 (선택)',
+      'es': 'Criterios / puntos (opcional)',
+      'fr': 'Critères / barème (facultatif)',
+      'de': 'Kriterien / Punkte (optional)',
+      'pt': 'Critérios / pontos (opcional)',
+      'ru': 'Критерии / баллы (необязательно)',
+    },
+    'paint.gradeNoteHint': {
+      'ja': '例: 1 問 5 点、 部分点あり',
+      'en': 'e.g. 5 points each, partial credit allowed',
+      'zh': '例：每题 5 分，可给部分分',
+      'ko': '예: 문항당 5점, 부분 점수 있음',
+      'es': 'p. ej. 5 puntos cada una, con puntuación parcial',
+      'fr': 'ex. 5 points chacune, points partiels',
+      'de': 'z. B. 5 Punkte je Aufgabe, Teilpunkte möglich',
+      'pt': 'ex.: 5 pontos cada, com pontuação parcial',
+      'ru': 'напр.: по 5 баллов, частичные баллы',
+    },
+    'paint.gradeRun': {
+      'ja': '採点する',
+      'en': 'Grade',
+      'zh': '评分',
+      'ko': '채점하기',
+      'es': 'Calificar',
+      'fr': 'Corriger',
+      'de': 'Bewerten',
+      'pt': 'Corrigir',
+      'ru': 'Проверить',
+    },
+    'paint.grading': {
+      'ja': 'AI が採点しています…',
+      'en': 'The AI is grading…',
+      'zh': 'AI 正在评分…',
+      'ko': 'AI가 채점 중…',
+      'es': 'La IA está calificando…',
+      'fr': 'L\'IA corrige…',
+      'de': 'Die KI bewertet…',
+      'pt': 'A IA está corrigindo…',
+      'ru': 'ИИ проверяет…',
+    },
+    'paint.gradeFailed': {
+      'ja': '採点できませんでした',
+      'en': 'Could not grade',
+      'zh': '无法评分',
+      'ko': '채점할 수 없었습니다',
+      'es': 'No se pudo calificar',
+      'fr': 'Correction impossible',
+      'de': 'Bewertung fehlgeschlagen',
+      'pt': 'Não foi possível corrigir',
+      'ru': 'Не удалось проверить',
+    },
+    'paint.gradeResult': {
+      'ja': '採点結果',
+      'en': 'Grading result',
+      'zh': '评分结果',
+      'ko': '채점 결과',
+      'es': 'Resultado',
+      'fr': 'Résultat',
+      'de': 'Ergebnis',
+      'pt': 'Resultado',
+      'ru': 'Результат',
+    },
+    'paint.gradeCopied': {
+      'ja': '採点結果をコピーしました',
+      'en': 'Result copied',
+      'zh': '已复制评分结果',
+      'ko': '채점 결과를 복사했습니다',
+      'es': 'Resultado copiado',
+      'fr': 'Résultat copié',
+      'de': 'Ergebnis kopiert',
+      'pt': 'Resultado copiado',
+      'ru': 'Результат скопирован',
+    },
+    'paint.gradeWrite': {
+      'ja': '紙に書き込む',
+      'en': 'Write on the paper',
+      'zh': '写到纸上',
+      'ko': '종이에 쓰기',
+      'es': 'Escribir en el papel',
+      'fr': 'Écrire sur la feuille',
+      'de': 'Auf das Blatt schreiben',
+      'pt': 'Escrever no papel',
+      'ru': 'Записать на лист',
+    },
+    'paint.gradeExplainPage': {
+      'ja': '解説を次のページに',
+      'en': 'Put explanations on the next page',
+      'zh': '讲解放到下一页',
+      'ko': '해설을 다음 페이지에',
+      'es': 'Explicaciones en la página siguiente',
+      'fr': 'Explications sur la page suivante',
+      'de': 'Erklärungen auf die nächste Seite',
+      'pt': 'Explicações na próxima página',
+      'ru': 'Пояснения на следующей странице',
+    },
+    'paint.gradeWritten': {
+      'ja': '採点を紙の右上に書き込みました',
+      'en': 'The score was written at the top right',
+      'zh': '评分已写在纸的右上角',
+      'ko': '채점을 종이 오른쪽 위에 적었습니다',
+      'es': 'La nota se escribió arriba a la derecha',
+      'fr': 'La note a été écrite en haut à droite',
+      'de': 'Die Bewertung steht jetzt oben rechts',
+      'pt': 'A nota foi escrita no canto superior direito',
+      'ru': 'Оценка записана в правом верхнем углу',
+    },
+    'paint.gradeExplainTitle': {
+      'ja': '解説',
+      'en': 'Explanations',
+      'zh': '讲解',
+      'ko': '해설',
+      'es': 'Explicaciones',
+      'fr': 'Explications',
+      'de': 'Erklärungen',
+      'pt': 'Explicações',
+      'ru': 'Пояснения',
+    },
+    'paint.gradeExplainAdded': {
+      'ja': '解説のページを足しました',
+      'en': 'Added a page with the explanations',
+      'zh': '已添加讲解页',
+      'ko': '해설 페이지를 추가했습니다',
+      'es': 'Se añadió una página con las explicaciones',
+      'fr': 'Page d\'explications ajoutée',
+      'de': 'Seite mit Erklärungen hinzugefügt',
+      'pt': 'Página de explicações adicionada',
+      'ru': 'Добавлена страница с пояснениями',
+    },
     'paint.docModeExit': {
       'ja': '手書きに戻る',
       'en': 'Back to drawing',
@@ -49251,6 +49530,259 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Кнопка удалена',
     },
     // ── 2 分割の向き (= ユーザー要望: 上下 / 左右を選べるように) ──
+    'fileLive.menu': {
+      'ja': 'ファイルの共同編集',
+      'en': 'Co-edit this file',
+      'zh': '共同编辑此文件',
+      'ko': '파일 공동 편집',
+      'es': 'Coeditar este archivo',
+      'fr': 'Coéditer ce fichier',
+      'de': 'Datei gemeinsam bearbeiten',
+      'pt': 'Coeditar este arquivo',
+      'ru': 'Совместное редактирование файла',
+    },
+    'fileLive.active': {
+      'ja': '共同編集中:',
+      'en': 'Co-editing:',
+      'zh': '共同编辑中：',
+      'ko': '공동 편집 중:',
+      'es': 'Coeditando:',
+      'fr': 'Coédition :',
+      'de': 'Gemeinsam:',
+      'pt': 'Coeditando:',
+      'ru': 'Совместно:',
+    },
+    'fileLive.start': {
+      'ja': '共同編集を始める (Max)',
+      'en': 'Start co-editing (Max)',
+      'zh': '开始共同编辑 (Max)',
+      'ko': '공동 편집 시작 (Max)',
+      'es': 'Empezar a coeditar (Max)',
+      'fr': 'Commencer la coédition (Max)',
+      'de': 'Gemeinsame Bearbeitung starten (Max)',
+      'pt': 'Começar a coeditar (Max)',
+      'ru': 'Начать совместное редактирование (Max)',
+    },
+    'fileLive.started': {
+      'ja': '共同編集を始めました。 コード {code} をコピーしました。 相手は「共同編集に参加」 でこのコードを入れます',
+      'en': 'Co-editing started. Code {code} was copied; others enter it in "Join a live session".',
+      'zh': '已开始共同编辑。已复制代码 {code}，对方在“加入共同编辑”中输入即可。',
+      'ko': '공동 편집을 시작했습니다. 코드 {code}를 복사했습니다. 상대는 "공동 편집 참가"에 이 코드를 넣습니다',
+      'es': 'Coedición iniciada. Se copió el código {code}; los demás lo escriben en "Unirse a la sesión".',
+      'fr': 'Coédition démarrée. Le code {code} a été copié ; les autres le saisissent dans « Rejoindre la session ».',
+      'de': 'Gemeinsame Bearbeitung gestartet. Code {code} wurde kopiert; andere geben ihn unter „Sitzung beitreten“ ein.',
+      'pt': 'Coedição iniciada. O código {code} foi copiado; os outros o inserem em "Entrar na sessão".',
+      'ru': 'Совместное редактирование начато. Код {code} скопирован; другие вводят его в «Присоединиться».',
+    },
+    'fileLive.codeCopied': {
+      'ja': 'コードをコピーしました',
+      'en': 'Code copied',
+      'zh': '已复制代码',
+      'ko': '코드를 복사했습니다',
+      'es': 'Código copiado',
+      'fr': 'Code copié',
+      'de': 'Code kopiert',
+      'pt': 'Código copiado',
+      'ru': 'Код скопирован',
+    },
+    'fileLive.copyCode': {
+      'ja': 'コード {code} をコピー',
+      'en': 'Copy code {code}',
+      'zh': '复制代码 {code}',
+      'ko': '코드 {code} 복사',
+      'es': 'Copiar código {code}',
+      'fr': 'Copier le code {code}',
+      'de': 'Code {code} kopieren',
+      'pt': 'Copiar código {code}',
+      'ru': 'Скопировать код {code}',
+    },
+    'fileLive.lock': {
+      'ja': '編集権を取る',
+      'en': 'Take the edit lock',
+      'zh': '获取编辑权',
+      'ko': '편집권 가져오기',
+      'es': 'Tomar el turno de edición',
+      'fr': 'Prendre la main',
+      'de': 'Bearbeitungsrecht übernehmen',
+      'pt': 'Assumir a edição',
+      'ru': 'Взять право редактирования',
+    },
+    'fileLive.unlock': {
+      'ja': '編集権を放す',
+      'en': 'Release the edit lock',
+      'zh': '释放编辑权',
+      'ko': '편집권 놓기',
+      'es': 'Soltar el turno de edición',
+      'fr': 'Rendre la main',
+      'de': 'Bearbeitungsrecht freigeben',
+      'pt': 'Liberar a edição',
+      'ru': 'Отдать право редактирования',
+    },
+    'fileLive.lockTaken': {
+      'ja': '編集権を取りました。 保存すると相手に届きます',
+      'en': 'You have the edit lock; saving sends it to the others',
+      'zh': '已获取编辑权，保存后将同步给对方',
+      'ko': '편집권을 가져왔습니다. 저장하면 상대에게 전달됩니다',
+      'es': 'Tienes el turno; al guardar se envía a los demás',
+      'fr': 'Vous avez la main ; l\'enregistrement est envoyé aux autres',
+      'de': 'Du hast das Bearbeitungsrecht; Speichern sendet es an die anderen',
+      'pt': 'Você tem a edição; salvar envia aos outros',
+      'ru': 'Право у вас; сохранение отправит файл остальным',
+    },
+    'fileLive.lockReleased': {
+      'ja': '編集権を放しました',
+      'en': 'Edit lock released',
+      'zh': '已释放编辑权',
+      'ko': '편집권을 놓았습니다',
+      'es': 'Turno liberado',
+      'fr': 'Main rendue',
+      'de': 'Bearbeitungsrecht freigegeben',
+      'pt': 'Edição liberada',
+      'ru': 'Право отдано',
+    },
+    'fileLive.end': {
+      'ja': '共同編集を終える',
+      'en': 'End co-editing',
+      'zh': '结束共同编辑',
+      'ko': '공동 편집 끝내기',
+      'es': 'Terminar la coedición',
+      'fr': 'Terminer la coédition',
+      'de': 'Gemeinsame Bearbeitung beenden',
+      'pt': 'Encerrar a coedição',
+      'ru': 'Завершить совместное редактирование',
+    },
+    'fileLive.ended': {
+      'ja': '共同編集を終えました',
+      'en': 'Co-editing ended',
+      'zh': '已结束共同编辑',
+      'ko': '공동 편집을 끝냈습니다',
+      'es': 'Coedición terminada',
+      'fr': 'Coédition terminée',
+      'de': 'Gemeinsame Bearbeitung beendet',
+      'pt': 'Coedição encerrada',
+      'ru': 'Совместное редактирование завершено',
+    },
+    'fileLive.lockedBy': {
+      'ja': '{name} が編集中です。 終わるまで保存できません',
+      'en': '{name} is editing; you cannot save until they finish',
+      'zh': '{name} 正在编辑，结束前无法保存',
+      'ko': '{name} 님이 편집 중입니다. 끝날 때까지 저장할 수 없습니다',
+      'es': '{name} está editando; no puedes guardar hasta que termine',
+      'fr': '{name} est en train d\'éditer ; enregistrement impossible jusqu\'à la fin',
+      'de': '{name} bearbeitet gerade; Speichern erst danach möglich',
+      'pt': '{name} está editando; não é possível salvar até terminar',
+      'ru': '{name} редактирует; сохранить можно после завершения',
+    },
+    'fileLive.holder': {
+      'ja': '編集中: {name}',
+      'en': 'Editing: {name}',
+      'zh': '编辑中：{name}',
+      'ko': '편집 중: {name}',
+      'es': 'Editando: {name}',
+      'fr': 'En édition : {name}',
+      'de': 'Bearbeitet: {name}',
+      'pt': 'Editando: {name}',
+      'ru': 'Редактирует: {name}',
+    },
+    'fileLive.free': {
+      'ja': '編集権: 空き (保存すると自分が取ります)',
+      'en': 'Edit lock: free (saving takes it)',
+      'zh': '编辑权：空闲（保存时自动获取）',
+      'ko': '편집권: 비어 있음 (저장하면 가져옵니다)',
+      'es': 'Turno: libre (guardar lo toma)',
+      'fr': 'Main : libre (l\'enregistrement la prend)',
+      'de': 'Bearbeitungsrecht: frei (Speichern übernimmt es)',
+      'pt': 'Edição: livre (salvar assume)',
+      'ru': 'Право: свободно (сохранение возьмёт его)',
+    },
+    'fileLive.mine': {
+      'ja': '編集権: 自分',
+      'en': 'Edit lock: you',
+      'zh': '编辑权：自己',
+      'ko': '편집권: 나',
+      'es': 'Turno: tú',
+      'fr': 'Main : vous',
+      'de': 'Bearbeitungsrecht: du',
+      'pt': 'Edição: você',
+      'ru': 'Право: у вас',
+    },
+    'fileLive.notFound': {
+      'ja': 'そのコードのファイルが見つかりません',
+      'en': 'No file has that code',
+      'zh': '找不到该代码对应的文件',
+      'ko': '그 코드의 파일을 찾을 수 없습니다',
+      'es': 'No hay ningún archivo con ese código',
+      'fr': 'Aucun fichier avec ce code',
+      'de': 'Keine Datei mit diesem Code',
+      'pt': 'Nenhum arquivo com esse código',
+      'ru': 'Файл с таким кодом не найден',
+    },
+    'fileLive.uploadFailed': {
+      'ja': 'ファイルを上げられませんでした',
+      'en': 'Could not upload the file',
+      'zh': '无法上传文件',
+      'ko': '파일을 올릴 수 없었습니다',
+      'es': 'No se pudo subir el archivo',
+      'fr': 'Impossible d\'envoyer le fichier',
+      'de': 'Datei konnte nicht hochgeladen werden',
+      'pt': 'Não foi possível enviar o arquivo',
+      'ru': 'Не удалось загрузить файл',
+    },
+    'fileLive.remoteLoaded': {
+      'ja': '相手の版を読み込みました',
+      'en': 'Loaded the other side\'s version',
+      'zh': '已加载对方的版本',
+      'ko': '상대의 버전을 불러왔습니다',
+      'es': 'Se cargó la versión del otro',
+      'fr': 'Version de l\'autre chargée',
+      'de': 'Version der anderen geladen',
+      'pt': 'Versão do outro carregada',
+      'ru': 'Загружена версия другой стороны',
+    },
+    'fileLive.remoteWhileDirty': {
+      'ja': '相手が保存しました。 未保存の変更があるので読み直していません (保存すると自分の版で上書きします)',
+      'en': 'The other side saved. Not reloaded because you have unsaved changes (saving overwrites with your version).',
+      'zh': '对方已保存。因你有未保存的更改，未重新加载（保存将以你的版本覆盖）。',
+      'ko': '상대가 저장했습니다. 저장하지 않은 변경이 있어 다시 읽지 않았습니다 (저장하면 내 버전으로 덮어씁니다)',
+      'es': 'El otro guardó. No se recargó porque tienes cambios sin guardar (guardar sobrescribe con tu versión).',
+      'fr': 'L\'autre a enregistré. Non rechargé car vous avez des modifications non enregistrées (enregistrer écrase avec votre version).',
+      'de': 'Die andere Seite hat gespeichert. Nicht neu geladen, da du ungespeicherte Änderungen hast (Speichern überschreibt mit deiner Version).',
+      'pt': 'O outro salvou. Não recarregado porque você tem alterações não salvas (salvar sobrescreve com a sua versão).',
+      'ru': 'Другая сторона сохранила. Не перезагружено, так как есть несохранённые изменения (сохранение перезапишет вашей версией).',
+    },
+    'fileLive.saveFirst': {
+      'ja': '先に保存してから始めてください',
+      'en': 'Save first, then start',
+      'zh': '请先保存再开始',
+      'ko': '먼저 저장한 뒤 시작하세요',
+      'es': 'Guarda primero y luego empieza',
+      'fr': 'Enregistrez d\'abord, puis commencez',
+      'de': 'Erst speichern, dann starten',
+      'pt': 'Salve primeiro e depois comece',
+      'ru': 'Сначала сохраните, затем начните',
+    },
+    'fileLive.joinHint': {
+      'ja': 'F で始まるコードはファイル (pptx / xlsx / csv / txt) の共同編集です。 参加するとファイルが手元に届いて開きます。',
+      'en': 'Codes starting with F are file co-editing (pptx / xlsx / csv / txt). Joining downloads the file and opens it.',
+      'zh': '以 F 开头的代码是文件（pptx / xlsx / csv / txt）共同编辑。加入后会下载并打开文件。',
+      'ko': 'F로 시작하는 코드는 파일(pptx / xlsx / csv / txt) 공동 편집입니다. 참가하면 파일이 내려와 열립니다.',
+      'es': 'Los códigos que empiezan por F son coedición de archivos (pptx / xlsx / csv / txt). Al unirte se descarga y se abre el archivo.',
+      'fr': 'Les codes commençant par F sont la coédition de fichiers (pptx / xlsx / csv / txt). Rejoindre télécharge et ouvre le fichier.',
+      'de': 'Codes mit F am Anfang sind Datei-Koedition (pptx / xlsx / csv / txt). Beitreten lädt die Datei herunter und öffnet sie.',
+      'pt': 'Códigos que começam com F são coedição de arquivos (pptx / xlsx / csv / txt). Entrar baixa e abre o arquivo.',
+      'ru': 'Коды, начинающиеся с F, — совместное редактирование файлов (pptx / xlsx / csv / txt). При входе файл скачивается и открывается.',
+    },
+    'fileLive.joined': {
+      'ja': 'ファイルの共同編集に参加しました: {name}',
+      'en': 'Joined file co-editing: {name}',
+      'zh': '已加入文件共同编辑：{name}',
+      'ko': '파일 공동 편집에 참가했습니다: {name}',
+      'es': 'Te uniste a la coedición: {name}',
+      'fr': 'Coédition rejointe : {name}',
+      'de': 'Datei-Koedition beigetreten: {name}',
+      'pt': 'Entrou na coedição: {name}',
+      'ru': 'Вы присоединились: {name}',
+    },
     'live.joinTitle': {
       'ja': '共同編集に参加',
       'en': 'Join a collaboration',
@@ -63683,6 +64215,83 @@ class MindMapProvider extends ChangeNotifier {
       'es': '(sin página para este número)', 'fr': '(aucune page pour ce numéro)',
       'de': '(keine Seite für diese Nummer)', 'pt': '(sem página para este número)',
       'ru': '(нет страницы для этого номера)',
+    },
+    'shortcutSlot.assignStart': {
+      'ja': 'Ctrl+1〜9 に開くページを決める (一覧を押した順に割り当て。 右クリックで枠ごとに選ぶ)',
+      'en': 'Assign pages to Ctrl+1-9 (in the order you click; right-click to pick per slot)',
+      'zh': '设置 Ctrl+1-9 打开的页面（按点击顺序分配；右键可逐个选择）',
+      'ko': 'Ctrl+1~9로 열 페이지 정하기 (누른 순서대로 할당, 오른쪽 클릭으로 칸별 선택)',
+      'es': 'Asignar páginas a Ctrl+1-9 (en el orden en que haces clic; clic derecho para elegir por casilla)',
+      'fr': 'Attribuer des pages à Ctrl+1-9 (dans l\'ordre des clics ; clic droit pour choisir par case)',
+      'de': 'Seiten für Strg+1-9 festlegen (in Klickreihenfolge; Rechtsklick für Auswahl je Platz)',
+      'pt': 'Atribuir páginas a Ctrl+1-9 (na ordem dos cliques; clique direito para escolher por posição)',
+      'ru': 'Назначить страницы на Ctrl+1-9 (в порядке нажатия; правый клик — выбор по ячейке)',
+    },
+    'shortcutSlot.assignTitle': {
+      'ja': 'Ctrl+1〜9 の割り当て',
+      'en': 'Assign Ctrl+1-9',
+      'zh': '分配 Ctrl+1-9',
+      'ko': 'Ctrl+1~9 할당',
+      'es': 'Asignar Ctrl+1-9',
+      'fr': 'Attribuer Ctrl+1-9',
+      'de': 'Strg+1-9 zuweisen',
+      'pt': 'Atribuir Ctrl+1-9',
+      'ru': 'Назначение Ctrl+1-9',
+    },
+    'shortcutSlot.assignHint': {
+      'ja': '左の一覧でページを押すと、 押した順に Ctrl+1、 2、 … が付きます。 枠を押すと、 次はその番号から続けます。',
+      'en': 'Click pages in the list on the left; they get Ctrl+1, 2, … in that order. Click a slot to continue from that number.',
+      'zh': '在左侧列表中点击页面，会按点击顺序依次分配 Ctrl+1、2、…。点击某个位置可从该编号继续。',
+      'ko': '왼쪽 목록에서 페이지를 누르면 누른 순서대로 Ctrl+1, 2, …가 붙습니다. 칸을 누르면 그 번호부터 이어갑니다.',
+      'es': 'Haz clic en las páginas de la lista de la izquierda; reciben Ctrl+1, 2, … en ese orden. Haz clic en una casilla para continuar desde ese número.',
+      'fr': 'Cliquez sur les pages dans la liste de gauche ; elles reçoivent Ctrl+1, 2, … dans cet ordre. Cliquez sur une case pour continuer à partir de ce numéro.',
+      'de': 'Klicke Seiten in der linken Liste an; sie erhalten Strg+1, 2, … in dieser Reihenfolge. Klicke einen Platz an, um ab dieser Nummer fortzufahren.',
+      'pt': 'Clique nas páginas da lista à esquerda; elas recebem Ctrl+1, 2, … nessa ordem. Clique em uma posição para continuar a partir desse número.',
+      'ru': 'Нажимайте страницы в списке слева — они получат Ctrl+1, 2, … в этом порядке. Нажмите ячейку, чтобы продолжить с этого номера.',
+    },
+    'shortcutSlot.assignNext': {
+      'ja': '次',
+      'en': 'Next',
+      'zh': '下一个',
+      'ko': '다음',
+      'es': 'Siguiente',
+      'fr': 'Suivant',
+      'de': 'Nächste',
+      'pt': 'Próximo',
+      'ru': 'След.',
+    },
+    'shortcutSlot.assignDone': {
+      'ja': '完了',
+      'en': 'Done',
+      'zh': '完成',
+      'ko': '완료',
+      'es': 'Listo',
+      'fr': 'Terminé',
+      'de': 'Fertig',
+      'pt': 'Concluído',
+      'ru': 'Готово',
+    },
+    'shortcutSlot.assignedAll': {
+      'ja': 'Ctrl+1〜9 を全部割り当てました',
+      'en': 'All of Ctrl+1-9 are assigned',
+      'zh': 'Ctrl+1-9 已全部分配',
+      'ko': 'Ctrl+1~9를 모두 할당했습니다',
+      'es': 'Se asignaron todas las teclas Ctrl+1-9',
+      'fr': 'Toutes les touches Ctrl+1-9 sont attribuées',
+      'de': 'Alle Plätze Strg+1-9 sind zugewiesen',
+      'pt': 'Todas as teclas Ctrl+1-9 foram atribuídas',
+      'ru': 'Все ячейки Ctrl+1-9 назначены',
+    },
+    'shortcutSlot.clearOne': {
+      'ja': 'この枠を外す',
+      'en': 'Clear this slot',
+      'zh': '清除此位置',
+      'ko': '이 칸 해제',
+      'es': 'Quitar esta casilla',
+      'fr': 'Effacer cette case',
+      'de': 'Diesen Platz leeren',
+      'pt': 'Limpar esta posição',
+      'ru': 'Очистить эту ячейку',
     },
     'shortcutSlot.clearAll': {
       'ja': '割り当てを全部外す', 'en': 'Clear all',
@@ -86915,6 +87524,207 @@ $cleanQ
   /// ★ 共同編集はノードの本文しか配っておらず、 添付は端末の中のパスしか
   ///   持っていなかったため、 他の端末では「ファイルが無い」 状態になって
   ///   いた (= ユーザー報告)。 上げた URL をノードに載せて配る。
+  // ═══ ファイルの共同編集 (pptx / xlsx / csv / txt) ═══
+  //
+  // = ユーザー要望「pptx, xlsx, csv, txt などもサーバーに公開して、 Max 以上の
+  //   特権として共同編集できるように」。
+  //   ファイルそのものを共有の置き場へ上げ、 published/<F…> の書類に
+  //   「最新の版 + 編集権 (ロック)」 を置く。 開いている人は 2 秒ごとに見に
+  //   行き、 新しい版が出たら読み直す。 保存できるのは編集権を持つ 1 人だけ
+  //   (= 上書きで消し合わない。 ページの共同編集のような要素単位の合成は
+  //   バイナリの Office ファイルでは組めない)。 コードは 'F' で始めて、
+  //   ページの共同編集のコードと見分ける。
+  static const String fileLiveCodePrefix = 'F';
+  static const int fileLiveLockTtlMs = 90 * 1000;
+  String? _fileLiveClientId;
+  String get fileLiveClientId => _fileLiveClientId ??=
+      _uuid.v4().replaceAll('-', '').substring(0, 12);
+  String get fileLiveMyName => _displayName?.trim().isNotEmpty == true
+      ? _displayName!.trim()
+      : t('live.anonymous');
+
+  static bool isFileLiveCode(String code) {
+    final c = code.trim().toUpperCase();
+    return c.length == 8 && c.startsWith(fileLiveCodePrefix);
+  }
+
+  Future<void> _fileLiveReady() async {
+    await ensureOnline();
+    if (!_firebaseEnabled) await _initFirebase();
+    if (!_firebaseEnabled) {
+      throw Exception(_firebaseInitError ?? t('sync.firebaseNotConfigured'));
+    }
+    await _ensureFreshToken();
+    if (_idToken == null) throw Exception(t('sync.firebaseDisconnected'));
+  }
+
+  Future<String?> _fileLiveUploadBytes(
+      String code, String name, Uint8List bytes) async {
+    final dir = await getApplicationSupportDirectory();
+    final tmp = Directory('${dir.path}${Platform.pathSeparator}file_live_tmp');
+    if (!await tmp.exists()) await tmp.create(recursive: true);
+    final safe = name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+    final f = File('${tmp.path}${Platform.pathSeparator}$safe');
+    await f.writeAsBytes(bytes, flush: true);
+    try {
+      return await _uploadLiveAttachment(code, f.path);
+    } finally {
+      try {
+        await f.delete();
+      } catch (_) {}
+    }
+  }
+
+  static Map<String, dynamic> _fsStr(String v) => {'stringValue': v};
+  static Map<String, dynamic> _fsInt(int v) => {'integerValue': '$v'};
+
+  Future<String?> _fileLivePatch(String code, Map<String, dynamic> fields,
+      {String? ifUpdateTime}) async {
+    final mask = fields.keys.map((k) => 'updateMask.fieldPaths=$k').join('&');
+    final cond = (ifUpdateTime == null || ifUpdateTime.isEmpty)
+        ? ''
+        : '&currentDocument.updateTime=${Uri.encodeComponent(ifUpdateTime)}';
+    final res = await http.patch(
+      Uri.parse('$_firestoreBaseUrl/published/$code?$mask$cond'),
+      headers: {
+        'Authorization': 'Bearer $_idToken',
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode({'fields': fields}),
+    );
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      return 'HTTP ${res.statusCode}';
+    }
+    return null;
+  }
+
+  Future<FileLiveInfo?> fileLiveFetch(String code) async {
+    await _fileLiveReady();
+    final c = code.trim().toUpperCase();
+    final res = await http.get(
+      Uri.parse('$_firestoreBaseUrl/published/$c'),
+      headers: {'Authorization': 'Bearer $_idToken'},
+    );
+    if (res.statusCode != 200) return null;
+    final doc = jsonDecode(res.body) as Map<String, dynamic>;
+    final f = doc['fields'] as Map<String, dynamic>? ?? {};
+    String s(String k) =>
+        ((f[k] as Map<String, dynamic>?)?['stringValue'] as String?) ?? '';
+    int i(String k) =>
+        int.tryParse('${(f[k] as Map<String, dynamic>?)?['integerValue'] ?? ''}') ??
+        0;
+    if (s('kind') != 'file') return null;
+    return FileLiveInfo(
+      code: c,
+      name: s('name'),
+      fileUrl: s('fileUrl'),
+      fileRev: i('fileRev'),
+      fileBy: s('fileBy'),
+      fileByName: s('fileByName'),
+      lockBy: s('lockBy'),
+      lockName: s('lockName'),
+      lockAtMs: i('lockAt'),
+      updateTime: (doc['updateTime'] as String?) ?? '',
+    );
+  }
+
+  bool fileLiveLockedByOther(FileLiveInfo info) {
+    if (info.lockBy.isEmpty || info.lockBy == fileLiveClientId) return false;
+    return DateTime.now().millisecondsSinceEpoch - info.lockAtMs <
+        fileLiveLockTtlMs;
+  }
+
+  String _fileLiveLockedMsg(FileLiveInfo info) => t('fileLive.lockedBy')
+      .replaceFirst(
+          '{name}', info.lockName.isEmpty ? t('live.anonymous') : info.lockName);
+
+  /// 共同編集を始める: ファイルを上げて書類を作り、 コードを返す。
+  Future<String> fileLiveCreate(
+      {required String name, required Uint8List bytes}) async {
+    if (!canUseMaxFeature) throw Exception(t('paywall.maxRequiredLive'));
+    await _fileLiveReady();
+    final code =
+        '$fileLiveCodePrefix${_uuid.v4().replaceAll('-', '').substring(0, 7).toUpperCase()}';
+    final url = await _fileLiveUploadBytes(code, name, bytes);
+    if (url == null) throw Exception(t('fileLive.uploadFailed'));
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final err = await _fileLivePatch(code, {
+      'kind': _fsStr('file'),
+      'name': _fsStr(name),
+      'fileUrl': _fsStr(url),
+      'fileRev': _fsInt(now),
+      'fileBy': _fsStr(fileLiveClientId),
+      'fileByName': _fsStr(fileLiveMyName),
+      'lockBy': _fsStr(fileLiveClientId),
+      'lockName': _fsStr(fileLiveMyName),
+      'lockAt': _fsInt(now),
+      'host': _fsStr(_uid ?? ''),
+      'createdAt': _fsInt(now),
+    });
+    if (err != null) throw Exception('${t('fileLive.uploadFailed')} ($err)');
+    return code;
+  }
+
+  Future<Uint8List?> fileLiveDownload(String url) async {
+    if (url.isEmpty) return null;
+    try {
+      final res = await http.get(Uri.parse(url));
+      if (res.statusCode != 200) return null;
+      return res.bodyBytes;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 編集権を取る / 放す。 null = できた、 それ以外 = 理由。
+  Future<String?> fileLiveLock(String code, {required bool acquire}) async {
+    await _fileLiveReady();
+    final info = await fileLiveFetch(code);
+    if (info == null) return t('fileLive.notFound');
+    if (acquire) {
+      if (fileLiveLockedByOther(info)) return _fileLiveLockedMsg(info);
+      return _fileLivePatch(
+          code,
+          {
+            'lockBy': _fsStr(fileLiveClientId),
+            'lockName': _fsStr(fileLiveMyName),
+            'lockAt': _fsInt(DateTime.now().millisecondsSinceEpoch),
+          },
+          ifUpdateTime: info.updateTime);
+    }
+    if (info.lockBy != fileLiveClientId) return null;
+    return _fileLivePatch(code, {
+      'lockBy': _fsStr(''),
+      'lockName': _fsStr(''),
+      'lockAt': _fsInt(0),
+    });
+  }
+
+  /// 保存した中身を上げる (編集権が要る。 空いていれば取る)。
+  Future<String?> fileLivePush(
+      {required String code,
+      required String name,
+      required Uint8List bytes}) async {
+    await _fileLiveReady();
+    final info = await fileLiveFetch(code);
+    if (info == null) return t('fileLive.notFound');
+    if (fileLiveLockedByOther(info)) return _fileLiveLockedMsg(info);
+    final url = await _fileLiveUploadBytes(code, name, bytes);
+    if (url == null) return t('fileLive.uploadFailed');
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final rev = now > info.fileRev ? now : info.fileRev + 1;
+    return _fileLivePatch(code, {
+      'name': _fsStr(name),
+      'fileUrl': _fsStr(url),
+      'fileRev': _fsInt(rev),
+      'fileBy': _fsStr(fileLiveClientId),
+      'fileByName': _fsStr(fileLiveMyName),
+      'lockBy': _fsStr(fileLiveClientId),
+      'lockName': _fsStr(fileLiveMyName),
+      'lockAt': _fsInt(now),
+    });
+  }
+
   Future<String?> _uploadLiveAttachment(String code, String localPath) async {
     if (_idToken == null) return null;
     try {
@@ -92502,7 +93312,8 @@ $cleanQ
         final ip = imagePath.trim();
         // 無いファイルを「入れました」 と返さない。
         if (!File(ip).existsSync()) return false;
-        return mcpSetPaintSheetBackground(page.id, ip);
+        // ★ 背景ではなく、 奥のレイヤーの画像要素として置く (= 後から選べる)。
+        return mcpInsertPaintBackLayerImage(page.id, ip);
       }
       // 用意された絵柄 (テンプレ) は紙の背景には使えない。
       return false;
@@ -92600,9 +93411,11 @@ $cleanQ
     // ★ フリーノートは page.backgroundImagePath を読まない。 紙 (シート) の
     //   背景へ入れる (= ユーザー報告: 描いたと言われるのに何も出ない)。
     if (toPaper) {
-      final ok = await mcpSetPaintSheetBackground(page.id, path);
+      // ★ 背景ではなく、 奥のレイヤーの画像要素として置く (= ユーザー要望:
+      //   後から選んで動かしたり消したりできるように)。
+      final ok = await mcpInsertPaintBackLayerImage(page.id, path);
       if (!ok) {
-        throw Exception('could not set the free-note paper background');
+        throw Exception('could not place the picture on the free-note paper');
       }
       _requestMcpFocus(page.id);
       return path;
@@ -93298,6 +94111,103 @@ $cleanQ
   ///   フリーノートからは永久に見えなかった。 フリーノートは自分の紙の
   ///   背景 (シートの 'bgi') を見るので、 そちらへ入れる。
   /// [imagePath] が空なら背景を外す。
+  /// 紙の寸法 (画面側 _kPaintSizes と同じ値。 'custom' は cw/ch)。
+  static const Map<String, (double, double)> _kMcpPaperSizes = {
+    'a4p': (794.0, 1123.0),
+    'a4l': (1123.0, 794.0),
+    'b5p': (689.0, 976.0),
+    'b5l': (976.0, 689.0),
+    'sq': (1000.0, 1000.0),
+    'wide': (1280.0, 720.0),
+    'reels': (720.0, 1280.0),
+    'r43l': (1024.0, 768.0),
+    'r43p': (768.0, 1024.0),
+    'a3p': (1123.0, 1587.0),
+    'a2p': (1587.0, 2245.0),
+    'a1p': (2245.0, 3179.0),
+    'b4p': (976.0, 1378.0),
+    'b2p': (1949.0, 2756.0),
+    'b1p': (2756.0, 3898.0),
+    'a3l': (1587.0, 1123.0),
+    'a2l': (2245.0, 1587.0),
+    'a1l': (3179.0, 2245.0),
+    'b4l': (1378.0, 976.0),
+    'b2l': (2756.0, 1949.0),
+    'b1l': (3898.0, 2756.0),
+  };
+
+  /// 絵を「背景」 ではなく、 いちばん奥のレイヤーの画像要素として紙に置く
+  /// (= ユーザー要望: 背景という概念は変。 奥に置いた絵なら後から選べる)。
+  Future<bool> mcpInsertPaintBackLayerImage(
+      String pageId, String imagePath) async {
+    final page = mcpPageById(pageId);
+    if (page == null) return false;
+    if (page.pageType != 'paint' && page.pageType != 'document') return false;
+    final ip = imagePath.trim();
+    if (ip.isEmpty || !File(ip).existsSync()) return false;
+    try {
+      final prefs = await _prefsWithRetry();
+      final key = 'paint_${page.id}';
+      dynamic decoded;
+      final raw = prefs.getString(key);
+      if (raw != null && raw.trim().isNotEmpty) {
+        try {
+          decoded = jsonDecode(raw);
+        } catch (_) {}
+      }
+      if (decoded != null && _mcpPaintSheetOf(decoded).sheet.isEmpty) {
+        return false;
+      }
+      final sheet = _mcpPaintSheetOf(decoded);
+      decoded = sheet.doc;
+      final s = sheet.sheet;
+      final sz = (s['sz'] ?? 'a4p').toString();
+      double w, h;
+      if (sz == 'custom') {
+        w = (s['cw'] as num?)?.toDouble() ?? 1000;
+        h = (s['ch'] as num?)?.toDouble() ?? 1000;
+      } else {
+        final d = _kMcpPaperSizes[sz] ?? _kMcpPaperSizes.values.first;
+        w = d.$1;
+        h = d.$2;
+      }
+      var minZ = 0;
+      for (final k in const ['s', 't', 'sh', 'im']) {
+        final l = s[k];
+        if (l is List) {
+          for (final e in l) {
+            if (e is Map) {
+              final z = (e['z'] as num?)?.toInt() ?? 0;
+              if (z < minZ) minZ = z;
+            }
+          }
+        }
+      }
+      final im = (s['im'] is List) ? (s['im'] as List) : <dynamic>[];
+      im.add({
+        'id': 'p${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}bg',
+        'p': ip,
+        'l': 0.0,
+        't': 0.0,
+        'w': w,
+        'h': h,
+        'z': minZ - 1,
+      });
+      s['im'] = im;
+      await prefs.setString(key, jsonEncode(decoded));
+      _paintReloadTick++;
+      _mcpContentTick++;
+      _bumpPaintBodyTick(page.id);
+      markLiveBodyDirty(page.id);
+      notifyListeners();
+      _requestMcpFocus(page.id);
+      return true;
+    } catch (e) {
+      debugPrint('mcpInsertPaintBackLayerImage failed: $e');
+      return false;
+    }
+  }
+
   Future<bool> mcpSetPaintSheetBackground(
       String pageId, String imagePath) async {
     final page = mcpPageById(pageId);
