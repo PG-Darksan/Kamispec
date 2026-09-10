@@ -160,6 +160,11 @@ flowchart TD
 
 | ツール | 説明 |
 |---|---|
+> 資料 (pptx) の 1 枚には `animation` を付けられる (`fadeIn` / `flyInLeft` /
+> `wipeLeft` / `zoomIn` / `floatUp` / `wheel` ほか)。見出し → 本文 → 挿し絵の
+> 順に、クリックのたびに 1 つずつ出る。**PowerPoint で開いても再生される**。
+> 「アニメーション付きで」と言われたら必ず付ける。
+
 | `generate_page_background` | 絵を用意して置く (**推奨**)。`prompt` / `opacityPercent`(既定 70) / `fit`。設定に従い **AI で描き起こす**か **Web から取得**する。結果の `imageSource` / `imageSourceUrl` を**返事に必ず書く** (出典)。描き起こしは画像 1 枚分のクレジットを消費 |
 | `set_page_background` | 既存の画像・組み込みテンプレート・解除。`template` = wood / chalkboard / ocean / sakura / fireworks / castle / aurora / nightSky / galaxy / rain / nature / blueprint / midnight / sage / sunset。色調整 `hueDegrees` / `saturationPercent` / `brightnessPercent` も可 |
 

@@ -865,6 +865,20 @@ class McpServer {
                   'type': 'string',
                   'enum': ['right', 'left', 'full']
                 },
+                // ── 動き (= ユーザー要望: アニメーション付きの資料を
+                //    AI に作らせたい) ──
+                'animation': {
+                  'type': 'string',
+                  'description':
+                      'Entrance animation for this slide. The title, the '
+                      'body and the picture appear one per click, with this '
+                      'effect. Leave it out for no animation. One of: '
+                      'appear, fadeIn, flyInLeft, flyInRight, flyInTop, '
+                      'flyInBottom, wipeLeft, wipeRight, wipeTop, '
+                      'wipeBottom, zoomIn, floatUp, wheel. '
+                      'It is written into the .pptx as a real PowerPoint '
+                      'effect, so it plays in PowerPoint too.',
+                },
                 'imageQuery': {'type': 'string'},
                 'imageShape': {
                   'type': 'string',
@@ -1320,6 +1334,7 @@ class McpServer {
           //   がやるので、 ここでは形だけ整える。
           'imagePrompt': '${e['imagePrompt'] ?? ''}',
           'imagePos': '${e['imagePos'] ?? ''}',
+          'animation': '${e['animation'] ?? ''}',
           'imageQuery': '${e['imageQuery'] ?? ''}',
           'imageShape': '${e['imageShape'] ?? ''}',
           'shapes': e['shapes'] is List ? e['shapes'] : const [],

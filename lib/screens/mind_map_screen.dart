@@ -63809,6 +63809,9 @@ class _MindMapScreenState extends State<MindMapScreen>
             for (final sh in (sl['shapes'] as List? ?? const []))
               if (sh is Map) sh.cast<String, dynamic>()
           ],
+          anim: _kPptxAnimPresets.containsKey('${sl['animation'] ?? ''}')
+              ? '${sl['animation']}'
+              : '',
         ));
       }
       final title = '${spec['title'] ?? ''}';
@@ -227738,55 +227741,105 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
               setD(() {});
             }
 
-            Future<void> addOf(String cls) async {
+            Color clsColor(String cls) => cls == 'exit'
+                ? const Color(0xFFE57373)
+                : (cls == 'emph'
+                    ? const Color(0xFFFFD54F)
+                    : const Color(0xFF81C784));
+
+            // ── 効果は「別の窓」 ではなく、 この窓の中に全部並べる
+            //    (= ユーザー要望: あちこちから項目が出てきて扱いづらい。
+            //    種類は減らさず、 押しやすくする)。 ──
+            Widget addSection(String cls) {
               final kinds = [
                 for (final e in _kPptxAnimPresets.entries)
                   if (e.value.$3 == cls) e.key,
               ];
-              final picked = await showDialog<String>(
-                context: dctx,
-                builder: (kctx) => AlertDialog(
-                  backgroundColor: const Color(0xFF22222E),
-                  title: Text('${_pptxAnimClassLabel(cls)}の効果を選ぶ',
-                      style: const TextStyle(color: Colors.white, fontSize: 14)),
-                  content: SizedBox(
-                    width: 320,
-                    child: Wrap(spacing: 6, runSpacing: 6, children: [
-                      for (final k in kinds)
-                        ActionChip(
-                          label: Text(_pptxAnimLabel(k),
-                              style: const TextStyle(fontSize: 12)),
-                          onPressed: () => Navigator.pop(kctx, k),
-                        ),
+              final color = clsColor(cls);
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(children: [
+                        Container(
+                            width: 8,
+                            height: 8,
+                            decoration: BoxDecoration(
+                                color: color, shape: BoxShape.circle)),
+                        const SizedBox(width: 6),
+                        Text(_pptxAnimClassLabel(cls),
+                            style: TextStyle(
+                                color: color,
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w700)),
+                      ]),
+                      const SizedBox(height: 5),
+                      Wrap(spacing: 5, runSpacing: 5, children: [
+                        for (final k in kinds)
+                          ActionChip(
+                            visualDensity: VisualDensity.compact,
+                            materialTapTargetSize:
+                                MaterialTapTargetSize.shrinkWrap,
+                            backgroundColor: const Color(0xFF2A2A3E),
+                            side: BorderSide(
+                                color: color.withValues(alpha: 0.45)),
+                            label: Text(_pptxAnimLabel(k),
+                                style: const TextStyle(
+                                    fontSize: 11.5, color: Colors.white)),
+                            onPressed: () => mutate(() => slide.anims.add(
+                                _PptxAnim(
+                                    shapeId: shapeId,
+                                    kind: k,
+                                    durMs: _pptxAnimDefaultDur(k)))),
+                          ),
+                      ]),
                     ]),
-                  ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(kctx),
-                      child: const Text('やめる',
-                          style: TextStyle(color: Colors.white54)),
-                    ),
-                  ],
-                ),
               );
-              if (picked == null) return;
-              mutate(() => slide.anims.add(_PptxAnim(
-                    shapeId: shapeId,
-                    kind: picked,
-                    durMs: _pptxAnimDefaultDur(picked),
-                  )));
+            }
+
+            /// 長さ / 遅れ のつまみ (= ユーザー要望: もっと決めやすい画面に)。
+            Widget msSlider(
+                String title, int value, void Function(int) onChanged) {
+              return Row(children: [
+                SizedBox(
+                  width: 32,
+                  child: Text(title,
+                      style: const TextStyle(
+                          color: Colors.white54, fontSize: 11)),
+                ),
+                Expanded(
+                  child: SliderTheme(
+                    data: SliderTheme.of(dctx).copyWith(
+                      trackHeight: 2,
+                      overlayShape:
+                          const RoundSliderOverlayShape(overlayRadius: 10),
+                    ),
+                    child: Slider(
+                      value: (value / 1000).clamp(0.0, 5.0),
+                      max: 5,
+                      divisions: 50,
+                      activeColor: const Color(0xFF6C63FF),
+                      onChanged: (v) => onChanged((v * 1000).round()),
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  width: 46,
+                  child: Text('${(value / 1000).toStringAsFixed(1)} 秒',
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(
+                          color: Colors.white70, fontSize: 11)),
+                ),
+              ]);
             }
 
             Widget animRow(int idx, _PptxAnim a) {
               final cls = a.cls;
-              final color = cls == 'exit'
-                  ? const Color(0xFFE57373)
-                  : (cls == 'emph'
-                      ? const Color(0xFFFFD54F)
-                      : const Color(0xFF81C784));
+              final color = clsColor(cls);
               return Container(
-                margin: const EdgeInsets.only(bottom: 6),
-                padding: const EdgeInsets.fromLTRB(8, 6, 4, 6),
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.fromLTRB(8, 6, 4, 4),
                 decoration: BoxDecoration(
                   color: Colors.white.withValues(alpha: 0.05),
                   borderRadius: BorderRadius.circular(8),
@@ -227812,6 +227865,8 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                       Expanded(
                         child: Text(
                             '${_pptxAnimClassLabel(cls)}: ${_pptxAnimLabel(a.kind)}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
                                 color: Colors.white, fontSize: 12.5)),
                       ),
@@ -227858,8 +227913,13 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                             mutate(() => slide.anims.removeAt(idx)),
                       ),
                     ]),
-                    const SizedBox(height: 4),
-                    Wrap(spacing: 6, runSpacing: 4, crossAxisAlignment: WrapCrossAlignment.center, children: [
+                    Row(children: [
+                      SizedBox(
+                        width: 32,
+                        child: Text('開始',
+                            style: const TextStyle(
+                                color: Colors.white54, fontSize: 11)),
+                      ),
                       DropdownButtonHideUnderline(
                         child: DropdownButton<String>(
                           value: a.trigger,
@@ -227878,27 +227938,11 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                           },
                         ),
                       ),
-                      const Text('長さ',
-                          style: TextStyle(color: Colors.white38, fontSize: 11)),
-                      for (final ms in const [250, 500, 1000, 2000, 3000])
-                        ChoiceChip(
-                          label: Text('${ms / 1000} 秒',
-                              style: const TextStyle(fontSize: 10.5)),
-                          visualDensity: VisualDensity.compact,
-                          selected: a.durMs == ms,
-                          onSelected: (_) => mutate(() => a.durMs = ms),
-                        ),
-                      const Text('遅れ',
-                          style: TextStyle(color: Colors.white38, fontSize: 11)),
-                      for (final ms in const [0, 500, 1000, 2000])
-                        ChoiceChip(
-                          label: Text('${ms / 1000} 秒',
-                              style: const TextStyle(fontSize: 10.5)),
-                          visualDensity: VisualDensity.compact,
-                          selected: a.delayMs == ms,
-                          onSelected: (_) => mutate(() => a.delayMs = ms),
-                        ),
                     ]),
+                    msSlider('長さ', a.durMs,
+                        (v) => mutate(() => a.durMs = math.max(100, v))),
+                    msSlider('遅れ', a.delayMs,
+                        (v) => mutate(() => a.delayMs = v)),
                   ],
                 ),
               );
@@ -227911,42 +227955,35 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(color: Colors.white, fontSize: 14)),
               content: SizedBox(
-                width: 420,
-                child: SingleChildScrollView(
-                  child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        if (mine.isEmpty)
-                          const Padding(
-                            padding: EdgeInsets.only(bottom: 8),
-                            child: Text('まだアニメーションはありません。 下から足してください。',
-                                style: TextStyle(
-                                    color: Colors.white38, fontSize: 11.5)),
-                          ),
-                        for (final (i, a) in mine) animRow(i, a),
-                        Wrap(spacing: 6, runSpacing: 6, children: [
-                          for (final cls in const ['entr', 'emph', 'exit'])
-                            OutlinedButton.icon(
-                              style: OutlinedButton.styleFrom(
-                                foregroundColor: Colors.white,
-                                side: const BorderSide(color: Colors.white24),
-                                visualDensity: VisualDensity.compact,
-                              ),
-                              onPressed: () => addOf(cls),
-                              icon: const Icon(Icons.add_rounded, size: 15),
-                              label: Text('${_pptxAnimClassLabel(cls)}を足す',
-                                  style: const TextStyle(fontSize: 12)),
+                width: 460,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                      maxHeight: math.max(
+                          240.0, MediaQuery.sizeOf(dctx).height - 240)),
+                  child: SingleChildScrollView(
+                    child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (mine.isEmpty)
+                            const Padding(
+                              padding: EdgeInsets.only(bottom: 8),
+                              child: Text('まだアニメーションはありません。 下から選ぶと足せます。',
+                                  style: TextStyle(
+                                      color: Colors.white38, fontSize: 11.5)),
                             ),
+                          for (final (i, a) in mine) animRow(i, a),
+                          const Divider(color: Colors.white12, height: 18),
+                          for (final cls in const ['entr', 'emph', 'exit'])
+                            addSection(cls),
+                          const Text(
+                              '番号はスライド全体での再生順です。 「クリック時」 で 1 つずつ進み、 '
+                              '「直前と同時 / 直前の後」 は同じクリックの中で続けて動きます。 '
+                              'PowerPoint で開いても同じ設定で再生されます。',
+                              style: TextStyle(
+                                  color: Colors.white38, fontSize: 11)),
                         ]),
-                        const SizedBox(height: 10),
-                        const Text(
-                            '番号はスライド全体での再生順です。 「クリック時」 で 1 つずつ進み、 '
-                            '「直前と同時 / 直前の後」 は同じクリックの中で続けて動きます。 '
-                            'PowerPoint で開いても同じ設定で再生されます。',
-                            style:
-                                TextStyle(color: Colors.white38, fontSize: 11)),
-                      ]),
+                  ),
                 ),
               ),
               actions: [
@@ -227974,7 +228011,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
 
     if (anchor != null && anchor.mounted) {
       await _showDialogNearAnchor<void>(anchor,
-          width: 440, estHeight: 420, builder: build);
+          width: 480, estHeight: 520, builder: build);
     } else {
       await showDialog<void>(context: context, builder: build);
     }
@@ -232664,6 +232701,14 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
     // `FocusManager.instance.primaryFocus` が editing focus かどうかも見る。
     // editing focus が外れているのに `_editingShapeId` だけ残ってる
     // (= 内部状態のズレ) の防御。
+    // ── F5 / Shift+F5 / Alt+F5: 発表者モード (= ユーザー要望: PowerPoint と
+    //    同じショートカットで入れるように)。 F5 = 最初から、 Shift+F5 =
+    //    今のスライドから、 Alt+F5 = 発表者ツール (このアプリは同じ画面)。 ──
+    if (event.logicalKey == LogicalKeyboardKey.f5) {
+      final shift = HardwareKeyboard.instance.isShiftPressed;
+      unawaited(_startPresenterMode(startIndex: shift ? _currentIndex : 0));
+      return KeyEventResult.handled;
+    }
     final isEditing = _editingShapeId != null ||
         (_editingFocus?.hasFocus ?? false) ||
         (_notesFocus?.hasFocus ?? false);
@@ -237415,7 +237460,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
   ///   対応。 別ダイアログ (= フルスクリーン) で `_PresenterModeDialog` を
   ///   開く。 そこではキー操作 (= 矢印 / Space) でスライドを進められ、 メモ
   ///   と次のスライドのサムネが表示される。 Esc で抜ける。
-  Future<void> _startPresenterMode() async {
+  Future<void> _startPresenterMode({int? startIndex}) async {
     // メモ編集中なら先に確定保存
     _commitNotesEditing();
     if (_slides.isEmpty) return;
@@ -237428,7 +237473,8 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
       transitionDuration: const Duration(milliseconds: 200),
       pageBuilder: (ctx, _, __) => _PresenterModeDialog(
         slides: _slides,
-        startIndex: _currentIndex,
+        startIndex:
+            (startIndex ?? _currentIndex).clamp(0, _slides.length - 1),
         media: _media,
         master: _activeMaster,
         slideWidthEmu: _slideWidthEmu,
@@ -243764,7 +243810,11 @@ typedef _AiSlideRec = ({
   Uint8List? image,
   String imagePos,
   String imageShape,
-  List<Map<String, dynamic>> shapes
+  List<Map<String, dynamic>> shapes,
+  // このスライドの動き (= ユーザー要望: AI にアニメーション付きの資料を
+  //   作らせたい)。 _kPptxAnimPresets の鍵 ('fadeIn' 等)。 '' = 動きなし。
+  //   見出し → 本文 → 挿し絵 の順に、 クリックのたびに 1 つずつ出る。
+  String anim
 });
 
 /// 分割ペインのファイルを切り替える前に呼ぶ未保存確認 ('left' / 'right' →
@@ -244217,8 +244267,14 @@ class _SlideDraft {
   final List<TextEditingController> bullets;
   Uint8List? image;
   bool imgLoading;
+
+  /// このスライドの動き (= ユーザー要望: AI にアニメーション付きで作らせる)。
+  String anim;
   _SlideDraft(
-      {required String title, required List<String> bullets, this.image})
+      {required String title,
+      required List<String> bullets,
+      this.image,
+      this.anim = ''})
       : title = TextEditingController(text: title),
         bullets = bullets.map((b) => TextEditingController(text: b)).toList(),
         imgLoading = false;
@@ -244235,6 +244291,7 @@ class _SlideDraft {
         imagePos: 'right',
         imageShape: imageShape,
         shapes: const <Map<String, dynamic>>[],
+        anim: anim,
       );
 
   void dispose() {
@@ -245955,6 +246012,102 @@ class _OfficeFileTemplate {
   /// `imagePos` = right / left / full) と飾りの図形 (`shapes`) を持てる。
   /// = ユーザー要望「おしゃれなカフェのパワポにしてとお願いしても珈琲の
   ///   画像や図形が挿入されず味気ない」。
+  /// AI が作る資料 1 枚分の `<p:timing>`。 見出し → 本文 → 挿し絵 の順で
+  /// 「クリックのたびに 1 つずつ」 出す。 [s.anim] が空なら何も書かない。
+  static String _aiSlideTimingXml(_AiSlideRec s, {required bool hasPic}) {
+    final kind = s.anim;
+    if (kind.isEmpty || !_kPptxAnimPresets.containsKey(kind)) return '';
+    final preset = _kPptxAnimPresets[kind]!;
+    final ids = <int>[2, 3, if (hasPic) 4];
+    final dur = _pptxAnimDefaultDur(kind);
+    var next = 3;
+    final buf = StringBuffer();
+    for (final id in ids) {
+      final i1 = next++, i2 = next++, i3 = next++, i4 = next++;
+      buf.write('<p:par><p:cTn id="$i1" fill="hold">'
+          '<p:stCondLst><p:cond delay="indefinite"/></p:stCondLst>'
+          '<p:childTnLst><p:par><p:cTn id="$i2" fill="hold">'
+          '<p:stCondLst><p:cond delay="0"/></p:stCondLst><p:childTnLst>'
+          '<p:par><p:cTn id="$i3" presetID="${preset.$1}" presetClass="entr" '
+          'presetSubtype="${preset.$2}" fill="hold" grpId="0" '
+          'nodeType="clickEffect">'
+          '<p:stCondLst><p:cond delay="0"/></p:stCondLst><p:childTnLst>'
+          '<p:set><p:cBhvr><p:cTn id="$i4" dur="1" fill="hold">'
+          '<p:stCondLst><p:cond delay="0"/></p:stCondLst></p:cTn>'
+          '<p:tgtEl><p:spTgt spid="$id"/></p:tgtEl>'
+          '<p:attrNameLst><p:attrName>style.visibility</p:attrName>'
+          '</p:attrNameLst></p:cBhvr>'
+          '<p:to><p:strVal val="visible"/></p:to></p:set>'
+          '<p:animEffect transition="in" filter="fade"><p:cBhvr>'
+          '<p:cTn id="${next++}" dur="$dur"/>'
+          '<p:tgtEl><p:spTgt spid="$id"/></p:tgtEl></p:cBhvr></p:animEffect>'
+          '</p:childTnLst></p:cTn></p:par>'
+          '</p:childTnLst></p:cTn></p:par></p:childTnLst></p:cTn></p:par>');
+    }
+    final bld = StringBuffer();
+    for (final id in ids) {
+      bld.write('<p:bldP spid="$id" grpId="0"/>');
+    }
+    return '<p:timing><p:tnLst><p:par>'
+        '<p:cTn id="1" dur="indefinite" restart="never" nodeType="tmRoot">'
+        '<p:childTnLst><p:seq concurrent="1" nextAc="seek">'
+        '<p:cTn id="2" dur="indefinite" nodeType="mainSeq">'
+        '<p:childTnLst>$buf</p:childTnLst></p:cTn>'
+        '<p:prevCondLst><p:cond evt="onPrev" delay="0">'
+        '<p:tgtEl><p:sldTgt/></p:tgtEl></p:cond></p:prevCondLst>'
+        '<p:nextCondLst><p:cond evt="onNext" delay="0">'
+        '<p:tgtEl><p:sldTgt/></p:tgtEl></p:cond></p:nextCondLst>'
+        '</p:seq></p:childTnLst></p:cTn></p:par></p:tnLst>'
+        '<p:bldLst>$bld</p:bldLst></p:timing>';
+  }
+
+  /// 飾りの図形どうしが重なって読めなくなるのを直す (= ユーザー報告: 縦棒と
+  /// 枠が重なって中身が見えない)。 細い棒 (縦 / 横) に食い込んでいる大きな
+  /// 図形を、 棒の外側へ寄せて幅を詰める。 x/y/w/h はスライドに対する % 値。
+  static List<Map<String, dynamic>> _fixDecoOverlaps(
+      List<Map<String, dynamic>> shapes) {
+    if (shapes.length < 2) return shapes;
+    double num0(Map m, String k, double d) =>
+        (m[k] is num) ? (m[k] as num).toDouble() : d;
+    final out = [
+      for (final s in shapes) Map<String, dynamic>.from(s),
+    ];
+    for (final bar in out) {
+      final bw = num0(bar, 'w', 0), bh = num0(bar, 'h', 0);
+      final bx = num0(bar, 'x', 0), by = num0(bar, 'y', 0);
+      final vertical = bw > 0 && bw <= 5 && bh >= 25;
+      final horizontal = bh > 0 && bh <= 5 && bw >= 25;
+      if (!vertical && !horizontal) continue;
+      for (final o in out) {
+        if (identical(o, bar)) continue;
+        final ow = num0(o, 'w', 0), oh = num0(o, 'h', 0);
+        final ox = num0(o, 'x', 0), oy = num0(o, 'y', 0);
+        // 相手も細い棒なら触らない (飾りどうしの重なりは意図の事がある)。
+        if ((ow <= 5 && oh >= 25) || (oh <= 5 && ow >= 25)) continue;
+        if (vertical) {
+          final overlapY = oy < by + bh && oy + oh > by;
+          final overlapX = ox < bx + bw && ox + ow > bx;
+          if (!overlapX || !overlapY) continue;
+          final right = bx + bw + 2;
+          final newW = ox + ow - right;
+          if (newW < 10) continue; // 詰め過ぎるくらいなら触らない
+          o['x'] = right;
+          o['w'] = newW;
+        } else {
+          final overlapX = ox < bx + bw && ox + ow > bx;
+          final overlapY = oy < by + bh && oy + oh > by;
+          if (!overlapX || !overlapY) continue;
+          final below = by + bh + 2;
+          final newH = oy + oh - below;
+          if (newH < 10) continue;
+          o['y'] = below;
+          o['h'] = newH;
+        }
+      }
+    }
+    return out;
+  }
+
   static Uint8List buildPptxFromSlides(
       List<_AiSlideRec> slides,
       {String? themeXml,
@@ -245975,6 +246128,7 @@ class _OfficeFileTemplate {
               image: null,
               imagePos: 'right',
               imageShape: 'rect',
+              anim: '',
               shapes: const <Map<String, dynamic>>[],
             )
           ]
@@ -246138,7 +246292,9 @@ class _OfficeFileTemplate {
       // 飾りの図形。 見出しや本文より先に置いて、 後ろに敷く。
       final deco = StringBuffer();
       var decoId = 10;
-      for (final sh in s.shapes.take(3)) {
+      // ★ 重なりを先に直す (= ユーザー報告: 縦棒と枠が重なって中身が
+      //   見えなくなる)。
+      for (final sh in _fixDecoOverlaps(s.shapes.take(3).toList())) {
         deco.write(shapeXml(sh, decoId++));
       }
       // 全面の絵は一番下 (= 背景) に置く。
@@ -246179,7 +246335,12 @@ class _OfficeFileTemplate {
           'lIns="0" rIns="91440" tIns="45720" bIns="45720">'
           '<a:normAutofit/></a:bodyPr><a:lstStyle/>$body</p:txBody></p:sp>'
           '$overlayPic'
-          '</p:spTree></p:cSld></p:sld>';
+          '</p:spTree></p:cSld>'
+          // ── 動き (= ユーザー要望: AI にアニメーション付きの資料を作らせる)。
+          //    見出し (id 2) → 本文 (id 3) → 挿し絵 (id 4) の順に、
+          //    クリックのたびに 1 つずつ出る。 PowerPoint でもそのまま動く。
+          '${_aiSlideTimingXml(s, hasPic: s.image != null)}'
+          '</p:sld>';
     }
 
     final files = <String, String>{};
@@ -255808,6 +255969,9 @@ class _PresenterModeDialogState extends State<_PresenterModeDialog>
         // 通常時 (none) は下のスライドへイベントを通しつつ右クリックだけ拾う。
         behavior: active ? HitTestBehavior.opaque : HitTestBehavior.translucent,
         onSecondaryTapDown: (d) => _showAnnotMenu(d.globalPosition),
+        // ── 押したら次へ (= ユーザー要望: クリックでアニメーションが順に
+        //    出て、 出し切ったら次のスライドへ)。 描き込み中は動かさない。 ──
+        onTap: active ? null : _next,
         onPanStart: paintMode
             ? (d) => _strokeStart(d.localPosition)
             : pointerMode

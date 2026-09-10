@@ -12,6 +12,8 @@
 //   図形が挿入されず味気ない」 の裏取り。
 import 'dart:typed_data';
 
+import 'dart:convert';
+
 import 'package:archive/archive.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mindmap_app/screens/mind_map_screen.dart';
@@ -38,8 +40,16 @@ void main() {
         image: png,
         imagePos: 'right',
         imageShape: 'rect',
+        anim: '',
         shapes: <Map<String, dynamic>>[
-          {'kind': 'ellipse', 'x': 72, 'y': 8, 'w': 22, 'h': 30, 'fill': 'D4AF37'},
+          {
+            'kind': 'ellipse',
+            'x': 72,
+            'y': 8,
+            'w': 22,
+            'h': 30,
+            'fill': 'D4AF37'
+          },
           {'kind': 'rect', 'x': 0, 'y': 92, 'w': 100, 'h': 8, 'fill': '1E293B'},
         ],
       ),
@@ -49,6 +59,7 @@ void main() {
         image: png,
         imagePos: 'full',
         imageShape: 'rect',
+        anim: '',
         shapes: const <Map<String, dynamic>>[],
       ),
     ]);
@@ -83,7 +94,8 @@ void main() {
     expect(s1.contains('<p:pic>'), isTrue, reason: '絵が無い');
     expect(s1.contains('x="5180000"'), isTrue, reason: '絵が右に無い');
     expect(names, contains('ppt/media/image1.png'));
-    expect(part('ppt/slides/_rels/slide1.xml.rels').contains('media/image1.png'),
+    expect(
+        part('ppt/slides/_rels/slide1.xml.rels').contains('media/image1.png'),
         isTrue,
         reason: '絵の関連付けが無い');
 
@@ -116,6 +128,7 @@ void main() {
         image: null,
         imagePos: 'left',
         imageShape: 'rect',
+        anim: '',
         shapes: const <Map<String, dynamic>>[],
       ),
     ]);
@@ -145,6 +158,7 @@ void main() {
           image: null,
           imagePos: 'right',
           imageShape: 'rect',
+          anim: '',
           shapes: const <Map<String, dynamic>>[],
         ),
       ]);
@@ -157,11 +171,9 @@ void main() {
     // 短い見出しは今までどおり大きく。
     expect(slideOf('会社紹介', const ['一行']).contains('sz="2800" b="1"'), isTrue);
     // 長い見出しは小さくなる。
-    final long = slideOf(
-        '株式会社テラスカイ 会社紹介 クラウドの可能性を最大限に引き出すプロフェッショナル',
-        const ['一行']);
-    expect(long.contains('sz="2800" b="1"'), isFalse,
-        reason: '長い見出しが縮んでいない');
+    final long =
+        slideOf('株式会社テラスカイ 会社紹介 クラウドの可能性を最大限に引き出すプロフェッショナル', const ['一行']);
+    expect(long.contains('sz="2800" b="1"'), isFalse, reason: '長い見出しが縮んでいない');
     expect(RegExp(r'sz="(1600|2000|2400)" b="1"').hasMatch(long), isTrue);
     // 行数が多い本文も小さくなる。
     final many = slideOf('題', List.generate(10, (i) => '項目 \$i'));
@@ -182,8 +194,16 @@ void main() {
         image: null,
         imagePos: 'right',
         imageShape: 'rect',
+        anim: '',
         shapes: <Map<String, dynamic>>[
-          {'kind': 'line', 'x': 10, 'y': 50, 'w': 80, 'h': 0.5, 'fill': 'D4AF37'},
+          {
+            'kind': 'line',
+            'x': 10,
+            'y': 50,
+            'w': 80,
+            'h': 0.5,
+            'fill': 'D4AF37'
+          },
         ],
       ),
     ]);
@@ -192,8 +212,10 @@ void main() {
         .firstWhere((f) => f.name == 'ppt/slides/slide1.xml')
         .content as List<int>);
     expect(xml.contains('prst="line"'), isTrue);
-    expect(RegExp(r'<a:ln w="\d+"><a:solidFill><a:srgbClr val="D4AF37"')
-        .hasMatch(xml), isTrue,
+    expect(
+        RegExp(r'<a:ln w="\d+"><a:solidFill><a:srgbClr val="D4AF37"')
+            .hasMatch(xml),
+        isTrue,
         reason: '線に色が付いていない (何も描かれない図形になる)');
   });
 
@@ -219,6 +241,7 @@ void main() {
         image: png,
         imagePos: 'right',
         imageShape: 'ellipse',
+        anim: '',
         shapes: const <Map<String, dynamic>>[],
       ),
       (
@@ -227,6 +250,7 @@ void main() {
         image: png,
         imagePos: 'full',
         imageShape: 'ellipse',
+        anim: '',
         shapes: const <Map<String, dynamic>>[],
       ),
     ]);
@@ -246,5 +270,44 @@ void main() {
     final pic2 = RegExp(r'<p:pic>.*?</p:pic>').firstMatch(s2)?.group(0);
     expect(pic2, isNotNull);
     expect(pic2!.contains('prst="rect"'), isTrue, reason: '全面の絵が抜かれている');
+  });
+
+  test('animation=fadeIn は <p:timing> 付きで書き出される', () {
+    final bytes = buildPptxFromSlidesForTest([
+      (
+        title: '動く見出し',
+        bullets: ['一つ目', '二つ目'],
+        image: null,
+        imagePos: 'right',
+        imageShape: 'rect',
+        anim: 'fadeIn',
+        shapes: <Map<String, dynamic>>[
+          // 縦棒 (細い) と、 それに食い込む枠。
+          {'kind': 'rect', 'x': 4.0, 'y': 10.0, 'w': 1.5, 'h': 70.0},
+          {'kind': 'roundRect', 'x': 4.0, 'y': 20.0, 'w': 80.0, 'h': 50.0},
+        ],
+      ),
+    ]);
+    final archive = ZipDecoder().decodeBytes(bytes);
+    final xml = utf8.decode(archive.files
+        .firstWhere((f) => f.name == 'ppt/slides/slide1.xml')
+        .content as List<int>);
+    expect(xml.contains('<p:timing>'), isTrue);
+    expect(xml.contains('presetClass="entr"'), isTrue);
+    expect(xml.contains('filter="fade"'), isTrue);
+    expect(xml.contains('<p:spTgt spid="2"/>'), isTrue);
+    expect(xml.contains('<p:spTgt spid="3"/>'), isTrue);
+    // 縦棒に食い込んでいた枠は、 棒の右へ寄っている。
+    final offs = RegExp(r'<a:off x="(\d+)" y="(\d+)"/>')
+        .allMatches(xml)
+        .map((m) => int.parse(m.group(1)!))
+        .toList();
+    // 9144000 EMU = 100%。 棒は x=4%、 枠は 4+1.5+2 = 7.5% 以上になるはず。
+    final barX = (9144000 * 0.04).round();
+    final boxX = (9144000 * 0.075).round();
+    expect(offs.any((x) => (x - barX).abs() < 20000), isTrue,
+        reason: '棒はそのまま x=4%');
+    expect(offs.any((x) => (x - boxX).abs() < 20000), isTrue,
+        reason: '枠は棒の外へ寄る');
   });
 }
