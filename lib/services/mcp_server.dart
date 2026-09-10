@@ -849,6 +849,15 @@ class McpServer {
               'items': {'type': 'string'}
             },
           },
+          // 配色 (= ユーザー要望: 白地に文字だけの資料にしない)。
+          'theme': {
+            'type': 'string',
+            'description':
+                'Colour theme name for a pptx deck (Japanese names, e.g. '
+                'モダンブルー / ミッドナイト / サンセット …). Leave it out and one '
+                'is picked for you. The deck is always coloured - never a '
+                'plain white text-only deck.',
+          },
           'slides': {
             'type': 'array',
             'items': {
@@ -884,9 +893,18 @@ class McpServer {
                   'type': 'string',
                   'enum': ['rect', 'roundRect', 'ellipse']
                 },
+                // 飾りの図形 (= 味気ない資料にしない)。
                 'shapes': {
                   'type': 'array',
-                  'items': {'type': 'object'}
+                  'items': {'type': 'object'},
+                  'description':
+                      'Decorations for this slide, up to 3. Each is '
+                      '{kind: rect|roundRect|ellipse|line|arrow, x, y, w, h '
+                      '(percent of the slide), fill: "RRGGBB", '
+                      'line: "RRGGBB", lineWidth: pt}. Use them like the '
+                      'in-app slide editor does: a colour band down one '
+                      'side, a big soft circle behind the title, a thin '
+                      'rule. Do not cover the text.',
                 },
               },
             },

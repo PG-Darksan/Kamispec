@@ -63822,6 +63822,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         paragraphs: paragraphs.isEmpty ? null : paragraphs,
         slides: slides.isEmpty ? null : slides,
         title: title.isEmpty ? null : title,
+        themeName: '${spec['theme'] ?? ''}'.trim(),
       );
 
       // 保存先はアプリの書類フォルダ。 名前が無ければ見出しか日時から作る。
@@ -223890,6 +223891,22 @@ const String _kPptxAiRoleLine = '''
 ・絵は 1 枚ずつ利用者のクレジットを使うので、 表紙と要になる 2〜3 枚だけに
   絞る。 全部のスライドには入れない。 文字だけで良い資料には入れない。
 
+【動き (アニメーション) を付ける】
+スライドに "anim" を足すと、 そのスライドの文字と絵が
+**クリックのたびに 1 つずつ**出てきます。
+```json
+{"layout":"bullets","title":"…","bullets":["…"],"anim":"fadeIn"}
+```
+・使える名前: appear / fadeIn / flyInLeft / flyInRight / flyInTop /
+  flyInBottom / wipeLeft / wipeRight / wipeTop / wipeBottom / zoomIn /
+  floatUp / wheel (開始)、 spin / grow / pulse (強調)、
+  fadeOut / flyOutLeft / flyOutRight / flyOutTop / flyOutBottom /
+  zoomOut / disappear (終了)。
+・free 型では texts / shapes の 1 つずつにも "anim" を付けられます。
+・**PowerPoint で開いても同じように再生されます**。
+・「アニメーション付きで」 と頼まれたら必ず付ける。 付けずに
+  「対応していません」 とは言わない。
+
 【飾りの図形を置く (1 枚に 3 個まで)】
 スライドの中に "shapes" を足すと、 帯や丸を敷けます。
 ```json
@@ -229835,7 +229852,9 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
     final subtitle = str('subtitle');
     final bullets = lines('bullets');
     // 見出しとその下の罫 (bullets 型)。 罫の長さは最後に文字幅へ合わせる。
-    (_PptxTextShape, _PptxDrawShape)? titleRuleFor;
+    // 文字の長さに合わせる線の一覧 (= ユーザー要望: 黄色い線がいつも同じ
+    //   長さで文字に足りていない)。 (合わせる文字, 線, 中央ぞろえか)。
+    final ruleFits = <(_PptxTextShape, _PptxDrawShape, bool)>[];
 
     // 'free' は決まった型を組まない (= 下の texts / shapes だけで作る)。
     switch (layout == 'free' ? '__none__' : layout) {
@@ -229843,10 +229862,12 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
         break;
       case 'title':
         // 表紙: 文字は少なく、 余白を大きく。 アクセントは細い帯 1 本。
-        slide.drawShapes.add(_mkAiRect(nextId(),
-            x: 8, y: 40, w: 9, h: 1.0, fill: th.accent));
+        //   帯の長さは最後に見出しの文字幅へ合わせる (= ユーザー要望)。
+        final titleRule = _mkAiRect(nextId(),
+            x: 8, y: 40, w: 9, h: 1.0, fill: th.accent);
+        slide.drawShapes.add(titleRule);
         if (title.isNotEmpty) {
-          slide.textShapes.add(_mkAiText(nextId(), title,
+          final ts = _mkAiText(nextId(), title,
               x: 8,
               y: 46,
               w: 84,
@@ -229854,7 +229875,9 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
               sizePt: th.titleSize + 8,
               color: th.titleColor,
               font: th.font,
-              bold: true));
+              bold: true);
+          slide.textShapes.add(ts);
+          ruleFits.add((ts, titleRule, false));
         }
         if (subtitle.isNotEmpty) {
           slide.textShapes.add(_mkAiText(nextId(), subtitle,
@@ -229937,8 +229960,11 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
         }
         break;
       case 'closing':
-        slide.drawShapes.add(_mkAiRect(nextId(),
-            x: 45.5, y: 62, w: 9, h: 0.9, fill: th.accent));
+        // 帯は下の言葉の長さに合わせる (= ユーザー要望)。 中央ぞろえなので
+        //   位置も中心を保ったまま伸ばす。
+        final closeRule = _mkAiRect(nextId(),
+            x: 45.5, y: 62, w: 9, h: 0.9, fill: th.accent);
+        slide.drawShapes.add(closeRule);
         if (title.isNotEmpty) {
           slide.textShapes.add(_mkAiText(nextId(), title,
               x: 8,
@@ -229952,7 +229978,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
               bold: true));
         }
         if (subtitle.isNotEmpty) {
-          slide.textShapes.add(_mkAiText(nextId(), subtitle,
+          final ss = _mkAiText(nextId(), subtitle,
               x: 8,
               y: 66,
               w: 84,
@@ -229960,7 +229986,9 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
               sizePt: th.bodySize,
               color: th.bodyColor,
               font: th.font,
-              align: 'ctr'));
+              align: 'ctr');
+          slide.textShapes.add(ss);
+          ruleFits.add((ss, closeRule, true));
         }
         break;
       default: // bullets
@@ -229982,7 +230010,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
           final rule = _mkAiRect(nextId(),
               x: 7, y: 22, w: 7, h: 0.7, fill: th.accent);
           slide.drawShapes.add(rule);
-          titleRuleFor = (titleShape, rule);
+          ruleFits.add((titleShape, rule, false));
         }
         if (bullets.isNotEmpty) {
           slide.textShapes.add(_mkAiText(
@@ -230169,14 +230197,94 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
     //    通し、 収まらない時は文字を小さくする。 絵の横で枠を狭めた後に
     //    やるのが肝心 (狭めてから折り返しが変わる)。
     _fitAiTextShapesToBoxes(slide);
-    // 見出し下の罫を見出しの文字幅に合わせる (= ユーザー要望)。
-    final tr = titleRuleFor;
-    if (tr != null) {
-      final wPx = _measureAiTextWidth(tr.$1);
+    // ── 動き (= ユーザー要望: AI アシスタントからアニメーションを付ける) ──
+    //    スライドの "anim" は、 このスライドの文字と絵に順番 (クリックのたび
+    //    に 1 つ) で掛ける。 free 型では文字 / 図形ごとの "anim" が優先。
+    _applySpecAnims(slide, sp);
+    // 帯 / 罫を文字の長さに合わせる (= ユーザー要望: いつも同じ長さで
+    //   文字に足りていない)。 中央ぞろえの物は中心を保ったまま伸ばす。
+    for (final (textShape, rule, centered) in ruleFits) {
+      final wPx = _measureAiTextWidth(textShape);
+      if (wPx <= 0) continue;
       final pct = (wPx / (_slideWidthEmu / 9525) * 100).clamp(7.0, 86.0);
-      tr.$2.extCx = _pxEmu(pct);
+      final centerEmu = rule.offX + rule.extCx / 2;
+      rule.extCx = _pxEmu(pct);
+      if (centered) {
+        rule.offX = (centerEmu - rule.extCx / 2).round().clamp(0, _slideWidthEmu);
+      }
     }
     return slide;
+  }
+
+  /// AI の指定から、 このスライドの動きを組み立てる。
+  ///
+  /// ・スライドの "anim" … 文字 → 図形 → 絵 の順に、 クリックのたびに 1 つ。
+  /// ・free 型の texts / shapes の "anim" … その要素だけに掛ける。
+  /// どちらも `_kPptxAnimPresets` の鍵 ('fadeIn' 等)。 知らない名前は無視。
+  void _applySpecAnims(_PptxSlide slide, Map<String, dynamic> sp) {
+    String kindOf(Object? v) {
+      final s = (v ?? '').toString().trim();
+      return _kPptxAnimPresets.containsKey(s) ? s : '';
+    }
+
+    // 要素ごとの指定 (free 型)。 置いた順に id が振られているので、
+    //   texts / shapes の並びと突き合わせる。
+    final perItem = <int, String>{};
+    final texts = sp['texts'];
+    if (texts is List) {
+      // 先に置いた文字から順に対応する (free 型は texts しか置かない)。
+      final ids = [for (final t in slide.textShapes) t.id];
+      for (var i = 0; i < texts.length && i < ids.length; i++) {
+        final t = texts[i];
+        if (t is Map) {
+          final k = kindOf(t['anim']);
+          if (k.isNotEmpty) perItem[ids[i]] = k;
+        }
+      }
+    }
+    final shapes = sp['shapes'];
+    if (shapes is List) {
+      // 飾りの図形は「後ろに敷く物」 なので、 置いた順の後ろから対応する。
+      final ids = [for (final d in slide.drawShapes) d.id];
+      final start = math.max(0, ids.length - shapes.length);
+      for (var i = 0; i < shapes.length && start + i < ids.length; i++) {
+        final s = shapes[i];
+        if (s is Map) {
+          final k = kindOf(s['anim']);
+          if (k.isNotEmpty) perItem[ids[start + i]] = k;
+        }
+      }
+    }
+
+    final slideKind = kindOf(sp['anim']);
+    if (slideKind.isEmpty && perItem.isEmpty) return;
+    final added = <_PptxAnim>[];
+    // 並びは「文字 → 貼った絵」。 飾りの図形は指定された物だけ動かす
+    //   (帯や丸まで動くと落ち着かないため)。
+    for (final t in slide.textShapes) {
+      final k = perItem[t.id] ?? slideKind;
+      if (k.isEmpty) continue;
+      added.add(_PptxAnim(
+          shapeId: t.id, kind: k, durMs: _pptxAnimDefaultDur(k)));
+    }
+    for (final d in slide.drawShapes) {
+      final k = perItem[d.id];
+      if (k == null || k.isEmpty) continue;
+      added.add(_PptxAnim(
+          shapeId: d.id, kind: k, durMs: _pptxAnimDefaultDur(k)));
+    }
+    for (final n in slide.newImages) {
+      final k = perItem[n.id] ?? slideKind;
+      if (k.isEmpty) continue;
+      added.add(_PptxAnim(
+          shapeId: n.id, kind: k, durMs: _pptxAnimDefaultDur(k)));
+    }
+    if (added.isEmpty) return;
+    slide.anims
+      ..clear()
+      ..addAll(added);
+    slide.animsDirty = true;
+    _syncAnimCaches(slide);
   }
 
   /// AI が組んだ文字枠 1 個を、 編集画面 (`_buildShapeText`) と同じ組み方
@@ -230288,6 +230396,15 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
     //   古い写真が重なる。 AI が入れた分 (mediaName が hnai_ で始まる物)
     //   だけ捨てる。 利用者が自分で貼った画像は残す。
     dst.newImages.removeWhere((ni) => ni.mediaName.startsWith('hnai_'));
+    // ★ 動きも一緒に移す (= ユーザー要望: AI からアニメーションを付ける)。
+    //   指定が無かった時は今の設定をそのまま残す。
+    if (built.anims.isNotEmpty) {
+      dst.anims
+        ..clear()
+        ..addAll(built.anims);
+      dst.animsDirty = true;
+      _syncAnimCaches(dst);
+    }
     dst.dirty = true;
   }
 
@@ -233069,37 +233186,6 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                                       _inkDraft.clear();
                                       _magicEraseMode = false;
                                       _aiReplaceMode = false;
-                                    }
-                                  });
-                                  _inkDraftTick.value++;
-                                },
-                        ),
-                        // ── 囲った所を消して周りに馴染ませる
-                        //    (= ユーザー要望: 消しゴムマジック) ──
-                        IconButton(
-                          tooltip: context
-                              .read<MindMapProvider>()
-                              .t('pptx.magicErase'),
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(
-                              minWidth: 30, minHeight: 30),
-                          icon: Icon(Icons.auto_fix_high_rounded,
-                              size: 19,
-                              color: _magicEraseMode
-                                  ? const Color(0xFFE57373)
-                                  : const Color(0xFF8E9AAF)),
-                          onPressed: _slides.isEmpty
-                              ? null
-                              : () {
-                                  final next = !_magicEraseMode;
-                                  setState(() {
-                                    _magicEraseMode = next;
-                                    if (next) {
-                                      _rangeSelectMode = false;
-                                      _aiReplaceMode = false;
-                                      _inkMode = false;
-                                      _inkDrawing = false;
-                                      _inkDraft.clear();
                                     }
                                   });
                                   _inkDraftTick.value++;
@@ -245495,6 +245581,9 @@ class _OfficeFileTemplate {
     List<String>? paragraphs,
     List<_AiSlideRec>? slides,
     String? title,
+    // 資料の配色 (= ユーザー要望: マップの AI から作っても、 pptx 画面の AI
+    //   と同じ見た目になるように)。 名前 (テーマ名) か番号。 null = おまかせ。
+    String? themeName,
   }) async {
     switch (type.toLowerCase()) {
       case 'txt':
@@ -245528,7 +245617,29 @@ class _OfficeFileTemplate {
         //   見栄えがはっきり劣っていた。
         //   絵と飾りの図形もそのまま通す (= ユーザー要望: 珈琲の画像や図形が
         //   挿入されず味気ない)。 絵は呼び出し側 (_buildMcpFile) が用意する。
-        return buildPptxFromSlides(slides ?? const <_AiSlideRec>[]);
+        {
+          // ★ 白地に文字だけの素っ気ない資料にしない (= ユーザー報告)。
+          //   名前で選べる。 指定が無ければ、 見出しの字面から決めて
+          //   毎回同じ配色にならないようにする。
+          final list = slides ?? const <_AiSlideRec>[];
+          final want = (themeName ?? '').trim();
+          var idx = -1;
+          if (want.isNotEmpty) {
+            idx = _kPptxThemes.indexWhere((t) =>
+                t.name == want ||
+                t.name.toLowerCase() == want.toLowerCase());
+          }
+          if (idx < 0) {
+            final seed = (title ?? '') +
+                (list.isEmpty ? '' : list.first.title);
+            idx = seed.isEmpty
+                ? 0
+                : (seed.codeUnits.fold<int>(0, (a, b) => a + b) %
+                    _kPptxThemes.length);
+          }
+          return buildPptxFromSlides(list,
+              theme: _kPptxThemes[idx.clamp(0, _kPptxThemes.length - 1)]);
+        }
       case 'pdf':
         return _buildPdf(title: title, paragraphs: paragraphs, rows: rows);
       default:
@@ -263745,6 +263856,7 @@ class _FlashcardStudyDialogState extends State<_FlashcardStudyDialog> {
     );
   }
 }
+
 
 
 
