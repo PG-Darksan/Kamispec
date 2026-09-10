@@ -35491,9 +35491,12 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// ファイルの種類と名前を聞くダイアログ (種類パレット付き)。
   /// 生成先が違う複数の入口 (ノード右クリック / キャンバス右クリック) で共用。
+  /// [markdownAsPage] = true の時、 Markdown は「ファイル」 ではなく
+  /// 「Markdown のページ」 を意味する (= ユーザー要望: 同じ並びで選べる)。
   Future<Map<String, String>?> _promptCreateFileTypeName(
-      BuildContext ctx, MindMapProvider provider) async {
-    String selectedType = 'docx'; // デフォルト
+      BuildContext ctx, MindMapProvider provider,
+      {bool markdownAsPage = false}) async {
+    String selectedType = markdownAsPage ? 'md' : 'docx'; // デフォルト
     // ── 作ったファイルをどの分割ペインで開くか (= ユーザー要望: 画面分割
     //    した状態でファイルを作成した時、 どの画面に埋め込むかを選べる) ──
     //    null = 開かない (今までどおり。 ノードを作るだけ)。
@@ -35544,9 +35547,13 @@ class _MindMapScreenState extends State<MindMapScreen>
                       ),
                       (
                         'md',
-                        Icons.article_outlined,
+                        markdownAsPage
+                            ? Icons.polyline_rounded
+                            : Icons.article_outlined,
                         'Markdown',
-                        const Color(0xFF6C63FF)
+                        markdownAsPage
+                            ? const Color(0xFF5FD3B2)
+                            : const Color(0xFF6C63FF)
                       ),
                       // HTML & CSS は一覧から外した (= ユーザー要望:
                       //   見栄えのため)。 作る仕組み自体は残してあるので、
@@ -69241,7 +69248,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         //    「新規マークダウン」 を出す) ──
         _menuItem<_AddMenuAction>(
             value: _AddMenuAction.newMarkdownPage,
-            icon: Icons.polyline_rounded,
+            icon: Icons.note_add_outlined,
             iconColor: const Color(0xFF5FD3B2),
             label: provider.t('drawer.newMarkdownPage'),
             shortcut: _getCommandShortcut('newMarkdownPage')),
@@ -75689,7 +75696,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             ('paint', Icons.brush_rounded, 'pageKind.paint',
                 const Color(0xFFEC407A)),
             // Markdown / 図 (Mermaid) ページ (= ユーザー要望)。
-            ('markdown', Icons.polyline_rounded, 'drawer.newMarkdownPage',
+            ('markdown', Icons.polyline_rounded, 'pageKind.markdown',
                 const Color(0xFF5FD3B2)),
           ])
             ListTile(
@@ -89035,7 +89042,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       ),
       (
         labelKey: 'drawer.newMarkdownPage',
-        icon: Icons.polyline_rounded,
+        icon: Icons.note_add_outlined,
         color: const Color(0xFF5FD3B2),
         create: () => _addMarkdownPageDialog(context, provider),
       ),
@@ -89132,63 +89139,30 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// Markdown / Mermaid ページの新規作成 (= ユーザー要望)。
   void _addMarkdownPageDialog(BuildContext context, MindMapProvider provider) {
     // ★ 「新規マークダウン」 は「新規ファイル」 に (= ユーザー要望): Markdown の
-    //   ページか、 pptx / xlsx / csv / txt / json などのファイルかを選んで作る。
+    //   ページも pptx / xlsx / csv / txt / json などのファイルも、 同じ窓の
+    //   同じ並びから選ぶ。 窓は押した所の近くに出る。
     unawaited(_addFileOrMarkdownDialog(context, provider));
   }
 
-  void _addMarkdownPageNow(BuildContext context, MindMapProvider provider) {
-    if (!provider.canCreatePageType('markdown')) {
-      _showPaywallDialog(provider);
-      return;
-    }
-    provider.addMarkdownPage(
-        name: null, folderId: _targetFolderForNewPage(provider));
-  }
-
-  /// 何を作るか選ぶ: Markdown のページ / ファイル。 ファイルは今のページに
-  /// 置く (ギャラリーならその中、 マップなら見えている所の真ん中、 それ以外の
-  /// 種類のページなら新しいギャラリーを作ってそこへ) → そのまま開く。
+  /// 何を作るか選ぶ (= 1 つの窓。 Markdown のページも他のファイルも同じ
+  /// 並び)。 Markdown はページとして、 それ以外は今のページに置くファイルと
+  /// して作り、 そのまま開く。
   Future<void> _addFileOrMarkdownDialog(
       BuildContext context, MindMapProvider provider) async {
-    final choice = await showDialog<String>(
-      context: context,
-      builder: (dctx) => SimpleDialog(
-        backgroundColor: const Color(0xFF1E1E32),
-        title: Text(provider.t('drawer.newFileTitle'),
-            style: const TextStyle(color: Colors.white, fontSize: 15)),
-        children: [
-          SimpleDialogOption(
-            onPressed: () => Navigator.pop(dctx, 'md'),
-            child: Row(children: [
-              const Icon(Icons.polyline_rounded, color: Color(0xFF5FD3B2)),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(provider.t('drawer.newFileMarkdown'),
-                    style: const TextStyle(color: Colors.white, fontSize: 13.5)),
-              ),
-            ]),
-          ),
-          SimpleDialogOption(
-            onPressed: () => Navigator.pop(dctx, 'file'),
-            child: Row(children: [
-              const Icon(Icons.note_add_outlined, color: Color(0xFFFFB347)),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(provider.t('drawer.newFileOffice'),
-                    style: const TextStyle(color: Colors.white, fontSize: 13.5)),
-              ),
-            ]),
-          ),
-        ],
-      ),
-    );
-    if (choice == null || !mounted) return;
-    if (choice == 'md') {
-      _addMarkdownPageNow(context, provider);
+    final result =
+        await _promptCreateFileTypeName(context, provider, markdownAsPage: true);
+    if (result == null || !mounted) return;
+    // Markdown はファイルではなくページを作る (= 同じ並びから選べる)。
+    if (result['type'] == 'md') {
+      if (!provider.canCreatePageType('markdown')) {
+        _showPaywallDialog(provider);
+        return;
+      }
+      provider.addMarkdownPage(
+          name: (result['name'] ?? '').trim().isEmpty ? null : result['name'],
+          folderId: _targetFolderForNewPage(provider));
       return;
     }
-    final result = await _promptCreateFileTypeName(context, provider);
-    if (result == null || !mounted) return;
     final type = result['type']!;
     final name = result['name']!;
     var page = provider.currentPage;
@@ -98083,7 +98057,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                 ('bookshelf', 'drawer.newBookshelfPage'),
                 ('paint', 'drawer.newPaintPage'),
                 ('document', 'drawer.newDocumentPage'),
-                ('markdown', 'drawer.newMarkdownPage'),
+                ('markdown', 'pageKind.markdown'),
                 if (!kStoreBuild)
                   ('videoEditor', 'drawer.newVideoEditorPage'),
               ])
@@ -222222,8 +222196,13 @@ class _PptxWipeClipper extends CustomClipper<Rect> {
 class _PptxDrawShape {
   int id;
 
-  /// 'rect' / 'roundRect' / 'ellipse' / 'line' / 'arrow'
+  /// 'rect' / 'roundRect' / 'ellipse' / 'line' / 'arrow' / 'arrowBoth' / 'ink'
   String kind;
+
+  /// 線を点線にする (= ユーザー要望: 点線も引けるように)。
+  /// 保存時は `<a:ln>` の中に `<a:prstDash val="dash"/>` を書くので、
+  /// PowerPoint で開いても点線のまま。
+  bool dashed = false;
 
   /// 位置と大きさ (EMU)。 line / arrow は左上→右下へ引く。
   int offX;
@@ -222250,10 +222229,12 @@ class _PptxDrawShape {
     this.fillColor,
     this.lineColor = 0x1E88E5,
     this.lineWidthPt100 = 200,
+    bool dashed = false,
     this.animation,
     this.animationOut,
     List<Offset>? points,
-  }) : points = points ?? <Offset>[];
+  })  : points = points ?? <Offset>[],
+        dashed = dashed;
 
   /// 出現 / 終了のアニメーション (= ユーザー要望: 要素ごとに設定)。
   String? animation;
@@ -222365,40 +222346,207 @@ class _PptxDrawLinePainter extends CustomPainter {
   final double width;
   final bool arrow;
 
+  /// 始点にも矢じりを付ける (= ユーザー要望: 両向きの矢印線)。
+  final bool arrowStart;
+
+  /// 点線で引く (= ユーザー要望)。
+  final bool dashed;
+
   _PptxDrawLinePainter(
-      {required this.color, required this.width, required this.arrow});
+      {required this.color,
+      required this.width,
+      required this.arrow,
+      this.arrowStart = false,
+      this.dashed = false});
+
+  /// 点線で 1 本引く。 矢じりは実線のままにする (本家と同じ見え方)。
+  static void drawDashedLine(
+      Canvas canvas, Offset a, Offset b, Paint paint, double w) {
+    final total = (b - a).distance;
+    if (total <= 0) return;
+    final dash = math.max(3.0, w * 3);
+    final gap = math.max(2.0, w * 2);
+    final dir = (b - a) / total;
+    var t = 0.0;
+    while (t < total) {
+      final e = math.min(total, t + dash);
+      canvas.drawLine(a + dir * t, a + dir * e, paint);
+      t = e + gap;
+    }
+  }
 
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
       ..color = color
       ..strokeWidth = width
-      ..strokeCap = StrokeCap.round
+      ..strokeCap = dashed ? StrokeCap.butt : StrokeCap.round
       ..style = PaintingStyle.stroke;
     const p1 = Offset.zero;
     final p2 = Offset(size.width, size.height);
-    canvas.drawLine(p1, p2, paint);
-    if (arrow) {
-      final d = p2 - p1;
-      if (d.distance > 0.5) {
-        final ang = math.atan2(d.dy, d.dx);
-        final hl = math.max(8.0, width * 3.5);
-        const spread = 0.48;
-        canvas.drawLine(
-            p2,
-            p2 - Offset(math.cos(ang - spread), math.sin(ang - spread)) * hl,
-            paint);
-        canvas.drawLine(
-            p2,
-            p2 - Offset(math.cos(ang + spread), math.sin(ang + spread)) * hl,
-            paint);
-      }
+    if (dashed) {
+      drawDashedLine(canvas, p1, p2, paint, width);
+    } else {
+      canvas.drawLine(p1, p2, paint);
+    }
+    final headPaint = Paint()
+      ..color = color
+      ..strokeWidth = width
+      ..strokeCap = StrokeCap.round
+      ..style = PaintingStyle.stroke;
+    void head(Offset tip, double ang) {
+      final hl = math.max(8.0, width * 3.5);
+      const spread = 0.48;
+      canvas.drawLine(
+          tip,
+          tip - Offset(math.cos(ang - spread), math.sin(ang - spread)) * hl,
+          headPaint);
+      canvas.drawLine(
+          tip,
+          tip - Offset(math.cos(ang + spread), math.sin(ang + spread)) * hl,
+          headPaint);
+    }
+
+    final d = p2 - p1;
+    if (d.distance > 0.5) {
+      final ang = math.atan2(d.dy, d.dx);
+      if (arrow) head(p2, ang);
+      if (arrowStart) head(p1, ang + math.pi);
     }
   }
 
   @override
   bool shouldRepaint(covariant _PptxDrawLinePainter old) =>
-      old.color != color || old.width != width || old.arrow != arrow;
+      old.color != color ||
+      old.width != width ||
+      old.arrow != arrow ||
+      old.arrowStart != arrowStart ||
+      old.dashed != dashed;
+}
+
+/// 四角 / 角丸 / 楕円の枠を点線で描く (= ユーザー要望: 点線の図形)。
+/// Flutter の Border は点線を引けないので、 塗りは Container、 枠はこれ。
+class _PptxDashedOutlinePainter extends CustomPainter {
+  final String kind; // 'rect' / 'roundRect' / 'ellipse'
+  final Color color;
+  final double width;
+  const _PptxDashedOutlinePainter(
+      {required this.kind, required this.color, required this.width});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final r = Offset.zero & size;
+    final inset = r.deflate(width / 2);
+    Path path;
+    switch (kind) {
+      case 'ellipse':
+        path = Path()..addOval(inset);
+        break;
+      case 'roundRect':
+        path = Path()
+          ..addRRect(RRect.fromRectAndRadius(inset,
+              Radius.circular(math.min(size.width, size.height) * 0.18)));
+        break;
+      default:
+        path = Path()..addRect(inset);
+    }
+    final paint = Paint()
+      ..color = color
+      ..strokeWidth = width
+      ..style = PaintingStyle.stroke;
+    final dash = math.max(3.0, width * 3);
+    final gap = math.max(2.0, width * 2);
+    for (final m in path.computeMetrics()) {
+      var t = 0.0;
+      while (t < m.length) {
+        final e = math.min(m.length, t + dash);
+        canvas.drawPath(m.extractPath(t, e), paint);
+        t = e + gap;
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _PptxDashedOutlinePainter old) =>
+      old.kind != kind || old.color != color || old.width != width;
+}
+
+/// 挿入図形 1 個の見た目。 編集画面と表示専用 (発表者モード / 見本) の
+/// **両方がこれを使う** (= 片方だけ直る双子を作らないため)。
+Widget _pptxDrawShapeVisual(
+  _PptxDrawShape s, {
+  required double w,
+  required double h,
+  required double lineWpx,
+  required double emuPerPxX,
+  required double emuPerPxY,
+}) {
+  final fill = s.fillColor == null
+      ? Colors.transparent
+      : Color(0xFF000000 | s.fillColor!);
+  final lineC = Color(0xFF000000 | s.lineColor);
+  Widget box(BoxDecoration deco) {
+    if (!s.dashed) return Container(decoration: deco);
+    // 点線: 塗りだけ Container、 枠は点線ペインタ。
+    return Stack(children: [
+      Positioned.fill(
+        child: Container(
+            decoration: deco.copyWith(border: const Border.fromBorderSide(
+                BorderSide(color: Colors.transparent, width: 0)))),
+      ),
+      Positioned.fill(
+        child: CustomPaint(
+          painter: _PptxDashedOutlinePainter(
+              kind: s.kind, color: lineC, width: lineWpx),
+        ),
+      ),
+    ]);
+  }
+
+  switch (s.kind) {
+    case 'ellipse':
+      return box(BoxDecoration(
+        color: fill,
+        borderRadius: BorderRadius.all(Radius.elliptical(w / 2, h / 2)),
+        border: Border.all(color: lineC, width: lineWpx),
+      ));
+    case 'roundRect':
+      return box(BoxDecoration(
+        color: fill,
+        borderRadius: BorderRadius.circular(math.min(w, h) * 0.18),
+        border: Border.all(color: lineC, width: lineWpx),
+      ));
+    case 'ink':
+      return CustomPaint(
+        painter: _PptxInkPainter(
+          points: s.points,
+          offXEmu: s.offX,
+          offYEmu: s.offY,
+          emuPerPxX: emuPerPxX,
+          emuPerPxY: emuPerPxY,
+          color: lineC,
+          width: lineWpx,
+        ),
+        child: const SizedBox.expand(),
+      );
+    case 'line':
+    case 'arrow':
+    case 'arrowBoth':
+      return CustomPaint(
+        painter: _PptxDrawLinePainter(
+            color: lineC,
+            width: lineWpx,
+            arrow: s.kind == 'arrow' || s.kind == 'arrowBoth',
+            arrowStart: s.kind == 'arrowBoth',
+            dashed: s.dashed),
+        child: const SizedBox.expand(),
+      );
+    default:
+      return box(BoxDecoration(
+        color: fill,
+        border: Border.all(color: lineC, width: lineWpx),
+      ));
+  }
 }
 
 /// アプリ内で挿入した画像 (= ユーザー要望: ファイル添付で画像ファイルなどを
@@ -222976,60 +223124,12 @@ class _PptxStaticSlide extends StatelessWidget {
     final w = math.max(8.0, s.extCx / sw * cw);
     final h = math.max(8.0, s.extCy / sh * ch);
     final lineWpx = math.max(1.0, (s.lineWidthPt100 / 100) * cw * 12700 / sw);
-    final fill = s.fillColor == null
-        ? Colors.transparent
-        : Color(0xFF000000 | s.fillColor!);
-    final lineC = Color(0xFF000000 | s.lineColor);
-    Widget visual;
-    switch (s.kind) {
-      case 'ellipse':
-        visual = Container(
-          decoration: BoxDecoration(
-            color: fill,
-            borderRadius: BorderRadius.all(Radius.elliptical(w / 2, h / 2)),
-            border: Border.all(color: lineC, width: lineWpx),
-          ),
-        );
-        break;
-      case 'roundRect':
-        visual = Container(
-          decoration: BoxDecoration(
-            color: fill,
-            borderRadius: BorderRadius.circular(math.min(w, h) * 0.18),
-            border: Border.all(color: lineC, width: lineWpx),
-          ),
-        );
-        break;
-      case 'ink':
-        visual = CustomPaint(
-          painter: _PptxInkPainter(
-            points: s.points,
-            offXEmu: s.offX,
-            offYEmu: s.offY,
-            emuPerPxX: sw / cw,
-            emuPerPxY: sh / ch,
-            color: lineC,
-            width: lineWpx,
-          ),
-          child: const SizedBox.expand(),
-        );
-        break;
-      case 'line':
-      case 'arrow':
-        visual = CustomPaint(
-          painter: _PptxDrawLinePainter(
-              color: lineC, width: lineWpx, arrow: s.kind == 'arrow'),
-          child: const SizedBox.expand(),
-        );
-        break;
-      default:
-        visual = Container(
-          decoration: BoxDecoration(
-            color: fill,
-            border: Border.all(color: lineC, width: lineWpx),
-          ),
-        );
-    }
+    final visual = _pptxDrawShapeVisual(s,
+        w: w,
+        h: h,
+        lineWpx: lineWpx,
+        emuPerPxX: sw / cw,
+        emuPerPxY: sh / ch);
     return Positioned(
       left: left,
       top: top,
@@ -228349,139 +228449,193 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
     _inkDraftTick.value++;
   }
 
-  /// 図形の挿入パレット (= ユーザー要望: マインドマップのような横長の
-  /// ダイアログ)。
-  ///
-  /// 押した図形はその場でスライドに置き、 パレットは開いたままにする
-  /// (= 続けて何個も置ける)。 色 / 塗りか中空か / 太さ もここで決める。
-  /// 以前は PopupMenuButton だったが、 メニューの最大幅 (392px) に阻まれて
-  /// 色が折り返し、 縦長で使いにくかった。
-  Future<void> _showShapeInsertPalette(BuildContext anchor) async {
-    // 図形の挿入 = 別のモードなので、 フリーハンドは解除する (= ユーザー要望)。
-    _exitInkMode();
+  // ── 図形のパレット (= ユーザー要望: パレットを出したまま図形を選んで
+  //    操作できるように) ──
+  //    以前は showDialog の窓だったので、 幕がキャンバスを塞いで図形を
+  //    掴めなかった。 今はスライドの上に浮かせる札 (Stack の中) にして、
+  //    出したままでも図形の選択 / 移動 / 大きさ変更ができる。
+  //    札は掴んで動かせる。
+  bool _pptxShapePaletteOpen = false;
+  Offset _pptxShapePalettePos = const Offset(24, 8);
+
+  /// マウスを乗せている文字の枠 (= 枠を「選ぶまで出さない」 ようにした分、
+  /// 乗せた時だけ薄く出して掴める場所を知らせる)。
+  int? _hoverShapeId;
+
+  /// 点線で引くか (= ユーザー要望: 点線も引けるように)。
+  bool _shapeInsDashed = false;
+
+  void _toggleShapePalette() {
+    if (!_pptxShapePaletteOpen) _exitInkMode();
+    setState(() => _pptxShapePaletteOpen = !_pptxShapePaletteOpen);
+  }
+
+  /// パレットで色 / 太さ / 点線 / 塗りを変えた時、 図形を選んでいれば
+  /// その図形にも掛ける (= ユーザー要望: パレットを出したまま操作したい)。
+  void _applyPaletteToSelection() {
+    final s = _selectedDrawShape;
+    if (s == null) return;
+    final isLine =
+        s.kind == 'line' || s.kind == 'arrow' || s.kind == 'arrowBoth';
+    setState(() {
+      s.lineColor = _shapeInsLineColor;
+      s.lineWidthPt100 = (_shapeInsLineWidthPt * 100).round();
+      s.dashed = _shapeInsDashed;
+      if (!isLine && s.kind != 'ink') {
+        s.fillColor = _shapeInsFilled ? _shapeInsLineColor : null;
+      }
+      _slides[_currentIndex].dirty = true;
+    });
+  }
+
+  Widget _buildShapePalettePanel() {
     const shapes = [
       ('rect', Icons.crop_square_rounded),
       ('roundRect', Icons.rounded_corner_rounded),
       ('ellipse', Icons.circle_outlined),
       ('line', Icons.horizontal_rule_rounded),
       ('arrow', Icons.north_east_rounded),
+      ('arrowBoth', Icons.swap_horiz_rounded),
     ];
     const colors = [
-      0xE53935, // 赤
-      0xD81B60, // 濃ピンク
-      0xF06292, // ピンク
-      0xFF5722, // 朱
-      0xFB8C00, // 橙
-      0xFFC107, // 山吹
-      0xFDD835, // 黄
-      0xC0CA33, // 黄緑
-      0x8BC34A, // 若草
-      0x43A047, // 緑
-      0x2E7D32, // 深緑
-      0x26A69A, // 青緑
-      0x00BCD4, // シアン
-      0x4FC3F7, // 水色
-      0x1E88E5, // 青
-      0x1565C0, // 濃青
-      0x3F51B5, // 藍
-      0x673AB7, // 菫
-      0x8E24AA, // 紫
-      0x795548, // 茶
-      0x9E9E9E, // 灰
-      0x455A64, // 濃灰
-      0x000000, // 黒
-      0xFFFFFF, // 白
+      0xE53935, 0xD81B60, 0xF06292, 0xFF5722, 0xFB8C00, 0xFFC107,
+      0xFDD835, 0xC0CA33, 0x8BC34A, 0x43A047, 0x2E7D32, 0x26A69A,
+      0x00BCD4, 0x4FC3F7, 0x1E88E5, 0x1565C0, 0x3F51B5, 0x673AB7,
+      0x8E24AA, 0x795548, 0x9E9E9E, 0x455A64, 0x000000, 0xFFFFFF,
     ];
     const accent = Color(0xFFAB47BC);
-    await _showDialogNearAnchor<void>(
-      anchor,
-      // 横長 (= ユーザー要望)。 色 24 個が 1 行に収まる幅。
-      width: 720,
-      estHeight: 150,
-      builder: (ctx) => StatefulBuilder(
-        builder: (pctx, setP) => Container(
-          padding: const EdgeInsets.fromLTRB(12, 10, 8, 12),
+    Widget chip(String label, bool on, VoidCallback onTap) => Padding(
+          padding: const EdgeInsets.only(right: 4),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: onTap,
+            child: Container(
+              height: 30,
+              padding: const EdgeInsets.symmetric(horizontal: 9),
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: on
+                    ? const Color(0xFF6C63FF)
+                    : Colors.white.withValues(alpha: 0.05),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                    color: on ? const Color(0xFF6C63FF) : Colors.white24),
+              ),
+              child: Text(label,
+                  style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: on ? Colors.white : Colors.white60)),
+            ),
+          ),
+        );
+    return Positioned(
+      left: _pptxShapePalettePos.dx,
+      top: _pptxShapePalettePos.dy,
+      child: Material(
+        color: Colors.transparent,
+        // ★ 幅を決めておく (= 浮かせた札は横に無制限なので、 中の Spacer /
+        //   スライダーが「幅が決まっていない」 で落ちる)。
+        child: Container(
+          width: 726,
+          padding: const EdgeInsets.fromLTRB(10, 6, 6, 10),
           decoration: BoxDecoration(
             color: const Color(0xFF1E1E2E),
             borderRadius: BorderRadius.circular(12),
             border: Border.all(color: Colors.white12),
             boxShadow: const [
               BoxShadow(
-                  color: Colors.black54,
-                  blurRadius: 18,
-                  offset: Offset(0, 6)),
+                  color: Colors.black54, blurRadius: 18, offset: Offset(0, 6)),
             ],
           ),
           child: Column(mainAxisSize: MainAxisSize.min, children: [
-            // ── 1 段目: 図形 + 塗り / 中空 + 太さ + 閉じる ──
+            // ── 掴んで動かす帯 (= 邪魔な所に来たらどかせる) ──
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onPanUpdate: (d) => setState(() {
+                final p = _pptxShapePalettePos + d.delta;
+                _pptxShapePalettePos =
+                    Offset(math.max(-680.0, p.dx), math.max(0.0, p.dy));
+              }),
+              child: Row(children: [
+                const Icon(Icons.drag_indicator_rounded,
+                    size: 16, color: Colors.white38),
+                const SizedBox(width: 4),
+                Text(
+                    context.read<MindMapProvider>().t('pptx.insertShape'),
+                    style: const TextStyle(
+                        color: Colors.white54,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700)),
+                const SizedBox(width: 12),
+                if (_selectedDrawShapeId != null)
+                  Text(context.read<MindMapProvider>().t('pptx.paletteApplies'),
+                      style: const TextStyle(
+                          color: Color(0xFFAB47BC), fontSize: 10.5)),
+                const Spacer(),
+                IconButton(
+                  tooltip: context.read<MindMapProvider>().t('btn.close'),
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 26, minHeight: 26),
+                  icon: const Icon(Icons.close_rounded,
+                      color: Colors.white54, size: 17),
+                  onPressed: () => setState(() => _pptxShapePaletteOpen = false),
+                ),
+              ]),
+            ),
+            const SizedBox(height: 4),
+            // ── 1 段目: 図形 + 塗り / 中空 + 実線 / 点線 + 太さ ──
             Row(children: [
               for (final (k, ic) in shapes)
                 Padding(
                   padding: const EdgeInsets.only(right: 4),
                   child: Tooltip(
-                    message: context
-                        .read<MindMapProvider>()
-                        .t('pptx.insertShape'),
+                    message:
+                        context.read<MindMapProvider>().t('pptx.insertShape'),
                     child: InkWell(
                       borderRadius: BorderRadius.circular(8),
-                      // 閉じずにその場で置く (= 続けて何個も置ける)。
                       onTap: () => _addDrawShape(k),
                       child: Container(
-                        width: 38,
-                        height: 34,
+                        width: 36,
+                        height: 32,
                         decoration: BoxDecoration(
                           borderRadius: BorderRadius.circular(8),
                           color: Colors.white.withValues(alpha: 0.05),
                           border: Border.all(
                               color: accent.withValues(alpha: 0.45)),
                         ),
-                        child: Icon(ic, size: 19, color: accent),
+                        child: Icon(ic, size: 18, color: accent),
                       ),
                     ),
                   ),
                 ),
-              const SizedBox(width: 10),
-              // ── 塗り / 中空 ──
-              for (final (filled, label) in const [
-                (true, '塗り'),
-                (false, '中空'),
-              ])
-                Padding(
-                  padding: const EdgeInsets.only(right: 4),
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(8),
-                    onTap: () => setP(() => _shapeInsFilled = filled),
-                    child: Container(
-                      height: 34,
-                      padding: const EdgeInsets.symmetric(horizontal: 10),
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        color: _shapeInsFilled == filled
-                            ? const Color(0xFF6C63FF)
-                            : Colors.white.withValues(alpha: 0.05),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(
-                            color: _shapeInsFilled == filled
-                                ? const Color(0xFF6C63FF)
-                                : Colors.white24),
-                      ),
-                      child: Text(label,
-                          style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w700,
-                              color: _shapeInsFilled == filled
-                                  ? Colors.white
-                                  : Colors.white60)),
-                    ),
-                  ),
-                ),
-              const SizedBox(width: 10),
+              const SizedBox(width: 8),
+              chip('塗り', _shapeInsFilled, () {
+                setState(() => _shapeInsFilled = true);
+                _applyPaletteToSelection();
+              }),
+              chip('中空', !_shapeInsFilled, () {
+                setState(() => _shapeInsFilled = false);
+                _applyPaletteToSelection();
+              }),
+              const SizedBox(width: 8),
+              chip('実線', !_shapeInsDashed, () {
+                setState(() => _shapeInsDashed = false);
+                _applyPaletteToSelection();
+              }),
+              chip('点線', _shapeInsDashed, () {
+                setState(() => _shapeInsDashed = true);
+                _applyPaletteToSelection();
+              }),
+              const SizedBox(width: 8),
               const Text('太さ',
                   style: TextStyle(color: Colors.white60, fontSize: 12)),
               SizedBox(
-                width: 170,
+                width: 150,
                 child: SliderTheme(
-                  data: SliderTheme.of(pctx).copyWith(
+                  data: SliderTheme.of(context).copyWith(
                     trackHeight: 2,
                     overlayShape:
                         const RoundSliderOverlayShape(overlayRadius: 12),
@@ -228492,38 +228646,35 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                     max: 8,
                     divisions: 7,
                     activeColor: accent,
-                    onChanged: (v) =>
-                        setP(() => _shapeInsLineWidthPt = v),
+                    onChanged: (v) {
+                      setState(() => _shapeInsLineWidthPt = v);
+                      _applyPaletteToSelection();
+                    },
                   ),
                 ),
               ),
               SizedBox(
-                width: 34,
+                width: 32,
                 child: Text('${_shapeInsLineWidthPt.round()}pt',
-                    style: const TextStyle(
-                        color: Colors.white70, fontSize: 12)),
-              ),
-              const Spacer(),
-              IconButton(
-                tooltip: context.read<MindMapProvider>().t('btn.close'),
-                visualDensity: VisualDensity.compact,
-                icon: const Icon(Icons.close_rounded,
-                    color: Colors.white54, size: 18),
-                onPressed: () => Navigator.of(pctx).maybePop(),
+                    style:
+                        const TextStyle(color: Colors.white70, fontSize: 12)),
               ),
             ]),
             const SizedBox(height: 8),
-            // ── 2 段目: 色 (24 色を 1 行に = 横長にした利点) ──
+            // ── 2 段目: 色 ──
             Row(children: [
               for (final c in colors)
                 Padding(
                   padding: const EdgeInsets.only(right: 5),
                   child: InkWell(
                     borderRadius: BorderRadius.circular(12),
-                    onTap: () => setP(() => _shapeInsLineColor = c),
+                    onTap: () {
+                      setState(() => _shapeInsLineColor = c);
+                      _applyPaletteToSelection();
+                    },
                     child: Container(
-                      width: 22,
-                      height: 22,
+                      width: 21,
+                      height: 21,
                       decoration: BoxDecoration(
                         color: Color(0xFF000000 | c),
                         shape: BoxShape.circle,
@@ -228543,13 +228694,97 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
     );
   }
 
+  /// アニメーションを付けられる物を選んでいるか。
+  bool get _hasAnimTargetSelected =>
+      _selectedShapeId != null ||
+      _selectedDrawShapeId != null ||
+      _selectedNewImageId != null;
+
+  /// 今選んでいる物 (文字 / 図形 / 画像) にアニメーションを足す
+  /// (= ユーザー要望: 本家の pptx のように、 選んでから挿入する)。
+  Future<void> _animateSelectionFrom(BuildContext anchor) async {
+    if (_slides.isEmpty) return;
+    final id =
+        _selectedShapeId ?? _selectedDrawShapeId ?? _selectedNewImageId;
+    if (id == null) {
+      _showSnack(context.read<MindMapProvider>().t('pptx.animPickTarget'));
+      return;
+    }
+    await _showAnimationPickerFor(
+      shapeId: id,
+      label: _animTargetLabel(_slides[_currentIndex], id),
+      anchor: anchor,
+    );
+  }
+
+  /// 図形の右クリックメニュー (= ユーザー要望: 選んでアニメーションを挿入)。
+  Future<void> _showDrawShapeMenu(_PptxDrawShape s, Offset globalPos) async {
+    final p = context.read<MindMapProvider>();
+    final overlay =
+        Overlay.of(context).context.findRenderObject() as RenderBox?;
+    if (overlay == null) return;
+    final v = await showMenu<String>(
+      context: context,
+      color: const Color(0xFF1E1E2E),
+      position: RelativeRect.fromRect(
+          globalPos & const Size(1, 1), Offset.zero & overlay.size),
+      items: [
+        PopupMenuItem(
+          value: 'anim',
+          height: 38,
+          child: Row(children: [
+            const Icon(Icons.animation_rounded,
+                size: 17, color: Color(0xFFFFB347)),
+            const SizedBox(width: 8),
+            Text(p.t('tip.animation'),
+                style: const TextStyle(color: Colors.white, fontSize: 13)),
+          ]),
+        ),
+        PopupMenuItem(
+          value: 'palette',
+          height: 38,
+          child: Row(children: [
+            const Icon(Icons.palette_outlined,
+                size: 17, color: Color(0xFFAB47BC)),
+            const SizedBox(width: 8),
+            Text(p.t('pptx.insertShape'),
+                style: const TextStyle(color: Colors.white, fontSize: 13)),
+          ]),
+        ),
+        PopupMenuItem(
+          value: 'delete',
+          height: 38,
+          child: Row(children: [
+            const Icon(Icons.delete_outline_rounded,
+                size: 17, color: Color(0xFFE57373)),
+            const SizedBox(width: 8),
+            Text(p.t('btn.delete'),
+                style: const TextStyle(color: Color(0xFFE57373), fontSize: 13)),
+          ]),
+        ),
+      ],
+    );
+    if (v == null || !mounted) return;
+    if (v == 'anim') {
+      await _showAnimationPickerFor(
+          shapeId: s.id,
+          label: _animTargetLabel(_slides[_currentIndex], s.id));
+    } else if (v == 'palette') {
+      // パレットは浮く札なので、 出したまま図形を触れる。
+      if (!_pptxShapePaletteOpen) setState(() => _pptxShapePaletteOpen = true);
+    } else if (v == 'delete') {
+      _deleteDrawShape(s);
+    }
+  }
+
   void _addDrawShape(String kind) {
     if (_slides.isEmpty) return;
     // 図形を置く = 別のモードなので、 フリーハンドは解除する (= ユーザー要望)。
     _exitInkMode();
     _pushHistory();
     final slide = _slides[_currentIndex];
-    final isLine = kind == 'line' || kind == 'arrow';
+    final isLine =
+        kind == 'line' || kind == 'arrow' || kind == 'arrowBoth';
     // 置くたびに右下へずらす。 12 個で一巡 (6 個だと 7 個目が 1 個目に重なる)。
     final step = (_shapeInsSeq++ % 12) * 200000;
     final cx = isLine ? 3600000 : 2880000;
@@ -228570,6 +228805,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
       fillColor: (isLine || !_shapeInsFilled) ? null : _shapeInsLineColor,
       lineColor: _shapeInsLineColor,
       lineWidthPt100: (_shapeInsLineWidthPt * 100).round(),
+      dashed: _shapeInsDashed,
     );
     setState(() {
       slide.drawShapes.add(s);
@@ -230933,6 +231169,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
           '<a:noFill/>'
           '<a:ln w="$lnW" cap="rnd"><a:solidFill>'
           '<a:srgbClr val="${_pptxHex(s.lineColor)}"/></a:solidFill>'
+          '${s.dashed ? '<a:prstDash val="dash"/>' : ''}'
           '<a:round/></a:ln>'
           '</p:spPr>'
           '<p:txBody><a:bodyPr/><a:p/></p:txBody>'
@@ -230943,6 +231180,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
       'ellipse' => 'ellipse',
       'line' => 'line',
       'arrow' => 'line',
+      'arrowBoth' => 'line',
       _ => 'rect',
     };
     final fill = s.fillColor == null
@@ -230950,7 +231188,13 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
         : '<a:solidFill><a:srgbClr val="${_pptxHex(s.fillColor!)}"/>'
             '</a:solidFill>';
     final lnW = (s.lineWidthPt100 * 127).round(); // 1/100pt → EMU
-    final tail = s.kind == 'arrow' ? '<a:tailEnd type="arrow"/>' : '';
+    // 矢じり (= ユーザー要望: 矢印線 / 両向きの矢印線) と点線。
+    //   OOXML の並びは fill → prstDash → headEnd → tailEnd の順。
+    final dash = s.dashed ? '<a:prstDash val="dash"/>' : '';
+    final head = s.kind == 'arrowBoth' ? '<a:headEnd type="arrow"/>' : '';
+    final tail = (s.kind == 'arrow' || s.kind == 'arrowBoth')
+        ? '<a:tailEnd type="arrow"/>'
+        : '';
     return '<p:sp><p:nvSpPr>'
         '<p:cNvPr id="${s.id}" name="Shape ${s.id}"/>'
         '<p:cNvSpPr/><p:nvPr/></p:nvSpPr>'
@@ -230960,7 +231204,8 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
         '<a:prstGeom prst="$prst"><a:avLst/></a:prstGeom>'
         '$fill'
         '<a:ln w="$lnW"><a:solidFill>'
-        '<a:srgbClr val="${_pptxHex(s.lineColor)}"/></a:solidFill>$tail</a:ln>'
+        '<a:srgbClr val="${_pptxHex(s.lineColor)}"/></a:solidFill>'
+        '$dash$head$tail</a:ln>'
         '</p:spPr>'
         '<p:txBody><a:bodyPr/><a:p/></p:txBody>'
         '</p:sp>';
@@ -232216,12 +232461,35 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                             padding: EdgeInsets.zero,
                             constraints: const BoxConstraints(
                                 minWidth: 30, minHeight: 30),
-                            icon: const Icon(Icons.category_rounded,
-                                size: 19, color: Color(0xFFAB47BC)),
+                            icon: Icon(Icons.category_rounded,
+                                size: 19,
+                                color: _pptxShapePaletteOpen
+                                    ? const Color(0xFFE1BEE7)
+                                    : const Color(0xFFAB47BC)),
+                            onPressed:
+                                _slides.isEmpty ? null : _toggleShapePalette,
+                          ),
+                        ),
+                        // ── 選んだ図形 / 文字 / 画像にアニメーションを足す
+                        //    (= ユーザー要望: 本家の pptx のように選んで挿入) ──
+                        Builder(
+                          builder: (bctx) => IconButton(
+                            tooltip: context
+                                .read<MindMapProvider>()
+                                .t('pptx.animateSelection'),
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                                minWidth: 30, minHeight: 30),
+                            icon: Icon(Icons.animation_rounded,
+                                size: 19,
+                                color: _hasAnimTargetSelected
+                                    ? const Color(0xFFFFB347)
+                                    : const Color(0xFFFFB347)
+                                        .withValues(alpha: 0.45)),
                             onPressed: _slides.isEmpty
                                 ? null
                                 : () =>
-                                    unawaited(_showShapeInsertPalette(bctx)),
+                                    unawaited(_animateSelectionFrom(bctx)),
                           ),
                         ),
                         // (AI ボタンはヘッダー右側へ移動 = ユーザー要望:
@@ -232839,7 +233107,8 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
     final canvasBg = Colors.white;
     final divider = dark ? Colors.white12 : Colors.black12;
     final aspectRatio = _slideWidthEmu / _slideHeightEmu;
-    return Column(
+    return Stack(clipBehavior: Clip.none, children: [
+      Column(
       children: [
         // ── キャンバス本体 (= AspectRatio 固定の白背景) ──
         Expanded(
@@ -233188,7 +233457,11 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
           ),
         ),
       ],
-    );
+      ),
+      // ── 図形のパレット (= ユーザー要望: 出したまま図形を選んで操作できる
+      //    ように、 幕のある窓ではなくスライドの上に浮かせる札にした) ──
+      if (_pptxShapePaletteOpen) _buildShapePalettePanel(),
+    ]);
   }
 
   /// キャンバス上の挿入図形 1 個を Positioned で描画 (= ユーザー要望)。
@@ -233207,63 +233480,12 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
     // pt → キャンバス px (スライド幅 pt = EMU / 12700)
     final lineWpx = math.max(
         1.0, (s.lineWidthPt100 / 100) * canvasW * 12700 / sw);
-    final fill = s.fillColor == null
-        ? Colors.transparent
-        : Color(0xFF000000 | s.fillColor!);
-    final lineC = Color(0xFF000000 | s.lineColor);
-
-    Widget visual;
-    switch (s.kind) {
-      case 'ellipse':
-        visual = Container(
-          decoration: BoxDecoration(
-            color: fill,
-            borderRadius:
-                BorderRadius.all(Radius.elliptical(w / 2, h / 2)),
-            border: Border.all(color: lineC, width: lineWpx),
-          ),
-        );
-        break;
-      case 'roundRect':
-        visual = Container(
-          decoration: BoxDecoration(
-            color: fill,
-            borderRadius: BorderRadius.circular(math.min(w, h) * 0.18),
-            border: Border.all(color: lineC, width: lineWpx),
-          ),
-        );
-        break;
-      case 'ink':
-        // フリーハンド (= ユーザー要望)。
-        visual = CustomPaint(
-          painter: _PptxInkPainter(
-            points: s.points,
-            offXEmu: s.offX,
-            offYEmu: s.offY,
-            emuPerPxX: sw / canvasW,
-            emuPerPxY: sh / canvasH,
-            color: lineC,
-            width: lineWpx,
-          ),
-          child: const SizedBox.expand(),
-        );
-        break;
-      case 'line':
-      case 'arrow':
-        visual = CustomPaint(
-          painter: _PptxDrawLinePainter(
-              color: lineC, width: lineWpx, arrow: s.kind == 'arrow'),
-          child: const SizedBox.expand(),
-        );
-        break;
-      default: // rect
-        visual = Container(
-          decoration: BoxDecoration(
-            color: fill,
-            border: Border.all(color: lineC, width: lineWpx),
-          ),
-        );
-    }
+    final visual = _pptxDrawShapeVisual(s,
+        w: w,
+        h: h,
+        lineWpx: lineWpx,
+        emuPerPxX: sw / canvasW,
+        emuPerPxY: sh / canvasH);
 
     void select() {
       if (_editingShapeId != null) _exitShapeEditMode();
@@ -233307,6 +233529,11 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                   ? HitTestBehavior.deferToChild
                   : HitTestBehavior.opaque,
               onTap: select,
+              // 右クリック: アニメーション / パレット / 削除 (= ユーザー要望)。
+              onSecondaryTapDown: (d) {
+                select();
+                unawaited(_showDrawShapeMenu(s, d.globalPosition));
+              },
               onPanStart: (_) {
                 select();
                 // ★ 動かす前に控える (= 以前は積んでいなかったので、 動かした
@@ -234110,6 +234337,12 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
     final isSelected =
         _selectedShapeId == shape.id || _multiSel.contains(shape.id);
     final isEditing = isEditingThisShape;
+    // ★ 枠は「選ぶまで出さない」 (= ユーザー要望: 選択前から枠線が見えている
+    //   のはおかしい)。 マウスを乗せた時と、 中身が空の枠 (= 見えないと
+    //   掴めない) だけ薄く出す。 表の罫線は元ファイルの見た目なのでそのまま。
+    final bool hovered = _hoverShapeId == shape.id;
+    final bool showHint =
+        hovered || (shape.isNew && shape.text.trim().isEmpty);
     // 同じ表 (= グループ) のセルが選択中かどうか。 表選択中は枠の色を
     // 個別シェイプとは別の見た目にして、 PowerPoint 風の「表全体選択」
     final isTableMember = shape.tableGroupId != null &&
@@ -234119,7 +234352,18 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
       top: top,
       width: width,
       height: height,
-      child: GestureDetector(
+      child: MouseRegion(
+        onEnter: (_) {
+          if (_hoverShapeId != shape.id) {
+            setState(() => _hoverShapeId = shape.id);
+          }
+        },
+        onExit: (_) {
+          if (_hoverShapeId == shape.id) {
+            setState(() => _hoverShapeId = null);
+          }
+        },
+        child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         // ── タップ動作 ──
         //
@@ -234236,8 +234480,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                 ? Color(0xFF000000 | shape.cellFillColor!)
                 : (isEditing
                     ? const Color(0xFF4FC3F7).withValues(alpha: 0.05)
-                    : (shape.isNew
-                        // ── 新規枠の色は緑 → 青 (= ユーザー要望) ──
+                    : (showHint
                         ? const Color(0xFF4FC3F7).withValues(alpha: 0.04)
                         : Colors.transparent)),
             border: Border.all(
@@ -234250,10 +234493,9 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                           : (shape.cellLineColor != null
                               // 表テンプレートの罫線色。
                               ? Color(0xFF000000 | shape.cellLineColor!)
-                              : (shape.isNew
-                                  // ── 新規枠の色は緑 → 青 (= ユーザー要望) ──
+                              : (showHint
                                   ? const Color(0xFF4FC3F7)
-                                      .withValues(alpha: 0.5)
+                                      .withValues(alpha: 0.45)
                                   : Colors.transparent)))),
               width: isEditing ? 2.0 : (isSelected ? 2.0 : 1.0),
             ),
@@ -234360,6 +234602,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
             ),
           ],
         ]),
+      ),
       ),
     );
   }
@@ -262625,4 +262868,5 @@ class _FlashcardStudyDialogState extends State<_FlashcardStudyDialog> {
     );
   }
 }
+
 
