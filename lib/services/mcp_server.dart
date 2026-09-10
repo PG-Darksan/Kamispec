@@ -837,6 +837,17 @@ class McpServer {
             'enum': ['xlsx', 'csv', 'docx', 'pptx', 'pdf', 'txt', 'md']
           },
           'fileName': {'type': 'string'},
+          // 後ろへ足すだけ (= ユーザー要望: 前のスライドを変えずに追記)。
+          'append': {
+            'type': 'boolean',
+            'description':
+                'pptx only. true = keep the slides that are already in the '
+                'file and add these ones AFTER them. Use it whenever the '
+                'user asks to add slides to a deck that already exists '
+                '("add a slide about X", "追記して"), so their earlier '
+                'slides are not rewritten. Pass the same fileName as the '
+                'existing deck, and put ONLY the new slides in "slides".',
+          },
           'title': {'type': 'string'},
           'paragraphs': {
             'type': 'array',

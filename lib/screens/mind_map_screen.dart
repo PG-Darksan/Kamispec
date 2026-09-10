@@ -63617,13 +63617,34 @@ class _MindMapScreenState extends State<MindMapScreen>
       );
       // 開いている間は小さな札を出さない (= 二重表示を避ける)。
       if (mounted) setState(() => _mcpChatVisible = true);
+      _markAssistantPanelOpen(() {
+        if (!done.isCompleted) done.complete();
+      });
       await done.future;
+      _markAssistantPanelClosed();
       if (mounted) setState(() => _mcpChatVisible = false);
       return;
     }
     if (mounted) setState(() => _mcpChatVisible = true);
+    _markAssistantPanelOpen(() {
+      if (mounted) Navigator.of(context, rootNavigator: true).maybePop();
+    });
     await showDialog<void>(context: context, builder: chat);
+    _markAssistantPanelClosed();
     if (mounted) setState(() => _mcpChatVisible = false);
+  }
+
+  /// 会話欄を出した / 閉じたことを控える (= 二重に出さないため)。
+  void _markAssistantPanelOpen(void Function() close) {
+    final s = _McpChatSession.instance;
+    s.panelVisible = true;
+    s.closePanelHandler = close;
+  }
+
+  void _markAssistantPanelClosed() {
+    final s = _McpChatSession.instance;
+    s.panelVisible = false;
+    s.closePanelHandler = null;
   }
 
   // ─────────── AI アシスタントをアプリの外の窓へ出す (= ユーザー要望) ───────────
@@ -63740,6 +63761,22 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// ★ 同じ名前のファイルが既にそのページに貼ってあれば、 新しく作らずに
   ///   そのファイルの中身を入れ替える (= ユーザー報告:「さっき作った
   ///   ファイルの中身を 100 行にして」 で 2 つ目が出来てしまった)。
+  /// 追記の相手になる既存ファイルを探す (= 同じ名前で作った物)。
+  Future<File?> _findExistingMcpFile(
+      Map<String, dynamic> spec, String kind) async {
+    var name = '${spec['fileName'] ?? ''}'.trim();
+    if (name.isEmpty) name = '${spec['title'] ?? ''}'.trim();
+    if (name.isEmpty) return null;
+    name = name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+    if (!name.toLowerCase().endsWith('.$kind')) name = '$name.$kind';
+    try {
+      final docs = await getApplicationDocumentsDirectory();
+      final f = File('${docs.path}/mcp_files/$name');
+      if (await f.exists()) return f;
+    } catch (_) {}
+    return null;
+  }
+
   Future<Map<String, dynamic>?> _buildMcpFile(Map<String, dynamic> spec) async {
     try {
       final provider = context.read<MindMapProvider>();
@@ -63816,7 +63853,23 @@ class _MindMapScreenState extends State<MindMapScreen>
       }
       final title = '${spec['title'] ?? ''}';
 
-      final bytes = await _OfficeFileTemplate.buildWithContent(
+      // ── 「後ろへ足すだけ」 (= ユーザー要望: 前を変えずにスライドを
+      //    足したい)。 同じ名前のファイルが既にあれば、 その中身をそのまま
+      //    残して、 新しいスライドだけを後ろに付ける。 ──
+      final appendOnly = spec['append'] == true;
+      Uint8List? bytes;
+      if (appendOnly && kind == 'pptx' && slides.isNotEmpty) {
+        final existing = await _findExistingMcpFile(spec, kind);
+        if (existing != null) {
+          try {
+            bytes = _OfficeFileTemplate.appendSlidesToPptx(
+                await existing.readAsBytes(), slides);
+          } catch (e) {
+            debugPrint('pptx への追記に失敗 (作り直す): $e');
+          }
+        }
+      }
+      bytes ??= await _OfficeFileTemplate.buildWithContent(
         kind,
         rows: rows.isEmpty ? null : rows,
         paragraphs: paragraphs.isEmpty ? null : paragraphs,
@@ -218390,7 +218443,13 @@ $csvText
                     color: Color(0xFFAB47BC)),
             onPressed: _aiBusy
                 ? null
-                : () => setState(() => _aiChatPanelOpen = !_aiChatPanelOpen),
+                : () {
+                    // 会話欄が 2 つ並ばないように (= ユーザー報告)。
+                    if (!_aiChatPanelOpen) {
+                      _McpChatSession.instance.requestClosePanel();
+                    }
+                    setState(() => _aiChatPanelOpen = !_aiChatPanelOpen);
+                  },
           ),
           const SizedBox(width: 6),
           // ── 上書き保存 (= ユーザー要望: 「保存」 と 「ダウンロード」 の
@@ -230902,6 +230961,9 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
   bool _aiChatPanelOpen = false;
 
   void _openAiAssistForPptx() {
+    // ★ 会話欄が 2 つ並ばないように、 本体のアシスタントは閉じてもらう
+    //   (= ユーザー報告)。 考える所は動いたままなので、 途中の作業は続く。
+    if (!_aiChatPanelOpen) _McpChatSession.instance.requestClosePanel();
     setState(() => _aiChatPanelOpen = !_aiChatPanelOpen);
   }
 
@@ -246123,6 +246185,25 @@ class _OfficeFileTemplate {
   /// `imagePos` = right / left / full) と飾りの図形 (`shapes`) を持てる。
   /// = ユーザー要望「おしゃれなカフェのパワポにしてとお願いしても珈琲の
   ///   画像や図形が挿入されず味気ない」。
+  /// 見出しの文字幅 (EMU)。 1pt = 1.333px、 1px = 9525 EMU。
+  /// 太字で描かれるので、 測る時も太字にする。
+  static int _measureTitleWidthEmu(String text, double sizePt, int maxEmu) {
+    final t = text.trim();
+    if (t.isEmpty) return 0;
+    final tp = TextPainter(
+      text: TextSpan(
+          text: t,
+          style: TextStyle(
+              fontSize: sizePt * 1.333,
+              fontWeight: FontWeight.bold,
+              height: 1.2)),
+      textDirection: TextDirection.ltr,
+      maxLines: 2,
+    )..layout(maxWidth: maxEmu / 9525.0);
+    final w = (tp.width * 9525).round();
+    return w.clamp(600000, maxEmu);
+  }
+
   /// AI が作る資料 1 枚分の `<p:timing>`。 見出し → 本文 → 挿し絵 の順で
   /// 「クリックのたびに 1 つずつ」 出す。 [s.anim] が空なら何も書かない。
   static String _aiSlideTimingXml(_AiSlideRec s, {required bool hasPic}) {
@@ -246172,6 +246253,46 @@ class _OfficeFileTemplate {
         '<p:bldLst>$bld</p:bldLst></p:timing>';
   }
 
+  /// 飾りが見出しや絵に被らないようにする (= ユーザー報告: タイトルと背景の
+  /// 絵が重なって見栄えが悪い)。 見出しの帯 (上 14%) に食い込む飾りは下へ、
+  /// 絵の場所に食い込む飾りは横へ避ける。 x/y/w/h はスライドに対する % 値。
+  static List<Map<String, dynamic>> _keepDecoOffContent(
+    List<Map<String, dynamic>> shapes, {
+    required bool hasRightImage,
+    required bool hasLeftImage,
+  }) {
+    double num0(Map m, String k, double d) =>
+        (m[k] is num) ? (m[k] as num).toDouble() : d;
+    final out = [
+      for (final s in shapes) Map<String, dynamic>.from(s),
+    ];
+    for (final o in out) {
+      final x = num0(o, 'x', 0), y = num0(o, 'y', 0);
+      final w = num0(o, 'w', 0), h = num0(o, 'h', 0);
+      // 縦に長い飾り (左端の帯など) は、 見出しに掛かってもよい。
+      final tall = h >= 60 && w <= 8;
+      if (!tall && y < 15 && y + h > 2 && w >= 20) {
+        // 見出しの帯に重なる横長の飾り → 見出しの下へ。
+        o['y'] = 16.0;
+        if (16.0 + h > 96) o['h'] = 80.0;
+      }
+      // 絵の場所 (右 46%〜96% / 左 4%〜54%) に食い込む大きな飾りは幅を詰める。
+      if (hasRightImage && w >= 20 && x + w > 46) {
+        final nw = 46 - x;
+        if (nw >= 12) o['w'] = nw;
+      }
+      if (hasLeftImage && w >= 20 && x < 54) {
+        final nx = 54.0;
+        final nw = x + w - nx;
+        if (nw >= 12) {
+          o['x'] = nx;
+          o['w'] = nw;
+        }
+      }
+    }
+    return out;
+  }
+
   /// 飾りの図形どうしが重なって読めなくなるのを直す (= ユーザー報告: 縦棒と
   /// 枠が重なって中身が見えない)。 細い棒 (縦 / 横) に食い込んでいる大きな
   /// 図形を、 棒の外側へ寄せて幅を詰める。 x/y/w/h はスライドに対する % 値。
@@ -246217,6 +246338,129 @@ class _OfficeFileTemplate {
       }
     }
     return out;
+  }
+
+  /// 既にある .pptx の**後ろに**スライドを足す (= ユーザー要望: 前のスライドを
+  /// 変えずに追記できるように)。 元のファイルはそのまま使い、 新しい分だけを
+  /// 作って継ぎ足す。 テーマも元ファイルの物を引き継ぐ。
+  static Uint8List appendSlidesToPptx(
+      Uint8List original, List<_AiSlideRec> extra) {
+    if (extra.isEmpty) return original;
+    final src = ZipDecoder().decodeBytes(original);
+    String? read(String name) {
+      for (final f in src.files) {
+        if (f.name == name) return utf8.decode(f.content as List<int>);
+      }
+      return null;
+    }
+
+    var pres = read('ppt/presentation.xml');
+    var rels = read('ppt/_rels/presentation.xml.rels');
+    var types = read('[Content_Types].xml');
+    if (pres == null || rels == null || types == null) {
+      throw StateError('pptx の形が読めない');
+    }
+    // 既にあるスライドの数と、 使われている番号の最大。
+    var maxSlideNo = 0;
+    for (final f in src.files) {
+      final m = RegExp(r'^ppt/slides/slide(\d+)\.xml$').firstMatch(f.name);
+      if (m != null) {
+        final v = int.tryParse(m.group(1)!) ?? 0;
+        if (v > maxSlideNo) maxSlideNo = v;
+      }
+    }
+    var maxRid = 0;
+    for (final m in RegExp(r'Id="rId(\d+)"').allMatches(rels)) {
+      final v = int.tryParse(m.group(1)!) ?? 0;
+      if (v > maxRid) maxRid = v;
+    }
+    var maxSldId = 255;
+    for (final m in RegExp(r'<p:sldId id="(\d+)"').allMatches(pres)) {
+      final v = int.tryParse(m.group(1)!) ?? 0;
+      if (v > maxSldId) maxSldId = v;
+    }
+    // 足す分のスライドだけを作って、 その XML を借りてくる。
+    final made = ZipDecoder().decodeBytes(buildPptxFromSlides(extra));
+    String? madeRead(String name) {
+      for (final f in made.files) {
+        if (f.name == name) return utf8.decode(f.content as List<int>);
+      }
+      return null;
+    }
+
+    // 元のファイル (差し替える 3 つは後で入れ直すので、 ここでは飛ばす)。
+    const replaced = {
+      'ppt/presentation.xml',
+      'ppt/_rels/presentation.xml.rels',
+      '[Content_Types].xml',
+    };
+    final out = Archive();
+    for (final f in src.files) {
+      if (!f.isFile || replaced.contains(f.name)) continue;
+      out.addFile(ArchiveFile(f.name, f.size, f.content));
+    }
+    final sldIdBuf = StringBuffer();
+    final relBuf = StringBuffer();
+    final typeBuf = StringBuffer();
+    // 足す分の絵 (media) は名前がぶつからないように付け替える。
+    var mediaSeq = DateTime.now().millisecondsSinceEpoch % 100000;
+    for (var i = 0; i < extra.length; i++) {
+      final srcName = 'ppt/slides/slide${i + 1}.xml';
+      var xml = madeRead(srcName);
+      if (xml == null) continue;
+      final no = maxSlideNo + 1 + i;
+      final rid = 'rId${maxRid + 1 + i}';
+      // 絵を持つスライドは media と rels も運ぶ。
+      final srcRel = madeRead('ppt/slides/_rels/slide${i + 1}.xml.rels');
+      var relXml = srcRel;
+      if (srcRel != null) {
+        for (final m in RegExp(r'\.\./media/([A-Za-z0-9_.-]+)')
+            .allMatches(srcRel)
+            .toList()
+            .reversed) {
+          final old = m.group(1)!;
+          final ext = old.contains('.') ? old.split('.').last : 'png';
+          final newName = 'hnadd${mediaSeq++}.$ext';
+          for (final mf in made.files) {
+            if (mf.name == 'ppt/media/$old') {
+              out.addFile(
+                  ArchiveFile('ppt/media/$newName', mf.size, mf.content));
+              if (!types.contains('Extension="$ext"')) {
+                typeBuf.write('<Default Extension="$ext" '
+                    'ContentType="image/$ext"/>');
+              }
+              break;
+            }
+          }
+          relXml = relXml!.replaceAll('../media/$old', '../media/$newName');
+        }
+        out.addFile(ArchiveFile('ppt/slides/_rels/slide$no.xml.rels',
+            utf8.encode(relXml!).length, utf8.encode(relXml)));
+      }
+      out.addFile(ArchiveFile(
+          'ppt/slides/slide$no.xml', utf8.encode(xml).length, utf8.encode(xml)));
+      sldIdBuf.write('<p:sldId id="${maxSldId + 1 + i}" r:id="$rid"/>');
+      relBuf.write('<Relationship Id="$rid" '
+          'Type="http://schemas.openxmlformats.org/officeDocument/2006/'
+          'relationships/slide" Target="slides/slide$no.xml"/>');
+      typeBuf.write('<Override PartName="/ppt/slides/slide$no.xml" '
+          'ContentType="application/vnd.openxmlformats-officedocument.'
+          'presentationml.slide+xml"/>');
+    }
+    pres = pres.replaceFirst('</p:sldIdLst>', '$sldIdBuf</p:sldIdLst>');
+    rels = rels.replaceFirst('</Relationships>', '$relBuf</Relationships>');
+    types = types.replaceFirst('</Types>', '$typeBuf</Types>');
+    void put(String name, String body) {
+      final b = utf8.encode(body);
+      out.addFile(ArchiveFile(name, b.length, b));
+    }
+
+    put('ppt/presentation.xml', pres);
+    put('ppt/_rels/presentation.xml.rels', rels);
+    put('[Content_Types].xml', types);
+    final enc = ZipEncoder().encode(out);
+    if (enc == null) throw StateError('zip に固められない');
+    return Uint8List.fromList(enc);
   }
 
   static Uint8List buildPptxFromSlides(
@@ -246404,8 +246648,12 @@ class _OfficeFileTemplate {
       final deco = StringBuffer();
       var decoId = 10;
       // ★ 重なりを先に直す (= ユーザー報告: 縦棒と枠が重なって中身が
-      //   見えなくなる)。
-      for (final sh in _fixDecoOverlaps(s.shapes.take(3).toList())) {
+      //   見えなくなる / 見出しと背景の絵が被る)。
+      //   見出しの帯 (上から 14%) と、 右に置く絵の場所は避ける。
+      for (final sh in _fixDecoOverlaps(
+          _keepDecoOffContent(s.shapes.take(3).toList(),
+              hasRightImage: hasImg && !full && !leftImg,
+              hasLeftImage: hasImg && leftImg))) {
         deco.write(shapeXml(sh, decoId++));
       }
       // 全面の絵は一番下 (= 背景) に置く。
@@ -246413,6 +246661,21 @@ class _OfficeFileTemplate {
       final overlayPic = (hasImg && !full) ? pic : '';
       // 本文の左端。 絵を左に置いた時は右へ寄せる。
       final bodyX = leftImg ? 4400000 : 548640;
+      // ── 見出しの下線 (= ユーザー要望: 文字の左右端にそろえる) ──
+      //    見出しは lIns=548640 の枠に入っているので、 左端はそこ。
+      //    幅は実際に描かれる文字の幅を測って決める。
+      const titleIns = 548640;
+      final titleWEmu = _measureTitleWidthEmu(
+          s.title, titleSz / 100.0, 9144000 - titleIns * 2);
+      final titleRule = s.title.trim().isEmpty
+          ? ''
+          : '<p:sp><p:nvSpPr><p:cNvPr id="7" name="TitleRule"/>'
+              '<p:cNvSpPr/><p:nvPr/></p:nvSpPr>'
+              '<p:spPr><a:xfrm><a:off x="$titleIns" y="1180000"/>'
+              '<a:ext cx="$titleWEmu" cy="52000"/></a:xfrm>'
+              '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>'
+              '<a:solidFill><a:schemeClr val="accent1"/></a:solidFill>'
+              '</p:spPr><p:txBody><a:bodyPr/><a:p/></p:txBody></p:sp>';
       return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
           '<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
           'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
@@ -246436,6 +246699,9 @@ class _OfficeFileTemplate {
           '<a:p><a:r><a:rPr lang="ja-JP" sz="$titleSz" b="1" dirty="0">'
           '<a:solidFill><a:schemeClr val="bg1"/></a:solidFill></a:rPr>'
           '<a:t>${esc(s.title)}</a:t></a:r></a:p></p:txBody></p:sp>'
+          // 見出しの下線。 長さは見出しの文字幅と同じ、 左端も見出しに
+          //   そろえる (= ユーザー要望: 横棒の長さが文章と合っていない)。
+          '$titleRule'
           // 本文 (箇条書き)
           '<p:sp><p:nvSpPr><p:cNvPr id="3" name="Body"/>'
           '<p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr/></p:nvSpPr>'
@@ -250321,6 +250587,10 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
   bool _aiChatPanelOpen = false;
 
   void _openAiAssistForDocx() {
+    // 会話欄が 2 つ並ばないように (= ユーザー報告)。
+    if (!_aiChatPanelOpen) {
+      _McpChatSession.instance.requestClosePanel();
+    }
     setState(() => _aiChatPanelOpen = !_aiChatPanelOpen);
   }
 
@@ -260457,6 +260727,13 @@ class _McpChatSession extends ChangeNotifier {
     List<AiInputImage>? images,
     bool steer = false,
   }) {
+    // ★ 投げた指示は、 順番待ちで取り消しても ↑ で戻せるように控える
+    //   (= ユーザー要望)。 会話に残らない (取り消した) 分もここには残る。
+    final logged = raw.trim().isEmpty ? shown.trim() : raw.trim();
+    if (logged.isNotEmpty && (_promptLog.isEmpty || _promptLog.last != logged)) {
+      _promptLog.add(logged);
+      if (_promptLog.length > 200) _promptLog.removeAt(0);
+    }
     if (!_busy) {
       unawaited(run(shown: shown, raw: raw, images: images));
       return;
@@ -260472,6 +260749,45 @@ class _McpChatSession extends ChangeNotifier {
     }
     _queued.add(_McpPending(shown: shown, raw: raw, images: images));
     notifyListeners();
+  }
+
+  // ── 会話欄を 2 つ同時に出さない (= ユーザー報告: 資料の画面から AI を
+  //    押すと会話欄が二重に出る) ──
+  //    本体のアシスタントが会話欄を出している間だけ [panelVisible] が true。
+  //    画面内の AI (資料 / 表 / 文書) が開く時に [requestClosePanel] を呼ぶと、
+  //    本体側が自分の会話欄を閉じる (考える所はそのまま動き続ける)。
+  bool panelVisible = false;
+  void Function()? closePanelHandler;
+  void requestClosePanel() {
+    if (!panelVisible) return;
+    final h = closePanelHandler;
+    if (h != null) h();
+  }
+
+  /// 投げた指示の控え (古い順)。 取り消した物も残る (= ↑ で呼び戻せる)。
+  final List<String> _promptLog = [];
+  List<String> get promptLog => List<String>.unmodifiable(_promptLog);
+
+  /// 順番待ちの 1 件を「割り込み」 に変える (= ユーザー要望: 待ち状態の物を
+  /// 割り込みに変えて、 今の作業に反映させられるように)。
+  void promoteQueuedToSteer(int index) {
+    if (index < 0 || index >= _queued.length) return;
+    final p = _queued.removeAt(index);
+    if (!_busy) {
+      unawaited(run(shown: p.shown, raw: p.raw, images: p.images));
+      return;
+    }
+    _msgs.add(_McpChatMsg('user', p.shown, raw: p.raw));
+    _steeredCount++;
+    notifyListeners();
+    unawaited(provider.appendMcpChat('user', p.shown));
+  }
+
+  /// 順番待ちを全部「割り込み」 に変える。
+  void promoteAllQueuedToSteer() {
+    while (_queued.isNotEmpty) {
+      promoteQueuedToSteer(0);
+    }
   }
 
   /// 順番待ちを 1 件取り消す。
@@ -261526,12 +261842,27 @@ class _McpChatDialogState extends State<_McpChatDialog> {
   /// 履歴に入る前に書きかけだった文 (一番下まで戻った時に返す)。
   String _promptDraft = '';
 
-  /// 送信済みの指示 (古い順)。 この会話のユーザー発言から作る。
-  List<String> get _sentPrompts => [
-        for (final m in _msgs)
-          if (m.role == 'user')
-            ((m.raw ?? m.text).trim().isEmpty ? m.text : (m.raw ?? m.text))
-      ].where((s) => s.trim().isNotEmpty).toList();
+  /// 送信済みの指示 (古い順)。 会話のユーザー発言 + 投げた控え。
+  /// ★ 順番待ちのまま取り消した指示も控えに残るので、 ↑ で呼び戻せる
+  ///   (= ユーザー要望)。
+  List<String> get _sentPrompts {
+    final out = <String>[];
+    void add(String s) {
+      final t = s.trim();
+      if (t.isEmpty) return;
+      if (out.isNotEmpty && out.last == t) return;
+      out.add(t);
+    }
+
+    for (final m in _msgs) {
+      if (m.role != 'user') continue;
+      add((m.raw ?? m.text).trim().isEmpty ? m.text : (m.raw ?? m.text));
+    }
+    for (final p in _session.promptLog) {
+      add(p);
+    }
+    return out;
+  }
 
   /// [delta] = -1 で 1 つ前、 +1 で 1 つ後。 動かせたら true。
   bool _recallPrompt(int delta) {
@@ -262742,7 +263073,30 @@ class _McpChatDialogState extends State<_McpChatDialog> {
               padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
               child: Row(children: [
                 const Spacer(),
-                if (_session.queued.isNotEmpty)
+                if (_session.queued.isNotEmpty) ...[
+                  // ── 待っている分を「割り込み」 に変える (= ユーザー要望:
+                  //    待ち状態の物を今の作業に反映させたい) ──
+                  Tooltip(
+                    message: provider.t('mcp.queuedToSteer'),
+                    child: InkWell(
+                      onTap: () =>
+                          setState(_session.promoteAllQueuedToSteer),
+                      borderRadius: BorderRadius.circular(6),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 2),
+                        child: Row(mainAxisSize: MainAxisSize.min, children: [
+                          const Icon(Icons.merge_type_rounded,
+                              size: 13, color: Color(0xFFFFB347)),
+                          const SizedBox(width: 3),
+                          Text(provider.t('mcp.queuedToSteerShort'),
+                              style: const TextStyle(
+                                  color: Color(0xFFFFB347), fontSize: 11)),
+                        ]),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
                   Tooltip(
                     message: provider.t('mcp.queuedClear'),
                     child: InkWell(
@@ -262759,6 +263113,7 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                       ),
                     ),
                   ),
+                ],
                 if (_session.steeredCount > 0)
                   Padding(
                     padding: const EdgeInsets.only(left: 8),
@@ -263856,6 +264211,7 @@ class _FlashcardStudyDialogState extends State<_FlashcardStudyDialog> {
     );
   }
 }
+
 
 
 
