@@ -177,6 +177,27 @@ class HomeShortcutService {
     return false;
   }
 
+  /// URL (YouTube の動画 / チャンネルなど) を単体の窓で開くショートカットを
+  /// デスクトップ等に作る (= ユーザー要望)。 Windows 専用。
+  ///
+  /// 起動引数は `--floating-web=<url>` (+ `--floating-title=<name>`)。 本体を
+  /// 立ち上げずに、 そのプロセス自身が浮かぶ Web 窓になる (他のショートカット
+  /// と同じ動き)。
+  static Future<bool> pinUrlShortcut({
+    required String url,
+    required String label,
+    String? destDir,
+    String? iconPath,
+  }) async {
+    if (kIsWeb || !Platform.isWindows) return false;
+    final u = url.trim();
+    if (u.isEmpty) return false;
+    final args = '--floating-web=${Uri.encodeComponent(u)} '
+        '--floating-title=${Uri.encodeComponent(label.trim())}';
+    return _createWindowsShortcut(args, label,
+        iconPath: iconPath, destDir: destDir);
+  }
+
   /// `.lnk` を作成する。
   ///
   /// ★ PowerShell + WScript.Shell はやめた (= ユーザー報告: ショートカットを

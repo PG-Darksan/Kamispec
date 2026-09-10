@@ -12260,6 +12260,35 @@ class _MindMapScreenState extends State<MindMapScreen>
                     style: const TextStyle(
                         color: Colors.white54, fontSize: 11)),
               ),
+              // ── ブックマークだけの項目 (= ユーザー報告: 右クリックで
+              //    メニューが二重に出る)。 以前は共通のこれと専用の物が重なって
+              //    出ていた。 専用側の項目をここへ寄せて 1 つにまとめる
+              //    (削除は下の共通の項目がブックマークの登録ごと消す)。
+              if (commandId.startsWith('bookmark:')) ...[
+                tile(
+                  icon: Icons.edit_rounded,
+                  iconColor: const Color(0xFF4FC3F7),
+                  title: context.read<MindMapProvider>().t('fav.editFull'),
+                  onTap: () async {
+                    Navigator.of(sctx).pop();
+                    await _showEditBookmarkButtonDialog(commandId);
+                  },
+                ),
+                tile(
+                  icon: Icons.remove_circle_outline_rounded,
+                  iconColor: const Color(0xFFFFB347),
+                  title: context
+                      .read<MindMapProvider>()
+                      .t('fav.removeFromLayout'),
+                  subtitle: context
+                      .read<MindMapProvider>()
+                      .t('fav.removeFromLayoutSub'),
+                  onTap: () async {
+                    Navigator.of(sctx).pop();
+                    await _removeButtonFromLayout(commandId);
+                  },
+                ),
+              ],
               // ① 他のボタンに差し替える
               tile(
                 icon: Icons.swap_horiz_rounded,
@@ -21571,6 +21600,19 @@ class _MindMapScreenState extends State<MindMapScreen>
                       color: Colors.white38, fontSize: 11, height: 1.35)),
               onTap: () => Navigator.pop(dctx, 'videos'),
             ),
+            // ── デスクトップにショートカット (= ユーザー要望)。 Windows だけ。 ──
+            if (!kIsWeb && Platform.isWindows)
+              ListTile(
+                leading: const Icon(Icons.add_to_home_screen_rounded,
+                    color: Color(0xFFFFB347), size: 22),
+                title: Text(provider.t('yt.channelPickDesktop'),
+                    style:
+                        const TextStyle(color: Colors.white, fontSize: 13)),
+                subtitle: Text(provider.t('yt.channelPickDesktopDesc'),
+                    style: const TextStyle(
+                        color: Colors.white38, fontSize: 11, height: 1.35)),
+                onTap: () => Navigator.pop(dctx, 'desktop'),
+              ),
           ]),
         ),
         actions: [
@@ -33035,6 +33077,20 @@ class _MindMapScreenState extends State<MindMapScreen>
             _shareVideoUrl(node.youtubeUrl!);
           },
         ),
+      // ── デスクトップにショートカット (= ユーザー要望)。 Windows だけ。 ──
+      if (!kIsWeb &&
+          Platform.isWindows &&
+          (node.youtubeUrl ?? '').startsWith('http'))
+        _CtxMenuItem(
+          icon: Icons.add_to_home_screen_rounded,
+          label: provider.t('shortcut.urlTitle'),
+          color: const Color(0xFFFFB347),
+          onTap: () {
+            _removeOverlay();
+            unawaited(showUrlShortcutDialog(context, provider,
+                url: node.youtubeUrl!, label: node.title));
+          },
+        ),
       // ── 子要素を整列 ──
       // 親ノードに紐づく子ノード達を、 親の右側に縦一列で等間隔配置する。
       // 接続線でつながっている直接の子だけが対象 (= 孫は動かさない)。
@@ -43799,10 +43855,11 @@ class _MindMapScreenState extends State<MindMapScreen>
       );
     } else if (commandId.startsWith('bookmark:') && !_reorderHeaderMode) {
       // ── 動的ブックマークボタン ──
+      // ★ 右クリックはここでは受けない (= ユーザー報告: メニューが二重に
+      //   出る)。 上の Listener が共通メニューを出しているので、 専用の
+      //   項目 (編集 / 配置から外す) はそちらへ寄せた。
       wrapped = GestureDetector(
         behavior: HitTestBehavior.translucent,
-        onSecondaryTap: () =>
-            _showBookmarkButtonContextMenu(context, commandId),
         onLongPress: _isDesktop
             ? () => _showBookmarkButtonContextMenu(context, commandId)
             : () =>
@@ -52681,6 +52738,31 @@ class _MindMapScreenState extends State<MindMapScreen>
     // チャンネル判定
     final channelInfo = _extractChannelInfo(url);
     if (channelInfo != null) {
+      // ★ 先に「何を置くか」 を聞く (= ユーザー要望: チャンネルのホームで
+      //   + を押した時に、 チャンネルへのショートカットだけをページに埋め込む
+      //   項目が欲しい)。 ギャラリーにはあった選択が、 ふつうのマップには
+      //   無く、 必ず動画を取り込んでいた。
+      final what = await _askChannelEmbedKind(provider);
+      if (what == null || !mounted) return;
+      if (what == 'desktop') {
+        // ページには置かず、 デスクトップ等にショートカットを作る。
+        await showUrlShortcutDialog(context, provider, url: url, label: '');
+        return;
+      }
+      if (what == 'channel') {
+        // チャンネルを 1 つの要素として置く。 押すとチャンネルが開く。
+        final newNode = provider.addNodeAtCenterReturning(pos);
+        provider.updateNodeYoutube(newNode.id, url);
+        unawaited(_backfillChannelTitle(provider, url));
+        _appSnack(
+            context,
+            SnackBar(
+              content: Text(provider.t('yt.channelEmbedded')),
+              backgroundColor: const Color(0xFF43B97F),
+              duration: const Duration(seconds: 2),
+            ));
+        return;
+      }
       final mode = await _pickChannelMode();
       if (mode == null || !mounted) return;
       provider.setChannelMode(mode);
@@ -116046,6 +116128,28 @@ try {
                   tooltip:
                       context.read<MindMapProvider>().t('player.popOutWindow'),
                   onPressed: _popOutVideoToOwnWindow,
+                ),
+              // ── デスクトップにショートカット (= ユーザー要望: チャンネルや
+              //    動画へのショートカットをデスクトップ等に作れるように)。
+              //    Windows だけ。 動画でもチャンネルでも出す。 ──
+              if (!kIsWeb &&
+                  Platform.isWindows &&
+                  _isEmbeddableYoutubeUrl(_currentUrl))
+                IconButton(
+                  icon: const Icon(Icons.add_to_home_screen_rounded,
+                      color: Color(0xFFFFB347), size: 20),
+                  tooltip:
+                      context.read<MindMapProvider>().t('shortcut.urlTitle'),
+                  onPressed: () {
+                    final provider = context.read<MindMapProvider>();
+                    final shareUrl = _currentUrl
+                        .replaceFirst('https://m.youtube.com/',
+                            'https://www.youtube.com/')
+                        .replaceFirst('http://m.youtube.com/',
+                            'https://www.youtube.com/');
+                    unawaited(showUrlShortcutDialog(context, provider,
+                        url: shareUrl, label: _currentTitle));
+                  },
                 ),
               // ── AI チャット (= ユーザー要望: YouTube だけでなくオフライン
               //    (ダウンロード済み mp4) 動画でも AI チャットを使えるように。
@@ -209393,6 +209497,8 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
 
   /// 行 [r] の高さ (px)。
   double _rowH(int r) {
+    // 絞り込みで隠れている行は高さ 0 (= 位置の計算がそのまま合う)。
+    if (_isRowHidden(r)) return 0;
     final v = _sheetRowH[_activeSheet]?[r];
     if (v == null) return _cellHeight;
     return v.clamp(_kMinRowH, _kMaxRowH);
@@ -209411,6 +209517,7 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
   void _invalidateGridMetrics() {
     _colXCache = null;
     _rowYCache = null;
+    _hiddenRowsCache = null;
   }
 
   /// シートが変わっていたら控えを丸ごと捨てる。
@@ -209800,6 +209907,8 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
     _formulaCtrl.dispose();
     _formulaFocus.dispose();
     _stopDragAutoScroll();
+    _bandHScroll.dispose();
+    _bandVScroll.dispose();
     _vScroll.dispose();
     _hScroll.dispose();
     _findCtrl.dispose();
@@ -209829,6 +209938,305 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
   final Map<String, String> _sheetAutoFilter = {};
 
   /// [r] 行 [c] 列がオートフィルターの見出し行か (= ▼ を出す所)。
+  /// 入力規則 (リスト) のあるセル (sheet → 規則)。
+  final Map<String, List<_SsValidation>> _sheetValidations = {};
+
+  _SsValidation? _validationAt(int r, int c) {
+    final list = _sheetValidations[_activeSheet];
+    if (list == null) return null;
+    for (final v in list) {
+      if (v.contains(r, c)) return v;
+    }
+    return null;
+  }
+
+  /// 規則の選択肢。 "a,b,c" はそのまま、 範囲参照は (別シートでも) 読む。
+  List<String> _validationOptions(_SsValidation v) {
+    var f = v.formula1.trim();
+    if (f.length >= 2 && f.startsWith('"') && f.endsWith('"')) {
+      return f
+          .substring(1, f.length - 1)
+          .split(',')
+          .map((s) => s.trim())
+          .where((s) => s.isNotEmpty)
+          .toList();
+    }
+    if (f.startsWith('=')) f = f.substring(1);
+    var sheet = _activeSheet;
+    var ref = f;
+    final bang = f.lastIndexOf('!');
+    if (bang > 0) {
+      sheet = f.substring(0, bang).replaceAll("'", '');
+      ref = f.substring(bang + 1);
+    }
+    final rg = _parseA1Range(ref);
+    if (rg == null) return const [];
+    final rows = _sheets[sheet] ?? _rows;
+    final out = <String>[];
+    final seen = <String>{};
+    for (var r = rg.$1; r <= rg.$3 && r < rows.length; r++) {
+      for (var c = rg.$2; c <= rg.$4 && c < rows[r].length; c++) {
+        final s = rows[r][c].trim();
+        if (s.isNotEmpty && seen.add(s)) out.add(s);
+      }
+    }
+    return out;
+  }
+
+  /// 選択肢を出して、 選んだ物をセルへ入れる (= ユーザー報告)。
+  Future<void> _showValidationMenu(Offset pos, int r, int c) async {
+    final v = _validationAt(r, c);
+    if (v == null) return;
+    final opts = _validationOptions(v);
+    if (opts.isEmpty) return;
+    _commitEdit();
+    final cur = (r < _rowCount && c < _colCount) ? _rows[r][c] : '';
+    final picked = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx, pos.dy),
+      color: const Color(0xFF22222E),
+      items: [
+        for (final o in opts)
+          PopupMenuItem<String>(
+            value: o,
+            height: 32,
+            child: Text(o,
+                style: TextStyle(
+                    color: o == cur ? const Color(0xFF8D86FF) : Colors.white,
+                    fontSize: 13,
+                    fontWeight: o == cur ? FontWeight.w700 : null)),
+          ),
+      ],
+    );
+    if (picked == null || !mounted) return;
+    if (r >= _rowCount || c >= _colCount) return;
+    _pushUndo();
+    setState(() {
+      _rows[r][c] = picked;
+      _dirty = true;
+      _invalidateFormulaCache();
+    });
+  }
+
+  // ── 列ごとの絞り込み (= ユーザー報告: フィルター機能が出ない) ──
+  //    sheet → 列 → 残す値。 無い列は絞り込まない。 Excel と同じく
+  //    オートフィルターの範囲の中の行だけを隠す。 表示だけの絞り込みで、
+  //    ファイルには書かない (autoFilter の範囲はそのまま残る)。
+  final Map<String, Map<int, Set<String>>> _sheetFilters = {};
+  Map<int, Set<String>> get _activeFilters =>
+      _sheetFilters[_activeSheet] ?? const {};
+
+  (int, int, int, int)? get _filterRange {
+    final ref = _sheetAutoFilter[_activeSheet];
+    return ref == null ? null : _parseA1Range(ref);
+  }
+
+  Set<int>? _hiddenRowsCache;
+  String _hiddenRowsSheet = '';
+
+  /// 絞り込みで隠れている行か。 高さ 0 にして、 組み立てもしない。
+  bool _isRowHidden(int r) {
+    final f = _sheetFilters[_activeSheet];
+    if (f == null || f.isEmpty) return false;
+    if (_hiddenRowsCache == null || _hiddenRowsSheet != _activeSheet) {
+      _hiddenRowsSheet = _activeSheet;
+      final s = <int>{};
+      final rg = _filterRange;
+      if (rg != null) {
+        for (var rr = rg.$1 + 1; rr <= rg.$3 && rr < _rowCount; rr++) {
+          for (final e in f.entries) {
+            if (!e.value.contains(_displayValue(rr, e.key).trim())) {
+              s.add(rr);
+              break;
+            }
+          }
+        }
+      }
+      _hiddenRowsCache = s;
+    }
+    return _hiddenRowsCache!.contains(r);
+  }
+
+  int get _hiddenRowCount {
+    if (_activeFilters.isEmpty) return 0;
+    _isRowHidden(0);
+    return _hiddenRowsCache?.length ?? 0;
+  }
+
+  void _setColumnFilter(int col, Set<String>? allowed) {
+    setState(() {
+      final m = _sheetFilters.putIfAbsent(_activeSheet, () => {});
+      if (allowed == null) {
+        m.remove(col);
+      } else {
+        m[col] = allowed;
+      }
+      if (m.isEmpty) _sheetFilters.remove(_activeSheet);
+      _hiddenRowsCache = null;
+      _invalidateGridMetrics();
+    });
+  }
+
+  /// 列の ▼ を押した時の絞り込み画面 (= Excel のフィルター)。
+  Future<void> _showFilterDialog(int col) async {
+    _commitEdit();
+    final rg = _filterRange;
+    if (rg == null) return;
+    final provider = context.read<MindMapProvider>();
+    final values = <String>[];
+    final seen = <String>{};
+    for (var r = rg.$1 + 1; r <= rg.$3 && r < _rowCount; r++) {
+      final v = _displayValue(r, col).trim();
+      if (seen.add(v)) values.add(v);
+    }
+    values.sort((a, b) {
+      final na = double.tryParse(a);
+      final nb = double.tryParse(b);
+      if (na != null && nb != null) return na.compareTo(nb);
+      if (na != null) return -1;
+      if (nb != null) return 1;
+      return a.compareTo(b);
+    });
+    final current = _activeFilters[col];
+    final sel = <String>{...(current ?? values)};
+    var query = '';
+    final blank = provider.t('ss.filterBlank');
+    final result = await showDialog<String>(
+      context: context,
+      builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
+        final shown = query.isEmpty
+            ? values
+            : values
+                .where((v) => v.toLowerCase().contains(query.toLowerCase()))
+                .toList();
+        final allOn = shown.isNotEmpty && shown.every(sel.contains);
+        final noneOn = shown.every((v) => !sel.contains(v));
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1E1E32),
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14)),
+          titlePadding: const EdgeInsets.fromLTRB(20, 16, 12, 0),
+          contentPadding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+          title: Row(children: [
+            const Icon(Icons.filter_alt_rounded,
+                color: Color(0xFF8D86FF), size: 20),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                  '${provider.t('ss.filterTitle')} — ${_colLabel(col)}',
+                  style: const TextStyle(color: Colors.white, fontSize: 15)),
+            ),
+          ]),
+          content: SizedBox(
+            width: 320,
+            height: 380,
+            child: Column(children: [
+              TextField(
+                autofocus: true,
+                style: const TextStyle(color: Colors.white, fontSize: 13),
+                decoration: InputDecoration(
+                  isDense: true,
+                  hintText: provider.t('ss.filterSearch'),
+                  hintStyle:
+                      const TextStyle(color: Colors.white24, fontSize: 12),
+                  prefixIcon: const Icon(Icons.search_rounded,
+                      color: Colors.white38, size: 18),
+                  filled: true,
+                  fillColor: Colors.white.withValues(alpha: 0.06),
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide.none),
+                ),
+                onChanged: (v) => setD(() => query = v.trim()),
+              ),
+              const SizedBox(height: 4),
+              CheckboxListTile(
+                dense: true,
+                controlAffinity: ListTileControlAffinity.leading,
+                tristate: true,
+                value: allOn ? true : (noneOn ? false : null),
+                activeColor: const Color(0xFF6C63FF),
+                title: Text(provider.t('ss.filterAll'),
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600)),
+                onChanged: (_) => setD(() {
+                  if (allOn) {
+                    sel.removeAll(shown);
+                  } else {
+                    sel.addAll(shown);
+                  }
+                }),
+              ),
+              const Divider(color: Colors.white12, height: 6),
+              Expanded(
+                child: Scrollbar(
+                  child: ListView.builder(
+                    itemCount: shown.length,
+                    itemBuilder: (_, i) {
+                      final v = shown[i];
+                      return CheckboxListTile(
+                        dense: true,
+                        controlAffinity: ListTileControlAffinity.leading,
+                        value: sel.contains(v),
+                        activeColor: const Color(0xFF6C63FF),
+                        title: Text(v.isEmpty ? blank : v,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                                color: v.isEmpty
+                                    ? Colors.white38
+                                    : Colors.white,
+                                fontSize: 13)),
+                        onChanged: (on) => setD(() {
+                          if (on == true) {
+                            sel.add(v);
+                          } else {
+                            sel.remove(v);
+                          }
+                        }),
+                      );
+                    },
+                  ),
+                ),
+              ),
+            ]),
+          ),
+          actions: [
+            if (current != null)
+              TextButton.icon(
+                onPressed: () => Navigator.pop(dctx, 'clear'),
+                icon: const Icon(Icons.filter_alt_off_rounded,
+                    size: 16, color: Color(0xFFE57373)),
+                label: Text(provider.t('ss.filterClear'),
+                    style: const TextStyle(color: Color(0xFFE57373))),
+              ),
+            TextButton(
+              onPressed: () => Navigator.pop(dctx),
+              child: Text(provider.t('btn.cancel'),
+                  style: const TextStyle(color: Colors.white54)),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dctx, 'apply'),
+              child: Text(provider.t('ss.filterApply')),
+            ),
+          ],
+        );
+      }),
+    );
+    if (!mounted || result == null) return;
+    if (result == 'clear') {
+      _setColumnFilter(col, null);
+      return;
+    }
+    if (sel.length >= values.length && values.every(sel.contains)) {
+      _setColumnFilter(col, null);
+    } else {
+      _setColumnFilter(col, sel);
+    }
+  }
+
   bool _isAutoFilterHeader(int r, int c) {
     final ref = _sheetAutoFilter[_activeSheet];
     if (ref == null) return false;
@@ -209936,6 +210344,75 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
   /// Excel は `<pane xSplit="1" ySplit="1" state="frozen"/>` の形で持つ。
   /// `state` が `frozen` / `frozenSplit` の物だけを固定として扱う
   /// (`split` はただの分割窓なので固定ではない)。
+  /// xlsx の <dataValidations> (リスト型だけ) をシートごとに拾う
+  /// (= ユーザー報告: 項目の選択肢が表示されない)。 excel パッケージは
+  /// 読まないので自分で読む。 保存はパッケージが元の XML を残すので、
+  /// ここで読んだ物はそのまま生き残る (実測)。
+  static Map<String, List<_SsValidation>> _readXlsxDataValidations(
+      Uint8List bytes) {
+    final out = <String, List<_SsValidation>>{};
+    try {
+      final arc = ZipDecoder().decodeBytes(bytes);
+      final files = <String, List<int>>{};
+      for (final f in arc.files) {
+        files[f.name] = List<int>.from(f.content as List<int>);
+      }
+      String? read(String name) => files[name] == null
+          ? null
+          : utf8.decode(files[name]!, allowMalformed: true);
+      final paths = _sheetXmlPaths(read);
+      for (final e in paths.entries) {
+        final xml = read(e.value);
+        if (xml == null) continue;
+        final list = <_SsValidation>[];
+        for (final m in RegExp(
+                r'<dataValidation\b([^>]*)>([\s\S]*?)</dataValidation>')
+            .allMatches(xml)) {
+          final attrs = m.group(1)!;
+          final type =
+              RegExp(r'type="([^"]*)"').firstMatch(attrs)?.group(1) ?? '';
+          if (type != 'list') continue;
+          final sqref =
+              RegExp(r'sqref="([^"]*)"').firstMatch(attrs)?.group(1) ?? '';
+          final f1 = RegExp(r'<formula1>([\s\S]*?)</formula1>')
+                  .firstMatch(m.group(2)!)
+                  ?.group(1) ??
+              '';
+          final ranges = <(int, int, int, int)>[];
+          for (final part in sqref.split(RegExp(r'\s+'))) {
+            if (part.isEmpty) continue;
+            final rg = _parseA1Range(part);
+            if (rg != null) ranges.add(rg);
+          }
+          if (ranges.isEmpty || f1.trim().isEmpty) continue;
+          list.add(_SsValidation(ranges, _xmlUnescapeEntities(f1.trim())));
+        }
+        if (list.isNotEmpty) out[e.key] = list;
+      }
+    } catch (e) {
+      debugPrint('入力規則の読み込みに失敗: $e');
+    }
+    return out;
+  }
+
+  /// 数値参照 (&#36196; / &#x8D64;) も含めて実体参照を戻す。
+  static String _xmlUnescapeEntities(String s) {
+    var t = s.replaceAllMapped(RegExp(r'&#x([0-9A-Fa-f]+);'), (m) {
+      final v = int.tryParse(m.group(1)!, radix: 16);
+      return v == null ? m.group(0)! : String.fromCharCode(v);
+    });
+    t = t.replaceAllMapped(RegExp(r'&#([0-9]+);'), (m) {
+      final v = int.tryParse(m.group(1)!);
+      return v == null ? m.group(0)! : String.fromCharCode(v);
+    });
+    return t
+        .replaceAll('&quot;', '"')
+        .replaceAll('&apos;', "'")
+        .replaceAll('&lt;', '<')
+        .replaceAll('&gt;', '>')
+        .replaceAll('&amp;', '&');
+  }
+
   static Map<String, List<int>> _readXlsxFreeze(Uint8List bytes) {
     final out = <String, List<int>>{};
     try {
@@ -210975,6 +211452,12 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
         _sheetFreeze
           ..clear()
           ..addAll(_readXlsxFreeze(normBytes));
+        // 入力規則 (選択肢) も自分で読む (= ユーザー報告)。
+        _sheetValidations
+          ..clear()
+          ..addAll(_readXlsxDataValidations(normBytes));
+        _sheetFilters.clear();
+        _hiddenRowsCache = null;
         xls.Excel? excel;
         try {
           excel = xls.Excel.decodeBytes(normBytes);
@@ -216624,8 +217107,10 @@ $csvText
                         Column(
                           children: [
                             _buildColumnHeaderRow(dark, fg),
-                            ...List.generate(
-                                _rowCount, (r) => _buildDataRow(r, dark, fg)),
+                            // 絞り込みで隠れた行は組み立てない
+                            //   (= ユーザー報告: フィルター機能)。
+                            for (var r = 0; r < _rowCount; r++)
+                              if (!_isRowHidden(r)) _buildDataRow(r, dark, fg),
                             _buildAppendRow(dark, fg),
                           ],
                         ),
@@ -216646,7 +217131,7 @@ $csvText
           if (!_hasFreeze) return grid;
           return Stack(children: [
             grid,
-            ..._buildFreezeBands(dark, fg, tableW),
+            ..._buildFreezeBands(dark, fg, tableW, tableH),
           ]);
         },
       ),
@@ -216664,7 +217149,41 @@ $csvText
   /// 中身は本物と同じ組み立て ([_buildColumnHeaderRow] / [_buildDataRow]) を
   /// 使うので、 押した時の動きも書き換えもそのまま効く。 スクロールが 0 の
   /// 時は下の本物とぴったり重なるだけなので、 二重には見えない。
-  List<Widget> _buildFreezeBands(bool dark, Color fg, double tableW) {
+  /// 帯用のスクロール。 本物に追従させるだけで、 利用者は直接は送れない。
+  ///
+  /// ★ 以前は帯の中身を Transform.translate で送っていた (= ユーザー報告:
+  ///   固定ボタンを押すと固定していない所が黒くなる)。 帯は表と同じ幅 /
+  ///   高さの中身を枠の外まで描く作りだったので、 GPU 側で大きな描画面が
+  ///   要る。 同じ「送る」 でも、 本物の表と同じスクロール表示にすれば、
+  ///   見えている分しか描かれない。
+  final ScrollController _bandHScroll = ScrollController();
+  final ScrollController _bandVScroll = ScrollController();
+  bool _bandSyncInstalled = false;
+
+  void _syncFreezeBands() {
+    if (!mounted) return;
+    final z = _ssZoom;
+    if (_bandHScroll.hasClients && _hScroll.hasClients) {
+      final dx = _hScroll.offset;
+      if ((_bandHScroll.offset - dx).abs() > 0.5) _bandHScroll.jumpTo(dx);
+    }
+    if (_bandVScroll.hasClients && _vScroll.hasClients) {
+      // 左の帯は上の帯の下から始まるので、 その分を足して送る。
+      final dy = _vScroll.offset + _freezeBandH * z;
+      if ((_bandVScroll.offset - dy).abs() > 0.5) _bandVScroll.jumpTo(dy);
+    }
+  }
+
+  void _installBandSync() {
+    if (_bandSyncInstalled) return;
+    _bandSyncInstalled = true;
+    _hScroll.addListener(_syncFreezeBands);
+    _vScroll.addListener(_syncFreezeBands);
+  }
+
+  List<Widget> _buildFreezeBands(
+      bool dark, Color fg, double tableW, double tableH) {
+    _installBandSync();
     final z = _ssZoom;
     final bandH = _freezeBandH * z;
     final bandW = _freezeBandW * z;
@@ -216693,20 +217212,19 @@ $csvText
     final out = <Widget>[];
 
     /// 帯の中身。 本物と同じ組み立てを使うので、 押した時の動きもそのまま。
-    ///
-    /// ★ 貼った図 / 図形も一緒に重ねる (= 点検で判明: 帯の裏地に隠れて
-    ///   掴めなくなっていた)。 座標系は本物と同じなので、 ぴったり重なる。
+    /// 貼った図 / 図形も一緒に重ねる (帯の裏地に隠れて掴めなくならない
+    /// ように)。 絞り込みで隠れた行は本物と同じく組み立てない。
     Widget bandBody(int cols, int rows) => Stack(children: [
           Column(children: [
             _buildColumnHeaderRow(dark, fg, maxCols: cols),
             for (var r = 0; r < rows; r++)
-              _buildDataRow(r, dark, fg, maxCols: cols),
+              if (!_isRowHidden(r)) _buildDataRow(r, dark, fg, maxCols: cols),
           ]),
           for (final im in _images) _buildSheetImage(im),
           for (final sh in _shapes) _buildSheetShape(sh),
         ]);
 
-    // ── 上の帯 (固定した行) ──
+    // ── 上の帯 (固定した行)。 横だけ本物に追従する。 ──
     if (fr > 0) {
       out.add(Positioned(
         left: 0,
@@ -216714,36 +217232,36 @@ $csvText
         top: 0,
         height: bandH,
         child: ClipRect(
-          child: Container(
+          child: ColoredBox(
             color: backdrop,
-            // ★ 中身は組み立て直さない (= 点検で判明: 送るたびに全行を
-            //   作り直していて重かった)。 動くのはずらす量だけ。
-            child: AnimatedBuilder(
-              animation: _hScroll,
+            child: SingleChildScrollView(
+              controller: _bandHScroll,
+              scrollDirection: Axis.horizontal,
+              physics: const NeverScrollableScrollPhysics(),
               child: scaled(bandBody(_colCount, fr), tableW, _freezeBandH),
-              builder: (_, band) {
-                final dx = _hScroll.hasClients ? _hScroll.offset : 0.0;
-                return Transform.translate(
-                    offset: Offset(-dx, 0), child: band);
-              },
             ),
           ),
         ),
       ));
     }
 
-    // ── 左の帯 (固定した列) ──
+    // ── 左の帯 (固定した列)。 縦だけ本物に追従する。 ──
     if (fc > 0) {
       final contentH = (_colHeaderHeight + _totalRowH) * z;
       out.add(AnimatedBuilder(
         animation: _vScroll,
-        child: scaled(bandBody(fc, _rowCount), _freezeBandW,
-            _colHeaderHeight + _totalRowH),
+        child: SingleChildScrollView(
+          controller: _bandVScroll,
+          scrollDirection: Axis.vertical,
+          physics: const NeverScrollableScrollPhysics(),
+          // 中身の高さは本物と同じ (行追加の分も含める) にして、 送れる
+          // 範囲を揃える。
+          child: scaled(bandBody(fc, _rowCount), _freezeBandW, tableH),
+        ),
         builder: (_, band) {
           final dy = _vScroll.hasClients ? _vScroll.offset : 0.0;
-          // ★ 帯は「表の中身がある所」 までにする (= 点検で判明: 最終行より
-          //   下まで裏地を伸ばしていたので、 その下にある「行追加」 ボタンが
-          //   押せなくなっていた)。
+          // 帯は「表の中身がある所」 まで (= 最終行より下の「行追加」 の
+          // ボタンを隠さない)。
           final h = contentH - dy - bandH;
           if (h <= 0) return const SizedBox.shrink();
           return Positioned(
@@ -216752,11 +217270,7 @@ $csvText
             width: bandW,
             height: h,
             child: ClipRect(
-              child: Container(
-                color: backdrop,
-                child: Transform.translate(
-                    offset: Offset(0, -(dy + bandH)), child: band),
-              ),
+              child: ColoredBox(color: backdrop, child: band),
             ),
           );
         },
@@ -216771,7 +217285,7 @@ $csvText
         width: bandW,
         height: bandH,
         child: ClipRect(
-          child: Container(
+          child: ColoredBox(
             color: backdrop,
             child: scaled(bandBody(fc, fr), _freezeBandW, _freezeBandH),
           ),
@@ -216791,6 +217305,8 @@ $csvText
           left: bandW - 1, top: 0, bottom: 0, width: 2,
           child: IgnorePointer(child: Container(color: line))));
     }
+    // 組み立て直した直後は帯の送りが 0 に戻るので、 本物に合わせ直す。
+    WidgetsBinding.instance.addPostFrameCallback((_) => _syncFreezeBands());
     return out;
   }
 
@@ -218061,6 +218577,13 @@ $csvText
               hideBottomBorder: mg != null && r != mg.r2,
               // Excel で付いていたオートフィルターの見出し行に印を出す。
               filterMark: _isAutoFilterHeader(r, c),
+              filterActive: _activeFilters.containsKey(c),
+              onFilterTap: (_) => unawaited(_showFilterDialog(c)),
+              dropdownMark: selected &&
+                  !_hasRange &&
+                  _editingRow == null &&
+                  _validationAt(r, c) != null,
+              onDropdownTap: (pos) => unawaited(_showValidationMenu(pos, r, c)),
               editing: editing && !isMergeBody,
               selected: selected,
               dark: dark,
@@ -218344,6 +218867,22 @@ $csvText
   }
 }
 
+/// 入力規則 (= Excel の「データの入力規則」 のリスト)。 sqref の範囲と
+/// formula1 (インラインの "a,b,c" か、 範囲参照)。 = ユーザー報告: xlsx を
+/// 開くと項目の選択肢が出ない。
+class _SsValidation {
+  final List<(int, int, int, int)> ranges;
+  final String formula1;
+  const _SsValidation(this.ranges, this.formula1);
+
+  bool contains(int r, int c) {
+    for (final rg in ranges) {
+      if (r >= rg.$1 && r <= rg.$3 && c >= rg.$2 && c <= rg.$4) return true;
+    }
+    return false;
+  }
+}
+
 class _SsDataCell extends StatelessWidget {
   final double width;
   final double height;
@@ -218412,6 +218951,16 @@ class _SsDataCell extends StatelessWidget {
   /// ようにするため (= ユーザー報告: フィルターの設定が反映されていない)。
   final bool filterMark;
 
+  /// この列で絞り込み中か (= ▼ を色付きにする)。
+  final bool filterActive;
+
+  /// ▼ を押した時 (画面座標)。
+  final void Function(Offset globalPos)? onFilterTap;
+
+  /// 入力規則 (選択肢) のあるセルか (= 右端に選択肢ボタンを出す)。
+  final bool dropdownMark;
+  final void Function(Offset globalPos)? onDropdownTap;
+
   const _SsDataCell({
     required this.width,
     required this.height,
@@ -218440,6 +218989,10 @@ class _SsDataCell extends StatelessWidget {
     this.hideTopBorder = false,
     this.hideBottomBorder = false,
     this.filterMark = false,
+    this.filterActive = false,
+    this.onFilterTap,
+    this.dropdownMark = false,
+    this.onDropdownTap,
     this.showFillHandle = false,
     this.inFillPreview = false,
     this.onFillDrag,
@@ -218663,15 +219216,60 @@ class _SsDataCell extends StatelessWidget {
           // ── オートフィルターの印 (= ユーザー報告: フィルターの設定が
           //    反映されていない)。 Excel で付いていた範囲の見出し行に ▼ を
           //    出して、 設定が読めている事が見て分かるようにする。 ──
+          //    押すと絞り込みの画面 (= ユーザー報告: フィルター機能が
+          //    出ない)。 絞り込み中は色を付けて分かるようにする。
           if (filterMark && !editing)
             Positioned(
-              right: 2,
+              right: 1,
               top: 0,
               bottom: 0,
               child: Center(
-                child: Icon(Icons.arrow_drop_down_rounded,
-                    size: 16,
-                    color: dark ? Colors.white54 : Colors.black45),
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTapDown: (d) => onFilterTap?.call(d.globalPosition),
+                  child: Container(
+                    width: 18,
+                    height: 18,
+                    decoration: BoxDecoration(
+                      color: filterActive
+                          ? const Color(0xFF6C63FF)
+                          : (dark ? Colors.white12 : Colors.black12),
+                      borderRadius: BorderRadius.circular(3),
+                    ),
+                    child: Icon(
+                        filterActive
+                            ? Icons.filter_alt_rounded
+                            : Icons.arrow_drop_down_rounded,
+                        size: filterActive ? 13 : 16,
+                        color: filterActive
+                            ? Colors.white
+                            : (dark ? Colors.white70 : Colors.black54)),
+                  ),
+                ),
+              ),
+            ),
+          // ── 入力規則の選択肢 (= ユーザー報告: 項目の選択肢が出ない)。
+          //    選んでいるセルにだけ出す (Excel と同じ)。 ──
+          if (dropdownMark && !editing)
+            Positioned(
+              right: 1,
+              top: 0,
+              bottom: 0,
+              child: Center(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTapDown: (d) => onDropdownTap?.call(d.globalPosition),
+                  child: Container(
+                    width: 18,
+                    height: 18,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF6C63FF),
+                      borderRadius: BorderRadius.circular(3),
+                    ),
+                    child: const Icon(Icons.arrow_drop_down_rounded,
+                        size: 16, color: Colors.white),
+                  ),
+                ),
               ),
             ),
           if (showFillHandle)
@@ -239804,6 +240402,272 @@ String _imageExtOf(Uint8List b) =>
     (b.length > 3 && b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF)
         ? 'jpeg'
         : 'png';
+
+/// YouTube の動画 / チャンネルのショートカット用アイコン (.ico) を描く。
+/// 暗い角丸の下地に赤い再生マーク。 アプリの書類フォルダーへ置く。
+Future<String?> _renderUrlShortcutIco(String saveName) async {
+  try {
+    const double size = 256;
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    final rr = RRect.fromRectAndRadius(
+        const Rect.fromLTWH(0, 0, size, size), const Radius.circular(52));
+    canvas.drawRRect(rr, Paint()..color = const Color(0xFF1E1E2E));
+    final icon = Icons.smart_display_rounded;
+    final tp = TextPainter(
+      text: TextSpan(
+        text: String.fromCharCode(icon.codePoint),
+        style: TextStyle(
+          fontSize: 172,
+          fontFamily: icon.fontFamily,
+          package: icon.fontPackage,
+          color: const Color(0xFFE53935),
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    tp.paint(canvas, Offset((size - tp.width) / 2, (size - tp.height) / 2));
+    final img = await recorder.endRecording().toImage(256, 256);
+    final data = await img.toByteData(format: ui.ImageByteFormat.png);
+    if (data == null) return null;
+    final png = data.buffer.asUint8List();
+    final ico = BytesBuilder()
+      ..add(const [0, 0, 1, 0, 1, 0])
+      ..add(const [0, 0, 0, 0, 1, 0, 32, 0])
+      ..add([
+        png.length & 0xFF,
+        (png.length >> 8) & 0xFF,
+        (png.length >> 16) & 0xFF,
+        (png.length >> 24) & 0xFF,
+        22, 0, 0, 0,
+      ])
+      ..add(png);
+    final dir = await getApplicationDocumentsDirectory();
+    final folder =
+        Directory('${dir.path}${Platform.pathSeparator}button_icons');
+    if (!folder.existsSync()) folder.createSync(recursive: true);
+    final safe = saveName.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
+    final f = File('${folder.path}${Platform.pathSeparator}url_$safe.ico');
+    await f.writeAsBytes(ico.toBytes());
+    return f.path;
+  } catch (_) {
+    return null;
+  }
+}
+
+/// YouTube の動画 / チャンネルなど、 URL へのショートカットをデスクトップ等に
+/// 作る画面 (= ユーザー要望)。 押すとその URL が単体の窓
+/// (`--floating-web=`) で開く。 Windows だけ。
+///
+/// ★ タスクバーへのピン留めは付けていない。 Windows 11 (このビルドでは
+///   26200) は他のアプリからのピン留め (shell の `{:}` 動詞) を無視する
+///   のを実測で確かめた。 Firefox が出来るのは Microsoft から限定機能の
+///   許可を受けているため。 代わりに、 作った後の手順を画面に書いてある。
+Future<void> showUrlShortcutDialog(
+  BuildContext ctx,
+  MindMapProvider provider, {
+  required String url,
+  required String label,
+}) async {
+  if (kIsWeb || !Platform.isWindows) return;
+  const destKey = 'shortcutDestDir_v1';
+  var destDir = '';
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    destDir = (prefs.getString(destKey) ?? '').trim();
+  } catch (_) {}
+  // 名前が無ければ URL から仮の名前を作る (@handle など)。 裏で題名を
+  // 取りに行き、 まだ打ち込まれていなければ差し替える。
+  var initial = label.trim();
+  if (initial.isEmpty) {
+    final m = RegExp(r'youtube\.com/(@[A-Za-z0-9._-]+|channel/[^/?#]+|c/[^/?#]+|user/[^/?#]+)')
+        .firstMatch(url);
+    initial = m?.group(1) ?? 'YouTube';
+  }
+  final nameCtrl = TextEditingController(text: initial);
+  var touched = false;
+  if (label.trim().isEmpty) {
+    unawaited(() async {
+      try {
+        final res = await http.get(Uri.parse(url), headers: const {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+        }).timeout(const Duration(seconds: 10));
+        if (res.statusCode != 200) return;
+        final m = RegExp(r'<meta\s+property="og:title"\s+content="([^"]+)"')
+            .firstMatch(res.body);
+        final t = m?.group(1)?.trim() ?? '';
+        if (t.isNotEmpty && !touched) nameCtrl.text = t;
+      } catch (_) {}
+    }());
+  }
+  if (!ctx.mounted) return;
+  final ok = await showDialog<bool>(
+    context: ctx,
+    builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
+      return AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        title: Row(children: [
+          const Icon(Icons.add_to_home_screen_rounded,
+              color: Color(0xFFFFB347), size: 20),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(provider.t('shortcut.urlTitle'),
+                style: const TextStyle(color: Colors.white, fontSize: 15)),
+          ),
+        ]),
+        content: SizedBox(
+          width: 440,
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(url,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      color: Colors.white38, fontSize: 11)),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: nameCtrl,
+              autofocus: true,
+              onChanged: (_) => touched = true,
+              style: const TextStyle(color: Colors.white, fontSize: 13),
+              decoration: InputDecoration(
+                isDense: true,
+                labelText: provider.t('shortcut.urlLabel'),
+                labelStyle:
+                    const TextStyle(color: Colors.white54, fontSize: 12),
+                filled: true,
+                fillColor: Colors.white.withValues(alpha: 0.06),
+                border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    borderSide: BorderSide.none),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Row(children: [
+              const Icon(Icons.folder_open_rounded,
+                  color: Color(0xFFFFB347), size: 16),
+              const SizedBox(width: 6),
+              Text('${provider.t('shortcut.destTitle')}:',
+                  style:
+                      const TextStyle(color: Colors.white54, fontSize: 11)),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  destDir.isEmpty
+                      ? provider.t('shortcut.destDesktop')
+                      : destDir,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.white, fontSize: 11.5),
+                ),
+              ),
+              TextButton(
+                style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 8)),
+                onPressed: () async {
+                  final dir = await FilePicker.platform.getDirectoryPath(
+                      dialogTitle: provider.t('shortcut.destChange'));
+                  if (dir == null || dir.trim().isEmpty) return;
+                  destDir = dir.trim();
+                  try {
+                    final prefs = await SharedPreferences.getInstance();
+                    await prefs.setString(destKey, destDir);
+                  } catch (_) {}
+                  if (dctx.mounted) setD(() {});
+                },
+                child: Text(provider.t('shortcut.destChange'),
+                    style: const TextStyle(
+                        color: Color(0xFF4FC3F7), fontSize: 11)),
+              ),
+              if (destDir.isNotEmpty)
+                TextButton(
+                  style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.symmetric(horizontal: 8)),
+                  onPressed: () async {
+                    destDir = '';
+                    try {
+                      final prefs = await SharedPreferences.getInstance();
+                      await prefs.remove(destKey);
+                    } catch (_) {}
+                    if (dctx.mounted) setD(() {});
+                  },
+                  child: Text(provider.t('shortcut.destReset'),
+                      style: const TextStyle(
+                          color: Colors.white38, fontSize: 11)),
+                ),
+            ]),
+            const SizedBox(height: 10),
+            Text(provider.t('shortcut.urlDesc'),
+                style: const TextStyle(
+                    color: Colors.white54, fontSize: 11, height: 1.4)),
+            const SizedBox(height: 6),
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.05),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(Icons.info_outline_rounded,
+                        color: Colors.white38, size: 14),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(provider.t('shortcut.pinNote'),
+                          style: const TextStyle(
+                              color: Colors.white54,
+                              fontSize: 10.5,
+                              height: 1.4)),
+                    ),
+                  ]),
+            ),
+          ]),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, false),
+            child: Text(provider.t('btn.cancel'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(dctx, true),
+            icon: const Icon(Icons.check_rounded, size: 16),
+            label: Text(provider.t('shortcut.urlCreate')),
+          ),
+        ],
+      );
+    }),
+  );
+  if (ok != true) {
+    nameCtrl.dispose();
+    return;
+  }
+  final name = nameCtrl.text.trim().isEmpty ? initial : nameCtrl.text.trim();
+  nameCtrl.dispose();
+  final ico = await _renderUrlShortcutIco(
+      url.hashCode.toRadixString(16));
+  final made = await HomeShortcutService.pinUrlShortcut(
+    url: url,
+    label: name,
+    destDir: destDir.isEmpty ? null : destDir,
+    iconPath: ico,
+  );
+  if (!ctx.mounted) return;
+  ScaffoldMessenger.maybeOf(ctx)?.showSnackBar(SnackBar(
+    content: Text(made
+        ? provider.t('shortcut.created').replaceFirst('{name}', name)
+        : provider.t('shortcut.failed')),
+    backgroundColor:
+        made ? const Color(0xFF43B97F) : const Color(0xFFE57373),
+    duration: const Duration(seconds: 3),
+  ));
+}
 
 /// 資料に入れる絵の入手先 (AI 生成 / Web) と、 Web の時の範囲 (著作権
 /// フリーのみ / 問わない) を選ぶ画面 (= ユーザー要望)。 設定画面と
