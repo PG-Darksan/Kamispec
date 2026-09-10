@@ -501,7 +501,8 @@ class McpServer {
         'This is the preferred way to change a background: '
         'describe the picture you want in "prompt" (English works best, be '
         'concrete about subject, colours and mood) and an image is generated '
-        'and applied. Costs a flat ~0.047 USD of prepaid credit per picture, '
+        'and applied. When the setting says to draw, it costs a flat ~0.047 '
+        'USD of prepaid credit per picture (fetching from the web is free), '
         'whatever the prompt length - one charge PER PAGE, so "give every '
         'page the same background" costs that much times the number of '
         'pages. Because it costs money, do '
@@ -516,7 +517,13 @@ class McpServer {
         'conversation. Leave pageId out and the current page is used. '
         'Markdown and video-editor pages have no background at all; asking '
         'for one there is refused - ask the user which page they meant '
-        'instead of picking one yourself. Say which page you changed.',
+        'instead of picking one yourself. Say which page you changed. '
+        'ALWAYS tell the user where the picture came from: the result carries '
+        '"imageSource" (and "imageSourceUrl" when it was fetched from the '
+        'web) - the app either draws it with AI or fetches it from an image '
+        'search, depending on the user setting. Put that in your reply, e.g. '
+        '"AI が描き起こしました" or "Wikimedia Commons から取得しました <url>". '
+        'Never claim it was drawn if it was fetched, or the other way round.',
         {
           'pageId': {'type': 'string'},
           'prompt': {'type': 'string'},
@@ -1689,10 +1696,18 @@ class McpServer {
               fit: a['fit'] as String?,
             );
             final genPage = _provider.mcpPageById(genPageId);
+            // 絵の出どころ (= ユーザー要望: チャットに出典を出す)。
+            final src = _provider.lastImageSource;
             return _ok({
               'background': path,
               'pageId': genPageId,
               if (genPage != null) 'pageName': genPage.name,
+              if (src != null) 'imageSource': src.label,
+              if (src?.url != null) 'imageSourceUrl': src!.url,
+              'tellTheUser': src == null
+                  ? 'Say where the picture came from.'
+                  : 'Tell the user where the picture came from, in your reply: '
+                      '${src.label}${src.url == null ? '' : ' (${src.url})'}',
             });
           } catch (e) {
             return _err('$e');

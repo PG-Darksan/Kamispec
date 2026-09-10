@@ -42528,6 +42528,116 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'O fundo agora é um elemento da camada de trás; pegue-o com a ferramenta de seleção',
       'ru': 'Фон стал элементом заднего слоя; его можно взять инструментом выделения',
     },
+    'paint.ocr': {
+      'ja': '手書きを文字にする',
+      'en': 'Turn handwriting into text',
+      'zh': '把手写转成文字',
+      'ko': '손글씨를 문자로',
+      'es': 'Convertir la escritura a texto',
+      'fr': 'Convertir l\'écriture en texte',
+      'de': 'Handschrift in Text umwandeln',
+      'pt': 'Converter a escrita em texto',
+      'ru': 'Преобразовать рукопись в текст',
+    },
+    'paint.ocrPickFirst': {
+      'ja': '選択ツールで手書きを選ぶか、 範囲を囲ってから押してください',
+      'en': 'Select the handwriting (or drag a box around it) first',
+      'zh': '请先用选择工具选中手写内容，或框选一个范围',
+      'ko': '선택 도구로 손글씨를 고르거나 범위를 지정한 뒤 눌러 주세요',
+      'es': 'Selecciona primero la escritura (o encuadra una zona)',
+      'fr': 'Sélectionnez d\'abord l\'écriture (ou encadrez une zone)',
+      'de': 'Wähle zuerst die Handschrift aus (oder ziehe einen Rahmen darum)',
+      'pt': 'Selecione primeiro a escrita (ou desenhe um retângulo em volta)',
+      'ru': 'Сначала выделите рукопись (или обведите область)',
+    },
+    'paint.ocrRunning': {
+      'ja': 'AI が文字を読み取っています…',
+      'en': 'The AI is reading the handwriting…',
+      'zh': 'AI 正在识别文字…',
+      'ko': 'AI가 글자를 읽고 있습니다…',
+      'es': 'La IA está leyendo la escritura…',
+      'fr': 'L\'IA lit l\'écriture…',
+      'de': 'Die KI liest die Handschrift…',
+      'pt': 'A IA está lendo a escrita…',
+      'ru': 'ИИ распознаёт рукопись…',
+    },
+    'paint.ocrTitle': {
+      'ja': '読み取った文字',
+      'en': 'Recognised text',
+      'zh': '识别结果',
+      'ko': '읽어낸 문자',
+      'es': 'Texto reconocido',
+      'fr': 'Texte reconnu',
+      'de': 'Erkannter Text',
+      'pt': 'Texto reconhecido',
+      'ru': 'Распознанный текст',
+    },
+    'paint.ocrReplace': {
+      'ja': '元の手書きを消して置き換える',
+      'en': 'Replace the handwriting',
+      'zh': '删除原手写并替换',
+      'ko': '원래 손글씨를 지우고 바꾸기',
+      'es': 'Sustituir la escritura original',
+      'fr': 'Remplacer l\'écriture d\'origine',
+      'de': 'Handschrift ersetzen',
+      'pt': 'Substituir a escrita original',
+      'ru': 'Заменить исходную рукопись',
+    },
+    'paint.ocrPlace': {
+      'ja': '置く',
+      'en': 'Place',
+      'zh': '放置',
+      'ko': '놓기',
+      'es': 'Colocar',
+      'fr': 'Placer',
+      'de': 'Einfügen',
+      'pt': 'Colocar',
+      'ru': 'Поместить',
+    },
+    'paint.ocrPlaced': {
+      'ja': '文字にしました',
+      'en': 'Turned into text',
+      'zh': '已转换为文字',
+      'ko': '문자로 바꿨습니다',
+      'es': 'Convertido en texto',
+      'fr': 'Converti en texte',
+      'de': 'In Text umgewandelt',
+      'pt': 'Convertido em texto',
+      'ru': 'Преобразовано в текст',
+    },
+    'paint.ocrCopied': {
+      'ja': '読み取った文字をコピーしました',
+      'en': 'The recognised text was copied',
+      'zh': '已复制识别结果',
+      'ko': '읽어낸 문자를 복사했습니다',
+      'es': 'Se copió el texto reconocido',
+      'fr': 'Texte reconnu copié',
+      'de': 'Erkannter Text kopiert',
+      'pt': 'Texto reconhecido copiado',
+      'ru': 'Распознанный текст скопирован',
+    },
+    'paint.ocrEmpty': {
+      'ja': '文字を読み取れませんでした',
+      'en': 'No text could be read',
+      'zh': '未能识别出文字',
+      'ko': '문자를 읽어내지 못했습니다',
+      'es': 'No se pudo leer ningún texto',
+      'fr': 'Aucun texte n\'a pu être lu',
+      'de': 'Es konnte kein Text gelesen werden',
+      'pt': 'Não foi possível ler nenhum texto',
+      'ru': 'Не удалось распознать текст',
+    },
+    'paint.ocrFailed': {
+      'ja': '文字にできませんでした',
+      'en': 'Could not convert',
+      'zh': '转换失败',
+      'ko': '문자로 바꾸지 못했습니다',
+      'es': 'No se pudo convertir',
+      'fr': 'Conversion impossible',
+      'de': 'Umwandlung fehlgeschlagen',
+      'pt': 'Não foi possível converter',
+      'ru': 'Не удалось преобразовать',
+    },
     'paint.grade': {
       'ja': 'AI で採点',
       'en': 'Grade with AI',
@@ -42659,6 +42769,28 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Auf das Blatt schreiben',
       'pt': 'Escrever no papel',
       'ru': 'Записать на лист',
+    },
+    'paint.gradeExplainEmbed': {
+      'ja': '解説をこの紙に埋め込む',
+      'en': 'Embed the explanations on this paper',
+      'zh': '把讲解嵌入本页',
+      'ko': '해설을 이 종이에 넣기',
+      'es': 'Insertar las explicaciones en esta hoja',
+      'fr': 'Insérer les explications sur cette feuille',
+      'de': 'Erklärungen auf dieses Blatt setzen',
+      'pt': 'Inserir as explicações nesta folha',
+      'ru': 'Вставить пояснения на этот лист',
+    },
+    'paint.gradeExplainEmbedded': {
+      'ja': '解説をこの紙の下に入れました',
+      'en': 'The explanations were added below on this paper',
+      'zh': '已把讲解加到本页下方',
+      'ko': '해설을 이 종이 아래에 넣었습니다',
+      'es': 'Las explicaciones se añadieron debajo en esta hoja',
+      'fr': 'Les explications ont été ajoutées en bas de cette feuille',
+      'de': 'Die Erklärungen wurden unten auf diesem Blatt ergänzt',
+      'pt': 'As explicações foram adicionadas abaixo nesta folha',
+      'ru': 'Пояснения добавлены ниже на этом листе',
     },
     'paint.gradeExplainPage': {
       'ja': '解説を次のページに',
@@ -78163,6 +78295,15 @@ class MindMapProvider extends ChangeNotifier {
   /// [prompt] は AI に描かせる時の指示 (英語)。 [query] は Web 検索の語
   /// (短い英語が望ましい)。 query が無ければ prompt の先頭から作る。
   /// Web で見つからなくても AI で描き直しはしない (= 勝手に費用を掛けない)。
+  /// 直前に用意した絵の出どころ (= ユーザー要望: 「どこから引っ張ってきたの?」
+  /// が分かるように、 チャットに出典を出す)。
+  ///   kind : 'ai' (描き起こし) / 'web' (取得)
+  ///   label: 人に見せる文 (「AI が描き起こし (モデル: …)」 等)
+  ///   url  : 取ってきた元の URL (web の時だけ)
+  ({String kind, String label, String? url})? _lastImageSource;
+  ({String kind, String label, String? url})? get lastImageSource =>
+      _lastImageSource;
+
   Future<Uint8List> makeSlideImage(
       {required String prompt, String? query}) {
     if (slideImagesFromWeb) {
@@ -78217,7 +78358,21 @@ class MindMapProvider extends ChangeNotifier {
       if (!seen.add(u)) continue;
       if (tried++ >= 12) break;
       final bytes = await _downloadImageBytes(u);
-      if (bytes != null) return bytes;
+      if (bytes != null) {
+        // 出どころを控える (= ユーザー要望: どこから取ったかを出す)。
+        String host = '';
+        try {
+          host = Uri.parse(u).host;
+        } catch (_) {}
+        _lastImageSource = (
+          kind: 'web',
+          label: free
+              ? 'Web から取得 (著作権フリー優先: Openverse / Wikimedia Commons)'
+              : 'Web から取得 (画像検索)',
+          url: u.isEmpty ? null : (host.isEmpty ? u : '$u'),
+        );
+        return bytes;
+      }
     }
     throw Exception(t('img.webNotFound'));
   }
@@ -78353,6 +78508,13 @@ class MindMapProvider extends ChangeNotifier {
   Future<Uint8List> generateAiImage(String prompt) async {
     final p = prompt.trim();
     if (p.isEmpty) throw Exception(t('ai.needPrompt'));
+    // 出どころを控える (= ユーザー要望: 描いたのか取ってきたのかを出す)。
+    _lastImageSource = (
+      kind: 'ai',
+      label: 'この場で AI が描き起こし'
+          '${_imageGenModel == 'auto' ? '' : ' (モデル: $_imageGenModel)'}',
+      url: null,
+    );
     // つながっていない時は、 その旨を出す (= ユーザー要望)。
     await ensureOnline();
     // ★ 画像もアプリ側で用意したキー (代行サーバー) で動かす
@@ -93412,7 +93574,9 @@ $cleanQ
         'No text, no letters, no watermark, '
         'no logo. Keep the composition calm and low-contrast so that notes '
         'and lines drawn on top stay readable.';
-    final bytes = await generateAiImageViaRelay(full);
+    // ★ 設定 (絵を描き起こす / Web から取る) に従う (= ユーザー要望: どこから
+    //   来た絵かをはっきりさせる)。 出どころは _lastImageSource に残る。
+    final bytes = await makeSlideImage(prompt: full, query: p);
     // 保存先を用意する。
     final dir = await getApplicationDocumentsDirectory();
     final bgDir = Directory('${dir.path}/backgrounds');

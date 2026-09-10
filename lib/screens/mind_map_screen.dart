@@ -139579,7 +139579,10 @@ class _PaintPageViewState extends State<_PaintPageView> {
               ChangeSource.local);
           return KeyEventResult.handled;
         }
-        if (k == LogicalKeyboardKey.keyD) {
+        // ★ Shift を押している時は渡さない (= ユーザー要望: Ctrl+Shift+D は
+        //   「ページ削除」 に割り当ててあるので、 文書モードと取り合わない)。
+        if (k == LogicalKeyboardKey.keyD &&
+            !HardwareKeyboard.instance.isShiftPressed) {
           unawaited(_togglePaintDocMode());
           return KeyEventResult.handled;
         }
@@ -139598,8 +139601,11 @@ class _PaintPageViewState extends State<_PaintPageView> {
     }
     // ── Ctrl/Cmd+D: 文書モードの ON / OFF (= ユーザー要望: 切り替える
     //    ショートカットキーが欲しい) ──
-    //    書いた内容はモードごとに別々に残るので、 何度切り替えても消えない。
+    //    ★ Shift 付き (Ctrl+Shift+D) は横取りしない (= ユーザー要望:
+    //      そちらは「ページ削除」 に割り当ててある)。 ここで消費すると
+    //      フリーノートの上ではページ削除が効かなくなる。
     if (k == LogicalKeyboardKey.keyD &&
+        !HardwareKeyboard.instance.isShiftPressed &&
         (HardwareKeyboard.instance.isControlPressed ||
             HardwareKeyboard.instance.isMetaPressed)) {
       // ignore: discarded_futures
@@ -146389,6 +146395,9 @@ class _PaintPageViewState extends State<_PaintPageView> {
         for (final t in _paintModeMenuTools())
           item('tool:${t.tool.name}', t.icon, t.label,
               on: !_docModeInline && _tool == t.tool),
+        // ── 手書きを文字にする (= ユーザー要望) ──
+        const PopupMenuDivider(height: 6),
+        item('ocr', Icons.text_format_rounded, p.t('paint.ocr')),
         // ── 背景の絵を、 選べる要素 (奥のレイヤー) にする (= ユーザー要望:
         //    「背景」 という概念が変。 奥に置いた絵なら後から選べる) ──
         if ((_sheet.bgImage ?? '').isNotEmpty) ...[
@@ -146407,6 +146416,10 @@ class _PaintPageViewState extends State<_PaintPageView> {
     if (v == null || !mounted) return;
     if (v == 'bgToLayer') {
       _convertBgImageToBackLayer();
+      return;
+    }
+    if (v == 'ocr') {
+      unawaited(_handwritingToText());
       return;
     }
     _applyPaintModeChoice(v);
@@ -146751,7 +146764,19 @@ class _PaintPageViewState extends State<_PaintPageView> {
             label: Text(p.t('paint.gradeWrite'),
                 style: const TextStyle(color: Color(0xFFEC407A))),
           ),
-          if (explainPart.isNotEmpty)
+          if (explainPart.isNotEmpty) ...[
+            // ── 解説を今の紙に埋め込む (= ユーザー要望: 解説まで埋め込める
+            //    ようにして欲しい) ──
+            TextButton.icon(
+              onPressed: () {
+                _embedExplanationOnSheet(explainPart);
+                Navigator.pop(dctx);
+              },
+              icon: const Icon(Icons.sticky_note_2_outlined,
+                  size: 18, color: Color(0xFF81C784)),
+              label: Text(p.t('paint.gradeExplainEmbed'),
+                  style: const TextStyle(color: Color(0xFF81C784))),
+            ),
             TextButton.icon(
               onPressed: () {
                 _addExplanationPage(explainPart);
@@ -146762,6 +146787,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
               label: Text(p.t('paint.gradeExplainPage'),
                   style: const TextStyle(color: Color(0xFF4FC3F7))),
             ),
+          ],
           TextButton(
             onPressed: () => Navigator.pop(dctx),
             child: Text(p.t('btn.close'),
@@ -146793,6 +146819,315 @@ class _PaintPageViewState extends State<_PaintPageView> {
     });
     unawaited(_persist());
     _snack(widget.provider.t('paint.gradeWritten'));
+  }
+
+  // ── 手書きの文字を文字に変える (= ユーザー要望: フリーハンドで描いた文字を
+  //    テキストに変換できる機能) ──
+  //    選んだ手書き (または最後に囲った範囲) を絵にして AI に読ませ、 返って
+  //    きた文字をキャンバスの文字として置く。 元の手書きは残すか消すか選べる。
+
+  /// 変換する範囲。 選択があればその外側の四角、 無ければ最後の範囲選択。
+  Rect? _handwritingTargetRect() {
+    Rect? acc;
+    void add(Rect r) => acc = acc == null ? r : acc!.expandToInclude(r);
+    for (final i in _selStrokeSet) {
+      if (i < 0 || i >= _sheet.strokes.length) continue;
+      final pts = _sheet.strokes[i].points;
+      if (pts.isEmpty) continue;
+      var r = Rect.fromPoints(pts.first, pts.first);
+      for (final p in pts) {
+        r = r.expandToInclude(Rect.fromPoints(p, p));
+      }
+      add(r.inflate(_sheet.strokes[i].width));
+    }
+    for (final i in _selShapeSet) {
+      if (i < 0 || i >= _sheet.shapes.length) continue;
+      final sh = _sheet.shapes[i];
+      add(Rect.fromPoints(sh.a, sh.b));
+    }
+    if (acc != null) return acc!.inflate(12);
+    final r = _lastRangeRect;
+    if (r != null && r.width > 4 && r.height > 4) return r;
+    return null;
+  }
+
+  Future<void> _handwritingToText() async {
+    final p = widget.provider;
+    if (_sheets.isEmpty) return;
+    if (_textEditPos != null) _commitTextEdit();
+    final rect = _handwritingTargetRect();
+    if (rect == null) {
+      _snack(p.t('paint.ocrPickFirst'));
+      return;
+    }
+    final region = rect.intersect(Rect.fromLTWH(0, 0, _csize.w, _csize.h));
+    if (region.width < 4 || region.height < 4) {
+      _snack(p.t('paint.ocrPickFirst'));
+      return;
+    }
+    final png = await _renderPaintRegionPng(region, pixelRatio: 2.5);
+    if (png == null || !mounted) {
+      _snack(p.t('paint.exportFailed'));
+      return;
+    }
+    final progressShown = Completer<void>();
+    unawaited(showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dctx) {
+        progressShown.complete();
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1E1E32),
+          content: Row(children: [
+            const SizedBox(
+                width: 22,
+                height: 22,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2.5, color: Color(0xFF4FC3F7))),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Text(p.t('paint.ocrRunning'),
+                  style: const TextStyle(color: Colors.white, fontSize: 13)),
+            ),
+          ]),
+        );
+      },
+    ));
+    await progressShown.future;
+    String out;
+    try {
+      out = await p.askAi(
+        '画像に手書きされた文字を、 そのまま文字に起こしてください。\n'
+        '・読み取った文字だけを返す (前置き・説明・記号の囲みは不要)。\n'
+        '・改行やレイアウトはできるだけ元のまま。\n'
+        '・数式は読める形 (例: √4 = 2、 2 × 3 = 6) で書く。\n'
+        '・読めない所は □ にする。\n\n'
+        '${p.languageInstructionForAi()}',
+        images: [
+          AiInputImage(
+              mime: 'image/png',
+              base64: base64Encode(png),
+              name: 'handwriting.png')
+        ],
+        timeoutOverride: const Duration(minutes: 2),
+      );
+    } catch (e) {
+      if (mounted) {
+        Navigator.of(context, rootNavigator: true).pop();
+        _snack('${p.t('paint.ocrFailed')}: '
+            '${'$e'.replaceFirst('Exception: ', '')}');
+      }
+      return;
+    }
+    if (!mounted) return;
+    Navigator.of(context, rootNavigator: true).pop();
+    var text = out.trim();
+    // ``` で囲って返してくる事があるので外す。
+    if (text.startsWith('```')) {
+      final lines = text.split('\n');
+      if (lines.length >= 2) {
+        lines.removeAt(0);
+        if (lines.isNotEmpty && lines.last.trim().startsWith('```')) {
+          lines.removeLast();
+        }
+        text = lines.join('\n').trim();
+      }
+    }
+    if (text.isEmpty) {
+      _snack(p.t('paint.ocrEmpty'));
+      return;
+    }
+    await _showHandwritingResult(text, region);
+  }
+
+  /// 読み取った文字の確認 (直してから置ける)。
+  Future<void> _showHandwritingResult(String text, Rect region) async {
+    final p = widget.provider;
+    final ctrl = TextEditingController(text: text);
+    var replace = _selStrokeSet.isNotEmpty || _selShapeSet.isNotEmpty;
+    final mode = await _showNearDialog<String>(
+      builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1E1E32),
+          title: Row(children: [
+            const Icon(Icons.text_fields_rounded,
+                color: Color(0xFF4FC3F7), size: 20),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(p.t('paint.ocrTitle'),
+                  style: const TextStyle(color: Colors.white, fontSize: 15)),
+            ),
+          ]),
+          content: SizedBox(
+            width: 460,
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              ConstrainedBox(
+                constraints: BoxConstraints(
+                    maxHeight:
+                        math.max(120.0, MediaQuery.sizeOf(dctx).height - 340)),
+                child: TextField(
+                  controller: ctrl,
+                  maxLines: null,
+                  style: const TextStyle(
+                      color: Colors.white, fontSize: 14, height: 1.5),
+                  decoration: const InputDecoration(
+                    isDense: true,
+                    enabledBorder: OutlineInputBorder(
+                        borderSide: BorderSide(color: Colors.white24)),
+                    focusedBorder: OutlineInputBorder(
+                        borderSide: BorderSide(color: Color(0xFF6C63FF))),
+                  ),
+                ),
+              ),
+              if (_selStrokeSet.isNotEmpty || _selShapeSet.isNotEmpty)
+                SwitchListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  value: replace,
+                  activeThumbColor: const Color(0xFF6C63FF),
+                  title: Text(p.t('paint.ocrReplace'),
+                      style:
+                          const TextStyle(color: Colors.white, fontSize: 13)),
+                  onChanged: (v) => setD(() => replace = v),
+                ),
+            ]),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dctx, 'copy'),
+              child: Text(p.t('btn.copy'),
+                  style: const TextStyle(color: Colors.white54)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(dctx),
+              child: Text(p.t('btn.cancel'),
+                  style: const TextStyle(color: Colors.white54)),
+            ),
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF6C63FF),
+                  foregroundColor: Colors.white),
+              onPressed: () => Navigator.pop(dctx, 'place'),
+              icon: const Icon(Icons.check_rounded, size: 16),
+              label: Text(p.t('paint.ocrPlace')),
+            ),
+          ],
+        );
+      }),
+    );
+    final finalText = ctrl.text.trim();
+    if (mode == 'copy') {
+      await Clipboard.setData(ClipboardData(text: finalText));
+      _snack(p.t('paint.ocrCopied'));
+      return;
+    }
+    if (mode != 'place' || finalText.isEmpty || !mounted) return;
+    // 元の高さから字の大きさを見当づける (行数で割る)。
+    final lines = math.max(1, '\n'.allMatches(finalText).length + 1);
+    final size =
+        (region.height / lines * 0.72).clamp(12.0, 72.0).toDouble();
+    final maxW = math.max(80.0, _csize.w - region.left - 24);
+    final wrapped = _wrapForCanvas(finalText, maxW, size);
+    setState(() {
+      _redo.clear();
+      if (replace) {
+        // 元の手書きを消してから置く (= 変換らしい動き)。
+        final strokes = _selStrokeSet.toList()..sort((a, b) => b - a);
+        for (final i in strokes) {
+          if (i < _sheet.strokes.length) _sheet.strokes.removeAt(i);
+        }
+        final shapes = _selShapeSet.toList()..sort((a, b) => b - a);
+        for (final i in shapes) {
+          if (i < _sheet.shapes.length) _sheet.shapes.removeAt(i);
+        }
+        _clearSelSets();
+      }
+      _sheet.texts.add(_PaintText(
+        Offset(region.left, region.top),
+        wrapped,
+        _color.toARGB32(),
+        size,
+      )
+        ..z = _nextPaintZ()
+        ..lyr = _activeLayer);
+      _sheet.undo.add('text');
+      _dirty = true;
+    });
+    unawaited(_persist());
+    _snack(p.t('paint.ocrPlaced'));
+  }
+
+  /// 解説を「今の紙」 に埋め込む (= ユーザー要望: 解説まで埋め込めるように)。
+  ///
+  /// 手書きと重ならないよう、 いちばん下の書き込みより下に置く。 入り切らな
+  /// ければ紙を下へ伸ばす (用紙をカスタムにして高さを足す)。 文字はキャンバス
+  /// の文字なので、 後から選択ツールで動かしたり消したりできる。
+  void _embedExplanationOnSheet(String text) {
+    final body = text.trim();
+    if (body.isEmpty) return;
+    if (_textEditPos != null) _commitTextEdit();
+    final cs = _csize;
+    const double left = 48, fontSize = 15;
+    final maxW = math.max(120.0, cs.w - left * 2);
+    final title = widget.provider.t('paint.gradeExplainTitle');
+    final wrapped = _wrapForCanvas('$title\n$body', maxW, fontSize);
+    // 今ある書き込みのいちばん下を探す (無ければ紙の 6 割の位置から)。
+    var bottom = 0.0;
+    for (final s in _sheet.strokes) {
+      for (final p in s.points) {
+        if (p.dy > bottom) bottom = p.dy;
+      }
+    }
+    for (final sh in _sheet.shapes) {
+      final r = Rect.fromPoints(sh.a, sh.b);
+      if (r.bottom > bottom) bottom = r.bottom;
+    }
+    for (final t in _sheet.texts) {
+      final h = _measurePaintTextHeight(t, maxW);
+      if (t.pos.dy + h > bottom) bottom = t.pos.dy + h;
+    }
+    for (final im in _sheet.images) {
+      if (im.rect.bottom > bottom) bottom = im.rect.bottom;
+    }
+    if (bottom <= 0) bottom = cs.h * 0.6;
+    final top = bottom + 40;
+    // 置いた文字の高さを測って、 紙からはみ出すなら紙を伸ばす。
+    final tp = TextPainter(
+      text: TextSpan(
+          text: wrapped, style: TextStyle(fontSize: fontSize, height: 1.35)),
+      textDirection: TextDirection.ltr,
+    )..layout(maxWidth: maxW);
+    final need = top + tp.height + 48;
+    setState(() {
+      _redo.clear();
+      if (need > cs.h) {
+        _sheet.sizeId = 'custom';
+        _sheet.customW = cs.w;
+        _sheet.customH = need;
+      }
+      _sheet.texts.add(_PaintText(
+        Offset(left, top),
+        wrapped,
+        0xFF1B5E20,
+        fontSize,
+        bold: false,
+      )
+        ..z = _nextPaintZ()
+        ..lyr = _activeLayer);
+      _sheet.undo.add('text');
+      _dirty = true;
+    });
+    unawaited(_persist());
+    _snack(widget.provider.t('paint.gradeExplainEmbedded'));
+  }
+
+  /// キャンバスの文字のおよその高さ (= 置き場所を決めるため)。
+  double _measurePaintTextHeight(_PaintText t, double maxW) {
+    final tp = TextPainter(
+      text: TextSpan(text: t.text, style: TextStyle(fontSize: t.size)),
+      textDirection: TextDirection.ltr,
+    )..layout(maxWidth: maxW);
+    return tp.height;
   }
 
   /// 解説を、 今のページの次に新しいページとして入れる (文字の層に)。
@@ -149209,6 +149544,11 @@ class _PaintPageViewState extends State<_PaintPageView> {
                   icon: Icons.file_open_rounded,
                   tooltip: widget.provider.t('paint.importFile'),
                   onTap: _importFileAsPages),
+              // ── 手書きの文字を文字にする (= ユーザー要望) ──
+              _toolBtn(
+                  icon: Icons.text_format_rounded,
+                  tooltip: widget.provider.t('paint.ocr'),
+                  onTap: () => unawaited(_handwritingToText())),
               // ── AI で採点 (= ユーザー要望: 問題を貼って書き込んだら採点、
               //    解説を付けるかも選べるように) ──
               _toolBtn(
@@ -149671,6 +150011,11 @@ class _PaintPageViewState extends State<_PaintPageView> {
                   icon: Icons.add_photo_alternate_outlined,
                   tooltip: widget.provider.t('paint.regionInsert'),
                   onTap: _insertPaintRegionAsImage),
+              // 囲った範囲の手書きを文字にする (= ユーザー要望)。
+              _toolBtn(
+                  icon: Icons.text_format_rounded,
+                  tooltip: widget.provider.t('paint.ocr'),
+                  onTap: () => unawaited(_handwritingToText())),
             ],
           ]),
         ),
@@ -150105,6 +150450,11 @@ class _PaintPageViewState extends State<_PaintPageView> {
                   icon: Icons.add_photo_alternate_outlined,
                   tooltip: widget.provider.t('paint.regionInsert'),
                   onTap: _insertPaintRegionAsImage),
+              // 囲った範囲の手書きを文字にする (= ユーザー要望)。
+              _toolBtn(
+                  icon: Icons.text_format_rounded,
+                  tooltip: widget.provider.t('paint.ocr'),
+                  onTap: () => unawaited(_handwritingToText())),
             ],
             _toolBtn(
                 icon: Icons.delete_outline_rounded,
@@ -262868,5 +263218,6 @@ class _FlashcardStudyDialogState extends State<_FlashcardStudyDialog> {
     );
   }
 }
+
 
 
