@@ -145866,6 +145866,195 @@ class _PaintPageViewState extends State<_PaintPageView> {
   }
 
   /// ファイル名から拡張子を除いた表示名。
+  // ── 画像 / PDF から「文章だけ」 を取り出して紙に入れる (= ユーザー要望:
+  //    画像や PDF を読ませて文章だけを抽出し、 1 ページにつき 1 枚、 抽出した
+  //    文字を埋め込めるように) ──
+  //    PDF は先にファイル自身の文字を試し (速くて正確)、 文字を持たない
+  //    (= 紙を写した) ページだけ絵にして AI に読ませる。 画像は AI に読ませる。
+  //    取り出した文字は紙の「文字の層」 に入るので、 そのまま直せる。
+  Future<void> _importTextOnlyFromFiles() async {
+    final p = widget.provider;
+    try {
+      final res = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const [
+          'pdf', 'jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif',
+        ],
+        allowMultiple: true,
+        withData: false,
+      );
+      final files = res?.files ?? const <PlatformFile>[];
+      if (files.isEmpty || !mounted) return;
+      final firstNewIndex = _sheets.length;
+      var added = 0;
+      final progress = ValueNotifier<String>(p.t('paint.textOnlyReading'));
+      final shown = Completer<void>();
+      unawaited(showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dctx) {
+          shown.complete();
+          return AlertDialog(
+            backgroundColor: const Color(0xFF1E1E32),
+            content: Row(children: [
+              const SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2.5, color: Color(0xFF4FC3F7))),
+              const SizedBox(width: 14),
+              Expanded(
+                child: ValueListenableBuilder<String>(
+                  valueListenable: progress,
+                  builder: (_, v, __) => Text(v,
+                      style: const TextStyle(
+                          color: Colors.white, fontSize: 13)),
+                ),
+              ),
+            ]),
+          );
+        },
+      ));
+      await shown.future;
+      try {
+        for (final pf in files) {
+          final path = pf.path;
+          if (path == null) continue;
+          final ext = path.split('.').last.toLowerCase();
+          final baseName = _importBaseName(path);
+          final pages = ext == 'pdf'
+              ? await _extractTextPagesFromPdf(path, progress)
+              : await _extractTextPagesFromImage(path, progress);
+          for (final t in pages) {
+            if (t.trim().isEmpty) continue;
+            if (!mounted) return;
+            setState(() {
+              _addTextOnlySheet('$baseName p{n}', t.trim());
+              _dirty = true;
+            });
+            added++;
+          }
+        }
+      } finally {
+        if (mounted) Navigator.of(context, rootNavigator: true).pop();
+        progress.dispose();
+      }
+      if (!mounted) return;
+      if (added == 0) {
+        _snack(p.t('paint.textOnlyNothing'));
+        return;
+      }
+      _selectPage(firstNewIndex.clamp(0, _sheets.length - 1));
+      unawaited(_persist());
+      _snack(p.t('paint.textOnlyDone').replaceFirst('{n}', '$added'));
+    } catch (e) {
+      debugPrint('文字だけの読み込みに失敗: $e');
+      if (mounted) _snack(p.t('paint.textOnlyFailed'));
+    }
+  }
+
+  /// 取り出した文字を 1 枚の紙に入れる (文字の層 = そのまま直せる)。
+  void _addTextOnlySheet(String namePattern, String text) {
+    final cur = _sheet;
+    final sheet = _PaintSheet(
+      name: _uniqueDefaultName(namePattern, _sheets.map((s) => s.name)),
+      sizeId: cur.sizeId,
+      customW: cur.customW,
+      customH: cur.customH,
+      ruleSpacing: cur.ruleSpacing,
+    )..doc = [
+        {'insert': '$text\n'}
+      ];
+    _sheets.add(sheet);
+  }
+
+  /// PDF: ページごとの本文。 文字を持たないページは絵にして AI に読ませる。
+  Future<List<String>> _extractTextPagesFromPdf(
+      String path, ValueNotifier<String> progress) async {
+    final p = widget.provider;
+    final bytes = await File(path).readAsBytes();
+    // 1) ファイル自身の文字 (速くて正確)。
+    var native = <int, String>{};
+    try {
+      final marked =
+          await compute(_extractPdfTextWithPagesForIsolate, bytes);
+      if (marked != null && marked.trim().isNotEmpty) {
+        final reg = RegExp(r'^=== p\.(\d+) ===$', multiLine: true);
+        final ms = reg.allMatches(marked).toList();
+        for (var i = 0; i < ms.length; i++) {
+          final no = int.tryParse(ms[i].group(1)!) ?? 0;
+          final end = i + 1 < ms.length ? ms[i + 1].start : marked.length;
+          final body = marked.substring(ms[i].end, end).trim();
+          if (no > 0 && body.isNotEmpty) native[no] = body;
+        }
+      }
+    } catch (e) {
+      debugPrint('PDF 本文の取り出しに失敗: $e');
+    }
+    // 2) 文字を持たないページは絵にして AI に読ませる。
+    final out = <String>[];
+    var pageNo = 0;
+    await for (final raster in printing.Printing.raster(bytes, dpi: 160)) {
+      pageNo++;
+      final have = native[pageNo];
+      if (have != null && have.length >= 8) {
+        out.add(have);
+        continue;
+      }
+      progress.value =
+          p.t('paint.textOnlyPage').replaceFirst('{n}', '$pageNo');
+      final png = await raster.toPng();
+      final t = await _askAiForPageText(png, pageNo);
+      out.add(t);
+      if (!mounted) break;
+    }
+    return out;
+  }
+
+  Future<List<String>> _extractTextPagesFromImage(
+      String path, ValueNotifier<String> progress) async {
+    progress.value = widget.provider.t('paint.textOnlyReading');
+    final bytes = await File(path).readAsBytes();
+    return [await _askAiForPageText(bytes, 1)];
+  }
+
+  /// 1 ページ分の絵を AI に読ませて、 本文だけを返す。
+  Future<String> _askAiForPageText(Uint8List png, int pageNo) async {
+    final p = widget.provider;
+    try {
+      final out = await p.askAi(
+        '画像に写っている文章を、 そのまま文字に起こしてください。\n'
+        '・本文だけを返す (前置き・説明・囲みの記号は不要)。\n'
+        '・段落と改行はできるだけ元のまま。\n'
+        '・見出しや箇条書きの記号もそのまま書く。\n'
+        '・図や飾りの説明は書かない。 文字が無ければ何も返さない。\n\n'
+        '${p.languageInstructionForAi()}',
+        images: [
+          AiInputImage(
+              mime: 'image/png',
+              base64: base64Encode(png),
+              name: 'page$pageNo.png')
+        ],
+        timeoutOverride: const Duration(minutes: 3),
+      );
+      var t = out.trim();
+      if (t.startsWith('```')) {
+        final lines = t.split('\n');
+        if (lines.length >= 2) {
+          lines.removeAt(0);
+          if (lines.isNotEmpty && lines.last.trim().startsWith('```')) {
+            lines.removeLast();
+          }
+          t = lines.join('\n').trim();
+        }
+      }
+      return t;
+    } catch (e) {
+      debugPrint('ページの文字起こしに失敗: $e');
+      return '';
+    }
+  }
+
   static String _importBaseName(String path) => path
       .replaceAll('\\', '/')
       .split('/')
@@ -146225,15 +146414,16 @@ class _PaintPageViewState extends State<_PaintPageView> {
       ),
     );
     if (editable) {
-      // 文字より下の空きを押しても打てるように (末尾へカーソル)。
+      // ── 押した高さの「行」 から書き始められるようにする (= ユーザー要望:
+      //    行はクリックした場所によって自由に入力位置を変えられるように) ──
+      //    横は左端のまま (= 文字の配置の設定を変えない限り固定)。
+      //    まだ無い行を押した時は、 そこまで空の行を足してから置く。
       body = GestureDetector(
         behavior: HitTestBehavior.translucent,
+        onTapDown: (d) => _docTapLocal = d.localPosition,
         onTap: () {
           if (!_docFocus.hasFocus) _docFocus.requestFocus();
-          final len = c.document.length;
-          c.updateSelection(
-              TextSelection.collapsed(offset: math.max(0, len - 1)),
-              ChangeSource.local);
+          _placeDocCaretAtTappedLine(c, lineH);
         },
         child: body,
       );
@@ -146272,6 +146462,58 @@ class _PaintPageViewState extends State<_PaintPageView> {
       child: Align(alignment: Alignment.topLeft, child: body),
     );
     return editable ? body : IgnorePointer(child: body);
+  }
+
+  /// 文書モードで押した所 (文字の層の中の座標)。
+  Offset? _docTapLocal;
+
+  /// 紙を押した所 (紙の座標) から、 文書モードの行を決める。
+  void _onDocCanvasTap(Offset paperPos) {
+    final c = _docCtrls[_sheet];
+    if (c == null) return;
+    if (!_docFocus.hasFocus) _docFocus.requestFocus();
+    _docTapLocal = Offset(paperPos.dx - _kPaintDocPadL,
+        paperPos.dy - _paintDocPadT(_sheet));
+    _placeDocCaretAtTappedLine(c, _paintDocLineH(_sheet));
+  }
+
+  /// 押した高さの行にカーソルを置く。 その行がまだ無ければ、 空の行を
+  /// 足してから置く (= ユーザー要望: 行を自由に選べるように)。
+  void _placeDocCaretAtTappedLine(QuillController c, double lineH) {
+    final tap = _docTapLocal;
+    _docTapLocal = null;
+    final doc = c.document;
+    if (tap == null || lineH <= 0) {
+      c.updateSelection(
+          TextSelection.collapsed(offset: math.max(0, doc.length - 1)),
+          ChangeSource.local);
+      return;
+    }
+    final target = (tap.dy / lineH).floor().clamp(0, 5000);
+    var plain = doc.toPlainText();
+    // toPlainText は末尾に必ず改行が付く。 行数 = 改行の数。
+    var count = '\n'.allMatches(plain).length;
+    if (target >= count) {
+      final need = target - count + 1;
+      try {
+        doc.insert(math.max(0, doc.length - 1), '\n' * need);
+      } catch (_) {
+        return;
+      }
+      plain = doc.toPlainText();
+      count = '\n'.allMatches(plain).length;
+    }
+    // その行の先頭までの文字数を数える。
+    var off = 0;
+    var line = 0;
+    for (var i = 0; i < plain.length && line < target; i++) {
+      off = i + 1;
+      if (plain[i] == '\n') line++;
+    }
+    final maxOff = math.max(0, doc.length - 1);
+    c.updateSelection(
+        TextSelection.collapsed(offset: off.clamp(0, maxOff)),
+        ChangeSource.local);
   }
 
   /// 文書モードの上の段: 書式のツールバー + 文字数 + 罫線 / 用紙の設定。
@@ -146392,12 +146634,17 @@ class _PaintPageViewState extends State<_PaintPageView> {
         Offset.zero & overlay.size,
       ),
       items: [
+        // ── 選んでいる物のレイヤーを変える (= ユーザー要望) ──
+        if (_isAnySelSet()) ...[
+          for (var i = 4; i >= 0; i--)
+            item('layer:$i', Icons.layers_rounded,
+                p.t('paint.moveToLayer').replaceFirst('{n}', '${i + 1}'),
+                on: _selectionLayer() == i),
+          const PopupMenuDivider(height: 6),
+        ],
         for (final t in _paintModeMenuTools())
           item('tool:${t.tool.name}', t.icon, t.label,
               on: !_docModeInline && _tool == t.tool),
-        // ── 手書きを文字にする (= ユーザー要望) ──
-        const PopupMenuDivider(height: 6),
-        item('ocr', Icons.text_format_rounded, p.t('paint.ocr')),
         // ── 背景の絵を、 選べる要素 (奥のレイヤー) にする (= ユーザー要望:
         //    「背景」 という概念が変。 奥に置いた絵なら後から選べる) ──
         if ((_sheet.bgImage ?? '').isNotEmpty) ...[
@@ -146418,11 +146665,69 @@ class _PaintPageViewState extends State<_PaintPageView> {
       _convertBgImageToBackLayer();
       return;
     }
-    if (v == 'ocr') {
-      unawaited(_handwritingToText());
+    if (v.startsWith('layer:')) {
+      final n = int.tryParse(v.substring(6));
+      if (n != null) _setSelectionLayer(n);
       return;
     }
     _applyPaintModeChoice(v);
+  }
+
+  /// 選んでいる物のレイヤー (全部同じなら その番号、 混ざっていれば null)。
+  int? _selectionLayer() {
+    int? acc;
+    bool same(int v) {
+      if (acc == null) {
+        acc = v;
+        return true;
+      }
+      return acc == v;
+    }
+
+    for (final i in _selStrokeSet) {
+      if (i < _sheet.strokes.length && !same(_sheet.strokes[i].lyr)) {
+        return null;
+      }
+    }
+    for (final i in _selShapeSet) {
+      if (i < _sheet.shapes.length && !same(_sheet.shapes[i].lyr)) return null;
+    }
+    for (final i in _selTextSet) {
+      if (i < _sheet.texts.length && !same(_sheet.texts[i].lyr)) return null;
+    }
+    for (final i in _selImgSet) {
+      if (i < _sheet.images.length && !same(_sheet.images[i].lyr)) return null;
+    }
+    return acc;
+  }
+
+  /// 選んでいる物をまとめて [lyr] のレイヤーへ移す (= ユーザー要望:
+  /// 選んで右クリックからレイヤーを変えられるように)。
+  void _setSelectionLayer(int lyr) {
+    if (!_isAnySelSet()) return;
+    final v = lyr.clamp(0, 4);
+    setState(() {
+      _redo.clear();
+      for (final i in _selStrokeSet) {
+        if (i < _sheet.strokes.length) _sheet.strokes[i].lyr = v;
+      }
+      for (final i in _selShapeSet) {
+        if (i < _sheet.shapes.length) _sheet.shapes[i].lyr = v;
+      }
+      for (final i in _selTextSet) {
+        if (i < _sheet.texts.length) _sheet.texts[i].lyr = v;
+      }
+      for (final i in _selImgSet) {
+        if (i < _sheet.images.length) _sheet.images[i].lyr = v;
+      }
+      // 使った番号までは層の数を増やしておく (道具側の一覧と合わせる)。
+      if (_layerCountPref < v + 1) _layerCountPref = v + 1;
+      _dirty = true;
+    });
+    unawaited(_persist());
+    _snack(widget.provider
+        .t('paint.movedToLayer')
+        .replaceFirst('{n}', '${v + 1}'));
   }
 
   /// 紙の背景画像を、 いちばん奥のレイヤーの画像要素に変える。 以後は
@@ -146534,6 +146839,9 @@ class _PaintPageViewState extends State<_PaintPageView> {
     _flushDocSave();
     var withExplain = true;
     var allPages = false;
+    // 何をさせるか (= ユーザー要望: 採点だけでなく問題も解かせたい。
+    //   ボタンは 1 つにまとめる)。 'grade' = 採点、 'solve' = 解かせる。
+    var mode = 'grade';
     final noteCtrl = TextEditingController();
     final go = await _showNearDialog<bool>(
       builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
@@ -146544,14 +146852,33 @@ class _PaintPageViewState extends State<_PaintPageView> {
                 color: Color(0xFF4FC3F7), size: 20),
             const SizedBox(width: 8),
             Expanded(
-              child: Text(p.t('paint.grade'),
+              child: Text(p.t('paint.aiSheet'),
                   style: const TextStyle(color: Colors.white, fontSize: 15)),
             ),
           ]),
           content: SizedBox(
             width: 380,
             child: Column(mainAxisSize: MainAxisSize.min, children: [
-              Text(p.t('paint.gradeDesc'),
+              // ── 何をさせるか (= ユーザー要望: ボタンは 1 つ) ──
+              Row(children: [
+                for (final (v, label) in [
+                  ('grade', p.t('paint.modeGrade')),
+                  ('solve', p.t('paint.modeSolve')),
+                ])
+                  Padding(
+                    padding: const EdgeInsets.only(right: 6),
+                    child: ChoiceChip(
+                      label: Text(label, style: const TextStyle(fontSize: 12)),
+                      selected: mode == v,
+                      onSelected: (_) => setD(() => mode = v),
+                    ),
+                  ),
+              ]),
+              const SizedBox(height: 8),
+              Text(
+                  mode == 'solve'
+                      ? p.t('paint.solveDesc')
+                      : p.t('paint.gradeDesc'),
                   style: const TextStyle(
                       color: Colors.white54, fontSize: 11.5, height: 1.45)),
               const SizedBox(height: 10),
@@ -146560,7 +146887,10 @@ class _PaintPageViewState extends State<_PaintPageView> {
                 contentPadding: EdgeInsets.zero,
                 value: withExplain,
                 activeThumbColor: const Color(0xFF6C63FF),
-                title: Text(p.t('paint.gradeExplain'),
+                title: Text(
+                    mode == 'solve'
+                        ? p.t('paint.solveExplain')
+                        : p.t('paint.gradeExplain'),
                     style: const TextStyle(color: Colors.white, fontSize: 13)),
                 onChanged: (v) => setD(() => withExplain = v),
               ),
@@ -146611,7 +146941,9 @@ class _PaintPageViewState extends State<_PaintPageView> {
                   foregroundColor: Colors.white),
               onPressed: () => Navigator.pop(dctx, true),
               icon: const Icon(Icons.auto_awesome_rounded, size: 16),
-              label: Text(p.t('paint.gradeRun')),
+              label: Text(mode == 'solve'
+                  ? p.t('paint.solveRun')
+                  : p.t('paint.gradeRun')),
             ),
           ],
         );
@@ -146635,29 +146967,51 @@ class _PaintPageViewState extends State<_PaintPageView> {
       return;
     }
     final note = noteCtrl.text.trim();
-    final prompt = StringBuffer()
-      ..writeln(
-          'これは問題用紙 (プリント / テストなど) に、 手書きまたは入力で解答した画像です。'
-          '${images.length > 1 ? ' 画像は ${images.length} ページ分 (page1, page2, … の順)。' : ''}')
-      ..writeln('採点者として次を行ってください:')
-      ..writeln('1. 各問について、 問題文を読み取り、 書かれた解答を読み取る。')
-      ..writeln('2. 正誤を判定し、 得点を集計する (配点が読み取れなければ 1 問 1 点)。')
-      ..writeln('3. 読み取れない文字は「判読不能」 と書き、 無理に正解 / 不正解にしない。')
-      ..writeln()
-      ..writeln('出力の形式 (この形式以外の前置きや装飾は不要):')
-      ..writeln('得点: X / Y')
-      ..writeln('問1: ○ (解答: …)')
-      ..writeln('問2: × (解答: … / 正答: …)')
-      ..writeln('…')
-      ..writeln(withExplain
-          ? '\n最後に「解説」 という行を置き、 その下に各問の解説を簡潔に (間違えた問は特に丁寧に) 書く。'
-          : '\n解説は書かない。')
+    final pages = images.length > 1
+        ? ' 画像は ${images.length} ページ分 (page1, page2, … の順)。'
+        : '';
+    final prompt = StringBuffer();
+    if (mode == 'solve') {
+      // ── AI に問題を解かせる (= ユーザー要望) ──
+      prompt
+        ..writeln('これは問題用紙 (プリント / テストなど) の画像です。$pages')
+        ..writeln('解答者として次を行ってください:')
+        ..writeln('1. 各問の問題文を読み取る (書き込みがあっても無視して、 自分で解く)。')
+        ..writeln('2. 各問に答える。 読み取れない所は「判読不能」 と書く。')
+        ..writeln()
+        ..writeln('出力の形式 (この形式以外の前置きや装飾は不要):')
+        ..writeln('問1: 答え')
+        ..writeln('問2: 答え')
+        ..writeln('…')
+        ..writeln(withExplain
+            ? '\n最後に「解説」 という行を置き、 その下に各問の解き方を簡潔に書く。'
+            : '\n解説は書かない。');
+    } else {
+      prompt
+        ..writeln('これは問題用紙 (プリント / テストなど) に、 手書きまたは入力で解答した画像です。$pages')
+        ..writeln('採点者として次を行ってください:')
+        ..writeln('1. 各問について、 問題文を読み取り、 書かれた解答を読み取る。')
+        ..writeln('2. 正誤を判定し、 得点を集計する (配点が読み取れなければ 1 問 1 点)。')
+        ..writeln('3. 読み取れない文字は「判読不能」 と書き、 無理に正解 / 不正解にしない。')
+        ..writeln()
+        ..writeln('出力の形式 (この形式以外の前置きや装飾は不要):')
+        ..writeln('得点: X / Y')
+        ..writeln('問1: ○ (解答: …)')
+        ..writeln('問2: × (解答: … / 正答: …)')
+        ..writeln('…')
+        ..writeln(withExplain
+            ? '\n最後に「解説」 という行を置き、 その下に各問の解説を簡潔に (間違えた問は特に丁寧に) 書く。'
+            : '\n解説は書かない。');
+    }
+    prompt
       ..writeln()
       ..writeln(p.languageInstructionForAi());
     if (note.isNotEmpty) {
       prompt
         ..writeln()
-        ..writeln('採点の基準 / 配点についての指示: $note');
+        ..writeln(mode == 'solve'
+            ? '解き方についての指示: $note'
+            : '採点の基準 / 配点についての指示: $note');
     }
     String result;
     // 待っている間の窓。
@@ -146677,7 +147031,9 @@ class _PaintPageViewState extends State<_PaintPageView> {
                     strokeWidth: 2.5, color: Color(0xFF4FC3F7))),
             const SizedBox(width: 14),
             Expanded(
-              child: Text(p.t('paint.grading'),
+              child: Text(mode == 'solve'
+                  ? p.t('paint.solving')
+                  : p.t('paint.grading'),
                   style: const TextStyle(color: Colors.white, fontSize: 13)),
             ),
           ]),
@@ -146698,11 +147054,12 @@ class _PaintPageViewState extends State<_PaintPageView> {
     }
     if (!mounted) return;
     Navigator.of(context, rootNavigator: true).pop();
-    _showGradeResult(result.trim(), withExplain);
+    _showGradeResult(result.trim(), withExplain, solve: mode == 'solve');
   }
 
   /// 採点結果の窓: 結果の本文 + 「紙に書き込む」 + 「解説を次のページに」。
-  Future<void> _showGradeResult(String result, bool withExplain) async {
+  Future<void> _showGradeResult(String result, bool withExplain,
+      {bool solve = false}) async {
     final p = widget.provider;
     // 「解説」 の行より前 = 採点、 後 = 解説。
     final lines = result.split('\n');
@@ -146727,7 +147084,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
               color: Color(0xFF4FC3F7), size: 20),
           const SizedBox(width: 8),
           Expanded(
-            child: Text(p.t('paint.gradeResult'),
+            child: Text(
+                solve ? p.t('paint.solveResult') : p.t('paint.gradeResult'),
                 style: const TextStyle(color: Colors.white, fontSize: 15)),
           ),
           IconButton(
@@ -146821,243 +147179,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
     _snack(widget.provider.t('paint.gradeWritten'));
   }
 
-  // ── 手書きの文字を文字に変える (= ユーザー要望: フリーハンドで描いた文字を
-  //    テキストに変換できる機能) ──
-  //    選んだ手書き (または最後に囲った範囲) を絵にして AI に読ませ、 返って
-  //    きた文字をキャンバスの文字として置く。 元の手書きは残すか消すか選べる。
-
-  /// 変換する範囲。 選択があればその外側の四角、 無ければ最後の範囲選択。
-  Rect? _handwritingTargetRect() {
-    Rect? acc;
-    void add(Rect r) => acc = acc == null ? r : acc!.expandToInclude(r);
-    for (final i in _selStrokeSet) {
-      if (i < 0 || i >= _sheet.strokes.length) continue;
-      final pts = _sheet.strokes[i].points;
-      if (pts.isEmpty) continue;
-      var r = Rect.fromPoints(pts.first, pts.first);
-      for (final p in pts) {
-        r = r.expandToInclude(Rect.fromPoints(p, p));
-      }
-      add(r.inflate(_sheet.strokes[i].width));
-    }
-    for (final i in _selShapeSet) {
-      if (i < 0 || i >= _sheet.shapes.length) continue;
-      final sh = _sheet.shapes[i];
-      add(Rect.fromPoints(sh.a, sh.b));
-    }
-    if (acc != null) return acc!.inflate(12);
-    final r = _lastRangeRect;
-    if (r != null && r.width > 4 && r.height > 4) return r;
-    return null;
-  }
-
-  Future<void> _handwritingToText() async {
-    final p = widget.provider;
-    if (_sheets.isEmpty) return;
-    if (_textEditPos != null) _commitTextEdit();
-    final rect = _handwritingTargetRect();
-    if (rect == null) {
-      _snack(p.t('paint.ocrPickFirst'));
-      return;
-    }
-    final region = rect.intersect(Rect.fromLTWH(0, 0, _csize.w, _csize.h));
-    if (region.width < 4 || region.height < 4) {
-      _snack(p.t('paint.ocrPickFirst'));
-      return;
-    }
-    final png = await _renderPaintRegionPng(region, pixelRatio: 2.5);
-    if (png == null || !mounted) {
-      _snack(p.t('paint.exportFailed'));
-      return;
-    }
-    final progressShown = Completer<void>();
-    unawaited(showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (dctx) {
-        progressShown.complete();
-        return AlertDialog(
-          backgroundColor: const Color(0xFF1E1E32),
-          content: Row(children: [
-            const SizedBox(
-                width: 22,
-                height: 22,
-                child: CircularProgressIndicator(
-                    strokeWidth: 2.5, color: Color(0xFF4FC3F7))),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Text(p.t('paint.ocrRunning'),
-                  style: const TextStyle(color: Colors.white, fontSize: 13)),
-            ),
-          ]),
-        );
-      },
-    ));
-    await progressShown.future;
-    String out;
-    try {
-      out = await p.askAi(
-        '画像に手書きされた文字を、 そのまま文字に起こしてください。\n'
-        '・読み取った文字だけを返す (前置き・説明・記号の囲みは不要)。\n'
-        '・改行やレイアウトはできるだけ元のまま。\n'
-        '・数式は読める形 (例: √4 = 2、 2 × 3 = 6) で書く。\n'
-        '・読めない所は □ にする。\n\n'
-        '${p.languageInstructionForAi()}',
-        images: [
-          AiInputImage(
-              mime: 'image/png',
-              base64: base64Encode(png),
-              name: 'handwriting.png')
-        ],
-        timeoutOverride: const Duration(minutes: 2),
-      );
-    } catch (e) {
-      if (mounted) {
-        Navigator.of(context, rootNavigator: true).pop();
-        _snack('${p.t('paint.ocrFailed')}: '
-            '${'$e'.replaceFirst('Exception: ', '')}');
-      }
-      return;
-    }
-    if (!mounted) return;
-    Navigator.of(context, rootNavigator: true).pop();
-    var text = out.trim();
-    // ``` で囲って返してくる事があるので外す。
-    if (text.startsWith('```')) {
-      final lines = text.split('\n');
-      if (lines.length >= 2) {
-        lines.removeAt(0);
-        if (lines.isNotEmpty && lines.last.trim().startsWith('```')) {
-          lines.removeLast();
-        }
-        text = lines.join('\n').trim();
-      }
-    }
-    if (text.isEmpty) {
-      _snack(p.t('paint.ocrEmpty'));
-      return;
-    }
-    await _showHandwritingResult(text, region);
-  }
-
-  /// 読み取った文字の確認 (直してから置ける)。
-  Future<void> _showHandwritingResult(String text, Rect region) async {
-    final p = widget.provider;
-    final ctrl = TextEditingController(text: text);
-    var replace = _selStrokeSet.isNotEmpty || _selShapeSet.isNotEmpty;
-    final mode = await _showNearDialog<String>(
-      builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
-        return AlertDialog(
-          backgroundColor: const Color(0xFF1E1E32),
-          title: Row(children: [
-            const Icon(Icons.text_fields_rounded,
-                color: Color(0xFF4FC3F7), size: 20),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(p.t('paint.ocrTitle'),
-                  style: const TextStyle(color: Colors.white, fontSize: 15)),
-            ),
-          ]),
-          content: SizedBox(
-            width: 460,
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              ConstrainedBox(
-                constraints: BoxConstraints(
-                    maxHeight:
-                        math.max(120.0, MediaQuery.sizeOf(dctx).height - 340)),
-                child: TextField(
-                  controller: ctrl,
-                  maxLines: null,
-                  style: const TextStyle(
-                      color: Colors.white, fontSize: 14, height: 1.5),
-                  decoration: const InputDecoration(
-                    isDense: true,
-                    enabledBorder: OutlineInputBorder(
-                        borderSide: BorderSide(color: Colors.white24)),
-                    focusedBorder: OutlineInputBorder(
-                        borderSide: BorderSide(color: Color(0xFF6C63FF))),
-                  ),
-                ),
-              ),
-              if (_selStrokeSet.isNotEmpty || _selShapeSet.isNotEmpty)
-                SwitchListTile(
-                  dense: true,
-                  contentPadding: EdgeInsets.zero,
-                  value: replace,
-                  activeThumbColor: const Color(0xFF6C63FF),
-                  title: Text(p.t('paint.ocrReplace'),
-                      style:
-                          const TextStyle(color: Colors.white, fontSize: 13)),
-                  onChanged: (v) => setD(() => replace = v),
-                ),
-            ]),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dctx, 'copy'),
-              child: Text(p.t('btn.copy'),
-                  style: const TextStyle(color: Colors.white54)),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(dctx),
-              child: Text(p.t('btn.cancel'),
-                  style: const TextStyle(color: Colors.white54)),
-            ),
-            ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF6C63FF),
-                  foregroundColor: Colors.white),
-              onPressed: () => Navigator.pop(dctx, 'place'),
-              icon: const Icon(Icons.check_rounded, size: 16),
-              label: Text(p.t('paint.ocrPlace')),
-            ),
-          ],
-        );
-      }),
-    );
-    final finalText = ctrl.text.trim();
-    if (mode == 'copy') {
-      await Clipboard.setData(ClipboardData(text: finalText));
-      _snack(p.t('paint.ocrCopied'));
-      return;
-    }
-    if (mode != 'place' || finalText.isEmpty || !mounted) return;
-    // 元の高さから字の大きさを見当づける (行数で割る)。
-    final lines = math.max(1, '\n'.allMatches(finalText).length + 1);
-    final size =
-        (region.height / lines * 0.72).clamp(12.0, 72.0).toDouble();
-    final maxW = math.max(80.0, _csize.w - region.left - 24);
-    final wrapped = _wrapForCanvas(finalText, maxW, size);
-    setState(() {
-      _redo.clear();
-      if (replace) {
-        // 元の手書きを消してから置く (= 変換らしい動き)。
-        final strokes = _selStrokeSet.toList()..sort((a, b) => b - a);
-        for (final i in strokes) {
-          if (i < _sheet.strokes.length) _sheet.strokes.removeAt(i);
-        }
-        final shapes = _selShapeSet.toList()..sort((a, b) => b - a);
-        for (final i in shapes) {
-          if (i < _sheet.shapes.length) _sheet.shapes.removeAt(i);
-        }
-        _clearSelSets();
-      }
-      _sheet.texts.add(_PaintText(
-        Offset(region.left, region.top),
-        wrapped,
-        _color.toARGB32(),
-        size,
-      )
-        ..z = _nextPaintZ()
-        ..lyr = _activeLayer);
-      _sheet.undo.add('text');
-      _dirty = true;
-    });
-    unawaited(_persist());
-    _snack(p.t('paint.ocrPlaced'));
-  }
-
-  /// 解説を「今の紙」 に埋め込む (= ユーザー要望: 解説まで埋め込めるように)。
+  /// 解説を「今の紙」 に埋め込む (= ユーザー要望: 解説まで埋め込めるように)。  /// 解説を「今の紙」 に埋め込む (= ユーザー要望: 解説まで埋め込めるように)。
   ///
   /// 手書きと重ならないよう、 いちばん下の書き込みより下に置く。 入り切らな
   /// ければ紙を下へ伸ばす (用紙をカスタムにして高さを足す)。 文字はキャンバス
@@ -148859,12 +148981,23 @@ class _PaintPageViewState extends State<_PaintPageView> {
                                     _onPanEnd();
                                   }
                                 },
-                                onTapUp: (!docEdit &&
-                                        (isText || isImage || isSelect || isFill))
+                                onTapUp: (docEdit ||
+                                        isText ||
+                                        isImage ||
+                                        isSelect ||
+                                        isFill)
                                     ? (d) {
                                         // 非アクティブ側は先にアクティブ化。
                                         if (!isActive) _selectPage(pageIdx);
                                         final p = d.localPosition / fit;
+                                        // ── 文書モード: 押した高さの行から
+                                        //    書き始める (= ユーザー要望)。
+                                        //    文字の上を押した時は Quill 側が
+                                        //    先に受けるので、 ここへは来ない。
+                                        if (docEdit) {
+                                          _onDocCanvasTap(p);
+                                          return;
+                                        }
                                         if (isText) {
                                           _onTextTap(p);
                                         } else if (isImage) {
@@ -149544,16 +149677,17 @@ class _PaintPageViewState extends State<_PaintPageView> {
                   icon: Icons.file_open_rounded,
                   tooltip: widget.provider.t('paint.importFile'),
                   onTap: _importFileAsPages),
-              // ── 手書きの文字を文字にする (= ユーザー要望) ──
+              // ── 画像 / PDF から文章だけを取り出して紙に入れる
+              //    (= ユーザー要望: 1 ページにつき 1 枚) ──
               _toolBtn(
-                  icon: Icons.text_format_rounded,
-                  tooltip: widget.provider.t('paint.ocr'),
-                  onTap: () => unawaited(_handwritingToText())),
+                  icon: Icons.document_scanner_outlined,
+                  tooltip: widget.provider.t('paint.textOnly'),
+                  onTap: () => unawaited(_importTextOnlyFromFiles())),
               // ── AI で採点 (= ユーザー要望: 問題を貼って書き込んだら採点、
               //    解説を付けるかも選べるように) ──
               _toolBtn(
                   icon: Icons.fact_check_outlined,
-                  tooltip: widget.provider.t('paint.grade'),
+                  tooltip: widget.provider.t('paint.aiSheet'),
                   onTap: _gradeWithAi),
               // ── 項目の説明 (= ユーザー要望: アイコンだけでは分からない) ──
               _toolBtn(
@@ -150011,11 +150145,6 @@ class _PaintPageViewState extends State<_PaintPageView> {
                   icon: Icons.add_photo_alternate_outlined,
                   tooltip: widget.provider.t('paint.regionInsert'),
                   onTap: _insertPaintRegionAsImage),
-              // 囲った範囲の手書きを文字にする (= ユーザー要望)。
-              _toolBtn(
-                  icon: Icons.text_format_rounded,
-                  tooltip: widget.provider.t('paint.ocr'),
-                  onTap: () => unawaited(_handwritingToText())),
             ],
           ]),
         ),
@@ -150450,11 +150579,6 @@ class _PaintPageViewState extends State<_PaintPageView> {
                   icon: Icons.add_photo_alternate_outlined,
                   tooltip: widget.provider.t('paint.regionInsert'),
                   onTap: _insertPaintRegionAsImage),
-              // 囲った範囲の手書きを文字にする (= ユーザー要望)。
-              _toolBtn(
-                  icon: Icons.text_format_rounded,
-                  tooltip: widget.provider.t('paint.ocr'),
-                  onTap: () => unawaited(_handwritingToText())),
             ],
             _toolBtn(
                 icon: Icons.delete_outline_rounded,
@@ -211607,6 +211731,14 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
   @override
   void initState() {
     super.initState();
+    // いちばん上に開いている物として登録 (= ユーザー要望)。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      context.read<MindMapProvider>().setFrontDocument(
+          path: _currentFilePath,
+          name: _currentFileName,
+          kind: 'sheet');
+    });
     _detectKind();
     _loadFile();
     _registerPaneCloseGuard(widget.paneGuardKey, this, () async {
@@ -211617,6 +211749,10 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
 
   @override
   void dispose() {
+    // 閉じたら「前面のファイル」 から外す。
+    try {
+      context.read<MindMapProvider>().clearFrontDocument(_currentFilePath);
+    } catch (_) {}
     _unregisterPaneCloseGuard(widget.paneGuardKey, this);
     _sheetToastTimer?.cancel();
     _editCtrl.dispose();
@@ -224597,7 +224733,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
         _slideMenuItem('shape', Icons.category_rounded, '図形を挿入',
             const Color(0xFFAB47BC)),
         _slideMenuItem('image', Icons.add_photo_alternate_outlined,
-            'ファイル添付 (画像を埋め込み)', const Color(0xFFEC407A)),
+            'ファイル添付', const Color(0xFFEC407A)),
         const PopupMenuDivider(),
         _slideMenuItem('slide', Icons.note_add_outlined, 'スライドを追加',
             const Color(0xFFE65100)),
@@ -225111,6 +225247,14 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
   @override
   void initState() {
     super.initState();
+    // いちばん上に開いている物として登録 (= ユーザー要望)。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      context.read<MindMapProvider>().setFrontDocument(
+          path: _currentFilePath,
+          name: _currentFileName,
+          kind: 'pptx');
+    });
     _loadFile();
     // スライドマスターの登録状態を復元 (= ユーザー要望)。
     unawaited(_loadMasterPref());
@@ -225127,6 +225271,10 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
 
   @override
   void dispose() {
+    // 閉じたら「前面のファイル」 から外す。
+    try {
+      context.read<MindMapProvider>().clearFrontDocument(_currentFilePath);
+    } catch (_) {}
     kUnsavedCloseGuards.remove(identityHashCode(this));
     _unregisterPaneCloseGuard(widget.paneGuardKey, this);
     _noticeEntry?.remove();
@@ -227460,6 +227608,42 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                   _showAnimationPicker(shape);
                 },
               ),
+              // ── 表のセル: 行 / 列の追加・削除 (= ユーザー要望) ──
+              if (shape.tableGroupId != null) ...[
+                const Divider(height: 1, color: Colors.white12),
+                for (final (v, ic, label, color) in <(String, IconData, String, Color)>[
+                  ('rowAbove', Icons.keyboard_arrow_up_rounded,
+                      context.read<MindMapProvider>().t('pptx.rowAbove'),
+                      const Color(0xFF4FC3F7)),
+                  ('rowBelow', Icons.keyboard_arrow_down_rounded,
+                      context.read<MindMapProvider>().t('pptx.rowBelow'),
+                      const Color(0xFF4FC3F7)),
+                  ('colLeft', Icons.keyboard_arrow_left_rounded,
+                      context.read<MindMapProvider>().t('pptx.colLeft'),
+                      const Color(0xFF81C784)),
+                  ('colRight', Icons.keyboard_arrow_right_rounded,
+                      context.read<MindMapProvider>().t('pptx.colRight'),
+                      const Color(0xFF81C784)),
+                  ('rowDel', Icons.remove_circle_outline_rounded,
+                      context.read<MindMapProvider>().t('pptx.rowDelete'),
+                      const Color(0xFFE57373)),
+                  ('colDel', Icons.remove_circle_outline_rounded,
+                      context.read<MindMapProvider>().t('pptx.colDelete'),
+                      const Color(0xFFE57373)),
+                ])
+                  ListTile(
+                    dense: true,
+                    leading: Icon(ic, color: color),
+                    title: Text(label,
+                        style:
+                            const TextStyle(color: Colors.white, fontSize: 14)),
+                    onTap: () {
+                      Navigator.of(sheetCtx).pop();
+                      _editPptxTable(shape, v);
+                    },
+                  ),
+                const Divider(height: 1, color: Colors.white12),
+              ],
               ListTile(
                 leading: const Icon(Icons.delete_outline_rounded,
                     color: Color(0xFFE57373)),
@@ -228179,7 +228363,9 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
             cellFillColor: isHeader
                 ? theme.headerFill
                 : (banded ? theme.bandFill : null),
-            cellLineColor: theme.line,
+            // ★ テンプレートに罫線の色が無くても薄い枠を引く (= ユーザー
+            //   報告: 外枠が無いので透明な行が入ったように見える)。
+            cellLineColor: theme.line ?? 0xBDBDBD,
             isNew: true,
             tableGroupId: groupId,
           ));
@@ -231123,6 +231309,118 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
   }
 
   /// シェイプを削除。
+  /// 表 (同じ tableGroupId のセル) に行 / 列を足す・消す (= ユーザー要望:
+  /// セルを右クリックして行や列を追加できるように)。
+  /// [op] = 'rowAbove' / 'rowBelow' / 'colLeft' / 'colRight' /
+  ///        'rowDel' / 'colDel'。
+  void _editPptxTable(_PptxTextShape cell, String op) {
+    if (_slides.isEmpty) return;
+    final g = cell.tableGroupId;
+    if (g == null) return;
+    final slide = _slides[_currentIndex];
+    final cells =
+        slide.textShapes.where((s) => s.tableGroupId == g).toList();
+    if (cells.isEmpty) return;
+    // 行 / 列の境目を集める (同じ位置は 1 つにまとめる)。
+    int? near(List<int> xs, int v) {
+      for (final x in xs) {
+        if ((x - v).abs() <= 2000) return x;
+      }
+      return null;
+    }
+
+    final rowYs = <int>[];
+    final colXs = <int>[];
+    for (final s in cells) {
+      if (near(rowYs, s.offY) == null) rowYs.add(s.offY);
+      if (near(colXs, s.offX) == null) colXs.add(s.offX);
+    }
+    rowYs.sort();
+    colXs.sort();
+    final myRow = rowYs.indexOf(near(rowYs, cell.offY) ?? cell.offY);
+    final myCol = colXs.indexOf(near(colXs, cell.offX) ?? cell.offX);
+    if (myRow < 0 || myCol < 0) return;
+    final cellH = cell.extCy;
+    final cellW = cell.extCx;
+    _pushHistory();
+    setState(() {
+      if (op == 'rowAbove' || op == 'rowBelow') {
+        final at = op == 'rowAbove' ? myRow : myRow + 1;
+        final y = at < rowYs.length
+            ? rowYs[at]
+            : rowYs.last + cellH;
+        // 下の行をずらす。
+        for (final s in cells) {
+          if (s.offY >= y - 2000) s.offY += cellH;
+        }
+        // 手本にする行 (見出し行の色は引き継がない)。
+        final model = cells.where((s) => s.offY - cellH == y || s.offY == y).toList();
+        for (var c = 0; c < colXs.length; c++) {
+          final ref = cells.firstWhere(
+              (s) => (s.offX - colXs[c]).abs() <= 2000,
+              orElse: () => cell);
+          slide.textShapes.add(_PptxTextShape(
+            id: _nextShapeId(),
+            text: '',
+            offX: colXs[c],
+            offY: y,
+            extCx: ref.extCx,
+            extCy: cellH,
+            fontSize: 1400,
+            cellFillColor: null,
+            cellLineColor: cell.cellLineColor ?? 0xBDBDBD,
+            isNew: true,
+            tableGroupId: g,
+          ));
+        }
+        model.clear();
+      } else if (op == 'colLeft' || op == 'colRight') {
+        final at = op == 'colLeft' ? myCol : myCol + 1;
+        final x = at < colXs.length ? colXs[at] : colXs.last + cellW;
+        for (final s in cells) {
+          if (s.offX >= x - 2000) s.offX += cellW;
+        }
+        for (var r = 0; r < rowYs.length; r++) {
+          final ref = cells.firstWhere(
+              (s) => (s.offY - rowYs[r]).abs() <= 2000,
+              orElse: () => cell);
+          slide.textShapes.add(_PptxTextShape(
+            id: _nextShapeId(),
+            text: '',
+            offX: x,
+            offY: rowYs[r],
+            extCx: cellW,
+            extCy: ref.extCy,
+            fontSize: r == 0 ? 1800 : 1400,
+            fontColor: r == 0 ? ref.fontColor : null,
+            cellFillColor: r == 0 ? ref.cellFillColor : null,
+            cellLineColor: cell.cellLineColor ?? 0xBDBDBD,
+            isNew: true,
+            tableGroupId: g,
+          ));
+        }
+      } else if (op == 'rowDel') {
+        if (rowYs.length <= 1) return;
+        final y = rowYs[myRow];
+        slide.textShapes.removeWhere((s) =>
+            s.tableGroupId == g && (s.offY - y).abs() <= 2000);
+        for (final s in slide.textShapes) {
+          if (s.tableGroupId == g && s.offY > y) s.offY -= cellH;
+        }
+      } else if (op == 'colDel') {
+        if (colXs.length <= 1) return;
+        final x = colXs[myCol];
+        slide.textShapes.removeWhere((s) =>
+            s.tableGroupId == g && (s.offX - x).abs() <= 2000);
+        for (final s in slide.textShapes) {
+          if (s.tableGroupId == g && s.offX > x) s.offX -= cellW;
+        }
+      }
+      slide.dirty = true;
+      _selectedShapeId = null;
+    });
+  }
+
   void _deleteShape(_PptxTextShape shape) {
     if (_slides.isEmpty) return;
     // ── Undo 履歴に積む (= シェイプ削除前の状態) ──
@@ -232372,6 +232670,17 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
     if (isEditing) {
       return KeyEventResult.ignored;
     }
+    // ── Esc: 文字の編集から抜ける (選んだ状態は残す) ──
+    //    = ユーザー報告: 文字枠が消せない。 押すと編集に入るので Del が
+    //      文字の削除になっていた。 Esc で抜ければ Del で枠ごと消せる。
+    if (event.logicalKey == LogicalKeyboardKey.escape) {
+      if (_editingShapeId != null) {
+        final id = _editingShapeId;
+        _exitShapeEditMode();
+        if (mounted) setState(() => _selectedShapeId = id);
+        return KeyEventResult.handled;
+      }
+    }
     // ── Del / Backspace: 選択中のテキスト枠・図形を削除 (= ユーザー要望) ──
     if (event.logicalKey == LogicalKeyboardKey.delete ||
         event.logicalKey == LogicalKeyboardKey.backspace) {
@@ -232830,11 +233139,13 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                             padding: EdgeInsets.zero,
                             constraints: const BoxConstraints(
                                 minWidth: 30, minHeight: 30),
+                            // ★ 黄色は明るい下地で見えにくい (= ユーザー
+                            //   報告)。 濃い紅紫にする。
                             icon: Icon(Icons.animation_rounded,
                                 size: 19,
                                 color: _hasAnimTargetSelected
-                                    ? const Color(0xFFFFB347)
-                                    : const Color(0xFFFFB347)
+                                    ? const Color(0xFFC2185B)
+                                    : const Color(0xFFC2185B)
                                         .withValues(alpha: 0.45)),
                             onPressed: _slides.isEmpty
                                 ? null
@@ -234886,6 +235197,34 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
           )),
           // ── 選択中は上下左右 + 右下角で大きさを変えられる
           //    (= ユーザー要望: テキスト入力欄の左右上下の大きさ調整)。 ──
+          // ── 枠ごと消す × (= ユーザー報告: テキスト入力枠を削除できない)。
+          //    編集中でも押せる所に出す。 ──
+          if ((isSelected || isEditing) && shape.tableGroupId == null)
+            Positioned(
+              // 大きさ変更のつまみ (-7) と同じ範囲に収める。 これより外へ
+              // 出すと Stack の親の外になり、 押しても反応しない。
+              right: -8,
+              top: -8,
+              child: Tooltip(
+                message: context.read<MindMapProvider>().t('btn.delete'),
+                child: InkWell(
+                  onTap: () {
+                    if (isEditing) _exitShapeEditMode();
+                    _deleteShape(shape);
+                  },
+                  child: Container(
+                    width: 20,
+                    height: 20,
+                    decoration: const BoxDecoration(
+                      color: Color(0xFFE57373),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.close_rounded,
+                        size: 13, color: Colors.white),
+                  ),
+                ),
+              ),
+            ),
           if (isSelected && !isEditing && shape.tableGroupId == null) ...[
             Positioned(
               right: -6,
@@ -238318,6 +238657,14 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
   @override
   void initState() {
     super.initState();
+    // いちばん上に開いている物として登録 (= ユーザー要望)。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      context.read<MindMapProvider>().setFrontDocument(
+          path: _currentFilePath,
+          name: _currentFileName,
+          kind: 'text');
+    });
     _language = _detectLanguage(_currentFileName);
     _nodeId = widget.nodeId;
     _loadFile();
@@ -238365,6 +238712,10 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
 
   @override
   void dispose() {
+    // 閉じたら「前面のファイル」 から外す。
+    try {
+      context.read<MindMapProvider>().clearFrontDocument(_currentFilePath);
+    } catch (_) {}
     kUnsavedCloseGuards.remove(identityHashCode(this));
     _unregisterPaneCloseGuard(widget.paneGuardKey, this);
     final b = _mcpBinding;
@@ -247078,6 +247429,14 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
   @override
   void initState() {
     super.initState();
+    // いちばん上に開いている物として登録 (= ユーザー要望)。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      context.read<MindMapProvider>().setFrontDocument(
+          path: _currentFilePath,
+          name: _currentFileName,
+          kind: 'docx');
+    });
     _loadFile();
     // ── アプリ本体の × でも未保存確認が出るよう登録 (= ユーザー要望) ──
     kUnsavedCloseGuards[identityHashCode(this)] = () async {
@@ -247092,6 +247451,10 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
 
   @override
   void dispose() {
+    // 閉じたら「前面のファイル」 から外す。
+    try {
+      context.read<MindMapProvider>().clearFrontDocument(_currentFilePath);
+    } catch (_) {}
     kUnsavedCloseGuards.remove(identityHashCode(this));
     _unregisterPaneCloseGuard(widget.paneGuardKey, this);
     _noticeEntry?.remove();
@@ -263218,6 +263581,7 @@ class _FlashcardStudyDialogState extends State<_FlashcardStudyDialog> {
     );
   }
 }
+
 
 
 

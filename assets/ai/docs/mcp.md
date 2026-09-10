@@ -121,7 +121,7 @@ flowchart TD
 
 | ツール | 説明 |
 |---|---|
-| `list_pages` | 全ページ (id, name, type, ノード数, `isCurrent`, `lastModified`)<br/>★ `isCurrent: true` が利用者の見ているページ。「このページ」は必ずこれ 1 枚<br/>★ `lastModified` は**最終更新**で作成日ではない (同名ページの「古いほう」は決められない) |
+| `list_pages` | `{ pages: [...], openFileOnTop?: {...} }`。`pages` は全ページ (id, name, type, ノード数, `isCurrent`, `lastModified`)<br/>★ `isCurrent: true` が利用者の見ているページ。「このページ」は必ずこれ 1 枚<br/>★ `openFileOnTop` があれば、利用者は**そのファイル**(pptx/xlsx/csv/txt/docx)を前面で開いている。どこを直すか明示されない指示はそのファイルのこと。マップを勝手に書き換えず、道具が無ければその画面の AI ボタンを案内する<br/>★ `lastModified` は**最終更新**で作成日ではない (同名ページの「古いほう」は決められない) |
 | `read_page` | 1 ページを完全な JSON で (nodes / connections / decorations) |
 | `create_page` | 新規ページ。type = `normal` / `bookshelf` / `paint` / `document` / `markdown` / `videoEditor`<br/>戻り値 `{pageId, type}` の `type` が実際に出来た種類 (知らない type は `normal` に倒れる) |
 | `delete_page` | ページを完全に削除。最後の 1 枚は消せない<br/>★ 短い間に 2 枚を超えて消そうとすると拒否される (暴走の歯止め。【8】参照)<br/>★ 戻す道具は無い。アプリ側の Ctrl+Z (`undoLastDeletedPage`) で**直前の 1 枚だけ**復元できる |

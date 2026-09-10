@@ -1394,7 +1394,26 @@ class McpServer {
               '利用者の許可設定によっては確認を求めるか、 断ることがあります。');
         }
       case 'list_pages':
-        return _ok(_provider.mcpListPages());
+        {
+          // いちばん上に開いているファイル (= ユーザー要望: 場所を明示され
+          //   ない指示は、 マップではなくこれを相手にする)。
+          final fd = _provider.frontDocument;
+          return _ok({
+            'pages': _provider.mcpListPages(),
+            if (fd != null)
+              'openFileOnTop': {
+                'name': fd.name,
+                'kind': fd.kind,
+                'path': fd.path,
+                'note': 'The user is looking at this FILE, opened on top of '
+                    'the map. An instruction that does not name a target '
+                    'means THIS FILE, not the map page. If you have no tool '
+                    'for this file kind, say so and tell the user to use the '
+                    'AI button inside that editor - do NOT edit the map '
+                    'instead.',
+              },
+          });
+        }
       case 'read_page':
         {
           final pid = a['pageId'] as String? ?? '';
