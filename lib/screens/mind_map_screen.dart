@@ -126319,11 +126319,17 @@ class _PaintEraseSnapshot {
   final List<_PaintText> texts;
   final List<_PaintShape> shapes;
   final List<_PaintImageItem> images;
+
+  /// 図形の内側をタップして塗った「領域塗り」。
+  /// ★ 消しゴムで消せるようにした (= ユーザー要望) ので、 控えにも入れる。
+  ///   入れないと取り消しで戻せない。
+  final List<_PaintFill> fills;
   _PaintEraseSnapshot({
     required this.strokes,
     required this.texts,
     required this.shapes,
     required this.images,
+    required this.fills,
   });
 }
 
@@ -140275,12 +140281,26 @@ class _PaintPageViewState extends State<_PaintPageView> {
   double _eraserWidth = 16;
 
   /// ペンの種類 ('' = 通常 / 'chalk' / 'squiggle' / 'dotted' / 'dashed' /
-  /// 'marker') (= ユーザー要望: 種類を増やす)。
+  /// 'marker' / 'blur') (= ユーザー要望: 種類を増やす)。
   String _penStyle = '';
 
   /// ペンの濃さ (不透明度) と 間隔/スケール (= ユーザー要望: 詳細設定)。
   double _penOpacity = 1.0;
   double _penInterval = 1.0;
+
+  /// 「間隔」 (粒・波長・点線ピッチ) が効くペンかどうか。
+  ///
+  /// = ユーザー要望「関係ないペンでは操作できないようにして」。
+  ///   効くのは 粒を散らすチョーク / 波を打つスクイグル / 点線 / 破線 の 4 つ
+  ///   だけ。 通常ペン・マーカー・ぼかしは描き手が iv を読まない。
+  ///   ★ 「効かない物を並べる」 書き方 (以前の `'' || 'marker'`) にすると、
+  ///     後からペンを足すたびに書き漏らす (実際 'blur' が漏れていた)。
+  ///     効く物を並べる形にしておく。
+  bool get _penUsesInterval =>
+      _penStyle == 'chalk' ||
+      _penStyle == 'squiggle' ||
+      _penStyle == 'dotted' ||
+      _penStyle == 'dashed';
 
   /// 輝き (グロー) トグル (= ユーザー要望: 文字や線に輝きを付けられるように)。
   /// ペン / 図形 / テキストの各ツールで個別に ON/OFF できる。
@@ -140440,6 +140460,160 @@ class _PaintPageViewState extends State<_PaintPageView> {
     _snack(widget.provider
         .t('paint.layerAdded')
         .replaceFirst('{n}', '${_activeLayer + 1}'));
+  }
+
+  /// レイヤーを 1 枚消す (= ユーザー要望: 追加したレイヤーを削除できるように)。
+  ///
+  /// ・その層に置いてある物は一緒に消える (中身が有る時は先に確かめる)。
+  /// ・上の層は 1 つずつ下へ詰める。 詰めないと番号に穴が空いて、
+  ///   利用者の絵の下で番号が付け替わったように見える。
+  /// ・最後の 1 枚は消さない。
+  ///
+  /// 取り消し (Ctrl+Z) で中身は戻る。 ただし控えは「今どの層を選んでいるか」
+  /// を覚えていないので、 選んでいた層はこちらで戻す。
+  Future<void> _deletePaintLayer(int layer) async {
+    final count = _layerCount;
+    if (count <= 1 || layer < 0 || layer >= count) return;
+    if (_textEditPos != null) _commitTextEdit(selectAfterCommit: false);
+    final p = widget.provider;
+    final hasContent = _sheet.strokes.any((e) => e.lyr == layer) ||
+        _sheet.texts.any((e) => e.lyr == layer) ||
+        _sheet.shapes.any((e) => e.lyr == layer) ||
+        _sheet.images.any((e) => e.lyr == layer);
+    if (hasContent) {
+      final ok = await _showNearDialog<bool>(
+        builder: (dctx) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E32),
+          title: Text(
+              p.t('paint.deleteLayer').replaceFirst('{n}', '${layer + 1}'),
+              style: const TextStyle(color: Colors.white, fontSize: 15)),
+          content: Text(p.t('paint.deleteLayerConfirm'),
+              style: const TextStyle(color: Colors.white70, fontSize: 13)),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(dctx, false),
+                child: Text(p.t('btn.cancel'))),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFE57373),
+                  foregroundColor: Colors.white),
+              onPressed: () => Navigator.pop(dctx, true),
+              child: Text(p.t('btn.delete')),
+            ),
+          ],
+        ),
+      );
+      if (ok != true || !mounted) return;
+    }
+    final before = _makeEraseSnapshot();
+    setState(() {
+      _sheet.strokes.removeWhere((e) => e.lyr == layer);
+      _sheet.texts.removeWhere((e) => e.lyr == layer);
+      _sheet.shapes.removeWhere((e) => e.lyr == layer);
+      _sheet.images.removeWhere((e) => e.lyr == layer);
+      // 上の層を 1 つ下へ詰める。
+      for (final e in _sheet.strokes) {
+        if (e.lyr > layer) e.lyr -= 1;
+      }
+      for (final e in _sheet.texts) {
+        if (e.lyr > layer) e.lyr -= 1;
+      }
+      for (final e in _sheet.shapes) {
+        if (e.lyr > layer) e.lyr -= 1;
+      }
+      for (final e in _sheet.images) {
+        if (e.lyr > layer) e.lyr -= 1;
+      }
+      _layerCountPref = math.max(1, count - 1);
+      if (_activeLayer >= layer) _activeLayer = math.max(0, _activeLayer - 1);
+      final now = _layerCount;
+      if (_activeLayer >= now) _activeLayer = now - 1;
+      if (_activeLayer < 0) _activeLayer = 0;
+      // 選択は番号 (並び順) で覚えているので、 消した後は必ず外す。
+      _resetPaintSelectionState();
+      _pushPaintSnapshotEdit(before);
+    });
+    _persist();
+    _snack(p.t('paint.layerDeleted').replaceFirst('{n}', '${layer + 1}'));
+  }
+
+  /// レイヤーの右クリック (長押し) メニュー
+  /// (= ユーザー要望: レイヤー項目を右クリックして削除できるように)。
+  Future<void> _showLayerContextMenu(int layer, Offset globalPos) async {
+    final p = widget.provider;
+    final overlay =
+        Overlay.of(context).context.findRenderObject() as RenderBox?;
+    if (overlay == null) return;
+    final canDelete = _layerCount > 1;
+    final v = await showMenu<String>(
+      context: context,
+      color: const Color(0xFF1E1E32),
+      position: RelativeRect.fromRect(
+        globalPos & const Size(1, 1),
+        Offset.zero & overlay.size,
+      ),
+      items: [
+        PopupMenuItem<String>(
+          value: 'select',
+          height: 36,
+          enabled: layer != _activeLayer,
+          child: Row(children: [
+            Icon(Icons.radio_button_checked_rounded,
+                size: 15,
+                color: layer != _activeLayer
+                    ? Colors.white70
+                    : Colors.white24),
+            const SizedBox(width: 8),
+            Text(p.t('paint.selectLayer').replaceFirst('{n}', '${layer + 1}'),
+                style: TextStyle(
+                    color: layer != _activeLayer
+                        ? Colors.white70
+                        : Colors.white24,
+                    fontSize: 12.5)),
+          ]),
+        ),
+        PopupMenuItem<String>(
+          value: 'add',
+          height: 36,
+          child: Row(children: [
+            const Icon(Icons.add_rounded, size: 15, color: Colors.white70),
+            const SizedBox(width: 8),
+            Text(p.t('paint.layerAdd'),
+                style: const TextStyle(color: Colors.white70, fontSize: 12.5)),
+          ]),
+        ),
+        const PopupMenuDivider(height: 6),
+        PopupMenuItem<String>(
+          value: 'delete',
+          height: 36,
+          enabled: canDelete,
+          child: Row(children: [
+            Icon(Icons.delete_outline_rounded,
+                size: 15,
+                color: canDelete ? const Color(0xFFE57373) : Colors.white24),
+            const SizedBox(width: 8),
+            Text(p.t('paint.deleteLayer').replaceFirst('{n}', '${layer + 1}'),
+                style: TextStyle(
+                    color: canDelete
+                        ? const Color(0xFFE57373)
+                        : Colors.white24,
+                    fontSize: 12.5)),
+          ]),
+        ),
+      ],
+    );
+    if (!mounted || v == null) return;
+    switch (v) {
+      case 'select':
+        setState(() => _activeLayer = layer);
+        break;
+      case 'add':
+        _addPaintLayer();
+        break;
+      case 'delete':
+        await _deletePaintLayer(layer);
+        break;
+    }
   }
 
   /// ヘッダー (ノート/ページ選択 + ツールバー) の表示 / 非表示
@@ -144233,11 +144407,16 @@ class _PaintPageViewState extends State<_PaintPageView> {
         .toList();
   }
 
+  /// 領域塗りの控え。 id は同じまま (共同編集で同じ物として扱うため)。
+  _PaintFill _cloneFill(_PaintFill f) =>
+      _PaintFill(f.x, f.y, f.color, f.alpha, id: f.id);
+
   _PaintEraseSnapshot _makeEraseSnapshot() => _PaintEraseSnapshot(
         strokes: _sheet.strokes.map(_cloneStroke).toList(),
         texts: _sheet.texts.map(_cloneText).toList(),
         shapes: _sheet.shapes.map(_cloneShape).toList(),
         images: _sheet.images.map(_cloneImage).toList(),
+        fills: _sheet.fills.map(_cloneFill).toList(),
       );
 
   void _pushPaintSnapshotEdit(_PaintEraseSnapshot before) {
@@ -144276,6 +144455,9 @@ class _PaintPageViewState extends State<_PaintPageView> {
     _sheet.images
       ..clear()
       ..addAll(snapshot.images.map(_cloneImage));
+    _sheet.fills
+      ..clear()
+      ..addAll(snapshot.fills.map(_cloneFill));
   }
 
   bool _strokeSegmentNearEraser(
@@ -144288,9 +144470,47 @@ class _PaintPageViewState extends State<_PaintPageView> {
         _distToSegment(eraserB, a, b) <= radius;
   }
 
+  /// なげなわ塗り (= 面) に消しゴムが触れたか。
+  ///
+  /// = ユーザー報告「塗りつぶした後に消しゴムを当てても塗った所が消えない」。
+  ///   塗りは閉じた**面**として描いているのに、 消しゴムの判定は全部
+  ///   「線からの距離」 だったので、 面の内側を擦っても何にも当たらなかった。
+  ///   ★ 面の形は描き手 (_drawStrokeBody) と同じ作り方にする
+  ///     (fillType を変えると、 自分と交わる形で塗った所と判定がずれる)。
+  bool _lassoFillHitByEraser(_PaintStroke s, Offset from, Offset to) {
+    final path = Path()..moveTo(s.points.first.dx, s.points.first.dy);
+    for (int i = 1; i < s.points.length; i++) {
+      path.lineTo(s.points[i].dx, s.points[i].dy);
+    }
+    path.close();
+    final r = math.max(2.0, _eraserWidth / 2);
+    final steps = math.max(1, ((to - from).distance / r).ceil());
+    for (int i = 0; i <= steps; i++) {
+      final p = Offset.lerp(from, to, i / steps) ?? to;
+      if (path.contains(p)) return true;
+    }
+    // 輪郭をなぞっただけでも消せるように (面の外側を擦った時の保険)。
+    for (int i = 1; i < s.points.length; i++) {
+      if (_strokeSegmentNearEraser(s.points[i - 1], s.points[i], from, to, r)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   bool _appendStrokeAfterErase(
       _PaintStroke stroke, Offset from, Offset to, List<_PaintStroke> out) {
     if (stroke.erase) {
+      out.add(stroke);
+      return false;
+    }
+    // ── なげなわ塗りは「面」。 中を擦ったら丸ごと取り除く (= ユーザー要望:
+    //    塗りつぶした所も消しゴムで消えて白に戻るように)。
+    //    out に入れずに true を返す = このストロークを消す、 という流儀
+    //    (1 点だけの線と同じ)。 ここで返すので、 下の「線を切り分ける」
+    //    処理へは進まない (切り分けると塗りの形が変わるだけで消えない)。
+    if (stroke.ps == 'lassoFill' && stroke.points.length >= 3) {
+      if (_lassoFillHitByEraser(stroke, from, to)) return true;
       out.add(stroke);
       return false;
     }
@@ -144375,6 +144595,47 @@ class _PaintPageViewState extends State<_PaintPageView> {
     return true;
   }
 
+  /// 図形の内側をタップして塗った「領域塗り」 も消しゴムで消せるようにする。
+  ///
+  /// = ユーザー報告「塗りつぶした所に消しゴムを当てても消えない」。
+  ///   領域塗りは「印を付けた点」 だけを覚えていて、 見えている面は毎回
+  ///   図形から計算し直している。 削り取る形を持っていないので、 触れたら
+  ///   丸ごと取り除く (= 白い紙に戻る)。
+  ///   ★ 層 (レイヤー) の判定はしない。 領域塗りは層を持っておらず、
+  ///     いつも一番手前に描かれるため (線や図形とは事情が違う)。
+  bool _eraseFillsAlong(Offset from, Offset to) {
+    if (_sheet.fills.isEmpty) return false;
+    final r = math.max(2.0, _eraserWidth / 2);
+    final steps = math.max(1, ((to - from).distance / r).ceil());
+    final band = Rect.fromPoints(from, to).inflate(r);
+    var changed = false;
+    for (int i = _sheet.fills.length - 1; i >= 0; i--) {
+      final f = _sheet.fills[i];
+      final anchor = Offset(f.x, f.y);
+      final region = _paintRegionAt(_sheet.shapes, anchor);
+      // 図形が動いて面が無くなった塗り (描かれない) は、 印の近くで消す。
+      if (region == null) {
+        if ((anchor - from).distance <= r || (anchor - to).distance <= r) {
+          _sheet.fills.removeAt(i);
+          changed = true;
+        }
+        continue;
+      }
+      // 面の計算は重いので、 まず大まかな四角で弾く。
+      if (!region.getBounds().overlaps(band)) continue;
+      var hit = false;
+      for (int k = 0; k <= steps && !hit; k++) {
+        final p = Offset.lerp(from, to, k / steps) ?? to;
+        hit = region.contains(p);
+      }
+      if (hit) {
+        _sheet.fills.removeAt(i);
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
   /// 消しゴムが [p] を通過した時、部分消去マスクの対象になる
   /// テキスト/図形を記録する。要素自体はリストから削除しない。
   /// 回した物の当たり判定用に、 点を「回す前」 の座標へ戻す。
@@ -144451,6 +144712,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
 
   bool _eraseAlong(Offset from, Offset to) {
     var changed = _eraseStrokesAlong(from, to);
+    // ★ 先に呼んでから || で足す (逆にすると短絡で呼ばれない事がある)。
+    changed = _eraseFillsAlong(from, to) || changed;
     final distance = (to - from).distance;
     final steps =
         math.max(1, (distance / math.max(4.0, _eraserWidth / 2)).ceil());
@@ -147000,7 +147263,12 @@ class _PaintPageViewState extends State<_PaintPageView> {
     }
   }
 
-  Future<void> _showPaintModeMenu(Offset globalPos) async {
+  /// 右クリック (キャンバス) のメニュー。
+  ///
+  /// [canvasPos] は押した所の「紙の上の座標」。 表のマス目を押した時に
+  /// 行や列を足す項目を出すために使う (= ユーザー要望)。 渡されない
+  /// 呼び出し (文書モードなど) では表の項目は出ない。
+  Future<void> _showPaintModeMenu(Offset globalPos, {Offset? canvasPos}) async {
     final p = widget.provider;
     final overlay =
         Overlay.of(context).context.findRenderObject() as RenderBox?;
@@ -147031,6 +147299,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
       );
     }
 
+    // 押した所が表のマス目かどうか (紙の上の座標が分かる時だけ)。
+    final cell = canvasPos == null ? null : _tableCellIndexAt(canvasPos);
     final v = await showMenu<String>(
       context: context,
       color: const Color(0xFF1E1E32),
@@ -147039,6 +147309,23 @@ class _PaintPageViewState extends State<_PaintPageView> {
         Offset.zero & overlay.size,
       ),
       items: [
+        // ── 表のマス目を押した時: 行 / 列の追加と削除 (= ユーザー要望:
+        //    セルを選択して右クリックで行や列を追加する項目が出るように) ──
+        if (cell != null) ...[
+          item('tbl:rowAbove', Icons.keyboard_arrow_up_rounded,
+              p.t('pptx.rowAbove')),
+          item('tbl:rowBelow', Icons.keyboard_arrow_down_rounded,
+              p.t('pptx.rowBelow')),
+          item('tbl:colLeft', Icons.keyboard_arrow_left_rounded,
+              p.t('pptx.colLeft')),
+          item('tbl:colRight', Icons.keyboard_arrow_right_rounded,
+              p.t('pptx.colRight')),
+          item('tbl:rowDelete', Icons.delete_outline_rounded,
+              p.t('pptx.rowDelete')),
+          item('tbl:colDelete', Icons.delete_outline_rounded,
+              p.t('pptx.colDelete')),
+          const PopupMenuDivider(height: 6),
+        ],
         // ── 選んでいる物のレイヤーを変える (= ユーザー要望) ──
         if (_isAnySelSet()) ...[
           for (var i = 4; i >= 0; i--)
@@ -147073,6 +147360,10 @@ class _PaintPageViewState extends State<_PaintPageView> {
     if (v.startsWith('layer:')) {
       final n = int.tryParse(v.substring(6));
       if (n != null) _setSelectionLayer(n);
+      return;
+    }
+    if (v.startsWith('tbl:') && cell != null) {
+      _editPaintTable(cell.gid, cell.row, cell.col, v.substring(4));
       return;
     }
     _applyPaintModeChoice(v);
@@ -148377,6 +148668,260 @@ class _PaintPageViewState extends State<_PaintPageView> {
     return null;
   }
 
+
+  /// 押した所が表のどのマス目かを返す (= ユーザー要望: セルを右クリックして
+  /// 行や列を足せるように)。 [row] / [col] は 0 始まりの番号。
+  ///
+  /// `_tableCellAt` は「文字を書き始める左上」 を返す物で番号を持たないので、
+  /// こちらは番号を返す。 端の罫線ちょうどを押した時に枠の外を指さないよう、
+  /// 最後の罫線の手前までを対象にする。
+  ({int gid, int row, int col, List<double> hys, List<double> vxs})?
+      _tableCellIndexAt(Offset p) {
+    final byGroup = <int, List<_PaintShape>>{};
+    for (final s in _sheet.shapes) {
+      if (s.g != 0 && s.kind == 2) {
+        byGroup.putIfAbsent(s.g, () => []).add(s);
+      }
+    }
+    for (final entry in byGroup.entries) {
+      final hys = <double>[];
+      final vxs = <double>[];
+      for (final s in entry.value) {
+        if ((s.a.dy - s.b.dy).abs() < 0.5) {
+          hys.add(s.a.dy);
+        } else if ((s.a.dx - s.b.dx).abs() < 0.5) {
+          vxs.add(s.a.dx);
+        }
+      }
+      if (hys.length < 2 || vxs.length < 2) continue;
+      hys.sort();
+      vxs.sort();
+      if (p.dx < vxs.first ||
+          p.dx > vxs.last ||
+          p.dy < hys.first ||
+          p.dy > hys.last) {
+        continue;
+      }
+      var col = 0;
+      for (int i = 0; i + 1 < vxs.length; i++) {
+        if (p.dx >= vxs[i]) col = i;
+      }
+      var row = 0;
+      for (int i = 0; i + 1 < hys.length; i++) {
+        if (p.dy >= hys[i]) row = i;
+      }
+      return (gid: entry.key, row: row, col: col, hys: hys, vxs: vxs);
+    }
+    return null;
+  }
+
+  /// 表の行 / 列を、 押したマス目を基準に足す・消す
+  /// (= ユーザー要望: セルを選択して右クリックで行や列を追加)。
+  ///
+  /// [what] は 'rowAbove' / 'rowBelow' / 'colLeft' / 'colRight' /
+  /// 'rowDelete' / 'colDelete'。
+  void _editPaintTable(int gid, int row, int col, String what) {
+    final hs = <_PaintShape>[];
+    final vs = <_PaintShape>[];
+    for (final s in _sheet.shapes) {
+      if (s.g != gid || s.kind != 2) continue;
+      if ((s.a.dy - s.b.dy).abs() < 0.5) {
+        hs.add(s);
+      } else if ((s.a.dx - s.b.dx).abs() < 0.5) {
+        vs.add(s);
+      }
+    }
+    if (hs.length < 2 || vs.length < 2) return;
+    hs.sort((a, b) => a.a.dy.compareTo(b.a.dy));
+    vs.sort((a, b) => a.a.dx.compareTo(b.a.dx));
+    final rows = hs.length - 1;
+    final cols = vs.length - 1;
+    if (row < 0 || row >= rows || col < 0 || col >= cols) return;
+    if (what == 'rowDelete' && rows <= 1) return;
+    if (what == 'colDelete' && cols <= 1) return;
+
+    // 押したマス目の大きさ。 これだけ表が伸び縮みする。
+    final cellH = hs[row + 1].a.dy - hs[row].a.dy;
+    final cellW = vs[col + 1].a.dx - vs[col].a.dx;
+    final before = _makeEraseSnapshot();
+
+    /// 縦罫線の下端を [d] だけ動かす (向きはどちらでもよい)。
+    void growV(double d) {
+      for (final s in vs) {
+        if (s.a.dy > s.b.dy) {
+          s.a = Offset(s.a.dx, s.a.dy + d);
+        } else {
+          s.b = Offset(s.b.dx, s.b.dy + d);
+        }
+      }
+    }
+
+    /// 横罫線の右端を [d] だけ動かす。
+    void growH(double d) {
+      for (final s in hs) {
+        if (s.a.dx > s.b.dx) {
+          s.a = Offset(s.a.dx + d, s.a.dy);
+        } else {
+          s.b = Offset(s.b.dx + d, s.b.dy);
+        }
+      }
+    }
+
+    /// 表の中身 (文字 / 絵 / 線 / 罫線でない図形) を動かす。
+    void shiftContent(bool vertical, double from, double d) {
+      for (final t in _sheet.texts) {
+        if (t.g != gid) continue;
+        if (vertical ? t.pos.dy >= from : t.pos.dx >= from) {
+          t.pos = vertical
+              ? Offset(t.pos.dx, t.pos.dy + d)
+              : Offset(t.pos.dx + d, t.pos.dy);
+        }
+      }
+      for (final im in _sheet.images) {
+        if (im.g != gid) continue;
+        if (vertical ? im.rect.top >= from : im.rect.left >= from) {
+          im.rect = im.rect.translate(vertical ? 0 : d, vertical ? d : 0);
+        }
+      }
+      for (final sh in _sheet.shapes) {
+        if (sh.g != gid || sh.kind == 2) continue;
+        final r = Rect.fromPoints(sh.a, sh.b);
+        if (vertical ? r.top >= from : r.left >= from) {
+          final off = Offset(vertical ? 0 : d, vertical ? d : 0);
+          sh.a = sh.a + off;
+          sh.b = sh.b + off;
+        }
+      }
+      for (final st in _sheet.strokes) {
+        if (st.g != gid) continue;
+        final b = _paintStrokeBounds(st);
+        if (b == null) continue;
+        if (vertical ? b.top >= from : b.left >= from) {
+          _shiftPaintStroke(st, Offset(vertical ? 0 : d, vertical ? d : 0));
+        }
+      }
+    }
+
+    /// 範囲 [from]〜[to] に入っている中身を捨てる (行 / 列を消す時)。
+    void dropContent(bool vertical, double from, double to) {
+      bool inRange(double v) => v >= from && v < to;
+      _sheet.texts.removeWhere(
+          (t) => t.g == gid && inRange(vertical ? t.pos.dy : t.pos.dx));
+      _sheet.images.removeWhere((im) =>
+          im.g == gid && inRange(vertical ? im.rect.top : im.rect.left));
+      _sheet.shapes.removeWhere((sh) {
+        if (sh.g != gid || sh.kind == 2) return false;
+        final r = Rect.fromPoints(sh.a, sh.b);
+        return inRange(vertical ? r.top : r.left);
+      });
+      _sheet.strokes.removeWhere((st) {
+        if (st.g != gid) return false;
+        final b = _paintStrokeBounds(st);
+        return b != null && inRange(vertical ? b.top : b.left);
+      });
+    }
+
+    setState(() {
+      _redo.clear();
+      switch (what) {
+        case 'rowAbove':
+        case 'rowBelow':
+          {
+            // 足す位置 = 押した行の上端 (上へ) か下端 (下へ)。
+            final at = what == 'rowAbove' ? row : row + 1;
+            final y = hs[at].a.dy;
+            // その位置から下を、 マス目 1 つ分だけ下へずらす。
+            for (int i = at; i < hs.length; i++) {
+              hs[i].a = Offset(hs[i].a.dx, hs[i].a.dy + cellH);
+              hs[i].b = Offset(hs[i].b.dx, hs[i].b.dy + cellH);
+            }
+            shiftContent(true, y, cellH);
+            growV(cellH);
+            final base = hs[at];
+            _sheet.shapes.add(_PaintShape(
+                2,
+                Offset(vs.first.a.dx, y),
+                Offset(vs.last.a.dx, y),
+                base.color,
+                base.width,
+                false,
+                g: gid)
+              ..z = _nextPaintZ()
+              // ★ 層は隣の罫線に合わせる。 今選んでいる層にすると、 表の
+              //   一部だけ別の層に残って消しゴムが効かなくなる。
+              ..lyr = base.lyr);
+            break;
+          }
+        case 'colLeft':
+        case 'colRight':
+          {
+            final at = what == 'colLeft' ? col : col + 1;
+            final x = vs[at].a.dx;
+            for (int i = at; i < vs.length; i++) {
+              vs[i].a = Offset(vs[i].a.dx + cellW, vs[i].a.dy);
+              vs[i].b = Offset(vs[i].b.dx + cellW, vs[i].b.dy);
+            }
+            shiftContent(false, x, cellW);
+            growH(cellW);
+            final base = vs[at];
+            _sheet.shapes.add(_PaintShape(
+                2,
+                Offset(x, hs.first.a.dy),
+                Offset(x, hs.last.a.dy),
+                base.color,
+                base.width,
+                false,
+                g: gid)
+              ..z = _nextPaintZ()
+              ..lyr = base.lyr);
+            break;
+          }
+        case 'rowDelete':
+          {
+            final top = hs[row].a.dy;
+            final bottom = hs[row + 1].a.dy;
+            dropContent(true, top, bottom);
+            final gone = hs[row + 1];
+            _sheet.shapes.remove(gone);
+            hs.removeAt(row + 1);
+            for (int i = row + 1; i < hs.length; i++) {
+              hs[i].a = Offset(hs[i].a.dx, hs[i].a.dy - cellH);
+              hs[i].b = Offset(hs[i].b.dx, hs[i].b.dy - cellH);
+            }
+            shiftContent(true, bottom, -cellH);
+            growV(-cellH);
+            break;
+          }
+        case 'colDelete':
+          {
+            final left = vs[col].a.dx;
+            final right = vs[col + 1].a.dx;
+            dropContent(false, left, right);
+            final gone = vs[col + 1];
+            _sheet.shapes.remove(gone);
+            vs.removeAt(col + 1);
+            for (int i = col + 1; i < vs.length; i++) {
+              vs[i].a = Offset(vs[i].a.dx - cellW, vs[i].a.dy);
+              vs[i].b = Offset(vs[i].b.dx - cellW, vs[i].b.dy);
+            }
+            shiftContent(false, right, -cellW);
+            growH(-cellW);
+            break;
+          }
+        default:
+          return;
+      }
+      // ★ セルの下地 (色の付いた長方形) は罫線ではないので、 上の
+      //   shiftContent / dropContent が一緒に動かす・消す。 ここで作り直す
+      //   必要は無い (作り直すと取り消しの段が 2 つに分かれてしまう)。
+      //   足した行 / 列に色が付かないのは、 前からある「行を追加」 の釦と
+      //   同じ挙動。
+      _resetPaintSelectionState();
+      _pushPaintSnapshotEdit(before);
+    });
+    _persist();
+  }
+
   // ── 範囲の部分コピー (= ユーザー要望: 画像や図形の一部を切り取って
   //    コピーできる機能) ───────────────────────────────────────────────
   /// 選択ツールでラバーバンドした最後の矩形。 部分コピーの対象領域。
@@ -149337,8 +149882,41 @@ class _PaintPageViewState extends State<_PaintPageView> {
                                 dragStartBehavior: DragStartBehavior.down,
                                 // ── 右クリック: モード / 道具の切替メニュー
                                 //    (= ユーザー要望) ──
-                                onSecondaryTapDown: (d) =>
-                                    _showPaintModeMenu(d.globalPosition),
+                                //    ★ 紙の上の座標も渡す。 表のマス目を
+                                //      押した時に行 / 列の項目を出すため
+                                //      (= ユーザー要望)。 ペインを切り替える
+                                //      前に取っておく (切り替えると書きかけの
+                                //      文字が確定して座標の基準が変わる)。
+                                onSecondaryTapDown: (d) {
+                                  final cp =
+                                      docEdit ? null : d.localPosition / fit;
+                                  if (!isActive) _selectPage(pageIdx);
+                                  unawaited(_showPaintModeMenu(
+                                      d.globalPosition,
+                                      canvasPos: cp));
+                                },
+                                // ── 長押し: スマホには右クリックが無いので、
+                                //    表のマス目の上でだけ同じメニューを出す
+                                //    (= ユーザー要望を touch でも使えるように)。
+                                //    選択ツール以外では描く操作を邪魔しない
+                                //    ように、 マス目に当たった時だけ出す。 ──
+                                //    ★ 描く道具 (ペン / 消しゴム / 図形 /
+                                //      塗りつぶし) では出さない。 ゆっくり
+                                //      描き始めただけでメニューが出ると邪魔に
+                                //      なるため。
+                                onLongPressStart: (docEdit ||
+                                        !(isSelect || isText))
+                                    ? null
+                                    : (d) {
+                                        final cp = d.localPosition / fit;
+                                        if (_tableCellIndexAt(cp) == null) {
+                                          return;
+                                        }
+                                        if (!isActive) _selectPage(pageIdx);
+                                        unawaited(_showPaintModeMenu(
+                                            d.globalPosition,
+                                            canvasPos: cp));
+                                      },
                                 onPanStart: docEdit ? null : (d) {
                                   // 非アクティブなペインを触ったら、 その
                                   // ページを編集対象に切り替えてから処理する
@@ -151101,31 +151679,42 @@ class _PaintPageViewState extends State<_PaintPageView> {
             Text('${(_penOpacity * 100).round()}%',
                 style: const TextStyle(color: Colors.white54, fontSize: 11)),
             // ── 間隔 (粒の間隔 / 波長 / 点線ピッチ) スライダー ──
-            // 通常ペン・マーカーには効かないので薄く表示。
+            // ★ 効かないペンでは**動かせなく**する (= ユーザー要望: 以前は
+            //   薄く表示するだけで、 掴んで動かせてしまった)。 Slider は
+            //   onChanged を null にすると操作を受け付けなくなる。 ただし
+            //   その時の既定色は暗い帯の上では見えないので、 無効時の色を
+            //   自分で指定する。
             const SizedBox(width: 6),
             Tooltip(
               message: widget.provider.t('paint.penInterval'),
               child: Icon(Icons.space_bar_rounded,
                   size: 16,
-                  color: (_penStyle == '' || _penStyle == 'marker')
-                      ? Colors.white24
-                      : Colors.white54),
+                  color: _penUsesInterval ? Colors.white54 : Colors.white24),
             ),
             SizedBox(
               width: 92,
               height: 32,
-              child: Slider(
-                value: _penInterval.clamp(0.4, 2.5),
-                min: 0.4,
-                max: 2.5,
-                activeColor: (_penStyle == '' || _penStyle == 'marker')
-                    ? Colors.white24
-                    : const Color(0xFFEC407A),
-                onChanged: (v) => setState(() => _penInterval = v),
+              child: SliderTheme(
+                data: SliderTheme.of(context).copyWith(
+                  disabledActiveTrackColor: Colors.white24,
+                  disabledInactiveTrackColor: Colors.white12,
+                  disabledThumbColor: Colors.white24,
+                ),
+                child: Slider(
+                  value: _penInterval.clamp(0.4, 2.5),
+                  min: 0.4,
+                  max: 2.5,
+                  activeColor: const Color(0xFFEC407A),
+                  onChanged: _penUsesInterval
+                      ? (v) => setState(() => _penInterval = v)
+                      : null,
+                ),
               ),
             ),
             Text('×${_penInterval.toStringAsFixed(1)}',
-                style: const TextStyle(color: Colors.white54, fontSize: 11)),
+                style: TextStyle(
+                    color: _penUsesInterval ? Colors.white54 : Colors.white24,
+                    fontSize: 11)),
             Container(
                 width: 1,
                 height: 22,
@@ -151573,9 +152162,17 @@ class _PaintPageViewState extends State<_PaintPageView> {
       Text(provider.t('layer.backMost'),
           style: const TextStyle(color: Colors.white38, fontSize: 9)),
       const SizedBox(width: 3),
-      for (int i = 0; i < count && i < 8; i++)
+      // ★ 上限を外す。 8 枚で止めていたので、 9 枚目以降は札が出ず
+      //   右クリックで消す事もできなかった。
+      for (int i = 0; i < count; i++)
         GestureDetector(
           onTap: () => setState(() => _activeLayer = i),
+          // ── 右クリック / 長押しで、 選ぶ・増やす・消す
+          //    (= ユーザー要望: レイヤー項目を右クリックして削除できるように) ──
+          onSecondaryTapDown: (d) =>
+              unawaited(_showLayerContextMenu(i, d.globalPosition)),
+          onLongPressStart: (d) =>
+              unawaited(_showLayerContextMenu(i, d.globalPosition)),
           child: Container(
             margin: const EdgeInsets.symmetric(horizontal: 2),
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
@@ -152002,6 +152599,13 @@ class _PaintPageViewState extends State<_PaintPageView> {
       child: PopupMenuButton<int>(
         color: const Color(0xFF1E1E32),
         onSelected: (v) {
+          // ★ -1 = 「今のレイヤーを消す」 (= ユーザー要望: 追加した
+          //   レイヤーを削除できるように)。 この釦は道具を選んでいない時でも
+          //   出ている唯一のレイヤー操作なので、 ここにも消す道を置く。
+          if (v < 0) {
+            unawaited(_deletePaintLayer(_activeLayer));
+            return;
+          }
           setState(() {
             _activeLayer = v;
             // 消しゴム側のレイヤー選択列にも同じ番号が並ぶようにする。
@@ -152051,6 +152655,31 @@ class _PaintPageViewState extends State<_PaintPageView> {
                 ],
               ]),
             ),
+          // ── 今のレイヤーを消す (= ユーザー要望) ──
+          //    最後の 1 枚は消せない。
+          const PopupMenuDivider(height: 6),
+          PopupMenuItem<int>(
+            value: -1,
+            height: 34,
+            enabled: _layerCount > 1,
+            child: Row(children: [
+              Icon(Icons.delete_outline_rounded,
+                  size: 15,
+                  color: _layerCount > 1
+                      ? const Color(0xFFE57373)
+                      : Colors.white24),
+              const SizedBox(width: 8),
+              Text(
+                  p
+                      .t('paint.deleteLayer')
+                      .replaceFirst('{n}', '${_activeLayer + 1}'),
+                  style: TextStyle(
+                      color: _layerCount > 1
+                          ? const Color(0xFFE57373)
+                          : Colors.white24,
+                      fontSize: 12.5)),
+            ]),
+          ),
         ],
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
