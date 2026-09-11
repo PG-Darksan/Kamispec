@@ -2880,6 +2880,17 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// マークダウンのファイルを投げたら、 置き換えか追記かを選べるように)。
   void Function(List<String> paths)? _markdownDropHandler;
 
+  /// マークダウンページのヘッダーを出し入れする受け口 (= ユーザー要望:
+  /// 右クリックのメニューからも切り替えられるように)。 今隠れているかを
+  /// 返す係と対で登録する (メニューの文言を変えるため)。
+  void Function()? _markdownHeaderToggle;
+  bool Function()? _markdownHeaderIsHidden;
+
+  /// マークダウンの「サイトのタブ」 の上にカーソルが乗っているか
+  /// (= ユーザー報告: サイトに飛んだ時にエリア内スクロールが効かない)。
+  /// 分割パネルと同じで、 乗っている間はマップ側のホイール処理を止める。
+  bool _mdWebPaneHover = false;
+
   /// フリーノート (paint) 表示中の貼り付け (Ctrl+V) の受け口
   /// (= ユーザー報告: 何も選んでいないとノートの Focus が外れていて、
   /// マップ側の貼り付けに流れてしまい、 ノートには何も貼られない)。
@@ -27530,7 +27541,13 @@ class _MindMapScreenState extends State<MindMapScreen>
     final sw = mq.size.width;
     final sh = mq.size.height;
     const double menuW = 210.0;
-    const double menuH = 46.0;
+    // マークダウンページでは「ヘッダーの表示 / 非表示」 も出す
+    // (= ユーザー要望: ヘッダーのボタンを廃止した代わりの入口)。
+    final bool mdHeaderItem =
+        provider.currentPage.pageType == 'markdown' &&
+            _markdownHeaderToggle != null;
+    final bool mdHeaderHidden = _markdownHeaderIsHidden?.call() ?? false;
+    final double menuH = mdHeaderItem ? 92.0 : 46.0;
     final double left = globalPos.dx.clamp(8.0, sw - menuW - 8.0);
     final double top = globalPos.dy
         .clamp(mq.padding.top + 8, sh - mq.padding.bottom - menuH - 8);
@@ -27574,6 +27591,20 @@ class _MindMapScreenState extends State<MindMapScreen>
                     unawaited(_showQuickPageSwitcher(provider));
                   },
                 ),
+                if (mdHeaderItem)
+                  _CtxMenuItem(
+                    icon: mdHeaderHidden
+                        ? Icons.keyboard_double_arrow_down_rounded
+                        : Icons.keyboard_double_arrow_up_rounded,
+                    label: provider.t(
+                        mdHeaderHidden ? 'md.showHeader' : 'md.hideHeader'),
+                    color: const Color(0xFF5FD3B2),
+                    onTap: () {
+                      final toggle = _markdownHeaderToggle;
+                      _removeOverlay();
+                      toggle?.call();
+                    },
+                  ),
               ]),
             ),
           ),
@@ -93613,6 +93644,27 @@ class _MindMapScreenState extends State<MindMapScreen>
       PointerSignalEvent event, TransformationController ctrl) {
     if (event is! PointerScrollEvent) return;
     if (_pauseViewer || _splitPanelHover || _splitLeftPanelHover) return;
+    // ── この Listener はページの種類に関係なく全部を包んでいるので、
+    //    マップ (と ギャラリー) 以外では何もしない (= ユーザー報告:
+    //    マークダウンからサイトに飛んだ時にエリア内スクロールが効かない
+    //    ことがある)。 専用の画面が自分でホイールを扱うのに、 裏で
+    //    マップの表示位置まで動かして毎回作り直していた。 ──
+    //    ★ 対象は「マップの代わりに専用の画面を出しているページ」 だけ
+    //      (それ以外は _buildCanvas が描くので、 今までどおり動かす)。
+    final pt = context.read<MindMapProvider>().currentPage.pageType;
+    if (pt == 'markdown' ||
+        pt == 'document' ||
+        pt == 'paint' ||
+        pt == 'videoEditor') {
+      // マークダウンの「サイトのタブ」 の上ではサイトだけを動かす
+      // (分割パネルの hover 判定と同じ考え方)。 上の種類の門で既に
+      // 止まっているので、 ここは分割セルに埋めた時のための保険。
+      return;
+    }
+    // ★ Platform View は onExit を取りこぼすことがあるので、 マップの上で
+    //   ホイールが回った = もうサイトの上には居ない、 と見て掃除する
+    //   (立ちっぱなしだとマップが二度とスクロールできなくなる)。
+    if (_mdWebPaneHover) _mdWebPaneHover = false;
     // ── 分割セル (編集セル以外) の上では、 マップ本体をスクロールしない
     //    (= ユーザー要望: 埋め込んだ動画などをスクロールすると元の画面まで
     //    一緒に動いてしまう。 埋め込んだ先だけが動くように)。 ホイールは
@@ -132335,13 +132387,52 @@ class _MdWebTabViewState extends State<_MdWebTabView> {
   iaw.InAppWebViewController? _iaw;
   String _current = '';
 
+  /// マップ側のホイール処理を止めてもらうために覚えておく親 State。
+  _MindMapScreenState? _host;
+
   bool get _isDesktop =>
       !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
+
+  /// ★ webview_windows はホイールを「最後にカーソルが居た所」 へ送る
+  ///   (windows/webview.cc の last_cursor_pos_)。 開いた直後でまだ一度も
+  ///   カーソルが動いていないと、 その値が (0,0) のままなので、 画面の
+  ///   左上隅にある物 (固定ヘッダーや横のメニュー) にホイールが吸われて
+  ///   本文が動かない = ユーザー報告「エリア内スクロールが効かないことが
+  ///   ある」。 (0,0) に来たホイールだけを本文へ回す保険を入れておく。
+  static const String _kWheelFixScript = r'''
+(function(){try{
+  if (window.__hnWheelFix) return; window.__hnWheelFix = 1;
+  window.addEventListener('wheel', function(e){
+    if (e.clientX !== 0 || e.clientY !== 0) return;
+    var el = document.scrollingElement || document.documentElement
+             || document.body;
+    if (!el) return;
+    e.preventDefault();
+    el.scrollBy(e.deltaX || 0, e.deltaY || 0);
+  }, {capture: true, passive: false});
+}catch(_){}})();
+''';
 
   @override
   void initState() {
     super.initState();
     _current = widget.url;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _host = context.findAncestorStateOfType<_MindMapScreenState>();
+    });
+  }
+
+  void _setHostHover(bool on) {
+    final h = _host;
+    if (h == null || !h.mounted || h._mdWebPaneHover == on) return;
+    h._mdWebPaneHover = on;
+  }
+
+  @override
+  void dispose() {
+    _setHostHover(false);
+    super.dispose();
   }
 
   Future<void> _reload() async {
@@ -132389,7 +132480,18 @@ class _MdWebTabViewState extends State<_MdWebTabView> {
     final Widget view = _isDesktop
         ? _SplitWindowsWebView(
             url: widget.url,
-            onControllerReady: (c) => _win = c,
+            onControllerReady: (c) {
+              _win = c;
+              // ホイールの当たり所の保険を入れる (上のコメント参照)。
+              unawaited(() async {
+                try {
+                  await c.addScriptToExecuteOnDocumentCreated(
+                      _kWheelFixScript);
+                  // 既に開いている文書にも今すぐ効かせる。
+                  await c.executeScript(_kWheelFixScript);
+                } catch (_) {}
+              }());
+            },
             onInitialized: () {},
             onUrlChanged: (u) {
               _current = u;
@@ -132452,7 +132554,18 @@ class _MdWebTabViewState extends State<_MdWebTabView> {
           }),
         ]),
       ),
-      Expanded(child: ColoredBox(color: const Color(0xFF14141F), child: view)),
+      Expanded(
+        // カーソルがサイトの上に居る間は、 裏のマップをホイールで
+        // 動かさない (= ユーザー報告: エリア内スクロールが効かない)。
+        child: MouseRegion(
+          opaque: false,
+          onEnter: (_) => _setHostHover(true),
+          onHover: (_) => _setHostHover(true),
+          onExit: (_) => _setHostHover(false),
+          child:
+              ColoredBox(color: const Color(0xFF14141F), child: view),
+        ),
+      ),
     ]);
   }
 }
@@ -133930,6 +134043,22 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
   bool _headerHover = false;
   static const String _kMdHeaderHiddenKey = 'markdownHeaderHidden';
 
+  /// 今ヘッダーが隠れているか (右クリックのメニューの文言に使う)。
+  bool _isHeaderHidden() => _headerHidden;
+
+  /// ヘッダーの表示 / 非表示を切り替える (= ユーザー要望: 専用のボタンは
+  /// 置かず、 ヘッダーの何も無い所を押す / 右クリックのメニューから)。
+  void _toggleHeaderHidden() {
+    final next = !_headerHidden;
+    setState(() {
+      _headerHidden = next;
+      if (!next) _headerHover = false;
+    });
+    // ignore: discarded_futures
+    SharedPreferences.getInstance()
+        .then((sp) => sp.setBool(_kMdHeaderHiddenKey, next));
+  }
+
   void _toggleSides() {
     setState(() => _previewLeft = !_previewLeft);
     // ignore: discarded_futures
@@ -134011,6 +134140,8 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
       if (!mounted) return;
       _mdHost = context.findAncestorStateOfType<_MindMapScreenState>();
       _mdHost?._markdownDropHandler = _onMarkdownDropFiles;
+      _mdHost?._markdownHeaderToggle = _toggleHeaderHidden;
+      _mdHost?._markdownHeaderIsHidden = _isHeaderHidden;
     });
   }
 
@@ -134053,8 +134184,13 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
         widget.onSaved?.call();
       }).catchError((_) {});
     }
+    _snackAutoClose?.cancel();
     if (_mdHost?._markdownDropHandler == _onMarkdownDropFiles) {
       _mdHost?._markdownDropHandler = null;
+    }
+    if (_mdHost?._markdownHeaderToggle == _toggleHeaderHidden) {
+      _mdHost?._markdownHeaderToggle = null;
+      _mdHost?._markdownHeaderIsHidden = null;
     }
     _mdMsgSub?.cancel();
     _scrollSyncThrottle?.cancel();
@@ -136552,15 +136688,40 @@ $body''';
     return (action: act, body: current);
   }
 
+  /// 画面の下に短く知らせを出す。
+  ///
+  /// ★ = ユーザー報告「サイトのタブを作った時の知らせがいつまでも残る」。
+  ///   SnackBar の自動消去は、 出てくる動きが終わってから時計が動き出す
+  ///   作りなので、 重い部品 (サイトの表示) を同じ瞬間に作ると時計が
+  ///   動き出さず出しっぱなしになることがある。 自前の時計でも閉じる。
+  ///   前の知らせは先に片付けるので、 続けて押しても溜まらない。
   void _appSnackTop(BuildContext ctx, String msg, Color color,
       {SnackBarAction? action}) {
-    ScaffoldMessenger.maybeOf(ctx)?.showSnackBar(SnackBar(
+    final m = ScaffoldMessenger.maybeOf(ctx);
+    if (m == null) return;
+    const dur = Duration(seconds: 4);
+    m.hideCurrentSnackBar();
+    final ctl = m.showSnackBar(SnackBar(
       content: Text(msg),
       backgroundColor: color,
-      duration: const Duration(seconds: 4),
+      duration: dur,
       action: action,
     ));
+    // 既に閉じていたら何もしない (別の知らせを横から消さないため。
+    // controller の close() は「今出ている物」 以外だと debug で落ちる)。
+    var closed = false;
+    ctl.closed.then((_) => closed = true).catchError((_) {});
+    _snackAutoClose?.cancel();
+    _snackAutoClose = Timer(dur + const Duration(milliseconds: 400), () {
+      if (closed) return;
+      try {
+        m.hideCurrentSnackBar();
+      } catch (_) {}
+    });
   }
+
+  /// 上の知らせを必ず閉じるための時計 (出しっぱなし対策)。
+  Timer? _snackAutoClose;
 
   Future<void> _copyAll() async {
     await Clipboard.setData(ClipboardData(text: _ctrl.text));
@@ -137101,14 +137262,10 @@ $body''';
             onExit: (_) => setState(() => _headerHover = false),
             // ── 格納しても高さは変えない (= ユーザー要望: 細くなると
             //    カーソルを合わせづらい)。 ボタンだけ消した同じ高さの帯を
-            //    残し、 ホバー (タップ) で「表示する」 ボタンを出す。 ──
+            //    残し、 押すと戻る (ホバー中は目印の矢印を出す)。 ──
             child: GestureDetector(
-              onTap: () {
-                setState(() => _headerHidden = false);
-                // ignore: discarded_futures
-                SharedPreferences.getInstance()
-                    .then((sp) => sp.setBool(_kMdHeaderHiddenKey, false));
-              },
+              behavior: HitTestBehavior.opaque,
+              onTap: _toggleHeaderHidden,
               child: Container(
                 height: narrow ? 78 : 42,
                 width: double.infinity,
@@ -137118,20 +137275,28 @@ $body''';
                       bottom: BorderSide(color: Colors.white12, width: 1)),
                 ),
                 alignment: Alignment.centerRight,
+                // 押せる帯だと分かるように、 カーソルが乗っている間だけ
+                // 小さな矢印を出す (押す所はこの帯ぜんぶ)。
                 child: _headerHover
-                    ? _btn(Icons.keyboard_double_arrow_down_rounded,
-                        provider.t('md.showHeader'), () {
-                        setState(() => _headerHidden = false);
-                        // ignore: discarded_futures
-                        SharedPreferences.getInstance().then(
-                            (sp) => sp.setBool(_kMdHeaderHiddenKey, false));
-                      })
+                    ? const Padding(
+                        padding: EdgeInsets.only(right: 10),
+                        child: Icon(
+                            Icons.keyboard_double_arrow_down_rounded,
+                            size: 18,
+                            color: Colors.white38),
+                      )
                     : const SizedBox.shrink(),
               ),
             ),
           )
         else
-        Container(
+        // ── ヘッダーの何も無い所を押すと隠せる (= ユーザー要望: 専用の
+        //    ボタンは目立って気が散るので置かない)。 ボタンやタブの上を
+        //    押した時は、 そちらが先に受け取るのでここへは来ない。 ──
+        GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: _toggleHeaderHidden,
+          child: Container(
           // モバイルは 2 段 (タブ + AI 中央 / 道具の列) なので高くする。
           height: narrow ? 78 : 42,
           padding: const EdgeInsets.symmetric(horizontal: 6),
@@ -137145,6 +137310,7 @@ $body''';
           child: LayoutBuilder(
             builder: (hctx, hbc) => _mdHeaderRow(provider, narrow,
                 paneWidth: hbc.maxWidth.isFinite ? hbc.maxWidth : null),
+          ),
           ),
         ),
         Expanded(
@@ -137946,31 +138112,19 @@ $body''';
           )
         : _btn(Icons.auto_awesome_rounded, provider.t('md.aiWrite'),
             _askAiToWrite);
-    // ヘッダーを隠すボタン (モバイルは上段の右端に置く)。
-    final hideBtn = _btn(Icons.keyboard_double_arrow_up_rounded,
-        provider.t('md.hideHeader'), () {
-      setState(() => _headerHidden = true);
-      // ignore: discarded_futures
-      SharedPreferences.getInstance()
-          .then((sp) => sp.setBool(_kMdHeaderHiddenKey, true));
-    });
+    // (ヘッダーを隠すボタンは廃止 = ユーザー要望: 中央にあっても気が散る。
+    //  ヘッダーの**何も無い所を押す**と隠れる / 出てくる。 右クリックの
+    //  メニューからも切り替えられる)
     // ── サイトのタブを開いている間は、 本文の道具を出さない ──
     //    (本文が画面に無いのに「AI に書いてもらう」 等を押せると、 書いた
-    //     物がどこにも残らない)。 タブ列と「隠す」 だけにする。
+    //     物がどこにも残らない)。 タブ列だけにする。
     //     サイトの操作 (戻る / 進む / 読み直す等) はサイトの帯にある。
     if (_cur?.isWeb == true) {
-      final webRow = <Widget>[
+      return Row(children: [
         if (_tabBarVisible)
           Flexible(flex: 5, child: _buildTabStrip(provider)),
         const Spacer(),
-      ];
-      if (!narrow && (paneWidth ?? double.infinity) >= 900) {
-        return Stack(children: [
-          Row(children: webRow),
-          Center(child: hideBtn),
-        ]);
-      }
-      return Row(children: [...webRow, hideBtn]);
+      ]);
     }
     // (タブ追加ボタンはタブ列の末尾に移した = ユーザー要望: 一番右端の
     //  タブの右側に置く)
@@ -138114,9 +138268,8 @@ $body''';
                   () => unawaited(_importMd())),
               _btn(Icons.save_alt_rounded, provider.t('md.export'), _exportMd),
             ],
-            // ヘッダーを隠す (= ユーザー要望)。 隠すと上端の細い帯だけになり、
-            //   そこにカーソルを乗せた時だけ「表示」 ボタンが出る。
-            hideBtn,
+            // (ヘッダーを隠すボタンは廃止 = ユーザー要望。 何も無い所を
+            //  押すか、 右クリックのメニューから切り替える)
     ];
     // ★ 中央に重ねるやり方は、 欄が狭いと右のボタン列と必ずぶつかる
     //   (= ユーザー報告: 4 分割にすると重なる)。 右の道具の列だけで
@@ -138124,15 +138277,7 @@ $body''';
     //   下の「横に並べて足りなければ横スクロール」 に落とす。
     final wideEnough = (paneWidth ?? double.infinity) >= 900;
     if (!narrow && wideEnough) {
-      // ── 中央にはヘッダーの表示 / 非表示ボタンを置く (= ユーザー要望:
-      //    AI ボタンは道具の列へ移したので、 その場所を譲る)。
-      //    他のボタン列の流れから外し、 Stack でヘッダー全幅の中央に重ねる。 ──
-      final rowChildren =
-          children.where((w) => !identical(w, hideBtn)).toList();
-      return Stack(children: [
-        Row(children: rowChildren),
-        Center(child: hideBtn),
-      ]);
+      return Row(children: children);
     }
     // ── モバイルも 1 段に並べる (= ユーザー要望: ヘッダーの項目は 1 列に)。
     //    左: タブ + 追加 / 削除 → 中: 道具の列 (横スクロール) → 右: 隠す。
@@ -138140,9 +138285,9 @@ $body''';
     //    なので入れ子にはならない (= 指の動きが取り合いにならない)。
     final tabMaxW = math.max(
         80.0, (paneWidth ?? MediaQuery.of(context).size.width) / 2 - 90);
-    // Spacer より後ろ = 道具の列。 末尾の「隠す」 は右端に固定するので除く。
-    final tools = children.sublist(
-        children.indexWhere((w) => w is Spacer) + 1, children.length - 1);
+    // Spacer より後ろ = 道具の列 (「隠す」 ボタンは廃止したので全部)。
+    final tools =
+        children.sublist(children.indexWhere((w) => w is Spacer) + 1);
     return SizedBox(
       height: 40,
       child: Row(children: [
@@ -138165,7 +138310,6 @@ $body''';
             ),
           ),
         ),
-        hideBtn,
       ]),
     );
   }
