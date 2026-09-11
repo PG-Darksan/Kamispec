@@ -802,6 +802,13 @@ class McpServer {
         'table. '
         '"pptx" -> pass "slides" (array of objects: '
         '{"title": "...", "bullets": ["...", "..."]}). '
+        'THE DECK IS ALWAYS DESIGNED FOR YOU: a full-bleed coloured '
+        'background from the theme, the FIRST slide rendered as a cover '
+        '(big title + accent rule; its bullets become the sub-title, so give '
+        'it a title and ONE short line), and every later slide with a thin '
+        'accent band, the title on the background and an accent rule fitted '
+        'to it. Do not add shapes just to fake a background, do not ask for '
+        'a white deck, and do not ask the user to choose colours. '
         'A pptx slide may ALSO carry "imagePrompt" (an ENGLISH description '
         'of a picture to draw with AI and place on that slide - be concrete '
         'about subject, colours and mood, and never ask for text or logos), '
@@ -863,11 +870,24 @@ class McpServer {
           // 配色 (= ユーザー要望: 白地に文字だけの資料にしない)。
           'theme': {
             'type': 'string',
+            // ★ 名前は _kPptxThemes と 1 文字違わず合わせる (画面側は名前で
+            //   引くので、 違う名前を書かれると黙って別の配色になる)。
+            'enum': [
+              'ミッドナイト',
+              'モダンブルー',
+              'サンセット',
+              'フォレスト',
+              'モノクロ',
+              'パステル',
+            ],
             'description':
-                'Colour theme name for a pptx deck (Japanese names, e.g. '
-                'モダンブルー / ミッドナイト / サンセット …). Leave it out and one '
-                'is picked for you. The deck is always coloured - never a '
-                'plain white text-only deck.',
+                'Colour theme for the deck. Every deck is built with a '
+                'full-bleed coloured background, a cover slide, a thin accent '
+                'band and an accent rule under each title - the same look the '
+                'in-app slide editor produces. Leave it out and one is chosen '
+                'from the title. ミッドナイト = dark slate + gold (default look), '
+                'モダンブルー / サンセット / フォレスト / モノクロ are dark, パステル is '
+                'light. Never ask the user to pick one unless they bring it up.',
           },
           'slides': {
             'type': 'array',
@@ -2219,6 +2239,12 @@ class McpServer {
             'paragraphs': _stringList(a['paragraphs']),
             'rows': _rowsOf(a['rows']),
             'slides': slides,
+            // ★ 配色と「後ろへ足すだけ」 を画面側へ渡す (= 動作確認で判明:
+            //   この 2 つは道具の説明には書いてあるのに、 ここで渡し忘れて
+            //   いたので、 配色を指定しても効かず、 追記も新規作成に
+            //   なっていた)。
+            'theme': '${a['theme'] ?? ''}',
+            'append': a['append'] == true,
           });
           final path = made?['path'] as String?;
           if (path == null) {

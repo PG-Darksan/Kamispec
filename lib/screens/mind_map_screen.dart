@@ -3789,6 +3789,9 @@ class _MindMapScreenState extends State<MindMapScreen>
           fileName: fileName,
           isDarkMode: isDark,
           paneGuardKey: paneGuardKey,
+          onSaved: notifySaved,
+          onCoverRendered: (png, aspect) =>
+              unawaited(_storeRenderedPptxCover(path, png, aspect)),
         );
       case 'docx':
         return _DocxViewerDialog(
@@ -26595,6 +26598,57 @@ class _MindMapScreenState extends State<MindMapScreen>
         }
       } catch (_) {}
     }();
+  }
+
+  /// 資料 (pptx) のビューアが撮った「1 枚目そのままの絵」 を、 タイルの
+  /// 表紙として控える (= ユーザー要望: サムネイルと開いた時の表紙を揃える)。
+  ///
+  /// 同じファイルを貼っている要素は全ページ分まとめて差し替える。
+  /// ファイル名に時刻を入れるのは、 同じ名前だと画面が古い絵を出したままに
+  /// なるため (= PDF の表紙で以前起きた不具合と同じ理由)。
+  Future<void> _storeRenderedPptxCover(
+      String filePath, Uint8List png, double aspect) async {
+    try {
+      if (!mounted) return;
+      final provider = context.read<MindMapProvider>();
+      // ★ 中身が変わっていないのに開くたび作り直さない (= 開くたびに
+      //   ファイルが増え、 タイルも無駄に描き直される)。
+      final src = File(filePath);
+      final srcAt =
+          src.existsSync() ? src.statSync().modified : DateTime.now();
+      for (final p in provider.pages) {
+        for (final n in p.nodes.values) {
+          if ((n.attachmentPath ?? '') != filePath) continue;
+          final t = (n.attachmentThumbPath ?? '').trim();
+          if (t.isEmpty || !t.contains('pptxcover_')) continue;
+          final tf = File(t);
+          if (tf.existsSync() && !tf.statSync().modified.isBefore(srcAt)) {
+            return; // もう新しい表紙がある。
+          }
+        }
+      }
+      final appDir = await getApplicationDocumentsDirectory();
+      final thumbDir = Directory('${appDir.path}/attachments');
+      if (!thumbDir.existsSync()) thumbDir.createSync(recursive: true);
+      final stamp = DateTime.now().millisecondsSinceEpoch;
+      final out = File('${thumbDir.path}/'
+          'pptxcover_${filePath.hashCode.toRadixString(16)}_$stamp.png');
+      await out.writeAsBytes(png, flush: true);
+      if (!mounted) return;
+      final ids = <String>[];
+      for (final p in provider.pages) {
+        for (final n in p.nodes.values) {
+          if ((n.attachmentPath ?? '') == filePath) ids.add(n.id);
+        }
+      }
+      for (final id in ids) {
+        provider.setAttachmentThumb(id, out.path, aspect);
+      }
+      // タイルが読んでいる「中身のさわり」 の控えも捨てて描き直させる。
+      DocPreview.invalidate(filePath);
+    } catch (e) {
+      debugPrint('資料の表紙の控えに失敗 (無視): $e');
+    }
   }
 
   Future<void> _showInAppViewer(BuildContext ctx, String urlOrPath,
@@ -63578,7 +63632,13 @@ class _MindMapScreenState extends State<MindMapScreen>
         return;
       }
     }
-    Widget chat(BuildContext _) => _McpChatDialog(
+    // 会話欄そのものの居場所 (= ダイアログとして開いた時に、 その画面だけを
+    //   閉じるために控える。 一番手前を閉じると、 上に開いた資料などを
+    //   巻き添えにしてしまう)。
+    BuildContext? chatCtx;
+    Widget chat(BuildContext c) {
+      chatCtx = c;
+      return _McpChatDialog(
           provider: provider,
           onOpenAiSettings: () =>
               _showGeminiKeyDialog(context, provider, null, anyProvider: true),
@@ -63598,6 +63658,8 @@ class _MindMapScreenState extends State<MindMapScreen>
           },
           // 浮かせ直す口は廃止 (= ユーザー要望: アプリの中だけで使う)。
         );
+    }
+
     // ── フローティング経由なら、 全画面ではなく小さな浮遊窓で開く
     //    (= ユーザー要望: AI アシスタントもフローティング画面で) ──
     if (floatingPanel && _isDesktop) {
@@ -63624,6 +63686,11 @@ class _MindMapScreenState extends State<MindMapScreen>
       // 開いている間は小さな札を出さない (= 二重表示を避ける)。
       if (mounted) setState(() => _mcpChatVisible = true);
       _markAssistantPanelOpen(() {
+        // ★ 窓の実体も Overlay から外す (= 以前は待ち合わせの合図を出す
+        //   だけで、 浮遊窓はそのまま残っていた)。 残ると「合言葉つきの
+        //   窓は 1 つだけ」 の台帳に居座り、 次に開こうとしても前面に
+        //   出し直すだけの道へ入って、 いつまでも開かなくなる。
+        _closeFloatingPanelByKey('assistant');
         if (!done.isCompleted) done.complete();
       });
       await done.future;
@@ -63632,8 +63699,22 @@ class _MindMapScreenState extends State<MindMapScreen>
       return;
     }
     if (mounted) setState(() => _mcpChatVisible = true);
+    // ★ 閉じるのは「この会話欄そのもの」 だけにする。 以前は一番手前の
+    //   画面を閉じていたので、 会話欄の上に資料 (pptx) などを開いていると
+    //   そちらが閉じられていた (= ユーザー報告: AI アシスタントを閉じると
+    //   pptx の画面まで閉じてしまう)。
     _markAssistantPanelOpen(() {
-      if (mounted) Navigator.of(context, rootNavigator: true).maybePop();
+      if (!mounted) return;
+      final c = chatCtx;
+      if (c == null || !c.mounted) return;
+      final r = ModalRoute.of(c);
+      if (r == null || !r.isActive) return;
+      final nav = Navigator.of(c);
+      if (r.isCurrent) {
+        nav.pop();
+      } else {
+        nav.removeRoute(r);
+      }
     });
     await showDialog<void>(context: context, builder: chat);
     _markAssistantPanelClosed();
@@ -72064,13 +72145,19 @@ class _MindMapScreenState extends State<MindMapScreen>
       _mapSplitCellTool.remove(slot);
       _syncNarrowPaneRatio();
     });
-    // ★ 隣の画面でファイルやページを開いている時は、 分割を畳まない
+    // ★ 隣の画面でファイルや Web、 別の道具を開いている時は、 分割を畳まない
     //   (= ユーザー報告: AI アシスタントを閉じると pptx まで閉じられる)。
     //   畳んでよいのは「この道具のために開いた分割で、 他に何も無い」 時だけ。
+    //
+    // ★ `_mapSplitCells` (= ページを入れたセルの控え) はここでは見ない。
+    //   あれは組み立て中に書かれるだけで畳んでも消えないので、 一度でも
+    //   ページ同士の分割を使うと、 以降ずっと「隣に何か居る」 と見なされ、
+    //   道具のために作った分割が全画面へ戻らなくなる (= 別のユーザー要望
+    //   「元の画面分割前の画面に戻るようにして欲しい」 を潰してしまう)。
+    //   pptx などのファイルは `_mapSplitCellFile` に入るので、 それで足りる。
     final otherOccupied = _mapSplitCellTool.isNotEmpty ||
         _mapSplitCellWeb.isNotEmpty ||
-        _mapSplitCellFile.isNotEmpty ||
-        _mapSplitCells.any((p) => p != null);
+        _mapSplitCellFile.isNotEmpty;
     if (openedByUs && !otherOccupied) {
       _closeMapSplit();
     }
@@ -72185,7 +72272,11 @@ class _MindMapScreenState extends State<MindMapScreen>
         for (final s in _visibleSplitSlots()) {
           if (s != slot &&
               _mapSplitCellWeb[s] == null &&
-              _mapSplitCellTool[s] == null) {
+              _mapSplitCellTool[s] == null &&
+              // ★ ファイルを開いているセルも「空き」 ではない
+              //   (= 編集ペインをそこへ逃がすと、 開いている pptx などの
+              //   裏にマップが潜り込む)。
+              _mapSplitCellFile[s] == null) {
             free = s;
             break;
           }
@@ -72962,7 +73053,11 @@ class _MindMapScreenState extends State<MindMapScreen>
         for (final s in _visibleSplitSlots()) {
           if (s != slot &&
               _mapSplitCellWeb[s] == null &&
-              _mapSplitCellTool[s] == null) {
+              _mapSplitCellTool[s] == null &&
+              // ★ ファイルを開いているセルも「空き」 ではない
+              //   (= 編集ペインをそこへ逃がすと、 開いている pptx などの
+              //   裏にマップが潜り込む)。
+              _mapSplitCellFile[s] == null) {
             free = s;
             break;
           }
@@ -84159,6 +84254,9 @@ class _MindMapScreenState extends State<MindMapScreen>
               filePath: path,
               fileName: fileName,
               isDarkMode: isDark,
+              onSaved: () => _notifyAttachmentEdited(nodeId),
+              onCoverRendered: (png, aspect) =>
+                  unawaited(_storeRenderedPptxCover(path, png, aspect)),
               onRenamed: (newPath, newName) =>
                   _notifyAttachmentRenamed(nodeId, newPath, newName),
             ),
@@ -84177,6 +84275,9 @@ class _MindMapScreenState extends State<MindMapScreen>
               filePath: path,
               fileName: fileName,
               isDarkMode: isDark,
+              onSaved: () => _notifyAttachmentEdited(nodeId),
+              onCoverRendered: (png, aspect) =>
+                  unawaited(_storeRenderedPptxCover(path, png, aspect)),
               onRenamed: (newPath, newName) =>
                   _notifyAttachmentRenamed(nodeId, newPath, newName),
               onSplitOpen: (p, n, {bool isLeftPanel = false}) {
@@ -84206,6 +84307,9 @@ class _MindMapScreenState extends State<MindMapScreen>
               filePath: path,
               fileName: fileName,
               isDarkMode: isDark,
+              onSaved: () => _notifyAttachmentEdited(nodeId),
+              onCoverRendered: (png, aspect) =>
+                  unawaited(_storeRenderedPptxCover(path, png, aspect)),
               onRenamed: (newPath, newName) =>
                   _notifyAttachmentRenamed(nodeId, newPath, newName),
               onSplitOpen: (p, n, {bool isLeftPanel = false}) {
@@ -223367,8 +223471,9 @@ Widget _pptxDrawShapeVisual(
 /// = ユーザー要望「おしゃれなカフェのパワポにしてとお願いしても珈琲の画像や
 ///   図形が挿入されず味気ない」。
 ///   絵は 1 枚ずつお金 (前払いクレジット) がかかるので、 変更案を作る時点
-///   では**描かない**。 利用者が「この内容で変更する」 を押して、 枚数と
-///   費用を確かめた後にまとめて描く。
+///   では**描かない**。 変更が実際に反映された後にまとめて描く。
+///   ★ 以前はここで枚数と費用を出して確かめていたが、 その確認画面は
+///     外した (= ユーザー要望: 画像を生成しますか？の確認画面も要らない)。
 class _PptxAiImageRequest {
   /// 何を描くか (英語推奨)。
   final String prompt;
@@ -224319,11 +224424,17 @@ class _PptxAiChange {
   /// 採用された時に実際の編集を行う。
   final void Function() apply;
 
+  /// 今ある資料には触らず、 後ろへ足すだけの案か。
+  /// true ばかりなら確認画面を出さずに反映してよい
+  /// (= ユーザー要望: 新規で作る際はデザインの確認画面は要らない)。
+  final bool isNew;
+
   _PptxAiChange({
     required this.label,
     required this.detail,
     required this.preview,
     required this.apply,
+    this.isNew = false,
   });
 }
 
@@ -224370,6 +224481,17 @@ class _PptxViewerDialog extends StatefulWidget {
   /// ファイル切替の前に未保存確認を出すために登録する。
   final String? paneGuardKey;
 
+  /// 保存した時に呼ばれる (= 表紙のサムネイルを作り直すため)。
+  /// docx / xlsx / テキストのビューアには前からあったのに、 資料
+  /// (pptx) だけ無かったので、 中身を直してもタイルが古いままだった。
+  final VoidCallback? onSaved;
+
+  /// 1 枚目を実際に描いた絵 (PNG) が用意できた時に呼ばれる。
+  /// [aspect] は 幅/高さ。 タイルの表紙をこの絵に差し替えると、 開いた時の
+  /// 表紙とタイルが完全に同じになる
+  /// (= ユーザー要望: サムネイルと開いた時の表紙でレイアウトが違う)。
+  final void Function(Uint8List png, double aspect)? onCoverRendered;
+
   const _PptxViewerDialog({
     required this.filePath,
     required this.fileName,
@@ -224377,6 +224499,8 @@ class _PptxViewerDialog extends StatefulWidget {
     this.onRenamed,
     this.onSplitOpen,
     this.paneGuardKey,
+    this.onSaved,
+    this.onCoverRendered,
   });
 
   @override
@@ -226718,6 +226842,9 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
           // 読み直した = ファイルの並びと一致したので未保存扱いを解除。
           _slideOrderDirty = false;
         });
+        // 1 枚目を出したところで、 その絵をタイルの表紙として控える
+        //   (= ユーザー要望: サムネイルと開いた表紙を揃える)。
+        _requestCoverCapture();
       }
     } catch (e, st) {
       debugPrint('PptxViewer load error: $e\n$st');
@@ -230792,6 +230919,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
             detail: (sp['title'] ?? '').toString(),
             preview: built,
             apply: () => _applyBuiltSlide(built, target),
+            isNew: isNew,
           ));
         }
       }
@@ -230884,8 +231012,29 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
     }
     final changes = _buildAiChanges(aiResult);
     if (changes.isEmpty) return;
-    final accepted = await _showPptxAiPlanDialog(changes);
-    if (accepted == null || accepted.isEmpty || !mounted) return;
+    // ★ 新規で作る時は確認画面を出さない (= ユーザー要望)。
+    //   「新規」 と見なすのは次の 2 つだけ。
+    //     ・まだ何も入っていないファイル (作ったばかりの白紙 1 枚)
+    //     ・今ある資料には一切触らず、 後ろへ足すだけの案
+    //   どちらも上書きで失う物が無いので、 そのまま反映してよい。
+    //   既にある資料への直し (原稿だけ足す / 動きを付ける なども資料まるごと
+    //   の形で返ってくる) は、 今までどおり一覧を見せて選んでもらう。
+    //   ※ 取り消しの控えは絵と動きを覚えていないので、 黙って上書きすると
+    //     Ctrl+Z でも戻せない。 だから「失う物が無い時だけ」 に限る。
+    final nothingToLose = _slides.every((s) =>
+        s.newImages.isEmpty &&
+        s.images.isEmpty &&
+        s.drawShapes.isEmpty &&
+        s.tableShapes.isEmpty &&
+        s.textShapes.every((t) => t.text.trim().isEmpty));
+    final Set<int> accepted;
+    if (nothingToLose || changes.every((c) => c.isNew)) {
+      accepted = {for (var i = 0; i < changes.length; i++) i};
+    } else {
+      final picked = await _showPptxAiPlanDialog(changes);
+      if (picked == null || picked.isEmpty || !mounted) return;
+      accepted = picked;
+    }
     _pushHistory();
     setState(() {
       for (var i = 0; i < changes.length; i++) {
@@ -230895,13 +231044,14 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
     _showSnack('✓ ${accepted.length} 件を反映しました (保存で確定)');
     // ★ 絵の指示が付いていたら、 ここでまとめて描く (= ユーザー要望:
     //   おしゃれなカフェのパワポと頼んだのに珈琲の画像が入らない)。
-    //   お金がかかるので、 枚数を見せて確かめてから。
+    //   絵は設定に従ってそのまま用意する (= ユーザー要望: 確認画面は出さない)。
     await _generatePendingAiImages();
   }
 
   /// AI が「ここに絵を入れたい」 と言ってきた分を、 まとめて描いて貼る。
   ///
-  /// 1 枚ずつ前払いクレジットを使うので、 先に枚数を出して確かめる。
+  /// 1 枚ずつ前払いクレジットを使う (確認は出さない = ユーザー要望。
+  /// 鍵もクレジットも無い時だけ止める)。
   /// 途中で失敗しても、 描けた分はそのまま残す (= 全部やり直しにしない)。
   /// 絵を描いている最中か。 描いている間に次の変更案を通されると、 同じ
   /// スライドを 2 度描いて**2 回課金**し、 先に描けた絵まで消える
@@ -230937,34 +231087,11 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
       dropPlaceholders(targets);
       return;
     }
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (dctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E2E),
-        title: Text(provider.t('pptx.aiImageTitle'),
-            style: const TextStyle(color: Colors.white, fontSize: 15)),
-        content: Text(
-          provider
-              .t(provider.slideImagesFromWeb
-                  ? 'pptx.aiImageBodyWeb'
-                  : 'pptx.aiImageBody')
-              .replaceFirst('{n}', '${targets.length}'),
-          style: const TextStyle(color: Colors.white70, fontSize: 13),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(dctx, false),
-              child: Text(provider.t('common.cancel'))),
-          FilledButton(
-              onPressed: () => Navigator.pop(dctx, true),
-              child: Text(provider.t('pptx.aiImageGo'))),
-        ],
-      ),
-    );
-    if (ok != true) {
-      if (mounted) dropPlaceholders(targets);
-      return;
-    }
+    // ★ 「絵を描いて入れますか？」 の確認画面は出さない (= ユーザー要望)。
+    //   マップの AI から作る時 (_buildMcpFile) も、 資料作成ページ
+    //   (_generateImageFor) も、 前から確認せずに描いている。 ここだけ
+    //   聞いていたので、 同じ操作なのに片方だけ止まっていた。
+    //   鍵もクレジットも無い時は上の関門で止まるので、 そこは変えない。
     if (!mounted) return;
     var made = 0;
     _aiImagesRunning = true;
@@ -232274,6 +232401,11 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
       // 再ロードでシェイプ ID を再採番して dirty フラグも降ろす
       _removedSlideParts.clear();
       await _loadFile();
+
+      // ★ 表紙のタイルを作り直させる (= 他のビューアには前からある通知。
+      //   資料だけ無かったので、 中身を直してもタイルが古いままだった)。
+      widget.onSaved?.call();
+      _requestCoverCapture();
 
       if (mounted) {
         _showSnack('保存しました');
@@ -237733,16 +237865,96 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
 
   /// キャンバス全体を ui.Image → PNG バイト列に変換。
   /// pixelRatio = 2.0 で Retina 相当の高解像度 (= 印刷でも見栄え良い)。
-  Future<Uint8List?> _captureCanvasAsPngBytes() async {
+  Future<Uint8List?> _captureCanvasAsPngBytes({double pixelRatio = 2.0}) async {
     try {
       final ro = _canvasKey.currentContext?.findRenderObject();
       if (ro is! RenderRepaintBoundary) return null;
-      final image = await ro.toImage(pixelRatio: 2.0);
+      final image = await ro.toImage(pixelRatio: pixelRatio);
       final bd = await image.toByteData(format: ui.ImageByteFormat.png);
       return bd?.buffer.asUint8List();
     } catch (e, st) {
       debugPrint('キャンバスキャプチャ失敗: $e\n$st');
       return null;
+    }
+  }
+
+  // ─── タイルの表紙を「実際に描いた 1 枚目」 にする ────────────────────
+  //
+  // = ユーザー要望「サムネイルと開いた時の表紙でレイアウトが違うのおかしい
+  //   から揃えて欲しい」。
+  //   タイルの絵はこれまで、 スライドの XML をざっと読んだ**別の描き方**で
+  //   組み立てていたので、 絵が出ない・文字の位置が違う・並べ替えると
+  //   別のページが出る、 といった食い違いがあった。
+  //   ここでは、 今まさに画面へ描いている 1 枚目をそのまま写真に撮って渡す。
+  //   同じ描き方から出来た絵なので、 定義上ずれようがない。
+
+  /// もう写真を撮ったか (= 開くたび / 保存のたびに撮り直すが、 同じ状態で
+  /// 何度も撮らない)。
+  bool _coverCaptureQueued = false;
+
+  /// 1 枚目を写真に撮って呼び出し元へ渡す。 1 枚目を出していない時は何もしない
+  /// (= 5 枚目を開いたまま保存した時に、 5 枚目が表紙になってしまうのを防ぐ)。
+  void _requestCoverCapture() {
+    if (widget.onCoverRendered == null) return;
+    if (_coverCaptureQueued) return;
+    if (_currentIndex != 0 || _slides.isEmpty) return;
+    // ★ 何かを選んでいる / 編集中の時は撮らない。 選択の枠や掴む点が
+    //   そのままタイルの絵に焼き付いてしまう (保存した時に起きる)。
+    //   撮れなかった時は、 次に開いた時に撮り直す。
+    if (_selectedShapeId != null ||
+        _selectedDrawShapeId != null ||
+        _selectedNewImageId != null ||
+        _selectedTableGroupId != null ||
+        _editingShapeId != null ||
+        _showAnchorDots ||
+        _rangeSelectMode ||
+        _inkMode ||
+        _magicEraseMode ||
+        _aiReplaceMode) {
+      return;
+    }
+    _coverCaptureQueued = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      _coverCaptureQueued = false;
+      if (!mounted || _currentIndex != 0) return;
+      // 小さすぎる所 (分割ペインの端など) で撮ると粗い絵になるので撮らない。
+      final box = _canvasKey.currentContext?.findRenderObject();
+      if (box is! RenderRepaintBoundary || !box.hasSize) return;
+      if (box.size.width < 240 || box.size.height < 135) return;
+      // タイルに出すだけなので、 横 1280px 程度で足りる (等倍の 2 倍で撮ると
+      //   数 MB の絵になってしまう)。
+      final png = await _captureCanvasAsPngBytes(
+          pixelRatio: (1280 / box.size.width).clamp(0.5, 2.0));
+      if (png == null || png.isEmpty || !mounted) return;
+      // 真っ白な絵は渡さない (= 以前、 中身の無い表紙が優先されてタイルが
+      //   白く見える不具合があった)。
+      if (await _isBlankPng(png)) return;
+      widget.onCoverRendered?.call(
+          png, _slideHeightEmu <= 0 ? 16 / 9 : _slideWidthEmu / _slideHeightEmu);
+    });
+  }
+
+  /// ほぼ単色 (= 中身が無い) の絵か。
+  static Future<bool> _isBlankPng(Uint8List png) async {
+    try {
+      final codec = await ui.instantiateImageCodec(png,
+          targetWidth: 24, targetHeight: 24);
+      final frame = await codec.getNextFrame();
+      final bd = await frame.image.toByteData();
+      if (bd == null) return false;
+      final b = bd.buffer.asUint8List();
+      if (b.length < 16) return false;
+      final r0 = b[0], g0 = b[1], b0 = b[2];
+      for (var i = 0; i + 3 < b.length; i += 4) {
+        if ((b[i] - r0).abs() > 8 ||
+            (b[i + 1] - g0).abs() > 8 ||
+            (b[i + 2] - b0).abs() > 8) {
+          return false;
+        }
+      }
+      return true;
+    } catch (_) {
+      return false;
     }
   }
 
@@ -244759,6 +244971,30 @@ class _PptxTheme {
   final String a1, a2, a3, a4, a5, a6;
   final String majorFont, minorFont;
   final Color accent; // UI プレビュー用
+
+  // ── 実際に紙へ塗る色 (= ユーザー要望: マップの AI から作っても、 資料の
+  //    画面の AI と同じデザインになるように) ──
+  //
+  // ★ dk1/lt1 (テーマ色) を darken するやり方では駄目だった。 このアプリの
+  //   表示側 (サムネイル doc_preview / ビューア) は背景を「スライドに書かれた
+  //   <p:bg> の srgbClr」 からしか読まないので、 テーマ色だけ変えても
+  //   PowerPoint では色付き・アプリの中では真っ白、 という食い違いになる。
+  //   だから紙の色は各スライドへ srgbClr で直接書き込む。
+  /// 紙の色 (RRGGBB)。
+  final String bgHex;
+
+  /// 箱・カードの色 (RRGGBB)。
+  final String surfaceHex;
+
+  /// 見出しの文字色 (RRGGBB)。
+  final String titleHex;
+
+  /// 本文の文字色 (RRGGBB)。
+  final String bodyHex;
+
+  /// 日本語の書体 (= Calibri のままだと置き換えられて別物になる)。
+  final String jpFont;
+
   const _PptxTheme({
     required this.name,
     this.dk1 = '1A1A1A',
@@ -244774,7 +245010,36 @@ class _PptxTheme {
     this.majorFont = 'Calibri',
     this.minorFont = 'Calibri',
     required this.accent,
+    this.bgHex = 'FFFFFF',
+    this.surfaceHex = 'F2F4F8',
+    this.titleHex = '1A1A1A',
+    this.bodyHex = '333333',
+    this.jpFont = 'Meiryo',
   });
+
+  /// 紙の色だけ差し替えた同じ配色 (= 後ろへ足す時に、 元の資料の紙の色へ
+  /// 合わせるために使う)。
+  _PptxTheme withBg(String hex) => _PptxTheme(
+        name: name,
+        dk1: dk1,
+        lt1: lt1,
+        dk2: dk2,
+        lt2: lt2,
+        a1: a1,
+        a2: a2,
+        a3: a3,
+        a4: a4,
+        a5: a5,
+        a6: a6,
+        majorFont: majorFont,
+        minorFont: minorFont,
+        accent: accent,
+        bgHex: hex,
+        surfaceHex: surfaceHex,
+        titleHex: titleHex,
+        bodyHex: bodyHex,
+        jpFont: jpFont,
+      );
 
   /// この配色/フォントから theme1.xml を組み立てる。
   String themeXml() => '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -244821,44 +245086,78 @@ class _PptxTheme {
       '</a:fmtScheme></a:themeElements></a:theme>';
 }
 
+// ★ 先頭が既定 (= 何も指定されなかった時の色)。 資料の画面の AI が既定で
+//   使う配色 (紺 + 金) と同じ物を先頭に置き、 マップの AI から作っても
+//   同じ見た目になるようにした
+//   (= ユーザー要望: ページから作らせると背景の無い真っ白な資料になる)。
 const List<_PptxTheme> _kPptxThemes = [
   _PptxTheme(
+      name: 'ミッドナイト',
+      a1: 'D4AF37',
+      a2: '38BDF8',
+      a3: 'F59E0B',
+      a4: '34D399',
+      a5: 'A78BFA',
+      a6: 'FB7185',
+      accent: Color(0xFFD4AF37),
+      bgHex: '0F172A',
+      surfaceHex: '1E293B',
+      titleHex: 'FFFFFF',
+      bodyHex: 'E2E8F0'),
+  _PptxTheme(
       name: 'モダンブルー',
-      a1: '2E6BE6',
+      a1: '4D8DFF',
       a2: '27A2D9',
       a3: '7C4DFF',
       a4: '00BFA5',
       a5: '5C6BC0',
       a6: '26C6DA',
-      accent: Color(0xFF2E6BE6)),
+      accent: Color(0xFF4D8DFF),
+      bgHex: '0E1A2E',
+      surfaceHex: '17263F',
+      titleHex: 'FFFFFF',
+      bodyHex: 'D8E5F7'),
   _PptxTheme(
       name: 'サンセット',
-      a1: 'FF6B35',
+      a1: 'FF8A4C',
       a2: 'F7931E',
       a3: 'E8505B',
       a4: 'FFB400',
       a5: 'C1436D',
       a6: 'FF8C42',
-      accent: Color(0xFFFF6B35)),
+      accent: Color(0xFFFF8A4C),
+      bgHex: '2A1310',
+      surfaceHex: '3C1F1A',
+      titleHex: 'FFFFFF',
+      bodyHex: 'FFE2D2'),
   _PptxTheme(
       name: 'フォレスト',
-      a1: '2E7D32',
+      a1: '5BC46A',
       a2: '66BB6A',
       a3: '009688',
       a4: '9CCC65',
       a5: '00897B',
       a6: '7CB342',
-      accent: Color(0xFF2E7D32)),
+      accent: Color(0xFF5BC46A),
+      bgHex: '0D1F15',
+      surfaceHex: '153021',
+      titleHex: 'FFFFFF',
+      bodyHex: 'D8ECDD'),
   _PptxTheme(
       name: 'モノクロ',
       dk2: '333333',
-      a1: '37474F',
+      a1: 'B0BEC5',
       a2: '616161',
       a3: '757575',
       a4: '9E9E9E',
       a5: '546E7A',
       a6: 'BDBDBD',
-      accent: Color(0xFF37474F)),
+      accent: Color(0xFFB0BEC5),
+      bgHex: '1B1B1F',
+      surfaceHex: '2A2A30',
+      titleHex: 'FFFFFF',
+      bodyHex: 'E0E0E0'),
+  // 明るい配色も 1 つ残す (= 全部が暗いと選べないので)。
   _PptxTheme(
       name: 'パステル',
       dk1: '4A4A5A',
@@ -244868,7 +245167,11 @@ const List<_PptxTheme> _kPptxThemes = [
       a4: '90CAF9',
       a5: 'A5D6A7',
       a6: 'FFCC80',
-      accent: Color(0xFF8E9AAF)),
+      accent: Color(0xFF8E9AAF),
+      bgHex: 'FBF7F4',
+      surfaceHex: 'FFFFFF',
+      titleHex: '3A3A48',
+      bodyHex: '55555F'),
 ];
 
 // ════════════════════════════════════════════════════════════════════════
@@ -245744,9 +246047,11 @@ class _AiStudioPageViewState extends State<_AiStudioPageView>
   /// 実際の pptx レイアウト (アクセント色のタイトルバー + 箇条書き) を縮小再現。
   Widget _themeThumb(_PptxTheme t, bool selected) {
     Color hex(String h) => Color(int.parse('FF$h', radix: 16));
-    final bg = hex(t.lt1);
+    // ★ 実際に紙へ塗る色で見本を描く (= 以前はテーマ色 lt1/dk1 から
+    //   組み立てていたので、 暗い配色でも見本だけ白いままだった)。
+    final bg = hex(t.bgHex);
     final bar = t.accent;
-    final txt = hex(t.dk1);
+    final txt = hex(t.bodyHex);
     return SizedBox(
       width: 104,
       child: Column(
@@ -245914,8 +246219,27 @@ class _AiStudioPageViewState extends State<_AiStudioPageView>
 /// 「出来た pptx が開ける形か」 を確かめるためだけに 1 本だけ口を開ける。
 @visibleForTesting
 Uint8List buildPptxFromSlidesForTest(
-        List<_AiSlideRec> slides) =>
-    _OfficeFileTemplate.buildPptxFromSlides(slides);
+    List<_AiSlideRec> slides, {
+    // 配色は名前で選ぶ (_PptxTheme はこのファイルの中だけの型なので、
+    //   検査からは作れない)。
+    String? themeName,
+    bool coverFirst = false,
+  }) {
+  final i = themeName == null
+      ? -1
+      : _kPptxThemes.indexWhere((t) => t.name == themeName);
+  return _OfficeFileTemplate.buildPptxFromSlides(
+    slides,
+    theme: i >= 0 ? _kPptxThemes[i] : null,
+    coverFirst: coverFirst,
+  );
+}
+
+/// 検査用の入口 (= 後ろへ足す時に、 紙の色が元の資料と揃うかを見る)。
+@visibleForTesting
+Uint8List appendSlidesToPptxForTest(
+        Uint8List original, List<_AiSlideRec> extra) =>
+    _OfficeFileTemplate.appendSlidesToPptx(original, extra);
 
 class _OfficeFileTemplate {
   // ─── 中身つきのファイルを作る (= ユーザー要望: AI から pptx / pdf /
@@ -245999,7 +246323,9 @@ class _OfficeFileTemplate {
                     _kPptxThemes.length);
           }
           return buildPptxFromSlides(list,
-              theme: _kPptxThemes[idx.clamp(0, _kPptxThemes.length - 1)]);
+              theme: _kPptxThemes[idx.clamp(0, _kPptxThemes.length - 1)],
+              // 1 枚目は表紙の体裁にする (= 資料の画面の AI と同じ形)。
+              coverFirst: true);
         }
       case 'pdf':
         return _buildPdf(title: title, paragraphs: paragraphs, rows: rows);
@@ -246568,6 +246894,9 @@ class _OfficeFileTemplate {
     for (final o in out) {
       final x = num0(o, 'x', 0), y = num0(o, 'y', 0);
       final w = num0(o, 'w', 0), h = num0(o, 'h', 0);
+      // 紙いっぱいの飾り (= 下敷き) はそのまま。 動かすと上下に紙の色の
+      //   帯が残って、 かえって不格好になる。
+      if (w >= 99 && h >= 99) continue;
       // 縦に長い飾り (左端の帯など) は、 見出しに掛かってもよい。
       final tall = h >= 60 && w <= 8;
       if (!tall && y < 15 && y + h > 2 && w >= 20) {
@@ -246678,8 +247007,30 @@ class _OfficeFileTemplate {
       final v = int.tryParse(m.group(1)!) ?? 0;
       if (v > maxSldId) maxSldId = v;
     }
-    // 足す分のスライドだけを作って、 その XML を借りてくる。
-    final made = ZipDecoder().decodeBytes(buildPptxFromSlides(extra));
+    // ── 足す分のスライドだけを作って、 その XML を借りてくる ──
+    // ★ 紙の色は「今ある資料の 1 枚目」 に合わせる (= 足したページだけ色が
+    //   変わってしまうのを防ぐ)。 元が色を持っていない (テーマ任せの) 資料
+    //   なら、 こちらも色を書かない。
+    String? existingBg;
+    for (var i = 1; i <= maxSlideNo; i++) {
+      final xml = read('ppt/slides/slide$i.xml');
+      if (xml == null) continue;
+      final m = RegExp(r'<p:bg>[\s\S]*?<a:srgbClr val="([0-9A-Fa-f]{6})"')
+          .firstMatch(xml);
+      if (m != null) {
+        existingBg = m.group(1)!.toUpperCase();
+        break;
+      }
+    }
+    final made = ZipDecoder().decodeBytes(buildPptxFromSlides(
+      extra,
+      theme: existingBg == null
+          ? null
+          : _kPptxThemes.first.withBg(existingBg),
+      // 追記なので表紙にはしない。 色が読めない資料は今までどおり
+      //   テーマ任せのまま足す。
+      styled: existingBg != null,
+    ));
     String? madeRead(String name) {
       for (final f in made.files) {
         if (f.name == name) return utf8.decode(f.content as List<int>);
@@ -246762,12 +247113,25 @@ class _OfficeFileTemplate {
     return Uint8List.fromList(enc);
   }
 
+  /// 中身つきの pptx を組み立てる。
+  ///
+  /// [coverFirst] を立てると 1 枚目を「表紙」 の体裁で書く
+  /// (= 資料の画面の AI が作る `layout:"title"` と同じ形)。 後ろへ足すだけの
+  /// 呼び出しや、 利用者が自分で並べた下書きの書き出しでは立てない
+  /// (2 枚目以降が表紙になってしまうため)。
+  ///
+  /// [styled] を下ろすと紙の色を書かず、 文字色もテーマ任せに戻す
+  /// (= 利用者が持ち込んだテンプレートの見た目を壊さないため)。
   static Uint8List buildPptxFromSlides(
       List<_AiSlideRec> slides,
       {String? themeXml,
-      _PptxTheme? theme}) {
+      _PptxTheme? theme,
+      bool coverFirst = false,
+      bool styled = true}) {
     final th = theme ?? _kPptxThemes.first;
     final themeContent = themeXml ?? th.themeXml();
+    // テンプレートを持ち込まれた時は、 こちらの色で塗り潰さない。
+    final paint = styled && themeXml == null;
     String esc(String s) => s
         .replaceAll('&', '&amp;')
         .replaceAll('<', '&lt;')
@@ -246842,7 +247206,40 @@ class _OfficeFileTemplate {
           '$fillXml$lineXml</p:spPr></p:sp>';
     }
 
-    String slideXml(_AiSlideRec s) {
+    /// 文字色の指定 1 つ分。 紙を塗る時は色を直に書き、 テンプレートを
+    /// 持ち込まれた時は今までどおりテーマ色に任せる。
+    String fillOf(String hex, String schemeName) => paint
+        ? '<a:solidFill><a:srgbClr val="$hex"/></a:solidFill>'
+            '<a:latin typeface="${esc(th.jpFont)}"/>'
+            '<a:ea typeface="${esc(th.jpFont)}"/>'
+            '<a:cs typeface="${esc(th.jpFont)}"/>'
+        : '<a:solidFill><a:schemeClr val="$schemeName"/></a:solidFill>';
+
+    /// スライドに対する % を EMU に直す小道具 (= 資料の画面と同じ数字で
+    /// 置けるように)。 名前を px/py にすると絵の切り抜きで使っている同名の
+    /// 変数に隠されるので、 emuX/emuY にしてある。
+    int emuX(double pct) => (pct / 100 * slideW).round();
+    int emuY(double pct) => (pct / 100 * slideH).round();
+
+    /// 塗りの帯 / 罫 1 本。
+    ///
+    /// ★ 色は配色名 (schemeClr) ではなく数字で書く。 タイルに出す小さな絵は
+    ///   スライドの XML だけを読むので、 配色名だと色を解けず、 帯や罫が
+    ///   まるごと消えて「開いた時と違う表紙」 になっていた
+    ///   (= ユーザー要望: サムネイルと開いた時の表紙を揃える)。
+    ///   資料の画面の AI が作る資料も、 同じように数字で書いている。
+    final accentFill = paint
+        ? '<a:solidFill><a:srgbClr val="${th.a1}"/></a:solidFill>'
+        : '<a:solidFill><a:schemeClr val="accent1"/></a:solidFill>';
+    String bandXml(int id, String name, int x, int y, int w, int h) =>
+        '<p:sp><p:nvSpPr><p:cNvPr id="$id" name="$name"/>'
+        '<p:cNvSpPr/><p:nvPr/></p:nvSpPr>'
+        '<p:spPr><a:xfrm><a:off x="$x" y="$y"/><a:ext cx="$w" cy="$h"/></a:xfrm>'
+        '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>'
+        '$accentFill</p:spPr>'
+        '<p:txBody><a:bodyPr/><a:p/></p:txBody></p:sp>';
+
+    String slideXml(_AiSlideRec s, bool isCover) {
       final hasImg = s.image != null;
       // ★ 置き場所は「絵が本当にある時」 だけ効かせる。
       //   絵が無いのに left だと本文が右へ寄り、 幅はそのままなので
@@ -246865,15 +247262,18 @@ class _OfficeFileTemplate {
         return n;
       }
 
-      // 見出し: 帯 (高さ 1300000 EMU ≒ 1.4 インチ) に 2 行までで収める。
+      // 見出しの大きさ。 帯の中ではなく紙の上へ大きく置くようになったので、
+      //   資料の画面の AI (既定 40pt / 表紙は 48pt) と同じ位まで大きくする。
+      //   長い見出しだけ 2 行に収まるよう段階的に落とす。
       final titleLen = visualLen(s.title);
-      final titleSz = titleLen <= 24
-          ? 2800
-          : titleLen <= 36
-              ? 2400
-              : titleLen <= 52
-                  ? 2000
-                  : 1600;
+      var titleSz = titleLen <= 22
+          ? 4000
+          : titleLen <= 34
+              ? 3200
+              : titleLen <= 50
+                  ? 2600
+                  : 2000;
+      if (isCover) titleSz = (titleSz + 800).clamp(2000, 4800);
       // 本文: 行数と一番長い行の両方を見る。
       var widest = 0;
       for (final b in s.bullets) {
@@ -246896,10 +247296,12 @@ class _OfficeFileTemplate {
         body.write('<a:p><a:endParaRPr lang="ja-JP"/></a:p>');
       } else {
         for (final b in s.bullets) {
+          // 表紙は「前書き」 なので黒丸を付けない (= 資料の画面の AI が作る
+          //   表紙と同じ形)。 中身は 1 行も捨てず、 そのまま並べる。
           body.write('<a:p>'
-              '<a:pPr><a:buFont typeface="Arial"/><a:buChar char="•"/></a:pPr>'
-              '<a:r><a:rPr lang="ja-JP" sz="$bodySz" dirty="0">'
-              '<a:solidFill><a:schemeClr val="tx1"/></a:solidFill></a:rPr>'
+              '${isCover ? '<a:pPr><a:buNone/></a:pPr>' : '<a:pPr><a:buFont typeface="Arial"/><a:buChar char="•"/></a:pPr>'}'
+              '<a:r><a:rPr lang="ja-JP" sz="${isCover ? bodySz + 200 : bodySz}" dirty="0">'
+              '${fillOf(th.bodyHex, 'tx1')}</a:rPr>'
               '<a:t>${esc(b)}</a:t></a:r></a:p>');
         }
       }
@@ -246958,45 +247360,64 @@ class _OfficeFileTemplate {
       // 全面の絵は一番下 (= 背景) に置く。
       final backdrop = (hasImg && full) ? pic : '';
       final overlayPic = (hasImg && !full) ? pic : '';
-      // 本文の左端。 絵を左に置いた時は右へ寄せる。
-      final bodyX = leftImg ? 4400000 : 548640;
+      // ── 置き場所 (= 資料の画面の AI が組む形と同じ %) ──
+      //    表紙  : 罫 8/40、 見出し 8/46 (84x22)、 前書き 8/70 (84x20)
+      //    それ以外: 細い帯 0/0 (100x1.1)、 見出し 7/8 (86x13)、
+      //              罫 7/22、 本文 7/28 (86x60)
+      //    以前は高さ 19% のべた塗り帯に白文字を入れていたので、 同じ中身でも
+      //    資料の画面で作った物とはっきり別物に見えていた
+      //    (= ユーザー要望: 同じ様なデザインで作られるように)。
+      final titleY = isCover ? emuY(46) : emuY(8);
+      final titleH = isCover ? emuY(22) : emuY(13);
+      final titleX = emuX(isCover ? 8 : 7);
+      final titleBoxW = emuX(isCover ? 84 : 86);
+      final ruleY = isCover ? emuY(40) : emuY(22);
+      final ruleH = isCover ? emuY(1.0) : emuY(0.7);
+      // 本文の左端と上端。 絵を左に置いた時は右へ寄せる。
+      final bodyX = leftImg ? 4400000 : emuX(isCover ? 8 : 7);
+      final bodyY = isCover ? emuY(70) : emuY(28);
+      final bodyCy = isCover ? emuY(24) : emuY(60);
       // ── 見出しの下線 (= ユーザー要望: 文字の左右端にそろえる) ──
-      //    見出しは lIns=548640 の枠に入っているので、 左端はそこ。
       //    幅は実際に描かれる文字の幅を測って決める。
-      const titleIns = 548640;
-      final titleWEmu = _measureTitleWidthEmu(
-          s.title, titleSz / 100.0, 9144000 - titleIns * 2);
+      final titleWEmu =
+          _measureTitleWidthEmu(s.title, titleSz / 100.0, titleBoxW);
       final titleRule = s.title.trim().isEmpty
           ? ''
-          : '<p:sp><p:nvSpPr><p:cNvPr id="7" name="TitleRule"/>'
-              '<p:cNvSpPr/><p:nvPr/></p:nvSpPr>'
-              '<p:spPr><a:xfrm><a:off x="$titleIns" y="1180000"/>'
-              '<a:ext cx="$titleWEmu" cy="52000"/></a:xfrm>'
-              '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>'
-              '<a:solidFill><a:schemeClr val="accent1"/></a:solidFill>'
-              '</p:spPr><p:txBody><a:bodyPr/><a:p/></p:txBody></p:sp>';
+          : bandXml(8, 'TitleRule', titleX, ruleY, titleWEmu, ruleH);
+      // 上端の細い帯 (表紙には置かない)。
+      final topBand =
+          isCover ? '' : bandXml(7, 'AccentBand', 0, 0, slideW, emuY(1.1));
       return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
           '<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
           'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
           'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">'
-          '<p:cSld><p:spTree>'
+          '<p:cSld>'
+          // ★ 紙の色。 <p:bg> は <p:cSld> の一番はじめの子でないと
+          //   PowerPoint が「修復が必要」 と言う。 <a:effectLst/> も必須。
+          '${paint ? '<p:bg><p:bgPr><a:solidFill><a:srgbClr val="${th.bgHex}"/></a:solidFill><a:effectLst/></p:bgPr></p:bg>' : ''}'
+          '<p:spTree>'
           '<p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>'
           '<p:grpSpPr/>'
-          // 全面の絵 (= 背景) → 飾りの図形 → 見出し → 本文 → 挿し絵 の順。
+          // 全面の絵 (= 背景) → 飾りの図形 → 帯 → 見出し → 罫 → 本文 →
+          //   挿し絵 の順。
           '$backdrop'
           '$deco'
-          // アクセントカラーのタイトルバー (= おしゃれ要素)
-          '<p:sp><p:nvSpPr><p:cNvPr id="2" name="TitleBar"/>'
-          '<p:cNvSpPr/><p:nvPr/></p:nvSpPr>'
-          '<p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="9144000" cy="1300000"/></a:xfrm>'
-          '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>'
-          '<a:solidFill><a:schemeClr val="accent1"/></a:solidFill></p:spPr>'
+          '$topBand'
+          // 見出し (紙の上に直接置く)。 id は 2 のまま = 動きの指定が
+          //   そのまま効く。
+          '<p:sp><p:nvSpPr><p:cNvPr id="2" name="Title"/>'
+          '<p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr/></p:nvSpPr>'
+          '<p:spPr><a:xfrm><a:off x="$titleX" y="$titleY"/>'
+          '<a:ext cx="$titleBoxW" cy="$titleH"/></a:xfrm>'
+          '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr>'
           // wrap="square" + normAutofit で、 長い見出しでも枠の中に収まる。
-          '<p:txBody><a:bodyPr anchor="ctr" wrap="square" '
-          'lIns="548640" rIns="548640" tIns="45720" bIns="45720">'
+          // 上ぞろえ (= 資料の画面の AI が置く形と同じ。 下ぞろえにすると
+          //   罫と見出しの間が大きく空いて別物に見える)。
+          '<p:txBody><a:bodyPr anchor="t" wrap="square" '
+          'lIns="0" rIns="91440" tIns="45720" bIns="45720">'
           '<a:normAutofit/></a:bodyPr><a:lstStyle/>'
           '<a:p><a:r><a:rPr lang="ja-JP" sz="$titleSz" b="1" dirty="0">'
-          '<a:solidFill><a:schemeClr val="bg1"/></a:solidFill></a:rPr>'
+          '${fillOf(th.titleHex, 'tx1')}</a:rPr>'
           '<a:t>${esc(s.title)}</a:t></a:r></a:p></p:txBody></p:sp>'
           // 見出しの下線。 長さは見出しの文字幅と同じ、 左端も見出しに
           //   そろえる (= ユーザー要望: 横棒の長さが文章と合っていない)。
@@ -247004,8 +247425,8 @@ class _OfficeFileTemplate {
           // 本文 (箇条書き)
           '<p:sp><p:nvSpPr><p:cNvPr id="3" name="Body"/>'
           '<p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr/></p:nvSpPr>'
-          '<p:spPr><a:xfrm><a:off x="$bodyX" y="1650000"/>'
-          '<a:ext cx="$bodyCx" cy="4850000"/></a:xfrm>'
+          '<p:spPr><a:xfrm><a:off x="$bodyX" y="$bodyY"/>'
+          '<a:ext cx="$bodyCx" cy="$bodyCy"/></a:xfrm>'
           '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr>'
           '<p:txBody><a:bodyPr wrap="square" '
           'lIns="0" rIns="91440" tIns="45720" bIns="45720">'
@@ -247086,7 +247507,7 @@ class _OfficeFileTemplate {
       }
       rels.write('</Relationships>');
       files['ppt/slides/_rels/slide$i.xml.rels'] = rels.toString();
-      files['ppt/slides/slide$i.xml'] = slideXml(s);
+      files['ppt/slides/slide$i.xml'] = slideXml(s, coverFirst && i == 1);
     }
     presRels.write('</Relationships>');
     files['ppt/_rels/presentation.xml.rels'] = presRels.toString();

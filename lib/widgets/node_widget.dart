@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -421,15 +422,14 @@ class _NodeWidgetState extends State<NodeWidget> {
     // pptx は 1 枚目の置き場所ごと控えてあれば、 そのまま縮小して描く
     // (= ユーザー要望: 文字の配置まで 1 枚目と同じに)。
     final slide = path == null ? null : DocPreview.slideFor(path);
-    if (slide != null && slide.boxes.isNotEmpty) {
+    if (slide != null && (slide.boxes.isNotEmpty || slide.images.isNotEmpty)) {
       return ClipRRect(
         borderRadius: BorderRadius.circular(4),
         child: AspectRatio(
           aspectRatio: slide.width / slide.height,
-          child: CustomPaint(
-            painter: _SlideThumbPainter(slide),
-            child: const SizedBox.expand(),
-          ),
+          // 絵は読み込みに 1 拍かかるので、 揃うまでは絵抜きで描いておく
+          // (= 待ち時間に白紙が出て点滅しないように)。
+          child: _SlideImageCache.build(slide),
         ),
       );
     }
@@ -853,6 +853,12 @@ class _NodeWidgetState extends State<NodeWidget> {
     //   別々に書いていたので JSON を足す時に片方だけ直す危険があった
     //   (ずれるとノードの当たり判定や接続点が描画とずれる)。
     const thumbnailableExts = {'pptx', 'ppt'};
+    // ★ 資料の表紙は端を切らずに全部出す (= ユーザー要望: サムネイルと
+    //   開いた時の表紙を揃える)。 PDF は縦長なので上端基準の cover でよいが、
+    //   スライドは横長なので、 ギャラリーの縦長のマスに cover で入れると
+    //   左右がごっそり切れて別物に見える。
+    final bool isSlideThumb =
+        hasThumb && thumbnailableExts.contains(attachExt);
     final docCoverExts = MindMapNode.coverCardExts.difference(thumbnailableExts);
     final bool isDocCoverAttach = hasAttachment &&
         !isImageAttach &&
@@ -1861,17 +1867,21 @@ class _NodeWidgetState extends State<NodeWidget> {
                                       //   全体表示し、文書サムネイルだけ表紙として
                                       //   上端基準の cover を維持する。
                                       child: ColoredBox(
-                                        color: Colors.white,
+                                        color: isSlideThumb
+                                            ? const Color(0xFF14141C)
+                                            : Colors.white,
                                         child: attachImgPath
                                                     .startsWith('http://') ||
                                                 attachImgPath
                                                     .startsWith('https://')
                                             ? Image.network(
                                                 attachImgPath,
-                                                fit: isImageAttach
+                                                fit: isImageAttach ||
+                                                        isSlideThumb
                                                     ? BoxFit.contain
                                                     : BoxFit.cover,
-                                                alignment: isImageAttach
+                                                alignment: isImageAttach ||
+                                                        isSlideThumb
                                                     ? Alignment.center
                                                     : Alignment.topCenter,
                                                 errorBuilder: (_, __, ___) =>
@@ -1885,10 +1895,12 @@ class _NodeWidgetState extends State<NodeWidget> {
                                               )
                                             : Image.file(
                                                 File(attachImgPath),
-                                                fit: isImageAttach
+                                                fit: isImageAttach ||
+                                                        isSlideThumb
                                                     ? BoxFit.contain
                                                     : BoxFit.cover,
-                                                alignment: isImageAttach
+                                                alignment: isImageAttach ||
+                                                        isSlideThumb
                                                     ? Alignment.center
                                                     : Alignment.topCenter,
                                                 errorBuilder: (_, __, ___) =>
@@ -3404,11 +3416,126 @@ class _NodeTableInlineWidgetState extends State<_NodeTableInlineWidget> {
   }
 }
 
-/// pptx の 1 枚目をサムネイルに縮小して描く (= ユーザー要望:
-/// 文字の配置まで 1 枚目と同じに)。
+/// スライドに貼られている絵を、 1 枚のスライドにつき 1 度だけ読み込んで
+/// 覚えておく置き場。
+///
+/// タイルは毎フレーム描き直されるので、 描くたびに絵を読み込むと重い。
+/// 読み込みが終わるまでは絵抜きで描き、 揃ったら描き直す。
+class _SlideImageCache {
+  static final Map<SlidePreview, List<ui.Image?>> _ready = {};
+  static final Set<SlidePreview> _loading = {};
+  static final Set<VoidCallback> _listeners = {};
+
+  static void _notify() {
+    for (final l in List<VoidCallback>.from(_listeners)) {
+      l();
+    }
+  }
+
+  static void _start(SlidePreview slide) {
+    if (_loading.contains(slide) || _ready.containsKey(slide)) return;
+    _loading.add(slide);
+    () async {
+      final out = <ui.Image?>[];
+      for (final im in slide.images) {
+        try {
+          final codec = await ui.instantiateImageCodec(im.bytes,
+              // タイルに出すだけなので、 小さく読み込んで軽くする。
+              targetWidth: 640);
+          out.add((await codec.getNextFrame()).image);
+        } catch (_) {
+          out.add(null);
+        }
+      }
+      _loading.remove(slide);
+      _ready[slide] = out;
+      // 覚えすぎないよう、 古い物から捨てる。
+      if (_ready.length > 40) {
+        final k = _ready.keys.first;
+        for (final im in _ready.remove(k) ?? const <ui.Image?>[]) {
+          im?.dispose();
+        }
+      }
+      _notify();
+    }();
+  }
+
+  static Widget build(SlidePreview slide) {
+    if (slide.images.isEmpty) {
+      return CustomPaint(
+        painter: _SlideThumbPainter(slide),
+        child: const SizedBox.expand(),
+      );
+    }
+    return _SlideThumbView(slide: slide);
+  }
+}
+
+/// 絵が揃ったら描き直すだけの入れ物。
+class _SlideThumbView extends StatefulWidget {
+  final SlidePreview slide;
+  const _SlideThumbView({required this.slide});
+  @override
+  State<_SlideThumbView> createState() => _SlideThumbViewState();
+}
+
+class _SlideThumbViewState extends State<_SlideThumbView> {
+  late final VoidCallback _onReady = () {
+    if (mounted) setState(() {});
+  };
+
+  @override
+  void initState() {
+    super.initState();
+    _SlideImageCache._listeners.add(_onReady);
+    _SlideImageCache._start(widget.slide);
+  }
+
+  @override
+  void didUpdateWidget(covariant _SlideThumbView old) {
+    super.didUpdateWidget(old);
+    if (!identical(old.slide, widget.slide)) {
+      _SlideImageCache._start(widget.slide);
+    }
+  }
+
+  @override
+  void dispose() {
+    _SlideImageCache._listeners.remove(_onReady);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(
+      painter: _SlideThumbPainter(widget.slide,
+          images: _SlideImageCache._ready[widget.slide] ?? const <ui.Image?>[]),
+      child: const SizedBox.expand(),
+    );
+  }
+}
+
+/// 検査用の入口 (= tool/ の検分から、 実際のタイルの絵を描き出すため)。
+/// 私有の描き方をそのまま使うので、 見え方のずれを画像で確かめられる。
+@visibleForTesting
+Widget buildSlideThumbForTest(SlidePreview slide) =>
+    _SlideImageCache.build(slide);
+
+/// タイルに出す「スライド 1 枚目」 の絵。
+///
+/// = ユーザー要望「サムネイルと開いた時の表紙でレイアウトが違うのおかしい
+///   から揃えて欲しい」。
+///   開いた事のある資料は、 ビューアが撮った本物の絵 (attachmentThumbPath)
+///   がここより先に使われる。 ここは「まだ一度も開いていない資料」 のための
+///   絵なので、 開いた時の描き方 (_PptxStaticSlide) に出来るだけ寄せる:
+///   紙の色 → 図形 → 絵 → 文字 の順、 文字は段落ごとに改行し、 縦横の
+///   そろえと太字も見る。
 class _SlideThumbPainter extends CustomPainter {
   final SlidePreview slide;
-  const _SlideThumbPainter(this.slide);
+
+  /// 読み込み済みの絵 (mediaName ではなく並び順で引く)。
+  final List<ui.Image?> images;
+  const _SlideThumbPainter(this.slide, {this.images = const []});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -3421,24 +3548,88 @@ class _SlideThumbPainter extends CustomPainter {
           ..color = slide.bg != null
               ? Color(0xFF000000 | slide.bg!)
               : Colors.white);
+
+    // ── 1. 図形 (と、 文字の枠が持っている塗り) ──
+    //    文字の枠にも塗りが付いている事がある (表のセルなど)。 塗らないと
+    //    白い見出し文字が白い紙の上に出て消えてしまう。
     for (final b in slide.boxes) {
-      final rect =
-          Rect.fromLTWH(b.x * sx, b.y * sy, b.w * sx, b.h * sy);
+      final hasText = b.text != null && b.text!.isNotEmpty;
+      if (hasText && b.fill == null) continue;
+      final rect = Rect.fromLTWH(b.x * sx, b.y * sy, b.w * sx, b.h * sy);
       if (rect.width <= 0 || rect.height <= 0) continue;
-      // 文字が無い枠は塗りの図形 (帯やブロック) として描く。
-      if (b.text == null || b.text!.isEmpty) {
-        if (b.fill != null) {
-          canvas.drawRect(rect, Paint()..color = Color(0xFF000000 | b.fill!));
-        }
+      if (hasText) {
+        canvas.drawRect(rect, Paint()..color = Color(0xFF000000 | b.fill!));
         continue;
       }
-      // 文字。 スライド上の文字サイズを、 そのまま縮尺に掛ける。
-      final ptSize = (b.sizeHundredths ?? 1800) / 100.0;
+      // 線・矢印は塗らない (= 以前は細い矢印が大きな色板になっていた)。
+      if (b.kind == 'line') {
+        final c = b.lineColor ?? b.fill;
+        if (c == null) continue;
+        canvas.drawLine(
+            rect.topLeft,
+            rect.bottomRight,
+            Paint()
+              ..color = Color(0xFF000000 | c)
+              ..strokeWidth = math.max(1.0, rect.height * 0.15));
+        continue;
+      }
+      if (b.fill != null) {
+        final p = Paint()..color = Color(0xFF000000 | b.fill!);
+        switch (b.kind) {
+          case 'ellipse':
+            canvas.drawOval(rect, p);
+            break;
+          case 'roundRect':
+            canvas.drawRRect(
+                RRect.fromRectAndRadius(
+                    rect, Radius.circular(rect.shortestSide * 0.14)),
+                p);
+            break;
+          default:
+            canvas.drawRect(rect, p);
+        }
+      } else if (b.lineColor != null) {
+        final p = Paint()
+          ..color = Color(0xFF000000 | b.lineColor!)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(1.0, size.width * 0.004);
+        if (b.kind == 'ellipse') {
+          canvas.drawOval(rect, p);
+        } else {
+          canvas.drawRect(rect, p);
+        }
+      }
+    }
+
+    // ── 2. 絵 (= 以前は 1 枚も描いていなかったので、 写真が丸ごと
+    //    消えていた) ──
+    for (var i = 0; i < slide.images.length; i++) {
+      final im = i < images.length ? images[i] : null;
+      if (im == null) continue;
+      final s = slide.images[i];
+      final dst = Rect.fromLTWH(s.x * sx, s.y * sy, s.w * sx, s.h * sy);
+      if (dst.width <= 0 || dst.height <= 0) continue;
+      canvas.drawImageRect(
+        im,
+        Rect.fromLTWH(0, 0, im.width.toDouble(), im.height.toDouble()),
+        dst,
+        Paint()..filterQuality = FilterQuality.low,
+      );
+    }
+
+    // ── 3. 文字 ──
+    for (final b in slide.boxes) {
+      final text = b.text;
+      if (text == null || text.isEmpty) continue;
+      final rect = Rect.fromLTWH(b.x * sx, b.y * sy, b.w * sx, b.h * sy);
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      // スライド上の文字サイズを、 そのまま縮尺に掛ける。
       // 1pt = 12700 EMU。 スライド幅に対する比で縮める。
+      final ptSize = (b.sizeHundredths ?? 1800) / 100.0;
       final px = math.max(3.0, ptSize * 12700 * sx);
       final tp = TextPainter(
         text: TextSpan(
-          text: b.text,
+          text: text,
           style: TextStyle(
             color: b.color != null
                 ? Color(0xFF000000 | b.color!)
@@ -3446,15 +3637,28 @@ class _SlideThumbPainter extends CustomPainter {
                     ? Colors.white
                     : const Color(0xFF212121)),
             fontSize: px,
-            height: 1.2,
-            fontWeight: px > 9 ? FontWeight.w700 : FontWeight.w400,
+            height: 1.25,
+            fontWeight: b.bold ? FontWeight.w700 : FontWeight.w400,
           ),
         ),
         textDirection: TextDirection.ltr,
-        maxLines: 6,
+        textAlign: b.align == 'ctr'
+            ? TextAlign.center
+            : (b.align == 'r' ? TextAlign.right : TextAlign.left),
+        maxLines: 8,
         ellipsis: '…',
       )..layout(maxWidth: math.max(4.0, rect.width));
-      tp.paint(canvas, Offset(rect.left, rect.top));
+      // 縦のそろえ (= 開いた時と同じ位置に来るように)。
+      final dy = b.anchor == 'ctr'
+          ? rect.top + (rect.height - tp.height) / 2
+          : b.anchor == 'b'
+              ? rect.bottom - tp.height
+              : rect.top;
+      canvas.save();
+      canvas.clipRect(Rect.fromLTWH(
+          rect.left, rect.top - 1, rect.width, math.max(rect.height, tp.height) + 2));
+      tp.paint(canvas, Offset(rect.left, dy));
+      canvas.restore();
     }
   }
 
@@ -3467,7 +3671,7 @@ class _SlideThumbPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _SlideThumbPainter old) =>
-      !identical(old.slide, slide);
+      !identical(old.slide, slide) || old.images.length != images.length;
 }
 
 /// 円グラフの順番の色 (編集ダイアログの色見本にも使う)。

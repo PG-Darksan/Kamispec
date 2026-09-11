@@ -21,11 +21,18 @@ class SlidePreview {
   final int height;
   final int? bg;
   final List<SlideBox> boxes;
-  const SlidePreview(
-      {required this.width,
-      required this.height,
-      this.bg,
-      required this.boxes});
+
+  /// スライドに貼られている絵 (置き場所つき)。 重ね順は [boxes] より先
+  /// (= 開いた時の描き方に合わせて、 図形 → 絵 → 文字 の順に描く)。
+  final List<SlideImg> images;
+
+  const SlidePreview({
+    required this.width,
+    required this.height,
+    this.bg,
+    required this.boxes,
+    this.images = const [],
+  });
 
   static SlidePreview? fromJsonString(String raw) {
     try {
@@ -47,13 +54,51 @@ class SlidePreview {
                 fill: (b['f'] as num?)?.toInt(),
                 color: (b['c'] as num?)?.toInt(),
                 sizeHundredths: (b['s'] as num?)?.toInt(),
+                kind: (b['k'] as String?) ?? 'rect',
+                lineColor: (b['l'] as num?)?.toInt(),
+                bold: b['bd'] == true,
+                align: (b['a'] as String?) ?? 'l',
+                anchor: (b['an'] as String?) ?? 't',
               ),
         ],
+        images: [
+          for (final im in (m['i'] as List? ?? const []))
+            if (im is Map)
+              () {
+                try {
+                  return SlideImg(
+                    x: (im['x'] as num?)?.toInt() ?? 0,
+                    y: (im['y'] as num?)?.toInt() ?? 0,
+                    w: (im['w'] as num?)?.toInt() ?? 0,
+                    h: (im['h'] as num?)?.toInt() ?? 0,
+                    bytes: base64Decode('${im['d'] ?? ''}'),
+                  );
+                } catch (_) {
+                  return null;
+                }
+              }(),
+        ].whereType<SlideImg>().toList(),
       );
     } catch (_) {
       return null;
     }
   }
+}
+
+/// スライドに貼られている絵 1 枚 (置き場所は EMU)。
+class SlideImg {
+  final int x;
+  final int y;
+  final int w;
+  final int h;
+  final Uint8List bytes;
+  const SlideImg({
+    required this.x,
+    required this.y,
+    required this.w,
+    required this.h,
+    required this.bytes,
+  });
 }
 
 /// スライドの中の 1 要素 (文字の枠 か 塗りの図形)。
@@ -62,10 +107,28 @@ class SlideBox {
   final int y;
   final int w;
   final int h;
+
+  /// 文字 (改行入り。 段落ごとに 1 行)。 null なら図形。
   final String? text;
   final int? fill;
   final int? color;
   final int? sizeHundredths;
+
+  /// 図形の形 ('rect' / 'roundRect' / 'ellipse' / 'line' / 'arrow')。
+  final String kind;
+
+  /// 線の色 (塗りの無い線・矢印はこれだけを持つ)。
+  final int? lineColor;
+
+  /// 太字か。
+  final bool bold;
+
+  /// 横のそろえ ('l' / 'ctr' / 'r')。
+  final String align;
+
+  /// 縦のそろえ ('t' / 'ctr' / 'b')。
+  final String anchor;
+
   const SlideBox({
     required this.x,
     required this.y,
@@ -75,12 +138,26 @@ class SlideBox {
     this.fill,
     this.color,
     this.sizeHundredths,
+    this.kind = 'rect',
+    this.lineColor,
+    this.bold = false,
+    this.align = 'l',
+    this.anchor = 't',
   });
 }
 
 class DocPreview {
   /// これより大きいファイルは、 タイルの表示のために読むには重すぎる。
   static const int _maxBytes = 8 * 1024 * 1024;
+
+  /// 資料 (pptx) だけは大きめまで読む。
+  /// 写真やテンプレートの入った資料はすぐ 8MB を超えるが、 そういう資料こそ
+  /// 表紙を見たい (= 超えると絵も文字も無いアイコンだけになっていた)。
+  /// 読むのは 1 枚目とその関係先だけなので、 重さは大きさに比例しない。
+  static const int _maxBytesPptx = 48 * 1024 * 1024;
+
+  static int _limitFor(String ext) =>
+      ext == 'pptx' ? _maxBytesPptx : _maxBytes;
 
   /// タイルに出す行数の上限。
   static const int maxLines = 12;
@@ -263,7 +340,7 @@ class DocPreview {
       final f = File(path);
       if (!f.existsSync()) return _miss(path);
       final st = f.statSync();
-      if (st.size > _maxBytes) return _miss(path);
+      if (st.size > _limitFor(e)) return _miss(path);
       key = '$path|${st.modified.millisecondsSinceEpoch}|${st.size}';
     } catch (_) {
       return _miss(path);
@@ -361,25 +438,23 @@ class DocPreview {
               blockTags: const ['</w:p>']));
         case 'pptx':
           final buf = StringBuffer();
-          final slides = zip.files
-              .where((f) =>
-                  f.isFile &&
-                  RegExp(r'ppt/slides/slide\d+\.xml$').hasMatch(f.name))
-              .toList()
-            ..sort((a, b) => a.name.compareTo(b.name));
+          // ★ 「1 枚目」 は presentation.xml の並び (<p:sldIdLst>) で決める。
+          //   ファイル名の順ではない (= 並べ替えても中の番号は変わらないので、
+          //   名前順だとタイルだけ別のページを出してしまう。 slide10.xml が
+          //   slide2.xml より前に来る、 という問題もある)。
+          final firstName = _pptxFirstSlidePart(zip);
+          final first = firstName == null ? null : _fileOf(zip, firstName);
           String firstXml = '';
-          // 1 枚目だけを出す (= ユーザー要望: サムネイルに 2 枚目以降の
-          // 内容まで混ざらないように)。
-          for (final s in slides.take(1)) {
-            final xml =
-                utf8.decode(s.content as List<int>, allowMalformed: true);
-            if (firstXml.isEmpty) firstXml = xml;
-            buf.writeln(_stripXml(xml, blockTags: const ['</a:p>']));
+          if (first != null) {
+            firstXml =
+                utf8.decode(first.content as List<int>, allowMalformed: true);
+            buf.writeln(_stripXml(firstXml, blockTags: const ['</a:p>']));
           }
           final lines = _toLines(buf.toString());
           // ── 1 枚目の配色と中身 (= ユーザー要望: 文字の配置まで同じに) ──
           final style = _pptxFirstSlideColors(firstXml);
-          final slide = _pptxFirstSlideLayout(zip, firstXml);
+          final slide =
+              _pptxFirstSlideLayout(zip, firstXml, firstName ?? '');
           return [
             if (slide != null) slide,
             if (style != null) style,
@@ -418,7 +493,8 @@ class DocPreview {
   ///
   /// `<p:sp>` の `<a:off>/<a:ext>` (EMU) と中の文字、 塗り色を拾って、
   /// 縮小表示で並べ直せるだけの情報にする。 読めなければ null。
-  static String? _pptxFirstSlideLayout(Archive zip, String xml) {
+  static String? _pptxFirstSlideLayout(
+      Archive zip, String xml, String slidePath) {
     if (xml.isEmpty) return null;
     // スライドの大きさ (presentation.xml)。 取れなければ 16:9 の既定値。
     var slideW = 12192000;
@@ -434,59 +510,288 @@ class DocPreview {
         ? int.tryParse(v, radix: 16)
         : null;
 
-    int? bg;
-    final bgBlock = RegExp(r'<p:bg>[\s\S]*?</p:bg>').firstMatch(xml);
-    if (bgBlock != null) {
-      bg = hex(RegExp(r'<a:srgbClr val="([0-9A-Fa-f]{6})"')
-          .firstMatch(bgBlock.group(0)!)
-          ?.group(1)
-          ?.toUpperCase());
-    }
-
-    final boxes = <Map<String, dynamic>>[];
-    for (final m
-        in RegExp(r'<p:sp\b[\s\S]*?</p:sp>').allMatches(xml)) {
-      final sp = m.group(0)!;
-      final off = RegExp(r'<a:off x="(-?\d+)" y="(-?\d+)"').firstMatch(sp);
-      final ext = RegExp(r'<a:ext cx="(\d+)" cy="(\d+)"').firstMatch(sp);
-      if (off == null || ext == null) continue;
-      final texts = [
-        for (final t in RegExp(r'<a:t[^>]*>([^<]*)</a:t>').allMatches(sp))
-          t.group(1) ?? ''
-      ].join();
-      final fillM = RegExp(
-              r'<a:solidFill>\s*<a:srgbClr val="([0-9A-Fa-f]{6})"')
-          .firstMatch(sp);
-      final szM = RegExp(r'<a:(?:rPr|defRPr)[^>]*sz="(\d+)"').firstMatch(sp);
-      // 文字色は <a:rPr> の中の塗り。
-      int? textColor;
-      final rpr = RegExp(r'<a:rPr\b[\s\S]*?</a:rPr>').firstMatch(sp);
-      if (rpr != null) {
-        textColor = hex(RegExp(r'<a:srgbClr val="([0-9A-Fa-f]{6})"')
-            .firstMatch(rpr.group(0)!)
+    /// この XML の中の最初の単色を拾う。
+    int? firstSolid(String s) => hex(
+        RegExp(r'<a:srgbClr val="([0-9A-Fa-f]{6})"')
+            .firstMatch(s)
             ?.group(1)
             ?.toUpperCase());
-      }
-      final hasText = texts.trim().isNotEmpty;
-      boxes.add({
-        'x': int.parse(off.group(1)!),
-        'y': int.parse(off.group(2)!),
-        'w': int.parse(ext.group(1)!),
-        'h': int.parse(ext.group(2)!),
-        if (hasText) 't': texts.trim(),
-        if (!hasText && fillM != null) 'f': hex(fillM.group(1)!.toUpperCase()),
-        if (hasText && textColor != null) 'c': textColor,
-        if (hasText && szM != null) 's': int.parse(szM.group(1)!),
-      });
-      if (boxes.length >= 24) break;
+
+    /// `<p:bg>` の色 (無ければ null)。 単色でもグラデーションでも、
+    /// 最初に出てくる色を紙の色として使う。
+    int? bgOf(String s) {
+      final m = RegExp(r'<p:bg>[\s\S]*?</p:bg>').firstMatch(s);
+      return m == null ? null : firstSolid(m.group(0)!);
     }
-    if (boxes.isEmpty && bg == null) return null;
+
+    // ── 紙の色: スライド → レイアウト → マスター の順に探す ──
+    //    (= 開いた時のビューアも 3 段を見ているので、 タイルも合わせる)。
+    final rels = _relsOf(zip, slidePath);
+    var bg = bgOf(xml);
+    String? layoutPath;
+    for (final t in rels.values) {
+      if (t.contains('slideLayout')) {
+        layoutPath = _resolvePart(slidePath, t);
+        break;
+      }
+    }
+    String? masterPath;
+    if (layoutPath != null) {
+      final layoutXml = _fileText(zip, layoutPath);
+      bg ??= bgOf(layoutXml);
+      for (final t in _relsOf(zip, layoutPath).values) {
+        if (t.contains('slideMaster')) {
+          masterPath = _resolvePart(layoutPath, t);
+          break;
+        }
+      }
+    }
+    if (bg == null && masterPath != null) {
+      bg = bgOf(_fileText(zip, masterPath));
+    }
+
+    // ── 中身 (図形 / 絵 / 文字) を、 書かれている順に読む ──
+    //    重ね順がそのまま奥から手前になるので、 並べ替えない。
+    final spTree = _sliceBetween(xml, '<p:spTree>', '</p:spTree>');
+    final boxes = <Map<String, dynamic>>[];
+    final images = <Map<String, dynamic>>[];
+    var imageBytes = 0;
+
+    for (final m in RegExp(
+            r'<p:(sp|pic)\b[\s\S]*?</p:\1>')
+        .allMatches(spTree)) {
+      if (boxes.length >= 40) break;
+      final tag = m.group(1)!;
+      final el = m.group(0)!;
+      final off = RegExp(r'<a:off x="(-?\d+)" y="(-?\d+)"').firstMatch(el);
+      final ext = RegExp(r'<a:ext cx="(\d+)" cy="(\d+)"').firstMatch(el);
+      if (off == null || ext == null) continue;
+      final x = int.parse(off.group(1)!);
+      final y = int.parse(off.group(2)!);
+      final w = int.parse(ext.group(1)!);
+      final h = int.parse(ext.group(2)!);
+
+      if (tag == 'pic') {
+        // ★ 絵 (= これまで 1 枚も読んでいなかったので、 タイルからは写真が
+        //   まるごと消えていた)。 大きい物・多い物は読まない (タイルの
+        //   ために何 MB も抱えないため)。
+        if (images.length >= 3 || imageBytes > 2500000) continue;
+        final rid = RegExp(r'<a:blip[^>]*r:embed="([^"]+)"')
+            .firstMatch(el)
+            ?.group(1);
+        if (rid == null) continue;
+        final target = rels[rid];
+        if (target == null) continue;
+        final part = _resolvePart(slidePath, target);
+        final f = _fileOf(zip, part);
+        if (f == null) continue;
+        final ext2 = part.split('.').last.toLowerCase();
+        if (!const {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'}
+            .contains(ext2)) {
+          continue;
+        }
+        final data = f.content as List<int>;
+        if (data.length > 1500000) continue;
+        imageBytes += data.length;
+        images.add({
+          'x': x,
+          'y': y,
+          'w': w,
+          'h': h,
+          'd': base64Encode(data),
+        });
+        continue;
+      }
+
+      // ── 図形 / 文字の枠 ──
+      // 形。 線・矢印は塗らずに線で描く。
+      final prst = RegExp(r'<a:prstGeom\s+prst="([A-Za-z0-9]+)"')
+              .firstMatch(el)
+              ?.group(1) ??
+          'rect';
+      final kind = prst == 'ellipse' || prst == 'roundRect'
+          ? prst
+          : (prst == 'line' || prst == 'straightConnector1')
+              ? 'line'
+              : prst.toLowerCase().contains('arrow')
+                  ? 'arrow'
+                  : 'rect';
+
+      // 段落ごとに 1 行として読む (= 全部つなげると、 開いた時と行の
+      //   分かれ方が変わってしまう)。
+      final paras = <String>[];
+      var align = 'l';
+      var bold = false;
+      int? textColor;
+      int? sizeH;
+      for (final pm
+          in RegExp(r'<a:p\b[^>]*>([\s\S]*?)</a:p>').allMatches(el)) {
+        final pxml = pm.group(0)!;
+        final t = [
+          for (final tm
+              in RegExp(r'<a:t[^>]*>([^<]*)</a:t>').allMatches(pxml))
+            tm.group(1) ?? ''
+        ].join();
+        if (t.trim().isEmpty) continue;
+        paras.add(t.trim());
+        final al = RegExp(r'<a:pPr[^>]*\salgn="([a-z]+)"')
+            .firstMatch(pxml)
+            ?.group(1);
+        if (al != null && paras.length == 1) {
+          align = al == 'ctr' || al == 'r' ? al : 'l';
+        }
+        final rpr = RegExp(r'<a:(?:rPr|defRPr)\b[^>]*>').firstMatch(pxml);
+        if (rpr != null && paras.length == 1) {
+          bold = rpr.group(0)!.contains('b="1"');
+          final sz = RegExp(r'sz="(\d+)"').firstMatch(rpr.group(0)!);
+          if (sz != null) sizeH = int.tryParse(sz.group(1)!);
+        }
+        if (textColor == null) {
+          final rprFull =
+              RegExp(r'<a:rPr\b[\s\S]*?</a:rPr>').firstMatch(pxml);
+          if (rprFull != null) textColor = firstSolid(rprFull.group(0)!);
+        }
+      }
+      // 自分で閉じる `<a:rPr .../>` しか無い時も拾う。
+      if (sizeH == null) {
+        final sz = RegExp(r'<a:(?:rPr|defRPr)[^>]*\ssz="(\d+)"')
+            .firstMatch(el);
+        if (sz != null) sizeH = int.tryParse(sz.group(1)!);
+      }
+      // 縦のそろえ。
+      final anchorM =
+          RegExp(r'<a:bodyPr[^>]*\sanchor="([a-z]+)"').firstMatch(el);
+      final anchor0 = anchorM?.group(1) ?? 't';
+      final anchor = anchor0 == 'ctr' || anchor0 == 'b' ? anchor0 : 't';
+
+      // ★ 塗りは `<p:spPr>` の中だけを見る。 以前は要素まるごとを見ていた
+      //   ので、 線や矢印の `<a:ln>` の色を「塗り」 と読み違えて、 細い矢印が
+      //   大きな色板として描かれていた。
+      final spPr = _sliceBetween(el, '<p:spPr>', '</p:spPr>');
+      final noFill = spPr.contains('<a:noFill/>');
+      int? fill;
+      if (!noFill) {
+        final fm = RegExp(
+                r'<a:solidFill>\s*<a:srgbClr val="([0-9A-Fa-f]{6})"')
+            .firstMatch(spPr.split('<a:ln').first);
+        fill = hex(fm?.group(1)?.toUpperCase());
+      }
+      final lnPart = spPr.contains('<a:ln')
+          ? spPr.substring(spPr.indexOf('<a:ln'))
+          : '';
+      final lineColor = lnPart.isEmpty ? null : firstSolid(lnPart);
+
+      final hasText = paras.isNotEmpty;
+      if (!hasText && fill == null && lineColor == null) continue;
+      boxes.add({
+        'x': x,
+        'y': y,
+        'w': w,
+        'h': h,
+        'k': kind,
+        if (hasText) 't': paras.join('\n'),
+        if (fill != null) 'f': fill,
+        if (lineColor != null) 'l': lineColor,
+        if (hasText && textColor != null) 'c': textColor,
+        if (hasText && sizeH != null) 's': sizeH,
+        if (hasText && bold) 'bd': true,
+        if (hasText && align != 'l') 'a': align,
+        if (hasText && anchor != 't') 'an': anchor,
+      });
+    }
+    if (boxes.isEmpty && images.isEmpty && bg == null) return null;
     return '$_slideMark${jsonEncode({
           'w': slideW,
           'h': slideH,
           if (bg != null) 'bg': bg,
           'b': boxes,
+          if (images.isNotEmpty) 'i': images,
         })}';
+  }
+
+  /// 表示順で最初のスライドの部品名 (`ppt/slides/slideN.xml`)。
+  ///
+  /// PowerPoint の並びは presentation.xml の `<p:sldIdLst>` が持っている。
+  /// ファイル名の番号順とは限らないので、 そちらを優先する
+  /// (= 並べ替えるとタイルだけ別のページを出していた)。
+  static String? _pptxFirstSlidePart(Archive zip) {
+    final pres = _fileText(zip, 'ppt/presentation.xml');
+    final rels = _relsOf(zip, 'ppt/presentation.xml');
+    final rid = RegExp(r'<p:sldId[^>]*?r:id="([^"]+)"')
+        .firstMatch(pres)
+        ?.group(1);
+    if (rid != null) {
+      final t = rels[rid];
+      if (t != null) {
+        final part = _resolvePart('ppt/presentation.xml', t);
+        if (_fileOf(zip, part) != null) return part;
+      }
+    }
+    // 読めなければ番号順 (slide2 より slide10 が先に来ないように数で並べる)。
+    final all = zip.files
+        .where((f) =>
+            f.isFile && RegExp(r'ppt/slides/slide\d+\.xml$').hasMatch(f.name))
+        .toList();
+    if (all.isEmpty) return null;
+    int no(String name) =>
+        int.tryParse(
+            RegExp(r'slide(\d+)\.xml').firstMatch(name)?.group(1) ?? '0') ??
+        0;
+    all.sort((a, b) => no(a.name).compareTo(no(b.name)));
+    return all.first.name;
+  }
+
+  /// 部品名 → その部品の `_rels` (rId → Target)。
+  static Map<String, String> _relsOf(Archive zip, String partPath) {
+    final i = partPath.lastIndexOf('/');
+    if (i < 0) return const {};
+    final relPath =
+        '${partPath.substring(0, i)}/_rels/${partPath.substring(i + 1)}.rels';
+    final xml = _fileText(zip, relPath);
+    if (xml.isEmpty) return const {};
+    final out = <String, String>{};
+    for (final m
+        in RegExp(r'<Relationship[^>]*?Id="([^"]+)"[^>]*?Target="([^"]+)"')
+            .allMatches(xml)) {
+      out[m.group(1)!] = m.group(2)!;
+    }
+    return out;
+  }
+
+  /// 相対パスを zip の中の絶対パスに直す。
+  static String _resolvePart(String fromPart, String target) {
+    if (target.startsWith('/')) return target.substring(1);
+    final baseDir = fromPart.contains('/')
+        ? fromPart.substring(0, fromPart.lastIndexOf('/'))
+        : '';
+    final segs = <String>[
+      ...baseDir.split('/').where((e) => e.isNotEmpty),
+    ];
+    for (final s in target.split('/')) {
+      if (s.isEmpty || s == '.') continue;
+      if (s == '..') {
+        if (segs.isNotEmpty) segs.removeLast();
+      } else {
+        segs.add(s);
+      }
+    }
+    return segs.join('/');
+  }
+
+  static ArchiveFile? _fileOf(Archive zip, String name) {
+    for (final f in zip.files) {
+      if (f.isFile && f.name == name) return f;
+    }
+    return null;
+  }
+
+  /// [open] と [close] に挟まれた部分 (無ければ元のまま)。
+  static String _sliceBetween(String s, String open, String close) {
+    final a = s.indexOf(open);
+    if (a < 0) return s;
+    final b = s.lastIndexOf(close);
+    if (b <= a) return s.substring(a + open.length);
+    return s.substring(a + open.length, b);
   }
 
   /// xlsx は「共有文字列 + 先頭シート」 を読んで、 表の形のまま返す。

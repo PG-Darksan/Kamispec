@@ -168,13 +168,13 @@ void main() {
           .content as List<int>);
     }
 
-    // 短い見出しは今までどおり大きく。
-    expect(slideOf('会社紹介', const ['一行']).contains('sz="2800" b="1"'), isTrue);
+    // 短い見出しは大きく (= 資料の画面の AI と同じ 40pt)。
+    expect(slideOf('会社紹介', const ['一行']).contains('sz="4000" b="1"'), isTrue);
     // 長い見出しは小さくなる。
     final long =
         slideOf('株式会社テラスカイ 会社紹介 クラウドの可能性を最大限に引き出すプロフェッショナル', const ['一行']);
-    expect(long.contains('sz="2800" b="1"'), isFalse, reason: '長い見出しが縮んでいない');
-    expect(RegExp(r'sz="(1600|2000|2400)" b="1"').hasMatch(long), isTrue);
+    expect(long.contains('sz="4000" b="1"'), isFalse, reason: '長い見出しが縮んでいない');
+    expect(RegExp(r'sz="(2000|2600|3200)" b="1"').hasMatch(long), isTrue);
     // 行数が多い本文も小さくなる。
     final many = slideOf('題', List.generate(10, (i) => '項目 \$i'));
     expect(many.contains('sz="1800" dirty'), isFalse,
@@ -309,5 +309,103 @@ void main() {
         reason: '棒はそのまま x=4%');
     expect(offs.any((x) => (x - boxX).abs() < 20000), isTrue,
         reason: '枠は棒の外へ寄る');
+  });
+
+  test('資料は必ず色の付いた紙になり、 1 枚目は表紙になる', () {
+    // = ユーザー要望「ページから AI アシスタントに作らせると背景の無い
+    //   真っ白なパワポになる。 資料の画面の AI と同じデザインにして」。
+    final bytes = buildPptxFromSlidesForTest(
+      [
+        (
+          title: 'DeepSeek の概要',
+          bullets: ['中国発の大規模言語モデル'],
+          image: null,
+          imagePos: 'right',
+          imageShape: 'rect',
+          anim: '',
+          shapes: const <Map<String, dynamic>>[],
+        ),
+        (
+          title: '特徴',
+          bullets: ['安い', '速い'],
+          image: null,
+          imagePos: 'right',
+          imageShape: 'rect',
+          anim: '',
+          shapes: const <Map<String, dynamic>>[],
+        ),
+      ],
+      themeName: 'ミッドナイト',
+      coverFirst: true,
+    );
+    final archive = ZipDecoder().decodeBytes(bytes);
+    String slide(int i) => utf8.decode(archive.files
+        .firstWhere((f) => f.name == 'ppt/slides/slide$i.xml')
+        .content as List<int>);
+    final s1 = slide(1);
+    final s2 = slide(2);
+
+    for (final xml in [s1, s2]) {
+      // 紙の色が書かれている。
+      expect(xml.contains('<p:bg>'), isTrue, reason: '<p:bg> が無い');
+      expect(xml.contains('<a:srgbClr val="0F172A"/>'), isTrue,
+          reason: '配色の紙の色になっていない');
+      // <p:bg> は <p:spTree> より前 (= PowerPoint が壊れたと言う条件)。
+      expect(xml.indexOf('<p:bg>') < xml.indexOf('<p:spTree>'), isTrue,
+          reason: '<p:bg> の場所が違う');
+      expect(xml.contains('<a:effectLst/>'), isTrue);
+      // 文字色をテーマ任せにしない (暗い紙の上で黒字になってしまう)。
+      expect(xml.contains('schemeClr val="tx1"'), isFalse);
+      expect(xml.contains('schemeClr val="bg1"'), isFalse);
+      // 日本語の書体を指定している。
+      expect(xml.contains('<a:latin typeface="Meiryo"/>'), isTrue);
+    }
+
+    // 1 枚目は表紙 = 上の帯を置かない。 2 枚目には置く。
+    expect(s1.contains('name="AccentBand"'), isFalse, reason: '表紙に帯がある');
+    expect(s2.contains('name="AccentBand"'), isTrue, reason: '帯が無い');
+    // 見出しと本文の id は 2 / 3 のまま (= 動きの指定が効く)。
+    expect(s1.contains('<p:cNvPr id="2" name="Title"/>'), isTrue);
+    expect(s1.contains('<p:cNvPr id="3" name="Body"/>'), isTrue);
+    // 表紙でも本文の行は捨てない。
+    expect(s1.contains('中国発の大規模言語モデル'), isTrue);
+    // 昔の「高さ 19% のべた塗り帯」 はもう無い。
+    expect(s1.contains('cy="1300000"'), isFalse);
+    expect(s2.contains('cy="1300000"'), isFalse);
+  });
+
+  test('後ろへ足したスライドは元の資料と同じ紙の色になる', () {
+    final base = buildPptxFromSlidesForTest(
+      [
+        (
+          title: 'もとの資料',
+          bullets: ['一つ目'],
+          image: null,
+          imagePos: 'right',
+          imageShape: 'rect',
+          anim: '',
+          shapes: const <Map<String, dynamic>>[],
+        ),
+      ],
+      themeName: 'フォレスト',
+    );
+    final grown = appendSlidesToPptxForTest(base, [
+      (
+        title: '足したページ',
+        bullets: ['二つ目'],
+        image: null,
+        imagePos: 'right',
+        imageShape: 'rect',
+        anim: '',
+        shapes: const <Map<String, dynamic>>[],
+      ),
+    ]);
+    final archive = ZipDecoder().decodeBytes(grown);
+    final s2 = utf8.decode(archive.files
+        .firstWhere((f) => f.name == 'ppt/slides/slide2.xml')
+        .content as List<int>);
+    expect(s2.contains('足したページ'), isTrue);
+    expect(s2.contains('<a:srgbClr val="0D1F15"/>'), isTrue,
+        reason: '足したページだけ紙の色が違う');
   });
 }
