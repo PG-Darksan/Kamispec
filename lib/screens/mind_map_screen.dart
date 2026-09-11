@@ -2876,6 +2876,16 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 戻り値 true = ノート側が消費した (マップ側のパン等はしない)。
   bool Function(LogicalKeyboardKey key)? _paintArrowKeyHandler;
 
+  /// マークダウンページが表示中に登録するドロップ受け口 (= ユーザー要望:
+  /// マークダウンのファイルを投げたら、 置き換えか追記かを選べるように)。
+  void Function(List<String> paths)? _markdownDropHandler;
+
+  /// フリーノート (paint) 表示中の貼り付け (Ctrl+V) の受け口
+  /// (= ユーザー報告: 何も選んでいないとノートの Focus が外れていて、
+  /// マップ側の貼り付けに流れてしまい、 ノートには何も貼られない)。
+  /// ノートが開いている間は、 マップへ貼らずにここへ回す。
+  void Function()? _paintPasteHandler;
+
   // ロックトースト表示（画面中央上部）
   String? _lockToastMessage;
   Timer? _lockToastTimer;
@@ -57806,6 +57816,15 @@ class _MindMapScreenState extends State<MindMapScreen>
               !isAlt &&
               event.logicalKey == LogicalKeyboardKey.keyV &&
               _shortcutCommandMatches('paste', 'Ctrl+V')) {
+            // ── フリーノートを開いている時は、 マップではなく今開いて
+            //    いるノートのページへ貼る (= ユーザー報告: 何も選んで
+            //    いないと何も貼り付けられない)。 マップへ貼ると、 ノートの
+            //    裏に見えない要素が作られてしまう。 ──
+            if (provider.currentPage.pageType == 'paint' &&
+                _paintPasteHandler != null) {
+              _paintPasteHandler!();
+              return;
+            }
             _handlePaste(provider);
             return;
           }
@@ -58999,6 +59018,22 @@ class _MindMapScreenState extends State<MindMapScreen>
             if (provider.currentPage.pageType == 'videoEditor' &&
                 _veDropHandler != null) {
               _veDropHandler!(details.files.map((f) => f.path).toList());
+              return;
+            }
+            // ── ページ一覧 (サイドバー) の上に落としたら、 そのファイルの
+            //    新しいページを作る (= ユーザー要望)。 マップへのノード
+            //    追加は行わない。 ──
+            if (_drawerOpen &&
+                details.localPosition.dx <= _drawerWidthFor(context) + 8) {
+              await _createPagesFromDroppedFiles(details.files, provider);
+              return;
+            }
+            // ── マークダウンページなら、 ドロップを本文へ委譲 ──
+            //   (= ユーザー要望: 投げたファイルで置き換えか追記かを選べる)。
+            if (provider.currentPage.pageType == 'markdown' &&
+                _markdownDropHandler != null) {
+              _markdownDropHandler!(
+                  details.files.map((f) => f.path).toList());
               return;
             }
             // ── フリーノート (paint) ページなら、 ドロップをノートへ委譲 ──
@@ -81777,6 +81812,83 @@ class _MindMapScreenState extends State<MindMapScreen>
       if (localPos.dx < leftEff + hitMargin) return 'left';
     }
     return null;
+  }
+
+  /// ページ一覧 (サイドバー) へファイルを落とした時の受け口
+  /// (= ユーザー要望: 投げたファイルの新しいページが作られるように)。
+  ///
+  ///   .md / .txt など文字のファイル → 中身を入れたマークダウンページ
+  ///   それ以外 (画像 / PDF / 動画 / Office など) → ファイルを入れたマップ
+  ///
+  /// 作れなかった時 (ページ数の上限など) はそこで止める。
+  Future<void> _createPagesFromDroppedFiles(
+      List<dynamic> files, MindMapProvider provider) async {
+    if (files.isEmpty) return;
+    final folderId = _targetFolderForNewPage(provider);
+    const textExt = {'md', 'markdown', 'txt', 'text', 'log'};
+    var made = 0;
+    for (final xf in files) {
+      final path = '${xf.path}';
+      if (path.trim().isEmpty) continue;
+      try {
+        if (FileStat.statSync(path).type ==
+            FileSystemEntityType.directory) {
+          continue; // フォルダーはマップへのドロップ側の仕事
+        }
+      } catch (_) {}
+      final name = path.replaceAll('\\', '/').split('/').last;
+      final dot = name.lastIndexOf('.');
+      final ext = dot > 0 ? name.substring(dot + 1).toLowerCase() : '';
+      final base = dot > 0 ? name.substring(0, dot) : name;
+      final before = provider.pages.map((e) => e.id).toSet();
+      if (textExt.contains(ext)) {
+        var text = '';
+        try {
+          text = utf8.decode(await File(path).readAsBytes(),
+              allowMalformed: true);
+        } catch (_) {}
+        provider.addMarkdownPage(
+            name: base.isEmpty ? 'Markdown' : base, folderId: folderId);
+        final added =
+            provider.pages.where((e) => !before.contains(e.id)).toList();
+        if (added.isEmpty) break; // 上限などで作れなかった
+        try {
+          final sp = await SharedPreferences.getInstance();
+          await sp.setString(
+              'markdown_${added.first.id}',
+              encodeMarkdownDoc([
+                _MdTab(
+                    id: 'md${DateTime.now().microsecondsSinceEpoch}',
+                    name: base.isEmpty ? '1' : base,
+                    text: text)
+              ], 0));
+          // 見本の文章を後から差し込ませない。
+          await sp.setBool('md_sample_seeded_${added.first.id}', true);
+        } catch (_) {}
+        made++;
+      } else {
+        provider.addPage(
+            name: base.isEmpty ? name : base, folderId: folderId);
+        final added =
+            provider.pages.where((e) => !before.contains(e.id)).toList();
+        if (added.isEmpty) break;
+        if (!mounted) return;
+        _embedFileAsNode(provider, path, name, pageId: added.first.id);
+        made++;
+      }
+    }
+    if (!mounted || made == 0) return;
+    setState(() {});
+    _appSnack(
+      context,
+      SnackBar(
+        content: Text(provider
+            .t('page.createdFromFiles')
+            .replaceFirst('{n}', '$made')),
+        backgroundColor: const Color(0xFF43B97F),
+        duration: const Duration(seconds: 2),
+      ),
+    );
   }
 
   Future<void> _handleDroppedFiles(List<dynamic> files,
@@ -132195,15 +132307,181 @@ Future<String?> _prepareMarkdownPreviewFile(String html,
   }
 }
 
+/// Markdown ページの「サイトのタブ」 の中身 (= ユーザー要望: プレビューの
+/// リンクを押したら、 いきなり全画面で開かずタブを作って、 そこに切り替えた
+/// 時に全画面でサイトを見られるように)。
+///
+/// デスクトップは分割ペインと同じ WebView2 の部品を借りる (ログインの
+/// Cookie も同じ置き場を使うので、 入り直さずに済む)。 モバイルは
+/// InAppWebView。 上に細い帯を置いて 戻る / 進む / 読み直し / 外の
+/// ブラウザで開く / URL のコピー ができる。
+class _MdWebTabView extends StatefulWidget {
+  final String url;
+  final MindMapProvider provider;
+
+  /// サイトの中で移動した時、 タブの持つ URL を追従させる係。
+  final ValueChanged<String>? onUrlChanged;
+  const _MdWebTabView(
+      {super.key,
+      required this.url,
+      required this.provider,
+      this.onUrlChanged});
+  @override
+  State<_MdWebTabView> createState() => _MdWebTabViewState();
+}
+
+class _MdWebTabViewState extends State<_MdWebTabView> {
+  wv_win.WebviewController? _win;
+  iaw.InAppWebViewController? _iaw;
+  String _current = '';
+
+  bool get _isDesktop =>
+      !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
+
+  @override
+  void initState() {
+    super.initState();
+    _current = widget.url;
+  }
+
+  Future<void> _reload() async {
+    try {
+      await _win?.reload();
+    } catch (_) {}
+    try {
+      await _iaw?.reload();
+    } catch (_) {}
+  }
+
+  Future<void> _back() async {
+    try {
+      await _win?.goBack();
+    } catch (_) {}
+    try {
+      if (await (_iaw?.canGoBack() ?? Future.value(false))) {
+        await _iaw?.goBack();
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _forward() async {
+    try {
+      await _win?.goForward();
+    } catch (_) {}
+    try {
+      if (await (_iaw?.canGoForward() ?? Future.value(false))) {
+        await _iaw?.goForward();
+      }
+    } catch (_) {}
+  }
+
+  Widget _bar(String tip, IconData icon, VoidCallback onTap) => IconButton(
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+        tooltip: tip,
+        icon: Icon(icon, size: 16, color: Colors.white60),
+        onPressed: onTap,
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    final p = widget.provider;
+    final Widget view = _isDesktop
+        ? _SplitWindowsWebView(
+            url: widget.url,
+            onControllerReady: (c) => _win = c,
+            onInitialized: () {},
+            onUrlChanged: (u) {
+              _current = u;
+              widget.onUrlChanged?.call(u);
+            },
+          )
+        : iaw.InAppWebView(
+            initialUrlRequest:
+                iaw.URLRequest(url: iaw.WebUri(widget.url)),
+            initialSettings: iaw.InAppWebViewSettings(
+              javaScriptEnabled: true,
+              mediaPlaybackRequiresUserGesture: false,
+            ),
+            onWebViewCreated: (c) => _iaw = c,
+            onUpdateVisitedHistory: (c, u, _) {
+              final s = u?.toString() ?? '';
+              if (s.isEmpty) return;
+              _current = s;
+              widget.onUrlChanged?.call(s);
+            },
+          );
+    return Column(children: [
+      Container(
+        height: 32,
+        padding: const EdgeInsets.symmetric(horizontal: 4),
+        decoration: const BoxDecoration(
+          color: Color(0xFF1A1A2E),
+          border: Border(bottom: BorderSide(color: Colors.white12)),
+        ),
+        child: Row(children: [
+          _bar(p.t('web.back'), Icons.arrow_back_rounded,
+              () => unawaited(_back())),
+          _bar(p.t('web.forward'), Icons.arrow_forward_rounded,
+              () => unawaited(_forward())),
+          _bar(p.t('web.reload'), Icons.refresh_rounded,
+              () => unawaited(_reload())),
+          const SizedBox(width: 4),
+          Expanded(
+            child: Text(
+              _current.isEmpty ? widget.url : _current,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: Colors.white38, fontSize: 11),
+            ),
+          ),
+          _bar(p.t('md.copy'), Icons.link_rounded, () {
+            unawaited(Clipboard.setData(ClipboardData(
+                text: _current.isEmpty ? widget.url : _current)));
+            ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+              content: Text(p.t('md.copied')),
+              backgroundColor: const Color(0xFF43B97F),
+              duration: const Duration(seconds: 2),
+            ));
+          }),
+          _bar(p.t('web.openExternal'), Icons.open_in_new_rounded, () {
+            final u = Uri.tryParse(_current.isEmpty ? widget.url : _current);
+            if (u != null) {
+              unawaited(launchUrl(u, mode: LaunchMode.externalApplication));
+            }
+          }),
+        ]),
+      ),
+      Expanded(child: ColoredBox(color: const Color(0xFF14141F), child: view)),
+    ]);
+  }
+}
+
 /// Markdown ページの中の 1 枚 (= ユーザー要望: 1 ページに何個もタブを
 /// 作って色んな Markdown を書けるように)。
 class _MdTab {
   String id;
   String name;
   String text;
-  _MdTab({required this.id, required this.name, required this.text});
 
-  Map<String, dynamic> toJson() => {'id': id, 'name': name, 'text': text};
+  /// サイトを開いているタブ (= ユーザー要望: プレビューのリンクを押したら
+  /// いきなり全画面にせず、 新しいタブとして作る)。 空なら普通の本文タブ。
+  String url;
+  _MdTab(
+      {required this.id,
+      required this.name,
+      required this.text,
+      this.url = ''});
+
+  /// このタブはサイトを開いているか。
+  bool get isWeb => url.trim().isNotEmpty;
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'text': text,
+        if (url.trim().isNotEmpty) 'url': url,
+      };
 
   static _MdTab fromJson(Map<dynamic, dynamic> m) => _MdTab(
         id: '${m['id'] ?? ''}'.trim().isEmpty
@@ -132211,6 +132489,7 @@ class _MdTab {
             : '${m['id']}',
         name: '${m['name'] ?? ''}',
         text: '${m['text'] ?? ''}',
+        url: '${m['url'] ?? ''}',
       );
 }
 
@@ -133498,7 +133777,9 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
   /// 入力欄の今の内容を、 開いているタブへ書き戻す。
   void _syncCurrentTab() {
     final c = _cur;
-    if (c != null) c.text = _ctrl.text;
+    // サイトのタブは本文を持たないので、 編集欄の中身を書き戻さない
+    // (書き戻すと、 直前に見ていた本文がサイトのタブに写ってしまう)。
+    if (c != null && !c.isWeb) c.text = _ctrl.text;
   }
   Timer? _saveDebounce;
   Timer? _renderDebounce;
@@ -133724,6 +134005,25 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
     _editorScroll.addListener(_onEditorScroll);
     _load();
     if (_isDesktopPlatform) _initWin();
+    // メインの DropTarget からファイルのドロップを受け取れるよう登録する
+    // (= ユーザー要望: マークダウンのファイルを投げたら置き換え / 追記)。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _mdHost = context.findAncestorStateOfType<_MindMapScreenState>();
+      _mdHost?._markdownDropHandler = _onMarkdownDropFiles;
+    });
+  }
+
+  /// ドロップ受け口を登録した親 State (= 外した時に自分の物だけ消すため)。
+  _MindMapScreenState? _mdHost;
+
+  /// 投げられたファイルを本文へ取り込む (= ユーザー要望)。
+  /// 文字として読める物 (.md/.txt/.csv など) をそのまま、 それ以外は
+  /// 読み込み係 (PDF / docx 等) があればそれで文字に直してから使う。
+  void _onMarkdownDropFiles(List<String> paths) {
+    final path = paths.where((e) => e.trim().isNotEmpty).toList();
+    if (path.isEmpty) return;
+    unawaited(_importMdFromPaths(path));
   }
 
   @override
@@ -133752,6 +134052,9 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
       File(widget.filePath!).writeAsString(_tabs[0].text).then((_) {
         widget.onSaved?.call();
       }).catchError((_) {});
+    }
+    if (_mdHost?._markdownDropHandler == _onMarkdownDropFiles) {
+      _mdHost?._markdownDropHandler = null;
     }
     _mdMsgSub?.cancel();
     _scrollSyncThrottle?.cancel();
@@ -134669,10 +134972,62 @@ graph TD
     _syncCurrentTab();
     setState(() {
       _sel = i;
-      _ctrl.text = _tabs[i].text;
+      // サイトのタブでは編集欄を空にしない (戻った時に本文が消えないよう、
+      // 本文タブの中身はそのまま残しておく)。
+      if (!_tabs[i].isWeb) _ctrl.text = _tabs[i].text;
     });
     unawaited(_saveNow());
-    _scheduleRender();
+    if (!_tabs[i].isWeb) _scheduleRender();
+  }
+
+  /// プレビューで押したサイトを「タブ」 として足す (= ユーザー要望:
+  /// いきなり全画面で開かず、 タブを作ってそこで全画面で見られるように)。
+  ///
+  /// 同じサイトのタブが既にあればそれを使う。 読んでいた所を見失わない
+  /// ように、 押しただけでは切り替えない (知らせの「開く」 で移る)。
+  void _openUrlAsTab(String rawUrl) {
+    final url = rawUrl.trim();
+    if (url.isEmpty) return;
+    final uri = Uri.tryParse(url);
+    if (uri == null || !uri.hasScheme) return;
+    _syncCurrentTab();
+    var i = _tabs.indexWhere((t) => t.url.trim() == url);
+    if (i < 0) {
+      // タブの名前はサイト名 (host) にする。 同じ名前は「(2)」 で分ける。
+      var base = uri.host.replaceFirst(RegExp(r'^www\.'), '');
+      if (base.isEmpty) base = widget.provider.t('md.webTab');
+      var name = base;
+      var n = 2;
+      while (_tabs.any((t) => t.name == name)) {
+        name = '$base ($n)';
+        n++;
+      }
+      setState(() {
+        _tabs.add(_MdTab(
+            id: 'md${DateTime.now().microsecondsSinceEpoch}',
+            name: name,
+            text: '',
+            url: url));
+      });
+      i = _tabs.length - 1;
+      unawaited(_saveNow());
+    }
+    if (!mounted) return;
+    final at = i;
+    _appSnackTop(
+      context,
+      widget.provider
+          .t('md.webTabAdded')
+          .replaceFirst('{name}', _tabs[at].name),
+      const Color(0xFF43B97F),
+      action: SnackBarAction(
+        label: widget.provider.t('md.webTabOpen'),
+        textColor: Colors.white,
+        onPressed: () {
+          if (mounted) _selectTab(at);
+        },
+      ),
+    );
   }
 
   /// 新しいタブを足す。 名前は「2」「3」… と重ならない番号にする。
@@ -134884,12 +135239,18 @@ graph TD
       final href = '${m['href'] ?? ''}'.trim();
       if (href.isEmpty) return;
       if (type == 'mdOpenUrl') {
-        // ★ 外のブラウザではなくアプリの中で開く (= ユーザー要望)。
-        //   Ctrl を押しながら押した時は新しいタブとして開く。
-        final open = openUrlInAppFromAnywhere;
+        // ★ = ユーザー要望「サイトの URL を押したらいきなり全画面で開くので
+        //   はなく、 タブが新規で作成されて、 そこに切り替えると全画面で
+        //   見れる形に」。 本文のタブ列に「サイトのタブ」 を足すだけにする。
+        //   Ctrl を押しながらならアプリ内ブラウザ (別の窓) で開く。
         final ctrl = m['ctrl'] == true;
+        if (!ctrl) {
+          _openUrlAsTab(href);
+          return;
+        }
+        final open = openUrlInAppFromAnywhere;
         if (open != null) {
-          open(href, newTab: ctrl);
+          open(href, newTab: true);
           return;
         }
         // 本体の画面が居ない時 (公開ページ等) だけ外のブラウザへ。
@@ -135565,9 +135926,13 @@ ${src.text}
   /// 今あるタブを 1 本の文書 (<<<PAGE: 名前>>> 区切り) にまとめる。
   String _joinTabsAsDocument() {
     _syncCurrentTab();
-    if (_tabs.length == 1) return _tabs.first.text;
+    // サイトのタブは本文を持たないので、 文書には混ぜない (= ユーザー要望の
+    // 「サイトのタブ」 が AI の分け直しで消えてしまわないように)。
+    final body = _tabs.where((t) => !t.isWeb).toList();
+    if (body.isEmpty) return '';
+    if (body.length == 1) return body.first.text;
     final b = StringBuffer();
-    for (final t in _tabs) {
+    for (final t in body) {
       b.writeln('<<<PAGE: ${t.name}>>>');
       b.writeln();
       b.writeln(t.text.trim());
@@ -135640,6 +136005,9 @@ $doc''';
         return;
       }
       if (r.action != 'replace') return;
+      // 分け直しの間、 サイトのタブは取り分けておいて後ろへ戻す
+      // (= 本文の分け直しで消してしまわないように)。
+      final keptWebTabs = _tabs.where((t) => t.isWeb).toList();
       final split = _splitMarkdownPages(result);
       if (split.length > 1) {
         // 分け直しなので、 余ったタブは残さず作り直す。
@@ -135653,6 +136021,10 @@ $doc''';
                 text: split.first.text));
         });
         await _applyMarkdownPages(split);
+        if (mounted && keptWebTabs.isNotEmpty) {
+          setState(() => _tabs.addAll(keptWebTabs));
+          await _saveNow();
+        }
       } else {
         setState(() {
           _sel = 0;
@@ -135661,7 +136033,8 @@ $doc''';
             ..add(_MdTab(
                 id: 'md${DateTime.now().microsecondsSinceEpoch}',
                 name: widget.provider.currentPage.name,
-                text: result));
+                text: result))
+            ..addAll(keptWebTabs);
           _ctrl.text = result;
         });
         _autoNamePageFromMarkdown(result);
@@ -136179,11 +136552,13 @@ $body''';
     return (action: act, body: current);
   }
 
-  void _appSnackTop(BuildContext ctx, String msg, Color color) {
+  void _appSnackTop(BuildContext ctx, String msg, Color color,
+      {SnackBarAction? action}) {
     ScaffoldMessenger.maybeOf(ctx)?.showSnackBar(SnackBar(
       content: Text(msg),
       backgroundColor: color,
       duration: const Duration(seconds: 4),
+      action: action,
     ));
   }
 
@@ -136242,49 +136617,89 @@ $body''';
         return;
       }
       if (!mounted) return;
-      final mode = _ctrl.text.trim().isEmpty
-          ? 'replace'
-          : await showDialog<String>(
-              context: context,
-              builder: (dctx) => AlertDialog(
-                backgroundColor: const Color(0xFF1E1E32),
-                title: Text('${f.name} を読み込みます',
-                    style:
-                        const TextStyle(color: Colors.white, fontSize: 15)),
-                content: const Text('今の内容をどうしますか？',
-                    style: TextStyle(color: Colors.white70, fontSize: 13)),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(dctx),
-                    child: const Text('やめる',
-                        style: TextStyle(color: Colors.white54)),
-                  ),
-                  TextButton(
-                    onPressed: () => Navigator.pop(dctx, 'append'),
-                    child: const Text('末尾に足す'),
-                  ),
-                  ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF6C63FF),
-                        foregroundColor: Colors.white),
-                    onPressed: () => Navigator.pop(dctx, 'replace'),
-                    child: const Text('差し替える'),
-                  ),
-                ],
-              ),
-            );
-      if (mode == null || !mounted) return;
-      setState(() {
-        _ctrl.text = mode == 'append'
-            ? '${_ctrl.text}\n\n$text'
-            : text;
-        _ctrl.selection =
-            TextSelection.collapsed(offset: _ctrl.text.length);
-      });
-      _onChanged();
+      await _applyImportedMarkdown(f.name, text);
+    } catch (e) {
       if (!mounted) return;
-      _appSnackTop(context, '${f.name} を読み込みました',
-          const Color(0xFF43B97F));
+      _appSnackTop(context, '$e', const Color(0xFFE57373));
+    }
+  }
+
+  /// 読み込んだ本文を、 置き換えか末尾に足すかを選ばせて反映する。
+  /// (ファイル選択のボタンと、 ドラッグ&ドロップの両方で使う)
+  Future<void> _applyImportedMarkdown(String name, String text) async {
+    final provider = widget.provider;
+    final mode = _ctrl.text.trim().isEmpty
+        ? 'replace'
+        : await showDialog<String>(
+            context: context,
+            builder: (dctx) => AlertDialog(
+              backgroundColor: const Color(0xFF1E1E32),
+              title: Text(
+                  provider.t('md.importTitle').replaceFirst('{name}', name),
+                  style: const TextStyle(color: Colors.white, fontSize: 15)),
+              content: Text(provider.t('md.importAsk'),
+                  style:
+                      const TextStyle(color: Colors.white70, fontSize: 13)),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dctx),
+                  child: Text(provider.t('btn.cancel'),
+                      style: const TextStyle(color: Colors.white54)),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(dctx, 'append'),
+                  child: Text(provider.t('md.importAppend')),
+                ),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF6C63FF),
+                      foregroundColor: Colors.white),
+                  onPressed: () => Navigator.pop(dctx, 'replace'),
+                  child: Text(provider.t('md.importReplace')),
+                ),
+              ],
+            ),
+          );
+    if (mode == null || !mounted) return;
+    setState(() {
+      _ctrl.text = mode == 'append' ? '${_ctrl.text}\n\n$text' : text;
+      _ctrl.selection = TextSelection.collapsed(offset: _ctrl.text.length);
+    });
+    _onChanged();
+    if (!mounted) return;
+    _appSnackTop(
+        context,
+        provider.t('md.importDone').replaceFirst('{name}', name),
+        const Color(0xFF43B97F));
+  }
+
+  /// 投げられたファイル (パス) を本文へ取り込む (= ユーザー要望: D&D)。
+  /// 複数投げられた時は 1 つ目だけ使う (置き換え / 追記の選択は 1 回)。
+  Future<void> _importMdFromPaths(List<String> paths) async {
+    try {
+      final path = paths.first;
+      final name = path.replaceAll('\\', '/').split('/').last;
+      final ext =
+          name.contains('.') ? name.split('.').last.toLowerCase() : '';
+      String? text;
+      const plain = {
+        'md', 'markdown', 'txt', 'text', 'log', 'csv', 'json', 'yaml', 'yml'
+      };
+      if (plain.contains(ext) || ext.isEmpty) {
+        try {
+          text = utf8.decode(await File(path).readAsBytes(),
+              allowMalformed: true);
+        } catch (_) {}
+      }
+      // 文字として読めない物 (PDF / docx など) は読み込み係に任せる。
+      text ??= await widget.extractText?.call(path, ext);
+      if (!mounted) return;
+      if (text == null || text.trim().isEmpty) {
+        _appSnackTop(context, widget.provider.t('md.importUnsupported'),
+            const Color(0xFFE57373));
+        return;
+      }
+      await _applyImportedMarkdown(name, text);
     } catch (e) {
       if (!mounted) return;
       _appSnackTop(context, '$e', const Color(0xFFE57373));
@@ -136322,17 +136737,29 @@ $body''';
         ),
         child: Center(
           widthFactor: 1,
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 170),
-            child: Text(
-              _tabs[i].name.isEmpty ? '-' : _tabs[i].name,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                  color: on ? Colors.white : Colors.white60,
-                  fontSize: 11.5,
-                  fontWeight: on ? FontWeight.w700 : FontWeight.w400),
-            ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // サイトを開いているタブは一目で分かるようにする (= ユーザー要望)。
+              if (_tabs[i].isWeb) ...[
+                Icon(Icons.public_rounded,
+                    size: 13,
+                    color: on ? Colors.white : Colors.white54),
+                const SizedBox(width: 4),
+              ],
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 170),
+                child: Text(
+                  _tabs[i].name.isEmpty ? '-' : _tabs[i].name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      color: on ? Colors.white : Colors.white60,
+                      fontSize: 11.5,
+                      fontWeight: on ? FontWeight.w700 : FontWeight.w400),
+                ),
+              ),
+            ],
           ),
         ),
       );
@@ -136578,6 +137005,9 @@ $body''';
     // タブ列はヘッダー側 (全幅) へ移した (= ユーザー要望: 開いている
     //   ページをヘッダーに出す)。 ここは本文だけ。
     final editor = editorField;
+    // 今開いているタブがサイトのタブなら、 本文の代わりにサイトを出す。
+    final curTab = _cur;
+    final webTab = (curTab != null && curTab.isWeb) ? curTab : null;
 
     Widget preview;
     if (_isDesktopPlatform) {
@@ -136724,7 +137154,20 @@ $body''';
             if (_isDesktopPlatform && _memoOpen)
               _buildSideMemoPanel(provider),
             Expanded(
-              child: !_preview
+              // ── サイトのタブ (= ユーザー要望: プレビューのリンクを押したら
+              //    タブが作られて、 そこに切り替えると全画面でサイトを見る) ──
+              child: webTab != null
+              ? _MdWebTabView(
+                  key: ValueKey('mdweb_${webTab.id}'),
+                  url: webTab.url,
+                  provider: provider,
+                  onUrlChanged: (u) {
+                    if (u.trim().isEmpty || u.trim() == webTab.url) return;
+                    webTab.url = u.trim();
+                    unawaited(_saveNow());
+                  },
+                )
+              : !_preview
               // 狭い画面は「並べる」 を使わない (= ユーザー要望: 上下分割
               // だと表示領域が狭まり過ぎる)。 前の設定が残っていても、
               // ここでプレビューだけに寄せる。
@@ -137485,32 +137928,24 @@ $body''';
 
   Widget _mdHeaderRow(MindMapProvider provider, bool narrow,
       {double? paneWidth}) {
-    // ── AI ボタン。 表記は「AI」 だけ (= ユーザー要望: 「AI に書いて
-    //    もらう」 は長い)。 何をする物かはツールチップで補う。 ──
-    final aiBtn = SizedBox(
-      height: 30,
-      child: Tooltip(
-        message: provider.t('md.aiWrite'),
-        child: ElevatedButton.icon(
-        style: ElevatedButton.styleFrom(
-          backgroundColor: const Color(0xFFBA68C8),
-          foregroundColor: Colors.white,
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          textStyle: const TextStyle(fontSize: 12.5),
-        ),
-        icon: _aiBusy
-            ? const SizedBox(
-                width: 14,
-                height: 14,
+    // ── AI ボタン (= ユーザー要望: 中央の紫いボタンは目立って気が散るので、
+    //    文字を消して他のアイコンと同じ白にし、 入れ替えボタンの左に置く)。
+    //    何をする物かはツールチップで補う。 ──
+    final aiBtn = _aiBusy
+        ? const SizedBox(
+            width: 34,
+            height: 34,
+            child: Center(
+              child: SizedBox(
+                width: 16,
+                height: 16,
                 child: CircularProgressIndicator(
-                    strokeWidth: 2, color: Colors.white))
-            : const Icon(Icons.auto_awesome_rounded, size: 16),
-        // 表記は短く「AI」 だけにする (= ユーザー要望)。
-        label: const Text('AI'),
-        onPressed: _aiBusy ? null : _askAiToWrite,
-        ),
-      ),
-    );
+                    strokeWidth: 2, color: Colors.white70),
+              ),
+            ),
+          )
+        : _btn(Icons.auto_awesome_rounded, provider.t('md.aiWrite'),
+            _askAiToWrite);
     // ヘッダーを隠すボタン (モバイルは上段の右端に置く)。
     final hideBtn = _btn(Icons.keyboard_double_arrow_up_rounded,
         provider.t('md.hideHeader'), () {
@@ -137519,6 +137954,24 @@ $body''';
       SharedPreferences.getInstance()
           .then((sp) => sp.setBool(_kMdHeaderHiddenKey, true));
     });
+    // ── サイトのタブを開いている間は、 本文の道具を出さない ──
+    //    (本文が画面に無いのに「AI に書いてもらう」 等を押せると、 書いた
+    //     物がどこにも残らない)。 タブ列と「隠す」 だけにする。
+    //     サイトの操作 (戻る / 進む / 読み直す等) はサイトの帯にある。
+    if (_cur?.isWeb == true) {
+      final webRow = <Widget>[
+        if (_tabBarVisible)
+          Flexible(flex: 5, child: _buildTabStrip(provider)),
+        const Spacer(),
+      ];
+      if (!narrow && (paneWidth ?? double.infinity) >= 900) {
+        return Stack(children: [
+          Row(children: webRow),
+          Center(child: hideBtn),
+        ]);
+      }
+      return Row(children: [...webRow, hideBtn]);
+    }
     // (タブ追加ボタンはタブ列の末尾に移した = ユーザー要望: 一番右端の
     //  タブの右側に置く)
     // タブ削除ボタン (= ユーザー要望: モバイルは右クリックが無いので、
@@ -137536,8 +137989,10 @@ $body''';
             // (タブの追加 + と削除 × はタブ列の末尾に入れた = ユーザー要望:
             //  × は + の左側)
             const SizedBox(width: 6),
-            aiBtn,
             const Spacer(),
+            // ── AI に書いてもらう。 右寄せの道具の列の先頭 (= 入れ替え
+            //    ボタンの左) に置く (= ユーザー要望)。 ──
+            aiBtn,
             // ── ボタンの色は白で統一 (= ユーザー要望: 項目ごとに色が付いたり
             //    付かなかったりが気になる)。 色が出るのはメモ / AI の
             //    パネルが開いている時だけ。 ──
@@ -137669,14 +138124,14 @@ $body''';
     //   下の「横に並べて足りなければ横スクロール」 に落とす。
     final wideEnough = (paneWidth ?? double.infinity) >= 900;
     if (!narrow && wideEnough) {
-      // ── AI ボタンは編集 (黒) とプレビュー (白) の丁度中央に固定する
-      //    (= ユーザー要望)。 タブ追加 (+) はその左に置く (= ユーザー要望)。
+      // ── 中央にはヘッダーの表示 / 非表示ボタンを置く (= ユーザー要望:
+      //    AI ボタンは道具の列へ移したので、 その場所を譲る)。
       //    他のボタン列の流れから外し、 Stack でヘッダー全幅の中央に重ねる。 ──
       final rowChildren =
-          children.where((w) => !identical(w, aiBtn)).toList();
+          children.where((w) => !identical(w, hideBtn)).toList();
       return Stack(children: [
         Row(children: rowChildren),
-        Center(child: aiBtn),
+        Center(child: hideBtn),
       ]);
     }
     // ── モバイルも 1 段に並べる (= ユーザー要望: ヘッダーの項目は 1 列に)。
@@ -137706,7 +138161,7 @@ $body''';
             scrollDirection: Axis.horizontal,
             child: Row(
               mainAxisSize: MainAxisSize.min,
-              children: [aiBtn, const SizedBox(width: 4), ...tools],
+              children: tools,
             ),
           ),
         ),
@@ -140157,6 +140612,29 @@ class _PaintPageViewState extends State<_PaintPageView> {
     return KeyEventResult.ignored;
   }
 
+  /// マップ側のキー処理から呼ばれる貼り付け (Ctrl+V) の受け口。
+  ///
+  /// ★ = ユーザー報告「フリーノートで何も選択していない状態で Ctrl+V を
+  ///   押しても何もペーストされない」。 ノートの Focus が外れていると
+  ///   _onPaintKey まで届かず、 マップ側の貼り付けへ流れていた。
+  ///   ここへ回して、 今開いているページへ貼る。
+  void _hostPaste() {
+    // 文字を打っている最中は、 入力欄の貼り付けを邪魔しない。
+    if (_textEditPos != null) return;
+    if (_docModeInline && _docFocus.hasFocus) {
+      final c = _docCtrls[_sheet];
+      if (c != null) {
+        unawaited(c.clipboardPaste());
+        return;
+      }
+    }
+    if (_paintClipboard.isNotEmpty) {
+      _pastePaintClipboard();
+    } else {
+      unawaited(_pasteFromSystemClipboard());
+    }
+  }
+
   /// マップ側のキー処理 (KeyboardListener) から呼ばれる矢印キーの受け口。
   /// フォーカスがノート側に無い時でも、 タブホバー中のページ切替と
   /// 「矢印キーを背後へ流さない」 を効かせる。 戻り値 true = 消費した。
@@ -140358,7 +140836,10 @@ class _PaintPageViewState extends State<_PaintPageView> {
     final double px = at.dx.clamp(0.0, math.max(0.0, cs.w - 260.0));
     final pos = _snapTextPosToRule(Offset(px, at.dy));
     final maxW = math.max(180.0, cs.w - px - 24.0);
-    final wrapped = _wrapForCanvas(raw, maxW, _textSize);
+    // 実際に描く書式で測る (= ユーザー報告: 長い文章が折り返されずに
+    //   ノートからはみ出す)。 太字や書体を変えていてもはみ出さない。
+    final wrapped = _wrapForCanvas(raw, maxW, _textSize,
+        bold: _textBold, italic: _textItalic, family: _textFont);
     setState(() {
       _redo.clear();
       _sheet.texts.add(_PaintText(
@@ -142607,6 +143088,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
       _paintHost = context.findAncestorStateOfType<_MindMapScreenState>();
       _paintHost?._paintDropHandler = _onPaintDropFiles;
       _paintHost?._paintArrowKeyHandler = _hostArrowKey;
+      _paintHost?._paintPasteHandler = _hostPaste;
     });
   }
 
@@ -143763,30 +144245,83 @@ class _PaintPageViewState extends State<_PaintPageView> {
   /// キャンバスに置く文字を、 [maxWidth] に収まるところで改行して返す。
   /// キャンバスの文字は自動で折り返さないため、 あらかじめ改行を入れておく。
   /// 元からある改行はそのまま残す。
-  static String _wrapForCanvas(String text, double maxWidth, double fontSize) {
-    final style = TextStyle(fontSize: fontSize);
+  /// 意味の切れ目になりやすい文字 (= ユーザー要望: 端で折る時は、
+  /// 単語や文の途中ではなく区切りのいい所で改行する)。
+  /// 句読点・閉じ括弧の「後ろ」 で折ると読みやすい。
+  static const String _kWrapBreakAfter =
+      '。．.！!？?、，,；;：:）)」』】〕》〉…—ー\u3000 \t/';
+
+  /// キャンバスの文字は自分では折り返さないので、 先に改行を入れておく。
+  ///
+  /// [maxWidth] は紙に収まる幅。 書式 ([bold]/[italic]/[family]) を渡すと
+  /// 実際に描くのと同じ幅で測るので、 太字や別の書体でもはみ出さない。
+  ///
+  /// ★ 1 行ぶんずつ**測り直し**ながら進める。 段落全体を 1 回測って
+  ///   その行の切れ目を使い回すと、 意味の切れ目まで戻した後の行が
+  ///   元の切れ目のままになり、 短い端切れの行が残ってしまう。
+  static String _wrapForCanvas(String text, double maxWidth, double fontSize,
+      {bool bold = false, bool italic = false, String family = ''}) {
+    final style = TextStyle(
+      fontSize: fontSize,
+      fontWeight: bold ? FontWeight.bold : FontWeight.w500,
+      fontStyle: italic ? FontStyle.italic : FontStyle.normal,
+      fontFamily: family.isEmpty ? null : family,
+    );
+    // 毎回 段落の残り全部を測ると長文で重いので、 1 行に収まるはずの
+    // 文字数より十分大きい窓だけを測る (足りなければ広げる)。
+    const int kBaseWindow = 1024;
     final out = StringBuffer();
     var firstPara = true;
     for (final para in text.split('\n')) {
       if (!firstPara) out.write('\n');
       firstPara = false;
       if (para.isEmpty) continue;
-      final tp = TextPainter(
-        text: TextSpan(text: para, style: style),
-        textDirection: TextDirection.ltr,
-      )..layout(maxWidth: maxWidth);
       var offset = 0;
       var firstLine = true;
       while (offset < para.length) {
-        final b = tp.getLineBoundary(TextPosition(offset: offset));
-        var end = b.end;
-        // 進まない時の保険 (無限ループ防止)。
-        if (end <= offset) end = offset + 1;
-        if (end > para.length) end = para.length;
-        if (!firstLine) out.write('\n');
+        // ── この位置から始まる 1 行の終わりを測る ──
+        var window = kBaseWindow;
+        int end;
+        String tail;
+        while (true) {
+          final stop = math.min(offset + window, para.length);
+          tail = para.substring(offset, stop);
+          final tp = TextPainter(
+            text: TextSpan(text: tail, style: style),
+            textDirection: TextDirection.ltr,
+          )..layout(maxWidth: maxWidth);
+          end = tp.getLineBoundary(const TextPosition(offset: 0)).end;
+          if (end <= 0) end = 1;
+          if (end > tail.length) end = tail.length;
+          // 窓を使い切った = まだ先まで 1 行に入るかもしれない → 広げる。
+          if (end >= tail.length && stop < para.length && window < 1 << 18) {
+            window *= 4;
+            continue;
+          }
+          break;
+        }
+        // ── 意味の切れ目まで戻す (= ユーザー要望) ──
+        //   行の終わり側に句読点などがあれば、 そこまでで折る。
+        //   戻し過ぎると隙間だらけになるので、 行の 6 割より後ろだけ見る。
+        if (offset + end < para.length) {
+          final floor = (end * 0.6).floor();
+          for (var i = end - 1; i > floor; i--) {
+            if (_kWrapBreakAfter.contains(tail[i])) {
+              end = i + 1;
+              break;
+            }
+          }
+        }
+        final line = tail.substring(0, end);
+        if (firstLine) {
+          out.write(line);
+        } else {
+          // 行頭に回った空白は落とす (戻した所が空白だった時に効く)。
+          out.write('\n');
+          out.write(line.trimLeft());
+        }
         firstLine = false;
-        out.write(para.substring(offset, end));
-        offset = end;
+        offset += end;
       }
     }
     return out.toString();
@@ -143872,6 +144407,9 @@ class _PaintPageViewState extends State<_PaintPageView> {
     }
     if (_paintHost?._paintArrowKeyHandler == _hostArrowKey) {
       _paintHost?._paintArrowKeyHandler = null;
+    }
+    if (_paintHost?._paintPasteHandler == _hostPaste) {
+      _paintHost?._paintPasteHandler = null;
     }
     _noteSaveTimer?.cancel();
     final noteController = _noteController;
@@ -152655,9 +153193,16 @@ class _PaintPageViewState extends State<_PaintPageView> {
             canRequestFocus: false,
             skipTraversal: true,
             onKeyEvent: (node, event) {
-              if (!isDesktop || event is! KeyDownEvent) {
-                return KeyEventResult.ignored;
+              if (event is! KeyDownEvent) return KeyEventResult.ignored;
+              // ★ Esc は「書いた文字を捨てる」 ではなく**確定**にする
+              //   (= ユーザー要望: 入力中に Esc 等を押しても書いた内容が
+              //   消えないように)。 ここで必ず消費して、 背後 (マップ本体)
+              //   の Esc 処理 (選択解除やモード解除) にも流さない。
+              if (event.logicalKey == LogicalKeyboardKey.escape) {
+                _commitTextEdit();
+                return KeyEventResult.handled;
               }
+              if (!isDesktop) return KeyEventResult.ignored;
               final isEnter = event.logicalKey == LogicalKeyboardKey.enter ||
                   event.logicalKey == LogicalKeyboardKey.numpadEnter;
               if (isEnter && !HardwareKeyboard.instance.isShiftPressed) {
