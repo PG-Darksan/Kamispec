@@ -181,9 +181,33 @@ service cloud.firestore {
       allow read: if signedIn();
       allow create: if signedIn()
                     && request.resource.data.ownerUid == request.auth.uid;
+
+      // ── ファイルの共同編集 (pptx / xlsx / csv / txt。 コードは F で始まる) ──
+      //
+      // ★ = ユーザー報告「pptx ファイルページ等が共同編集状態にならない」。
+      //   ページの共同編集は書き換わる所を published/{code}/doc/… に置いて
+      //   いるが、 ファイルの共同編集は「最新の版」 と「編集権」 を**親の
+      //   書類そのもの**に置いている。 下の「本人だけ」 の決まりだけだと、
+      //   参加した人は編集権を取る事も新しい版を送る事もできず、 必ず 403 に
+      //   なっていた。 kind が 'file' の書類に限り、 下の 8 つの欄だけは
+      //   参加した人も書き換えられるようにする (持ち主 / 種類 / 作った時刻は
+      //   触らせない)。
+      function fileCollabFields() {
+        return ['name', 'fileUrl', 'fileRev', 'fileBy', 'fileByName',
+                'lockBy', 'lockName', 'lockAt'];
+      }
+      function isFileCollabUpdate() {
+        return resource.data.get('kind', '') == 'file'
+               && request.resource.data.diff(resource.data)
+                    .affectedKeys().hasOnly(fileCollabFields());
+      }
       // 後から書き換えられるのは公開した本人だけ。
-      allow update, delete: if signedIn()
-                            && resource.data.ownerUid == request.auth.uid;
+      //   (ファイルの共同編集の上の欄だけは、 参加した人も書き換えられる)
+      allow update: if signedIn()
+                    && (resource.data.get('ownerUid', '') == request.auth.uid
+                        || isFileCollabUpdate());
+      allow delete: if signedIn()
+                    && resource.data.get('ownerUid', '') == request.auth.uid;
 
       // 本文 (共同編集の実体)。
       match /doc/{docId} {

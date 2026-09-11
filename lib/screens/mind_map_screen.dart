@@ -10971,7 +10971,12 @@ class _MindMapScreenState extends State<MindMapScreen>
       if (room > 160 && boxH > room) boxH = room;
     }
     if (boxH > screen.height - 16) boxH = screen.height - 16;
-    size = Size(size.width, boxH);
+    // 幅も画面に合わせる (= ユーザー要望: モバイルで右端が切れる)。
+    //   高さだけ縮めて幅はそのままだったので、 幅 420 を渡す呼び出しは
+    //   412px の画面で右へはみ出していた。
+    var boxW = size.width;
+    if (boxW > screen.width - 16) boxW = screen.width - 16;
+    size = Size(boxW, boxH);
     child = ConstrainedBox(
         constraints: BoxConstraints(maxHeight: boxH), child: child);
     final double maxLeft = (screen.width - size.width - 8.0).clamp(8.0, 1e5);
@@ -75297,6 +75302,11 @@ class _MindMapScreenState extends State<MindMapScreen>
         const SizedBox(height: 6),
         _MonitorDisplaySettings(provider: provider),
 
+        // ── Windows の見た目 (明るい / 暗い) (= ユーザー要望: PC 自体の
+        //    ダークモードの切り替えもここでできるように) ──
+        _pcSectionLabel(provider.t('osTheme.title')),
+        _OsThemeInline(provider: provider),
+
         // ── スクリーンセーバー (= ユーザー要望) ──
         _pcSectionLabel(provider.t('saver.title')),
         _ScreenSaverInline(provider: provider),
@@ -85746,6 +85756,27 @@ class _MindMapScreenState extends State<MindMapScreen>
     final permission = await _askBulkSharePermission(ctx, provider);
     if (permission == null || !mounted) return; // キャンセル
 
+    // ★ 繋がっているかは、 窓を出す前に 1 回だけ確かめる
+    //   (= ユーザー要望: 共有が終わるまでが長い)。 これまでは全部のページを
+    //   書き終えた後の startLiveSession の中で初めて調べていて、 名前解決が
+    //   遅い回線だと最後に数秒ぶん黙って止まっていた。 結果は 15 秒ほど
+    //   控えられるので、 後段の確認はただで済む。
+    try {
+      await provider.ensureOnline();
+    } catch (e) {
+      if (!mounted) return;
+      _appSnack(
+        ctx,
+        SnackBar(
+          backgroundColor: const Color(0xFFE57373),
+          content: Text('$e'.replaceFirst('Exception: ', ''),
+              style: const TextStyle(color: Colors.white)),
+        ),
+      );
+      return;
+    }
+    if (!mounted) return;
+
     // ── 進捗表示 ──
     var progress = 0;
     final failed = <String>[];
@@ -85776,12 +85807,19 @@ class _MindMapScreenState extends State<MindMapScreen>
       }),
     ).whenComplete(() => progressOpen = false);
 
-    for (final page in pages) {
+    // ★ = ユーザー要望「共有していますから完了するまでが非常に時間が掛かる」。
+    //   ページどうしは何も共有していない (別の番号・別の書類・別の置き場)
+    //   ので、 1 枚ずつ順番に待つ理由が無かった。 4 本ずつ並べて進める。
+    //   端末側の控えの書き出しは 1 枚ごとにやらず、 最後に 1 回だけにする。
+    Future<void> shareOne(MindMapPage page) async {
       try {
         // ★ ブラウザ向け HTML は作らない (= ユーザー要望: 共同編集は
         //   あくまでアプリ内の機能)。 コードの登録と土台の書き込みだけ。
         final code = await provider.registerLivePage(
-            pageId: page.id, title: page.name, permission: permission);
+            pageId: page.id,
+            title: page.name,
+            permission: permission,
+            save: false);
         // ★ 人の共有に参加した番号を持っていると、 相手の土台に書けずに
         //   403 になる (= ユーザー報告: 1 ページだけ共有できない)。
         //   その時は番号を取り直して、 自分の土台として作り直す。
@@ -85804,26 +85842,69 @@ class _MindMapScreenState extends State<MindMapScreen>
       } catch (_) {}
     }
 
+    {
+      var next = 0;
+      const workers = 4;
+      Future<void> worker() async {
+        while (true) {
+          final i = next++;
+          if (i >= pages.length) return;
+          await shareOne(pages[i]);
+        }
+      }
+
+      await Future.wait([
+        for (var i = 0; i < math.min(workers, pages.length); i++) worker(),
+      ]);
+      // 控えはここで 1 回だけ書く (1 枚ごとに書くと、 枚数ぶん丸ごと
+      //   書き直していた)。
+      try {
+        await provider.savePublishedPagesNow();
+      } catch (_) {}
+    }
+
+    // ★ 書き込みが終わった時点で「共有しています…」 を閉じる
+    //   (= ユーザー要望: 終わるまでが長い)。 この後に残る仕事
+    //   (自分の画面のセッション開始・束の番号) は、 待っている意味が
+    //   ほとんど無いのに 4〜6 往復ぶん窓を出したままにしていた。
+    if (mounted && progressOpen) {
+      Navigator.of(ctx, rootNavigator: true).pop();
+      progressOpen = false;
+    }
+
     // ── 現在のページ (選択に含まれる時) か先頭ページでセッション開始 ──
+    //    自分の画面の話なので待たない (失敗しても知らせるだけ)。
     final curId = provider.currentPage.id;
     final target =
         pages.firstWhere((p) => p.id == curId, orElse: () => pages.first);
     final targetCode = provider.publishedCodeFor(target.id);
+    Future<void>? sessionFut;
     if (targetCode != null &&
         targetCode.isNotEmpty &&
         !failed.any((f) => f.startsWith('${target.name}:'))) {
-      try {
-        await provider.startLiveSession(
-            pageId: target.id,
-            code: targetCode,
-            permission: provider.publishPermissionFor(target.id));
-      } catch (e) {
-        failed.add('${target.name}: $e');
-      }
+      sessionFut = provider
+          .startLiveSession(
+              pageId: target.id,
+              code: targetCode,
+              permission: provider.publishPermissionFor(target.id))
+          .catchError((Object e) {
+        if (mounted) {
+          _appSnack(
+            context,
+            SnackBar(
+              backgroundColor: const Color(0xFFE57373),
+              content: Text('${target.name}: $e'
+                  .replaceFirst('Exception: ', ''),
+                  style: const TextStyle(color: Colors.white)),
+            ),
+          );
+        }
+      });
     }
 
     // ── 束の番号を 1 つ発行する (= ユーザー要望: ページごとに番号が
     //    違うのは不便) ──
+    //    セッション開始と同時に走らせる (別の書類なのでぶつからない)。
     String? bundleCode;
     {
       final ok = pages
@@ -85851,6 +85932,13 @@ class _MindMapScreenState extends State<MindMapScreen>
       }
     }
 
+    // セッションの開始が終わっていなければ、 ここで待ち合わせる
+    //   (結果の一覧を出す時には整っていてほしい)。
+    if (sessionFut != null) {
+      try {
+        await sessionFut;
+      } catch (_) {}
+    }
     if (!mounted) return;
     if (progressOpen) Navigator.of(ctx, rootNavigator: true).pop();
     setState(() {
@@ -86374,7 +86462,8 @@ class _MindMapScreenState extends State<MindMapScreen>
             ),
           ]),
           content: SizedBox(
-            width: 400,
+            // 狭い画面では画面幅に合わせる (= ユーザー要望)。
+            width: math.min(400.0, MediaQuery.sizeOf(dctx2).width - 88),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -86448,16 +86537,26 @@ class _MindMapScreenState extends State<MindMapScreen>
             ),
           ],
         );
-        if (at == null) return dlg;
-        // 押した所の近くへ置く。 画面からはみ出さないように留める。
         final scr = MediaQuery.of(dctx2).size;
-        const w = 460.0;
+        // ★ = ユーザー報告「モバイルで共同編集に参加の項目のレイアウトが
+        //   崩れる / もう少し上に出てほしい」。
+        //   狭い画面では「押した所の近くに出す」 をやめて、 普通の真ん中の
+        //   窓にする。 幅 460 を決め打ちで Positioned に渡していたため、
+        //   412px の画面では左が 12 に張り付いて右へ 60px はみ出し、
+        //   Stack が既定で切り取るので参加ボタンが見えず押せなかった。
+        //   また showDialog は中身を SafeArea で包むので、 画面の高さで
+        //   決めた top はその分だけ下へずれて、 下が切れていた。
+        if (at == null || scr.width < 560) return dlg;
+        // 押した所の近くへ置く。 画面からはみ出さないように留める。
+        final w = math.min(460.0, math.max(240.0, scr.width - 24.0));
         final left = (at.dx - w / 2)
             .clamp(12.0, math.max(12.0, scr.width - w - 12))
             .toDouble();
-        final top = (at.dy + 16)
-            .clamp(12.0, math.max(12.0, scr.height - 320))
-            .toDouble();
+        // 入り切らない時は押した所の上へ出す (他の近くに出す窓と同じ形)。
+        const h = 360.0;
+        var top = at.dy + 16;
+        if (top + h > scr.height - 12) top = at.dy - h - 16;
+        top = top.clamp(12.0, math.max(12.0, scr.height - h - 12)).toDouble();
         return Stack(children: [
           Positioned(
             left: left,
@@ -100736,6 +100835,152 @@ class _SplitPdfHorizontalScrollBarState
 
 /// 音声の出力先を、 ディスプレイ設定の中にそのまま並べる
 /// (= ユーザー要望: 一つずつ押して開くのが面倒なので全部一度に出す)。
+/// Windows 自体の見た目 (明るい / 暗い) を切り替える設定
+/// (= ユーザー要望: PC 自体のダークモードとの切り替えもアプリのディスプレイ
+/// 設定でできるように)。 Windows の「設定 > 個人用設定 > 色」 と同じ所を
+/// 書き、 起動中のアプリにもその場で効かせる。
+class _OsThemeInline extends StatefulWidget {
+  final MindMapProvider provider;
+  const _OsThemeInline({required this.provider});
+
+  @override
+  State<_OsThemeInline> createState() => _OsThemeInlineState();
+}
+
+class _OsThemeInlineState extends State<_OsThemeInline> {
+  PcThemeState? _state;
+
+  @override
+  void initState() {
+    super.initState();
+    _reload();
+  }
+
+  void _reload() {
+    if (!PcSettings.isSupported) return;
+    final v = PcSettings.readTheme();
+    if (mounted) setState(() => _state = v);
+  }
+
+  void _apply({bool? appsDark, bool? systemDark}) {
+    final ok = PcSettings.setTheme(appsDark: appsDark, systemDark: systemDark);
+    _reload();
+    if (!mounted || ok) return;
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+      content: Text(widget.provider.t('osTheme.failed')),
+      backgroundColor: const Color(0xFFE57373),
+      duration: const Duration(seconds: 3),
+    ));
+  }
+
+  /// 「明るい / 暗い」 を選ぶ 1 行。
+  Widget _row(String label, String help, bool dark,
+      void Function(bool dark) onPick) {
+    final p = widget.provider;
+    Widget chip(String text, IconData icon, bool wantDark) {
+      final on = dark == wantDark;
+      return InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: on ? null : () => onPick(wantDark),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            color: on
+                ? const Color(0xFF4FC3F7).withValues(alpha: 0.18)
+                : Colors.white.withValues(alpha: 0.04),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+                color: on ? const Color(0xFF4FC3F7) : Colors.white24,
+                width: on ? 1.5 : 1),
+          ),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Icon(icon,
+                size: 14,
+                color: on ? const Color(0xFF4FC3F7) : Colors.white54),
+            const SizedBox(width: 6),
+            Text(text,
+                style: TextStyle(
+                    color: on ? Colors.white : Colors.white60,
+                    fontSize: 11.5,
+                    fontWeight: on ? FontWeight.w700 : FontWeight.w400)),
+          ]),
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(children: [
+        Expanded(
+          child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(label,
+                    style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w600)),
+                const SizedBox(height: 2),
+                Text(help,
+                    style: const TextStyle(
+                        color: Colors.white38, fontSize: 10, height: 1.35)),
+              ]),
+        ),
+        chip(p.t('osTheme.light'), Icons.light_mode_rounded, false),
+        const SizedBox(width: 6),
+        chip(p.t('osTheme.dark'), Icons.dark_mode_rounded, true),
+      ]),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!PcSettings.isSupported) return const SizedBox.shrink();
+    final p = widget.provider;
+    final st = _state;
+    if (st == null) return const SizedBox.shrink();
+    return Container(
+      margin: const EdgeInsets.only(top: 4),
+      padding: const EdgeInsets.fromLTRB(10, 6, 10, 8),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.04),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.white12),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(p.t('osTheme.desc'),
+            style: const TextStyle(
+                color: Colors.white38, fontSize: 10.5, height: 1.4)),
+        const SizedBox(height: 4),
+        _row(p.t('osTheme.apps'), p.t('osTheme.appsHelp'), st.appsDark,
+            (d) => _apply(appsDark: d)),
+        const Divider(color: Colors.white12, height: 10),
+        _row(p.t('osTheme.system'), p.t('osTheme.systemHelp'), st.systemDark,
+            (d) => _apply(systemDark: d)),
+        const SizedBox(height: 4),
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton.icon(
+            onPressed: () {
+              final both = !(st.appsDark && st.systemDark);
+              _apply(appsDark: both, systemDark: both);
+            },
+            icon: Icon(
+                (st.appsDark && st.systemDark)
+                    ? Icons.light_mode_rounded
+                    : Icons.dark_mode_rounded,
+                size: 16),
+            label: Text(p.t((st.appsDark && st.systemDark)
+                ? 'osTheme.allLight'
+                : 'osTheme.allDark')),
+            style: TextButton.styleFrom(foregroundColor: Colors.white60),
+          ),
+        ),
+      ]),
+    );
+  }
+}
+
 class _AudioOutputInline extends StatefulWidget {
   final MindMapProvider provider;
   const _AudioOutputInline({required this.provider});
@@ -125303,181 +125548,188 @@ class _GanttPageViewState extends State<_GanttPageView> {
             child: Column(children: [
               Padding(
                 padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
-                child: Row(children: [
-                  if (!isMobile) ...[
-                    const Icon(Icons.view_timeline_rounded,
-                        color: Color(0xFF4FC3F7)),
-                    const SizedBox(width: 8),
-                    Flexible(
-                      child: Text(widget.provider.t('gantt.title'),
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 16,
-                              fontWeight: FontWeight.w700)),
-                    ),
-                    const SizedBox(width: 8),
-                  ],
-                  // ── 日 / 時間 の単位切替 (= ユーザー要望: 時間単位のタスク表) ──
-                  SegmentedButton<String>(
-                    segments: [
-                      ButtonSegment(
-                          value: 'day',
-                          label: Text(widget.provider.t('gantt.day'))),
-                      ButtonSegment(
-                          value: 'hour',
-                          label: Text(widget.provider.t('gantt.hour'))),
-                    ],
-                    selected: {_unit},
-                    showSelectedIcon: false,
-                    style: SegmentedButton.styleFrom(
-                      visualDensity: VisualDensity.compact,
-                      foregroundColor: Colors.white70,
-                      selectedForegroundColor: Colors.white,
-                      selectedBackgroundColor:
-                          const Color(0xFF4FC3F7).withValues(alpha: 0.5),
-                    ),
-                    onSelectionChanged: (s) => _setUnit(s.first),
-                  ),
-                  // ── 表示する時間帯の設定 (時間モードのみ) (= ユーザー要望) ──
-                  if (_unit == 'hour')
-                    Builder(
-                      builder: (bctx) => IconButton(
-                        tooltip: context
-                            .read<MindMapProvider>()
-                            .t('gantt.timeAndBlockedTitle'),
-                        visualDensity: VisualDensity.compact,
-                        icon: const Icon(Icons.schedule_rounded,
-                            size: 20, color: Colors.white70),
-                        onPressed: () => _showHoursDialog(bctx),
+                // ★ = ユーザー要望「モバイルでレイアウトが崩れている所」。
+                //   狭い時に隠れるのは題名だけで、 右の道具は固定幅のまま
+                //   だった。 人ごとの表示や時間の単位にすると 412px を
+                //   超えてはみ出すので、 横に流せるようにする。
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(children: [
+                      if (!isMobile) ...[
+                        const Icon(Icons.view_timeline_rounded,
+                            color: Color(0xFF4FC3F7)),
+                        const SizedBox(width: 8),
+                        Flexible(
+                          child: Text(widget.provider.t('gantt.title'),
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w700)),
+                        ),
+                        const SizedBox(width: 8),
+                      ],
+                      // ── 日 / 時間 の単位切替 (= ユーザー要望: 時間単位のタスク表) ──
+                      SegmentedButton<String>(
+                        segments: [
+                          ButtonSegment(
+                              value: 'day',
+                              label: Text(widget.provider.t('gantt.day'))),
+                          ButtonSegment(
+                              value: 'hour',
+                              label: Text(widget.provider.t('gantt.hour'))),
+                        ],
+                        selected: {_unit},
+                        showSelectedIcon: false,
+                        style: SegmentedButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          foregroundColor: Colors.white70,
+                          selectedForegroundColor: Colors.white,
+                          selectedBackgroundColor:
+                              const Color(0xFF4FC3F7).withValues(alpha: 0.5),
+                        ),
+                        onSelectionChanged: (s) => _setUnit(s.first),
                       ),
-                    ),
-                  // ── 12時間(AM/PM) / 24時間 表記の切替 (= ユーザー要望) ──
-                  if (_unit == 'hour')
-                    IconButton(
-                      tooltip: widget.provider
-                          .t(_use12h ? 'gantt.switch24h' : 'gantt.switch12h'),
-                      visualDensity: VisualDensity.compact,
-                      icon: Icon(
-                          _use12h
-                              ? Icons.access_time_filled_rounded
-                              : Icons.access_time_rounded,
-                          size: 20,
-                          color: _use12h
-                              ? const Color(0xFF4FC3F7)
-                              : Colors.white70),
-                      onPressed: _toggle12h,
-                    ),
-                  // ── ページに出す (= ユーザー要望: ガントチャートを
-                  //    マインドマップやギャラリーに埋め込めるように) ──
-                  //    今の表を「編集できる工程表のノード」 として置く。
-                  Builder(
-                    builder: (bctx) => IconButton(
-                      tooltip: widget.provider.t('tool.putIntoPage'),
-                      visualDensity: VisualDensity.compact,
-                      // ★ アプリの外に出す (open_in_new) と紛らわしいので、
-                      //    「ページに差し込む」 の意味の絵に変更 + 周りに
-                      //    合わせて白にする (= ユーザー要望)。
-                      icon: const Icon(Icons.post_add_rounded,
-                          size: 20, color: Colors.white70),
-                      // 「どのページに入れますか」 は押したボタンの近くへ。
-                      onPressed: () => _putIntoPageMenu(bctx),
-                    ),
-                  ),
-                  // ── 予定の通知設定 (= ユーザー要望: ガントの予定が通知される時刻を設定) ──
-                  Builder(
-                    builder: (bctx) => IconButton(
-                      tooltip: context
-                          .read<MindMapProvider>()
-                          .t('gantt.notifySettings'),
-                      visualDensity: VisualDensity.compact,
-                      icon: Icon(
-                          _notifyEnabled
-                              ? Icons.notifications_active_rounded
-                              : Icons.notifications_none_rounded,
-                          size: 20,
-                          color: _notifyEnabled
-                              ? const Color(0xFFFFB347)
-                              : Colors.white70),
-                      onPressed: () => _showGanttNotifySettings(bctx),
-                    ),
-                  ),
-                  // ── 合体表示の入切 (= ユーザー要望: メンバー表と
-                  //    ガントチャートを合体させた 1 つの物に) ──
-                  //    入 = 人ごとにまとめる / 切 = 工程だけ並べる。
-                  IconButton(
-                    tooltip: widget.provider.t(_groupByMember
-                        ? 'gantt.groupByTask'
-                        : 'gantt.groupByMember'),
-                    visualDensity: VisualDensity.compact,
-                    icon: Icon(
-                        _groupByMember
-                            ? Icons.groups_rounded
-                            : Icons.format_list_bulleted_rounded,
-                        size: 20,
-                        color: _groupByMember
-                            ? const Color(0xFF66BB6A)
-                            : Colors.white70),
-                    onPressed: _toggleGroupByMember,
-                  ),
-                  // ── 自分の名前を変える / 人を足す (= 合体表示のときだけ) ──
-                  if (_groupByMember) ...[
-                    IconButton(
-                      tooltip: widget.provider.t('memberSchedule.editOwnName'),
-                      visualDensity: VisualDensity.compact,
-                      icon: const Icon(Icons.badge_outlined,
-                          size: 20, color: Colors.white70),
-                      onPressed: _editOwnName,
-                    ),
-                    IconButton(
-                      tooltip: widget.provider.t('memberSchedule.addMember'),
-                      visualDensity: VisualDensity.compact,
-                      icon: const Icon(Icons.person_add_alt_1_rounded,
-                          size: 20, color: Colors.white70),
-                      onPressed: _addManualMember,
-                    ),
-                  ],
-                  // ── チャート一覧の表示 / 非表示 (= ユーザー要望) ──
-                  IconButton(
-                    tooltip: widget.provider.t(_chartTabsVisible
-                        ? 'gantt.hideChartTabs'
-                        : 'gantt.showChartTabs'),
-                    visualDensity: VisualDensity.compact,
-                    icon: Icon(
-                        _chartTabsVisible
-                            ? Icons.tab_rounded
-                            : Icons.tab_unselected_rounded,
-                        size: 20,
-                        color: _chartTabsVisible
-                            ? const Color(0xFF4FC3F7)
-                            : Colors.white70),
-                    onPressed: _toggleChartTabs,
-                  ),
-                  // ── サイド編集メニューの開閉 (= ユーザー要望: 動画エディター風) ──
-                  IconButton(
-                    tooltip: widget.provider.t('gantt.sideMenu'),
-                    visualDensity: VisualDensity.compact,
-                    icon: Icon(
-                        _sidePanelOpen
-                            ? Icons.view_sidebar_rounded
-                            : Icons.view_sidebar_outlined,
-                        size: 20,
-                        color: _sidePanelOpen
-                            ? const Color(0xFF4FC3F7)
-                            : Colors.white70),
-                    onPressed: () =>
-                        setState(() => _sidePanelOpen = !_sidePanelOpen),
-                  ),
-                  // ★ 「+ 追加」 は置かない (= ユーザー要望: 表の下の
-                  //   「行を追加」 で足りるので要らない)。
-                  // ── 共同編集 (= ユーザー要望: 「同期」 ではなく共同編集の
-                  //    形に。 Max プランだけの特典)。 入の間は自分の予定を
-                  //    相手に出しつつ、 相手の予定を定期的に取り込む。 ──
-                  if (_groupByMember) ...[
-                    const SizedBox(width: 6),
-                    _buildCollabButton(widget.provider.currentGroupId != null),
-                  ],
-                ]),
+                      // ── 表示する時間帯の設定 (時間モードのみ) (= ユーザー要望) ──
+                      if (_unit == 'hour')
+                        Builder(
+                          builder: (bctx) => IconButton(
+                            tooltip: context
+                                .read<MindMapProvider>()
+                                .t('gantt.timeAndBlockedTitle'),
+                            visualDensity: VisualDensity.compact,
+                            icon: const Icon(Icons.schedule_rounded,
+                                size: 20, color: Colors.white70),
+                            onPressed: () => _showHoursDialog(bctx),
+                          ),
+                        ),
+                      // ── 12時間(AM/PM) / 24時間 表記の切替 (= ユーザー要望) ──
+                      if (_unit == 'hour')
+                        IconButton(
+                          tooltip: widget.provider
+                              .t(_use12h ? 'gantt.switch24h' : 'gantt.switch12h'),
+                          visualDensity: VisualDensity.compact,
+                          icon: Icon(
+                              _use12h
+                                  ? Icons.access_time_filled_rounded
+                                  : Icons.access_time_rounded,
+                              size: 20,
+                              color: _use12h
+                                  ? const Color(0xFF4FC3F7)
+                                  : Colors.white70),
+                          onPressed: _toggle12h,
+                        ),
+                      // ── ページに出す (= ユーザー要望: ガントチャートを
+                      //    マインドマップやギャラリーに埋め込めるように) ──
+                      //    今の表を「編集できる工程表のノード」 として置く。
+                      Builder(
+                        builder: (bctx) => IconButton(
+                          tooltip: widget.provider.t('tool.putIntoPage'),
+                          visualDensity: VisualDensity.compact,
+                          // ★ アプリの外に出す (open_in_new) と紛らわしいので、
+                          //    「ページに差し込む」 の意味の絵に変更 + 周りに
+                          //    合わせて白にする (= ユーザー要望)。
+                          icon: const Icon(Icons.post_add_rounded,
+                              size: 20, color: Colors.white70),
+                          // 「どのページに入れますか」 は押したボタンの近くへ。
+                          onPressed: () => _putIntoPageMenu(bctx),
+                        ),
+                      ),
+                      // ── 予定の通知設定 (= ユーザー要望: ガントの予定が通知される時刻を設定) ──
+                      Builder(
+                        builder: (bctx) => IconButton(
+                          tooltip: context
+                              .read<MindMapProvider>()
+                              .t('gantt.notifySettings'),
+                          visualDensity: VisualDensity.compact,
+                          icon: Icon(
+                              _notifyEnabled
+                                  ? Icons.notifications_active_rounded
+                                  : Icons.notifications_none_rounded,
+                              size: 20,
+                              color: _notifyEnabled
+                                  ? const Color(0xFFFFB347)
+                                  : Colors.white70),
+                          onPressed: () => _showGanttNotifySettings(bctx),
+                        ),
+                      ),
+                      // ── 合体表示の入切 (= ユーザー要望: メンバー表と
+                      //    ガントチャートを合体させた 1 つの物に) ──
+                      //    入 = 人ごとにまとめる / 切 = 工程だけ並べる。
+                      IconButton(
+                        tooltip: widget.provider.t(_groupByMember
+                            ? 'gantt.groupByTask'
+                            : 'gantt.groupByMember'),
+                        visualDensity: VisualDensity.compact,
+                        icon: Icon(
+                            _groupByMember
+                                ? Icons.groups_rounded
+                                : Icons.format_list_bulleted_rounded,
+                            size: 20,
+                            color: _groupByMember
+                                ? const Color(0xFF66BB6A)
+                                : Colors.white70),
+                        onPressed: _toggleGroupByMember,
+                      ),
+                      // ── 自分の名前を変える / 人を足す (= 合体表示のときだけ) ──
+                      if (_groupByMember) ...[
+                        IconButton(
+                          tooltip: widget.provider.t('memberSchedule.editOwnName'),
+                          visualDensity: VisualDensity.compact,
+                          icon: const Icon(Icons.badge_outlined,
+                              size: 20, color: Colors.white70),
+                          onPressed: _editOwnName,
+                        ),
+                        IconButton(
+                          tooltip: widget.provider.t('memberSchedule.addMember'),
+                          visualDensity: VisualDensity.compact,
+                          icon: const Icon(Icons.person_add_alt_1_rounded,
+                              size: 20, color: Colors.white70),
+                          onPressed: _addManualMember,
+                        ),
+                      ],
+                      // ── チャート一覧の表示 / 非表示 (= ユーザー要望) ──
+                      IconButton(
+                        tooltip: widget.provider.t(_chartTabsVisible
+                            ? 'gantt.hideChartTabs'
+                            : 'gantt.showChartTabs'),
+                        visualDensity: VisualDensity.compact,
+                        icon: Icon(
+                            _chartTabsVisible
+                                ? Icons.tab_rounded
+                                : Icons.tab_unselected_rounded,
+                            size: 20,
+                            color: _chartTabsVisible
+                                ? const Color(0xFF4FC3F7)
+                                : Colors.white70),
+                        onPressed: _toggleChartTabs,
+                      ),
+                      // ── サイド編集メニューの開閉 (= ユーザー要望: 動画エディター風) ──
+                      IconButton(
+                        tooltip: widget.provider.t('gantt.sideMenu'),
+                        visualDensity: VisualDensity.compact,
+                        icon: Icon(
+                            _sidePanelOpen
+                                ? Icons.view_sidebar_rounded
+                                : Icons.view_sidebar_outlined,
+                            size: 20,
+                            color: _sidePanelOpen
+                                ? const Color(0xFF4FC3F7)
+                                : Colors.white70),
+                        onPressed: () =>
+                            setState(() => _sidePanelOpen = !_sidePanelOpen),
+                      ),
+                      // ★ 「+ 追加」 は置かない (= ユーザー要望: 表の下の
+                      //   「行を追加」 で足りるので要らない)。
+                      // ── 共同編集 (= ユーザー要望: 「同期」 ではなく共同編集の
+                      //    形に。 Max プランだけの特典)。 入の間は自分の予定を
+                      //    相手に出しつつ、 相手の予定を定期的に取り込む。 ──
+                      if (_groupByMember) ...[
+                        const SizedBox(width: 6),
+                        _buildCollabButton(widget.provider.currentGroupId != null),
+                      ],
+                  ]),
+                ),
               ),
               // ── チャート切替タブ (= ユーザー要望: チャートを複数作成) ──
               //    非表示にもできる (= ユーザー要望)。
@@ -134356,6 +134608,60 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
   bool _headerHover = false;
   static const String _kMdHeaderHiddenKey = 'markdownHeaderHidden';
 
+  /// 本文の入力欄の右クリックメニュー。
+  ///
+  /// ★ = ユーザー要望「マークダウンの文字を選択して右クリックしたら AI に
+  ///   渡せるように」。 標準の項目はそのまま残して、 後ろに足す。
+  Widget _mdEditorContextMenu(
+      MindMapProvider provider, EditableTextState state) {
+    final sel = _ctrl.selection;
+    final hasSel = sel.isValid && !sel.isCollapsed;
+    ContextMenuButtonItem btn(String label, VoidCallback run) =>
+        ContextMenuButtonItem(
+          label: label,
+          onPressed: () {
+            ContextMenuController.removeAny();
+            run();
+          },
+        );
+    return AdaptiveTextSelectionToolbar.buttonItems(
+      anchors: state.contextMenuAnchors,
+      buttonItems: <ContextMenuButtonItem>[
+        ...state.contextMenuButtonItems,
+        btn(provider.t(hasSel ? 'md.sendSelToAi' : 'md.sendAllToAi'),
+            _sendMdTextToAi),
+        // ★ = ユーザー要望「本文だけに切り替えた後、 右クリックでプレビュー
+        //   付きに戻せないのが使いにくい」。 本文の欄の右クリックからも
+        //   表示の切り替え / ヘッダーの出し入れ / AI に書いてもらう を出す
+        //   (本文だけの時は画面に余白が無く、 他に入口が無いため)。
+        btn(_viewModeLabel(provider), _cycleViewMode),
+        btn(provider.t(_headerHidden ? 'md.showHeader' : 'md.hideHeader'),
+            _toggleHeaderHidden),
+        if (!_aiBusy) btn(provider.t('md.aiWrite'), _askAiToWrite),
+      ],
+    );
+  }
+
+  /// 選んでいる文字 (無ければ本文ぜんぶ) を AI へ渡す。
+  void _sendMdTextToAi() {
+    final sel = _ctrl.selection;
+    final text = (sel.isValid && !sel.isCollapsed)
+        ? _ctrl.text.substring(sel.start, sel.end)
+        : _ctrl.text;
+    if (text.trim().isEmpty) return;
+    final host = _mdHost;
+    if (host != null && host.mounted) {
+      host._sendQueryToBrowserAi(text);
+      return;
+    }
+    // 本体の画面が居ない時 (公開ページ等) は、 写すだけにしておく。
+    unawaited(Clipboard.setData(ClipboardData(text: text)));
+    if (mounted) {
+      _appSnackTop(
+          context, widget.provider.t('md.copied'), const Color(0xFF43B97F));
+    }
+  }
+
   /// 今ヘッダーが隠れているか (右クリックのメニューの文言に使う)。
   bool _isHeaderHidden() => _headerHidden;
 
@@ -137474,6 +137780,10 @@ $body''';
                 height: 1.6,
                 fontFamily: 'Consolas'),
             cursorColor: const Color(0xFFBA68C8),
+            // ── 選んだ文字を右クリックして AI へ渡す (= ユーザー要望) ──
+            //    標準の項目 (切り取り / コピー / すべてを選択) の後ろに足す。
+            contextMenuBuilder: (mctx, state) =>
+                _mdEditorContextMenu(provider, state),
             decoration: InputDecoration(
               contentPadding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
               border: InputBorder.none,
@@ -145116,25 +145426,11 @@ class _PaintPageViewState extends State<_PaintPageView> {
       });
       if (_dirty) _persist();
     } else if (_curStroke != null) {
-      // ── なげなわ塗りで囲まずにタップしただけの時 ──
-      //   何も無い所を押したのなら、 用紙そのものの色を変える
-      //   (= ユーザー要望: 白紙を押したら白紙がその色になるように)。
-      //   何かの上を押した時は誤操作なので、 これまでどおり何もしない。
+      // ── なげなわ塗りで囲まずにタップしただけの時は何もしない ──
+      //   (= ユーザー要望: 押しただけで用紙ぜんぶが塗られないように。
+      //    紙の色は道具の帯の「用紙の色」 から変える)。
       if (_curStroke!.ps == 'lassoFill' && _curStroke!.points.length < 3) {
-        final tapped =
-            _curStroke!.points.isNotEmpty ? _curStroke!.points.first : null;
-        final color = _color.toARGB32();
-        setState(() {
-          _curStroke = null;
-          if (tapped != null && _isBlankSpotForBgFill(tapped)) {
-            _redo.clear();
-            _bgColorUndo.add(_sheet.bgColor ?? -1);
-            _sheet.bgColor = color;
-            _sheet.undo.add('bg');
-            _dirty = true;
-          }
-        });
-        if (_dirty) _persist();
+        setState(() => _curStroke = null);
         return;
       }
       // ── 囲む線が交差していたら、 輪になっている部分だけを残す
@@ -146019,21 +146315,10 @@ class _PaintPageViewState extends State<_PaintPageView> {
       // ── フリーハンドで描いた閉領域もタップで塗れるように (= ユーザー
       //    要望)。 手書きストロークを閉じたパスとみなして内側判定する。 ──
       if (_fillFreehandRegionAt(p)) return;
-      // ── 何も無い所を押したら用紙そのものの色を変える (= ユーザー要望) ──
-      //   白紙でも塗れる状態なのに「面のある図形を選んでください」 と出るのは
-      //   おかしいので、 案内を出さずにそのまま紙の色を変える。
-      if (_isBlankSpotForBgFill(p)) {
-        setState(() {
-          _redo.clear();
-          _bgColorUndo.add(_sheet.bgColor ?? -1);
-          _sheet.bgColor = _color.toARGB32();
-          _sheet.undo.add('bg');
-          _dirty = true;
-        });
-        _persist();
-        return;
-      }
-      // 図形やインクの上を押した時だけ、 塗れない理由を出す。
+      // ★ = ユーザー要望「塗りつぶしは押したら全部塗られるのではなく、
+      //   クリックした領域だけが塗られるように」。 昔は何も無い所を押すと
+      //   用紙ぜんぶの色を変えていたが、 少し外しただけで紙が塗り替わって
+      //   しまうのでやめた。 紙の色は道具の帯の「用紙の色」 から変える。
       _snack(widget.provider.t('paint.fillNoRegion'));
       return;
     }
@@ -148667,6 +148952,11 @@ class _PaintPageViewState extends State<_PaintPageView> {
         //      起きない帯」 になる。
         //    ★ 長押しは付けない。 ゆっくり左クリックしただけで大きさの
         //      メニューが出て、 道具が切り替わらなくなるため。
+        // ★ 包む前の中身を別の名前で持つ (= ユーザー報告: 右クリックすると
+        //   謎の領域が出てくる)。 `row` は下で入れ替わるので、 closure が
+        //   `row` をそのまま見ていると**自分自身を入れ子にし続けて**
+        //   例外になり、 リリースでは例外の箱が灰色の四角として描かれる。
+        final inner = row;
         row = SizedBox(
           height: 36,
           child: Align(
@@ -148676,7 +148966,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
                 behavior: HitTestBehavior.opaque,
                 onSecondaryTapDown: (_) =>
                     Navigator.of(ctx).pop('size:${sizeOf.name}'),
-                child: row,
+                child: inner,
               ),
             ),
           ),
@@ -153797,6 +154087,33 @@ class _PaintPageViewState extends State<_PaintPageView> {
           Text('${(_fillAlpha * 100).round()}%',
               style: const TextStyle(color: Colors.white54, fontSize: 11)),
           const SizedBox(width: 10),
+          // ── 用紙そのものの色 (= ユーザー要望: 押しただけで全部塗られるのは
+          //    困るので、 紙を塗るのはこのボタンからだけにした) ──
+          OutlinedButton.icon(
+            onPressed: _setSheetBgColorToCurrent,
+            icon: const Icon(Icons.crop_portrait_rounded, size: 15),
+            label: Text(widget.provider.t('paint.fillPaper'),
+                style: const TextStyle(fontSize: 11)),
+            style: OutlinedButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+              foregroundColor: Colors.white70,
+              side: const BorderSide(color: Colors.white24),
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+            ),
+          ),
+          if (_sheet.bgColor != null) ...[
+            const SizedBox(width: 4),
+            TextButton.icon(
+              onPressed: _clearSheetBgColor,
+              icon: const Icon(Icons.close_rounded, size: 15),
+              label: Text(widget.provider.t('paint.fillPaperClear'),
+                  style: const TextStyle(fontSize: 11)),
+              style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  foregroundColor: Colors.white54),
+            ),
+          ],
+          const SizedBox(width: 10),
           Text(widget.provider.t('paint.fillHint'),
               style: const TextStyle(color: Colors.white38, fontSize: 11)),
           const SizedBox(width: 8),
@@ -153806,6 +154123,34 @@ class _PaintPageViewState extends State<_PaintPageView> {
         ]),
       )),
     );
+  }
+
+  /// 用紙そのものの色を、 今選んでいる色にする (= ユーザー要望: 全部塗るのは
+  /// 押し間違いではなく、 このボタンからだけ)。 Ctrl+Z で戻せる。
+  void _setSheetBgColorToCurrent() {
+    final color = _color.toARGB32();
+    if (_sheet.bgColor == color) return;
+    setState(() {
+      _redo.clear();
+      _bgColorUndo.add(_sheet.bgColor ?? -1);
+      _sheet.bgColor = color;
+      _sheet.undo.add('bg');
+      _dirty = true;
+    });
+    _persist();
+  }
+
+  /// 用紙の色を元 (何も塗っていない状態) に戻す。
+  void _clearSheetBgColor() {
+    if (_sheet.bgColor == null) return;
+    setState(() {
+      _redo.clear();
+      _bgColorUndo.add(_sheet.bgColor ?? -1);
+      _sheet.bgColor = null;
+      _sheet.undo.add('bg');
+      _dirty = true;
+    });
+    _persist();
   }
 
   Widget _buildEraserOptions() {
@@ -221123,285 +221468,298 @@ $csvText
                       fontSize: 11,
                       fontWeight: FontWeight.w700)),
             ),
-          const Spacer(),
-          // ── 画面分割で開く (左/右の 2 ボタン) ──
-          // (左右の画面分割ボタンは廃止 = ユーザー要望: 分割表示中は
-          //  ファイルが自動でペインに開くため不要になった)
-          // 数式表示トグル (= 結果表示 / 数式そのものを表示)。
-          // ★ 隣に出していた「数式OFF / タップでON」 の札は廃止
-          //   (= ユーザー要望: 見れば分かるので文字は要らない)。
-          //   状態はこのボタンの色 (amber) と斜線で分かる。
-          IconButton(
-            tooltip: _showFormulaResults
-                ? context.read<MindMapProvider>().t('ss.formulaTipOn')
-                : context.read<MindMapProvider>().t('ss.formulaTipOff'),
-            icon: Stack(
-              clipBehavior: Clip.none,
-              alignment: Alignment.center,
-              children: [
-                Icon(
-                  Icons.functions_rounded,
-                  color: _showFormulaResults
-                      ? const Color(0xFF6C63FF)
-                      : Colors.amber,
-                ),
-                if (!_showFormulaResults)
-                  // 斜線で OFF を表現
-                  Positioned.fill(
-                    child: CustomPaint(
-                      painter: _DiagonalSlashPainter(color: Colors.amber),
+          // ★ = ユーザー要望「モバイルでレイアウトが崩れている所を直して」。
+          //   道具のボタンが固定幅のまま並んでいて、 412px の画面では
+          //   はみ出して右端 (保存 / 閉じる) が押せなかった。 文字や
+          //   テキストのエディタと同じく、 横に流せるようにする。
+          Expanded(
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+              // ── 画面分割で開く (左/右の 2 ボタン) ──
+              // (左右の画面分割ボタンは廃止 = ユーザー要望: 分割表示中は
+              //  ファイルが自動でペインに開くため不要になった)
+              // 数式表示トグル (= 結果表示 / 数式そのものを表示)。
+              // ★ 隣に出していた「数式OFF / タップでON」 の札は廃止
+              //   (= ユーザー要望: 見れば分かるので文字は要らない)。
+              //   状態はこのボタンの色 (amber) と斜線で分かる。
+              IconButton(
+                tooltip: _showFormulaResults
+                    ? context.read<MindMapProvider>().t('ss.formulaTipOn')
+                    : context.read<MindMapProvider>().t('ss.formulaTipOff'),
+                icon: Stack(
+                  clipBehavior: Clip.none,
+                  alignment: Alignment.center,
+                  children: [
+                    Icon(
+                      Icons.functions_rounded,
+                      color: _showFormulaResults
+                          ? const Color(0xFF6C63FF)
+                          : Colors.amber,
                     ),
-                  ),
+                    if (!_showFormulaResults)
+                      // 斜線で OFF を表現
+                      Positioned.fill(
+                        child: CustomPaint(
+                          painter: _DiagonalSlashPainter(color: Colors.amber),
+                        ),
+                      ),
+                  ],
+                ),
+                onPressed: () {
+                  _commitEdit();
+                  _invalidateFormulaCache();
+                  setState(() => _showFormulaResults = !_showFormulaResults);
+                },
+              ),
+              // ── 図 / 表の挿入・CSV 取り込み (= ユーザー要望)。 xlsx だけ ──
+              if (_kind == _SpreadsheetKind.xlsx) ...[
+                IconButton(
+                  tooltip: context.read<MindMapProvider>().t('tip.insertPicture'),
+                  icon: const Icon(Icons.image_outlined, color: Color(0xFF4FC3F7)),
+                  onPressed: () => unawaited(_insertSpreadsheetImage()),
+                ),
+                IconButton(
+                  tooltip: context.read<MindMapProvider>().t('pptx.insertTable'),
+                  icon: const Icon(Icons.grid_on_rounded, color: Color(0xFF43B97F)),
+                  onPressed: () => unawaited(_insertSpreadsheetTable()),
+                ),
               ],
-            ),
-            onPressed: () {
-              _commitEdit();
-              _invalidateFormulaCache();
-              setState(() => _showFormulaResults = !_showFormulaResults);
-            },
-          ),
-          // ── 図 / 表の挿入・CSV 取り込み (= ユーザー要望)。 xlsx だけ ──
-          if (_kind == _SpreadsheetKind.xlsx) ...[
-            IconButton(
-              tooltip: context.read<MindMapProvider>().t('tip.insertPicture'),
-              icon: const Icon(Icons.image_outlined, color: Color(0xFF4FC3F7)),
-              onPressed: () => unawaited(_insertSpreadsheetImage()),
-            ),
-            IconButton(
-              tooltip: context.read<MindMapProvider>().t('pptx.insertTable'),
-              icon: const Icon(Icons.grid_on_rounded, color: Color(0xFF43B97F)),
-              onPressed: () => unawaited(_insertSpreadsheetTable()),
-            ),
-          ],
-          // ── 選んだ範囲を表 / グラフにする (= ユーザー要望: 端の小さな
-          //    ボタンだと気付かないので、 ヘッダーに出す)。 範囲を選んで
-          //    いない間は押せない見た目にする。 ──
-          // ★ csv / tsv では出さない (= ユーザー要望: csv は文字だけの
-          //   ファイルなので、 作った図や表を保存できない。 保存すると
-          //   黙って消えるので、 機能ごと出さないようにする)。
-          if (_canHoldObjects) ...[
-            IconButton(
-              tooltip: _hasRange
-                  ? '選んだ範囲を表にする'
-                  : '表にする (先にセルの範囲を選んでください)',
-              icon: Icon(Icons.table_view_rounded,
-                  color: _hasRange
-                      ? const Color(0xFF26C6DA)
-                      : const Color(0xFF26C6DA).withValues(alpha: 0.3)),
-              onPressed: _hasRange ? _rangeToTable : null,
-            ),
-            IconButton(
-              tooltip: _hasRange
-                  ? '選んだ範囲をグラフにする'
-                  : 'グラフにする (先にセルの範囲を選んでください)',
-              icon: Icon(Icons.bar_chart_rounded,
-                  color: _hasRange
-                      ? const Color(0xFF7CB342)
-                      : const Color(0xFF7CB342).withValues(alpha: 0.3)),
-              onPressed: _hasRange ? () => unawaited(_rangeToChart()) : null,
-            ),
-          ],
-          if (_kind == _SpreadsheetKind.xlsx) ...[
-            IconButton(
-              tooltip: context.read<MindMapProvider>().t('tip.importCsv'),
-              // 黄色は背景に埋もれて読みづらい (= ユーザー報告)。
-              icon: const Icon(Icons.file_download_outlined,
-                  color: Color(0xFF2E7D32)),
-              onPressed: () => unawaited(_importCsvIntoWorkbook()),
-            ),
-          ],
-          // AI 編集ボタン
-          IconButton(
-            tooltip: context.read<MindMapProvider>().t('doc.aiRewrite'),
-            icon: _aiBusy
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        valueColor: AlwaysStoppedAnimation(Color(0xFFAB47BC))),
-                  )
-                : const Icon(Icons.auto_awesome_rounded,
-                    color: Color(0xFFAB47BC)),
-            onPressed: _aiBusy
-                ? null
-                : () {
-                    // 会話欄が 2 つ並ばないように (= ユーザー報告)。
-                    if (!_aiChatPanelOpen) {
-                      _McpChatSession.instance.requestClosePanel();
+              // ── 選んだ範囲を表 / グラフにする (= ユーザー要望: 端の小さな
+              //    ボタンだと気付かないので、 ヘッダーに出す)。 範囲を選んで
+              //    いない間は押せない見た目にする。 ──
+              // ★ csv / tsv では出さない (= ユーザー要望: csv は文字だけの
+              //   ファイルなので、 作った図や表を保存できない。 保存すると
+              //   黙って消えるので、 機能ごと出さないようにする)。
+              if (_canHoldObjects) ...[
+                IconButton(
+                  tooltip: _hasRange
+                      ? '選んだ範囲を表にする'
+                      : '表にする (先にセルの範囲を選んでください)',
+                  icon: Icon(Icons.table_view_rounded,
+                      color: _hasRange
+                          ? const Color(0xFF26C6DA)
+                          : const Color(0xFF26C6DA).withValues(alpha: 0.3)),
+                  onPressed: _hasRange ? _rangeToTable : null,
+                ),
+                IconButton(
+                  tooltip: _hasRange
+                      ? '選んだ範囲をグラフにする'
+                      : 'グラフにする (先にセルの範囲を選んでください)',
+                  icon: Icon(Icons.bar_chart_rounded,
+                      color: _hasRange
+                          ? const Color(0xFF7CB342)
+                          : const Color(0xFF7CB342).withValues(alpha: 0.3)),
+                  onPressed: _hasRange ? () => unawaited(_rangeToChart()) : null,
+                ),
+              ],
+              if (_kind == _SpreadsheetKind.xlsx) ...[
+                IconButton(
+                  tooltip: context.read<MindMapProvider>().t('tip.importCsv'),
+                  // 黄色は背景に埋もれて読みづらい (= ユーザー報告)。
+                  icon: const Icon(Icons.file_download_outlined,
+                      color: Color(0xFF2E7D32)),
+                  onPressed: () => unawaited(_importCsvIntoWorkbook()),
+                ),
+              ],
+              // AI 編集ボタン
+              IconButton(
+                tooltip: context.read<MindMapProvider>().t('doc.aiRewrite'),
+                icon: _aiBusy
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation(Color(0xFFAB47BC))),
+                      )
+                    : const Icon(Icons.auto_awesome_rounded,
+                        color: Color(0xFFAB47BC)),
+                onPressed: _aiBusy
+                    ? null
+                    : () {
+                        // 会話欄が 2 つ並ばないように (= ユーザー報告)。
+                        if (!_aiChatPanelOpen) {
+                          _McpChatSession.instance.requestClosePanel();
+                        }
+                        setState(() => _aiChatPanelOpen = !_aiChatPanelOpen);
+                      },
+              ),
+              const SizedBox(width: 6),
+              // ── 上書き保存 (= ユーザー要望: 「保存」 と 「ダウンロード」 の
+              //    違いが紛らわしいので、 こちらは 「上書き保存」 と名乗る。
+              //    直した所が無い時は押せないようにして、 押す意味が無いことを
+              //    見た目で分かるようにする) ──
+              Tooltip(
+                message: _dirty
+                    ? context.read<MindMapProvider>().t('doc.overwriteSaveTip')
+                    : context.read<MindMapProvider>().t('doc.noChanges'),
+                child: TextButton.icon(
+                  onPressed: _dirty ? _save : null,
+                  icon: const Icon(Icons.save_rounded, size: 18),
+                  label:
+                      Text(context.read<MindMapProvider>().t('doc.overwriteSave')),
+                  style: TextButton.styleFrom(
+                    foregroundColor: Colors.white,
+                    backgroundColor: const Color(0xFF6C63FF),
+                    // ★ 明るい配色では白い字が下地に溶ける (= ユーザー報告:
+                    //   白飛び)。 押せない時の色も明暗で変える。
+                    disabledForegroundColor:
+                        dark ? Colors.white38 : const Color(0xFF9A9AA6),
+                    disabledBackgroundColor:
+                        dark ? Colors.white12 : const Color(0xFFD2D2CC),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+              // ── 共同編集 (= ユーザー要望: Max 限定でファイルを共同編集) ──
+              _buildFileLiveMenu(
+                context,
+                provider: context.read<MindMapProvider>(),
+                filePath: _currentFilePath,
+                fileName: _currentFileName,
+                isDirty: () => _dirty,
+                fg: fg,
+                dark: dark,
+                onSession: (_) {
+                  _attachFileLive();
+                  if (mounted) setState(() {});
+                },
+              ),
+              // ── ダウンロード (= ユーザー要望: xlsx にもダウンロードボタン) ──
+              PopupMenuButton<String>(
+                tooltip: context.read<MindMapProvider>().t('fsv.download'),
+                icon: Icon(Icons.download_rounded, color: fg),
+                color: dark ? const Color(0xFF22222E) : Colors.white,
+                onSelected: (v) async {
+                  if (v == 'same') {
+                    await _downloadSheetCopy();
+                  } else if (v == 'csv') {
+                    await _downloadSheetAsCsv();
+                  } else if (v == 'pdf') {
+                    await _downloadSheetAsPdf();
+                  }
+                },
+                itemBuilder: (_) => [
+                  PopupMenuItem(
+                    value: 'same',
+                    child: Row(children: [
+                      const Icon(Icons.table_chart_outlined,
+                          size: 16, color: Color(0xFF2E7D32)),
+                      const SizedBox(width: 8),
+                      Text('xlsx として保存',
+                          style: TextStyle(color: fg, fontSize: 13)),
+                    ]),
+                  ),
+                  PopupMenuItem(
+                    value: 'csv',
+                    child: Row(children: [
+                      const Icon(Icons.view_list_outlined,
+                          size: 16, color: Color(0xFF7B1FA2)),
+                      const SizedBox(width: 8),
+                      Text('CSV として保存 (現在のシートのみ)',
+                          style: TextStyle(color: fg, fontSize: 13)),
+                    ]),
+                  ),
+                  PopupMenuItem(
+                    value: 'pdf',
+                    child: Row(children: [
+                      const Icon(Icons.picture_as_pdf_outlined,
+                          size: 16, color: Color(0xFFFF6B6B)),
+                      const SizedBox(width: 8),
+                      Text('PDF に変換', style: TextStyle(color: fg, fontSize: 13)),
+                    ]),
+                  ),
+                ],
+              ),
+              // ── 左 / 右に分割 (= ユーザー要望: xlsx にも分割ボタンを置いて、
+              //    右分割を押したら 2 分割の右半分がこの表になるように) ──
+              //    分割ペインの中で開いている時 (onSplitOpen == null) は出さない。
+              if (widget.onSplitOpen != null) ...[
+                IconButton(
+                  tooltip: context.read<MindMapProvider>().t('openStyle.splitLeft'),
+                  icon: _splitPanelIcon(_SplitIconFill.left,
+                      color: const Color(0xFFFF6B6B), size: 19),
+                  // ★ onSplitOpen の実装側がビューアを閉じるので、 ここでは
+                  //   閉じない (二重に pop すると後ろの画面まで閉じてしまう)。
+                  onPressed: () => widget.onSplitOpen!(
+                      _currentFilePath, _currentFileName,
+                      isLeftPanel: true),
+                ),
+                IconButton(
+                  tooltip:
+                      context.read<MindMapProvider>().t('openStyle.splitRight'),
+                  icon: _splitPanelIcon(_SplitIconFill.right,
+                      color: const Color(0xFF2196F3), size: 19),
+                  onPressed: () => widget.onSplitOpen!(
+                      _currentFilePath, _currentFileName,
+                      isLeftPanel: false),
+                ),
+              ],
+              // ── 表示の拡大率 (= ユーザー要望: ボタンでも変えられるように) ──
+              IconButton(
+                tooltip: context.read<MindMapProvider>().t('cmd.zoomOut'),
+                icon: Icon(Icons.zoom_out_rounded,
+                    color: fg.withValues(alpha: 0.75), size: 20),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+                onPressed: () => _ssSetZoom(_ssZoom - 0.1),
+              ),
+              InkWell(
+                // 押すと 100% に戻る。
+                onTap: () => _ssSetZoom(1.0),
+                borderRadius: BorderRadius.circular(6),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 8),
+                  child: Text('${(_ssZoom * 100).round()}%',
+                      style: TextStyle(
+                          color: fg.withValues(alpha: 0.75), fontSize: 11)),
+                ),
+              ),
+              IconButton(
+                tooltip: context.read<MindMapProvider>().t('cmd.zoomIn'),
+                icon: Icon(Icons.zoom_in_rounded,
+                    color: fg.withValues(alpha: 0.75), size: 20),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+                onPressed: () => _ssSetZoom(_ssZoom + 0.1),
+              ),
+              // ── 使える関数の一覧 (= ユーザー要望: 端に置く) ──
+              IconButton(
+                tooltip: context.read<MindMapProvider>().t('tip.formulaHelp'),
+                icon: const Icon(Icons.help_outline_rounded,
+                    color: Color(0xFF82AAFF)),
+                onPressed: () => unawaited(_showFormulaHelp()),
+              ),
+              // ★ 「ヘッダーを隠す」 は書式バーの端へ移した (= ユーザー要望:
+              //   白飛びしている段に付けて欲しい)。 xlsx 以外は書式バーが
+              //   出ないので、 その時だけここに残す。
+              if (_kind != _SpreadsheetKind.xlsx)
+                IconButton(
+                  tooltip: context.read<MindMapProvider>().t('text.hideHeader'),
+                  icon: Icon(Icons.keyboard_double_arrow_up_rounded,
+                      color: fg.withValues(alpha: 0.7)),
+                  onPressed: () => setState(() => _headerVisible = false),
+                ),
+              // Builder で × ボタン自身の context を取り、 未保存確認をその
+              // すぐ近くに出す (= ユーザー要望)。
+              Builder(
+                builder: (btnCtx) => IconButton(
+                  tooltip: context.read<MindMapProvider>().t('btn.close'),
+                  icon: Icon(Icons.close_rounded, color: fg),
+                  onPressed: () async {
+                    if (await _confirmDiscard(anchor: btnCtx)) {
+                      if (mounted) Navigator.of(context).pop();
                     }
-                    setState(() => _aiChatPanelOpen = !_aiChatPanelOpen);
                   },
-          ),
-          const SizedBox(width: 6),
-          // ── 上書き保存 (= ユーザー要望: 「保存」 と 「ダウンロード」 の
-          //    違いが紛らわしいので、 こちらは 「上書き保存」 と名乗る。
-          //    直した所が無い時は押せないようにして、 押す意味が無いことを
-          //    見た目で分かるようにする) ──
-          Tooltip(
-            message: _dirty
-                ? context.read<MindMapProvider>().t('doc.overwriteSaveTip')
-                : context.read<MindMapProvider>().t('doc.noChanges'),
-            child: TextButton.icon(
-              onPressed: _dirty ? _save : null,
-              icon: const Icon(Icons.save_rounded, size: 18),
-              label:
-                  Text(context.read<MindMapProvider>().t('doc.overwriteSave')),
-              style: TextButton.styleFrom(
-                foregroundColor: Colors.white,
-                backgroundColor: const Color(0xFF6C63FF),
-                // ★ 明るい配色では白い字が下地に溶ける (= ユーザー報告:
-                //   白飛び)。 押せない時の色も明暗で変える。
-                disabledForegroundColor:
-                    dark ? Colors.white38 : const Color(0xFF9A9AA6),
-                disabledBackgroundColor:
-                    dark ? Colors.white12 : const Color(0xFFD2D2CC),
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                ),
               ),
-            ),
-          ),
-          const SizedBox(width: 6),
-          // ── 共同編集 (= ユーザー要望: Max 限定でファイルを共同編集) ──
-          _buildFileLiveMenu(
-            context,
-            provider: context.read<MindMapProvider>(),
-            filePath: _currentFilePath,
-            fileName: _currentFileName,
-            isDirty: () => _dirty,
-            fg: fg,
-            dark: dark,
-            onSession: (_) {
-              _attachFileLive();
-              if (mounted) setState(() {});
-            },
-          ),
-          // ── ダウンロード (= ユーザー要望: xlsx にもダウンロードボタン) ──
-          PopupMenuButton<String>(
-            tooltip: context.read<MindMapProvider>().t('fsv.download'),
-            icon: Icon(Icons.download_rounded, color: fg),
-            color: dark ? const Color(0xFF22222E) : Colors.white,
-            onSelected: (v) async {
-              if (v == 'same') {
-                await _downloadSheetCopy();
-              } else if (v == 'csv') {
-                await _downloadSheetAsCsv();
-              } else if (v == 'pdf') {
-                await _downloadSheetAsPdf();
-              }
-            },
-            itemBuilder: (_) => [
-              PopupMenuItem(
-                value: 'same',
-                child: Row(children: [
-                  const Icon(Icons.table_chart_outlined,
-                      size: 16, color: Color(0xFF2E7D32)),
-                  const SizedBox(width: 8),
-                  Text('xlsx として保存',
-                      style: TextStyle(color: fg, fontSize: 13)),
                 ]),
               ),
-              PopupMenuItem(
-                value: 'csv',
-                child: Row(children: [
-                  const Icon(Icons.view_list_outlined,
-                      size: 16, color: Color(0xFF7B1FA2)),
-                  const SizedBox(width: 8),
-                  Text('CSV として保存 (現在のシートのみ)',
-                      style: TextStyle(color: fg, fontSize: 13)),
-                ]),
-              ),
-              PopupMenuItem(
-                value: 'pdf',
-                child: Row(children: [
-                  const Icon(Icons.picture_as_pdf_outlined,
-                      size: 16, color: Color(0xFFFF6B6B)),
-                  const SizedBox(width: 8),
-                  Text('PDF に変換', style: TextStyle(color: fg, fontSize: 13)),
-                ]),
-              ),
-            ],
-          ),
-          // ── 左 / 右に分割 (= ユーザー要望: xlsx にも分割ボタンを置いて、
-          //    右分割を押したら 2 分割の右半分がこの表になるように) ──
-          //    分割ペインの中で開いている時 (onSplitOpen == null) は出さない。
-          if (widget.onSplitOpen != null) ...[
-            IconButton(
-              tooltip: context.read<MindMapProvider>().t('openStyle.splitLeft'),
-              icon: _splitPanelIcon(_SplitIconFill.left,
-                  color: const Color(0xFFFF6B6B), size: 19),
-              // ★ onSplitOpen の実装側がビューアを閉じるので、 ここでは
-              //   閉じない (二重に pop すると後ろの画面まで閉じてしまう)。
-              onPressed: () => widget.onSplitOpen!(
-                  _currentFilePath, _currentFileName,
-                  isLeftPanel: true),
-            ),
-            IconButton(
-              tooltip:
-                  context.read<MindMapProvider>().t('openStyle.splitRight'),
-              icon: _splitPanelIcon(_SplitIconFill.right,
-                  color: const Color(0xFF2196F3), size: 19),
-              onPressed: () => widget.onSplitOpen!(
-                  _currentFilePath, _currentFileName,
-                  isLeftPanel: false),
-            ),
-          ],
-          // ── 表示の拡大率 (= ユーザー要望: ボタンでも変えられるように) ──
-          IconButton(
-            tooltip: context.read<MindMapProvider>().t('cmd.zoomOut'),
-            icon: Icon(Icons.zoom_out_rounded,
-                color: fg.withValues(alpha: 0.75), size: 20),
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
-            onPressed: () => _ssSetZoom(_ssZoom - 0.1),
-          ),
-          InkWell(
-            // 押すと 100% に戻る。
-            onTap: () => _ssSetZoom(1.0),
-            borderRadius: BorderRadius.circular(6),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 8),
-              child: Text('${(_ssZoom * 100).round()}%',
-                  style: TextStyle(
-                      color: fg.withValues(alpha: 0.75), fontSize: 11)),
-            ),
-          ),
-          IconButton(
-            tooltip: context.read<MindMapProvider>().t('cmd.zoomIn'),
-            icon: Icon(Icons.zoom_in_rounded,
-                color: fg.withValues(alpha: 0.75), size: 20),
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
-            onPressed: () => _ssSetZoom(_ssZoom + 0.1),
-          ),
-          // ── 使える関数の一覧 (= ユーザー要望: 端に置く) ──
-          IconButton(
-            tooltip: context.read<MindMapProvider>().t('tip.formulaHelp'),
-            icon: const Icon(Icons.help_outline_rounded,
-                color: Color(0xFF82AAFF)),
-            onPressed: () => unawaited(_showFormulaHelp()),
-          ),
-          // ★ 「ヘッダーを隠す」 は書式バーの端へ移した (= ユーザー要望:
-          //   白飛びしている段に付けて欲しい)。 xlsx 以外は書式バーが
-          //   出ないので、 その時だけここに残す。
-          if (_kind != _SpreadsheetKind.xlsx)
-            IconButton(
-              tooltip: context.read<MindMapProvider>().t('text.hideHeader'),
-              icon: Icon(Icons.keyboard_double_arrow_up_rounded,
-                  color: fg.withValues(alpha: 0.7)),
-              onPressed: () => setState(() => _headerVisible = false),
-            ),
-          // Builder で × ボタン自身の context を取り、 未保存確認をその
-          // すぐ近くに出す (= ユーザー要望)。
-          Builder(
-            builder: (btnCtx) => IconButton(
-              tooltip: context.read<MindMapProvider>().t('btn.close'),
-              icon: Icon(Icons.close_rounded, color: fg),
-              onPressed: () async {
-                if (await _confirmDiscard(anchor: btnCtx)) {
-                  if (mounted) Navigator.of(context).pop();
-                }
-              },
             ),
           ),
         ],
@@ -225431,6 +225789,45 @@ String _pptxAnimTriggerLabel(String t) => t == 'with'
     ? '直前と同時'
     : (t == 'after' ? '直前の後' : 'クリック時');
 
+/// 読み込んだスライド XML の <p:transition> から、 画面の切り替え方を読む
+/// (= ユーザー要望)。 分からない書き方は '' (= 付けない) にする。
+({String kind, int ms}) _parsePptxTransition(String xml) {
+  final m = RegExp(r'<p:transition([^>]*)>([\s\S]*?)</p:transition>')
+          .firstMatch(xml) ??
+      RegExp(r'<p:transition([^>]*)/>').firstMatch(xml);
+  if (m == null) return (kind: '', ms: 500);
+  final attrs = m.group(1) ?? '';
+  final body = (m.groupCount >= 2 ? m.group(2) : '') ?? '';
+  const known = {
+    'fade': 'fade',
+    'push': 'push',
+    'wipe': 'wipe',
+    'cover': 'cover',
+    'zoom': 'zoom',
+    'cut': 'cut',
+    'dissolve': 'fade',
+    'pull': 'push',
+  };
+  var kind = '';
+  for (final e in known.entries) {
+    if (RegExp('<[a-zA-Z0-9]+:${e.key}\\b').hasMatch(body)) {
+      kind = e.value;
+      break;
+    }
+  }
+  // spd="slow|med|fast" (既定は med)。 dur があればそちらを優先。
+  var ms = 500;
+  final dur = RegExp(r'\bdur="(\d+)"').firstMatch(attrs)?.group(1);
+  if (dur != null) {
+    ms = (int.tryParse(dur) ?? 500).clamp(80, 3000);
+  } else {
+    final spd = RegExp(r'\bspd="(\w+)"').firstMatch(attrs)?.group(1);
+    if (spd == 'slow') ms = 900;
+    if (spd == 'fast') ms = 280;
+  }
+  return (kind: kind, ms: ms);
+}
+
 /// 読み込んだスライド XML の <p:timing> から、 効果の一覧を並び順に取り出す。
 /// 効果 = presetID の付いた <p:cTn>。 対象 (spid) / 長さ (中の behavior の
 /// dur) / 遅れ (効果直下の cond delay) / きっかけ (nodeType) を読む。
@@ -226565,6 +226962,18 @@ class _PptxStaticSlide extends StatelessWidget {
   }
 }
 
+/// 画面の切り替え方の一覧 (= ユーザー要望: 本家のような動きを選べるように)。
+/// 左が値 ('' = 付けない)、 右が画面に出す名前。
+const List<(String, String)> _kPptxTransitions = [
+  ('', '切り替えなし'),
+  ('fade', '切り替え: フェード'),
+  ('push', '切り替え: プッシュ'),
+  ('wipe', '切り替え: ワイプ'),
+  ('cover', '切り替え: カバー'),
+  ('zoom', '切り替え: ズーム'),
+  ('cut', '切り替え: カット (瞬間)'),
+];
+
 class _PptxSlide {
   final int index;
 
@@ -226584,6 +226993,17 @@ class _PptxSlide {
   /// (触っていなければ元のまま残す = PowerPoint で付けた効果を壊さない)。
   final List<_PptxAnim> anims = [];
   bool animsDirty = false;
+
+  /// 画面の切り替え方 (= ユーザー要望: 本家のようにスライドが変わる時の
+  /// 動きを付けられるように)。 '' = 付けない。
+  /// 'fade' / 'push' / 'wipe' / 'cover' / 'zoom' / 'cut'。
+  /// ファイルの <p:transition> から読み、 変えたら [transitionDirty] を
+  /// 立てて保存時に書き直す (触っていなければ元のまま残す)。
+  String transition = '';
+  bool transitionDirty = false;
+
+  /// 切り替えにかける長さ (ミリ秒)。 PowerPoint の spd を読み替えた値。
+  int transitionMs = 500;
 
   /// このセッションで追加された新しいスライドか (= ユーザー要望: ページを
   /// 追加)。 保存時に presentation.xml / rels / Content_Types へ登録する。
@@ -226924,7 +227344,17 @@ class _PptxViewerDialog extends StatefulWidget {
   State<_PptxViewerDialog> createState() => _PptxViewerDialogState();
 }
 
-class _PptxViewerDialogState extends State<_PptxViewerDialog> {
+class _PptxViewerDialogState extends State<_PptxViewerDialog>
+    with TickerProviderStateMixin {
+  /// 右クリックで下から出る板を、 待たせずに出すための時計
+  /// (= ユーザー要望: 右クリックの項目が出る速度が遅い)。
+  /// 既定は 0.25 秒かけて上がってくるので、 ほぼ 0 にして即出す。
+  AnimationController? _fastSheetAnim;
+  AnimationController get _fastSheet =>
+      _fastSheetAnim ??= BottomSheet.createAnimationController(this)
+        ..duration = const Duration(milliseconds: 1)
+        ..reverseDuration = const Duration(milliseconds: 80);
+
   // ─── ファイルパス / 名前 (リネーム対応) ─────────────────────────────
   late String _currentFilePath = widget.filePath;
   late String _currentFileName = widget.fileName;
@@ -227612,6 +228042,10 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
     final picked = await showMenu<String>(
       context: context,
       color: const Color(0xFF1E1E2E),
+      // ★ = ユーザー要望「右クリックの項目が出る速度が遅い」。
+      //   showMenu は既定で 0.3 秒かけて開き、 項目も順に浮かび上がる。
+      //   その間は空の板に見えるので、 出る動きそのものを止めて即出す。
+      popUpAnimationStyle: AnimationStyle.noAnimation,
       position: RelativeRect.fromLTRB(
         globalPos.dx,
         globalPos.dy,
@@ -228170,6 +228604,8 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
     } catch (_) {}
     kUnsavedCloseGuards.remove(identityHashCode(this));
     _unregisterPaneCloseGuard(widget.paneGuardKey, this);
+    _fastSheetAnim?.dispose();
+    _fastSheetAnim = null;
     _noticeEntry?.remove();
     _noticeEntry = null;
     _thumbScroll.dispose();
@@ -228449,12 +228885,17 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
   }
 
   Future<void> _loadFile() async {
+    // ★ 共同編集の受け口は、 読み込みが失敗しても必ず繋ぐ
+    //   (= 表計算 / 文字のエディタと同じ形)。 try の中に入れていたので、
+    //   壊れた zip や書き換え中のファイルに当たると、 既にセッションが
+    //   有るのに「共同編集を始める」 の見た目のままになり、 相手の新しい版も
+    //   読み直せなくなっていた。
+    _attachFileLive();
     try {
       final bytes = await File(_currentFilePath).readAsBytes();
       _originalBytes = Uint8List.fromList(bytes);
       final archive = ZipDecoder().decodeBytes(bytes);
       _originalArchive = archive;
-      _attachFileLive();
 
       // ── presentation.xml からスライドサイズを取得 ──
       // <p:sldSz cx="..." cy="..."/> 形式。 16:9 / 4:3 / カスタム 全対応。
@@ -229220,6 +229661,13 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
         )
           ..bgColor = slideBgColor
           ..anims.addAll(_parsePptxTimingAnims(xml)));
+        {
+          // 画面の切り替え方も読む (= ユーザー要望)。
+          final tr = _parsePptxTransition(xml);
+          slides.last
+            ..transition = tr.kind
+            ..transitionMs = tr.ms;
+        }
         _syncAnimCaches(slides.last);
         slideIdx++;
       }
@@ -230459,6 +230907,8 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
   Future<void> _showShapeContextMenu(_PptxTextShape shape) async {
     await showModalBottomSheet<void>(
       context: context,
+      // 出るまで待たせない (= ユーザー要望: 右クリックの項目が遅い)。
+      transitionAnimationController: _fastSheet,
       backgroundColor: const Color(0xFF1E1E32),
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
@@ -231639,6 +232089,8 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
     if (overlay == null) return;
     final sel = await showMenu<String>(
       context: context,
+      // 出る動きを止めて即出す (= ユーザー要望: 右クリックが遅い)。
+      popUpAnimationStyle: AnimationStyle.noAnimation,
       color: const Color(0xFF1E1E2E),
       position: RelativeRect.fromRect(
           globalPos & const Size(1, 1), Offset.zero & overlay.size),
@@ -231679,6 +232131,39 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
           ]),
         ),
         const PopupMenuDivider(height: 1),
+        // ── 画面の切り替え (= ユーザー要望: 本家のようにスライドが変わる
+        //    時の動きを付けられるように) ──
+        for (final (k, label) in _kPptxTransitions)
+          PopupMenuItem<String>(
+            value: 'tr:$k',
+            height: 34,
+            child: Row(children: [
+              Icon(
+                  k.isEmpty
+                      ? Icons.block_rounded
+                      : Icons.slideshow_rounded,
+                  size: 15,
+                  color: _slides[index].transition == k
+                      ? const Color(0xFFFFB347)
+                      : Colors.white38),
+              const SizedBox(width: 8),
+              Text(label,
+                  style: TextStyle(
+                      color: _slides[index].transition == k
+                          ? Colors.white
+                          : Colors.white70,
+                      fontSize: 12.5,
+                      fontWeight: _slides[index].transition == k
+                          ? FontWeight.w700
+                          : FontWeight.w400)),
+              if (_slides[index].transition == k) ...[
+                const Spacer(),
+                const Icon(Icons.check_rounded,
+                    size: 14, color: Color(0xFFFFB347)),
+              ],
+            ]),
+          ),
+        const PopupMenuDivider(height: 1),
         PopupMenuItem<String>(
           value: 'delete',
           height: 36,
@@ -231693,6 +232178,16 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
       ],
     );
     if (sel == null || !mounted) return;
+    if (sel.startsWith('tr:')) {
+      final k = sel.substring(3);
+      setState(() {
+        _slides[index]
+          ..transition = k
+          ..transitionDirty = true
+          ..dirty = true;
+      });
+      return;
+    }
     if (sel == 'delete') {
       await _deleteSlideAt(index);
       return;
@@ -231995,15 +232490,22 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
             ),
           ),
         );
+    // ★ = ユーザー要望「モバイルでレイアウトが崩れている所」。
+    //   幅 726 の決め打ちだったので、 412px の画面では半分近く (閉じる ×
+    //   を含む右側) が画面の外へ出て、 触れなくなっていた。 画面に収める。
+    final scrW = MediaQuery.sizeOf(context).width;
+    final palW = math.min(726.0, math.max(280.0, scrW - 16));
     return Positioned(
-      left: _pptxShapePalettePos.dx,
+      left: _pptxShapePalettePos.dx
+          .clamp(0.0, math.max(0.0, scrW - palW))
+          .toDouble(),
       top: _pptxShapePalettePos.dy,
       child: Material(
         color: Colors.transparent,
         // ★ 幅を決めておく (= 浮かせた札は横に無制限なので、 中の Spacer /
         //   スライダーが「幅が決まっていない」 で落ちる)。
         child: Container(
-          width: 726,
+          width: palW,
           padding: const EdgeInsets.fromLTRB(10, 6, 6, 10),
           decoration: BoxDecoration(
             color: const Color(0xFF1E1E2E),
@@ -232192,6 +232694,8 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
     final v = await showMenu<String>(
       context: context,
       color: const Color(0xFF1E1E2E),
+      // 出る動きを止めて即出す (= ユーザー要望: 右クリックが遅い)。
+      popUpAnimationStyle: AnimationStyle.noAnimation,
       position: RelativeRect.fromRect(
           globalPos & const Size(1, 1), Offset.zero & overlay.size),
       items: [
@@ -235091,6 +235595,50 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
       xml = xml.replaceFirst('</p:spTree>', '${buf.toString()}</p:spTree>');
     }
 
+    // ── 2.5 画面の切り替え <p:transition> を挿入 / 置換 (= ユーザー要望) ──
+    //    並び順の決まり: cSld → clrMapOvr → transition → timing → extLst。
+    //    触っていない時は元のまま残す (PowerPoint で付けた物を壊さない)。
+    if (slide.transitionDirty) {
+      final trReg = RegExp(
+          r'<p:transition\b[^>]*(?:/>|>[\s\S]*?</p:transition>)');
+      if (slide.transition.isEmpty) {
+        xml = xml.replaceFirst(trReg, '');
+      } else {
+        final spd = slide.transitionMs <= 320
+            ? 'fast'
+            : (slide.transitionMs >= 800 ? 'slow' : 'med');
+        const body = {
+          'fade': '<p:fade/>',
+          'push': '<p:push dir="l"/>',
+          'wipe': '<p:wipe dir="l"/>',
+          'cover': '<p:cover dir="l"/>',
+          'zoom': '<p:zoom dir="in"/>',
+          'cut': '<p:cut/>',
+        };
+        final inner = body[slide.transition] ?? '<p:fade/>';
+        final trXml = '<p:transition spd="$spd">$inner</p:transition>';
+        if (trReg.hasMatch(xml)) {
+          xml = xml.replaceFirst(trReg, trXml);
+        } else {
+          final timing = xml.indexOf('<p:timing');
+          if (timing >= 0) {
+            xml = xml.substring(0, timing) + trXml + xml.substring(timing);
+          } else {
+            final ext = xml.lastIndexOf('<p:extLst');
+            final cSldEnd = xml.indexOf('</p:cSld>');
+            if (ext > cSldEnd) {
+              xml = xml.substring(0, ext) + trXml + xml.substring(ext);
+            } else {
+              final end = xml.lastIndexOf('</p:sld>');
+              xml = end >= 0
+                  ? xml.substring(0, end) + trXml + xml.substring(end)
+                  : xml.replaceFirst('</p:cSld>', '</p:cSld>$trXml');
+            }
+          }
+        }
+      }
+    }
+
     // ── 3. アニメーション <p:timing> を挿入 / 置換 ──
     // ユーザー要望「アニメーションを入れられるようにして」 への対応。
     // 各シェイプの `animation` フィールドから <p:timing> を構築する。
@@ -235896,6 +236444,21 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
           // Esc では閉じない (= ユーザー要望)。 消費して dismiss へ流さない。
           return KeyEventResult.handled;
         }
+        // ── F5 / Shift+F5: 発表者モード ──
+        //
+        // ★ = ユーザー報告「F5 などで入る機能が実装できていない」。
+        //   中の Focus (_keyFocus) にも同じ処理はあるが、 道具のボタンや
+        //   メモ欄を一度でも押すとそちらへ焦点が移り、 F5 が届かなくなって
+        //   いた。 この Focus は画面ぜんぶの先祖なので、 どこを触った後でも
+        //   必ず通る (文字を打っている最中の F5 も、 入力欄は消費しない)。
+        if (event is KeyDownEvent &&
+            event.logicalKey == LogicalKeyboardKey.f5 &&
+            !HardwareKeyboard.instance.isControlPressed) {
+          final shift = HardwareKeyboard.instance.isShiftPressed;
+          unawaited(
+              _startPresenterMode(startIndex: shift ? _currentIndex : 0));
+          return KeyEventResult.handled;
+        }
         return KeyEventResult.ignored;
       },
       child: Container(
@@ -236512,243 +237075,257 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog> {
                       size: 17, color: Color(0xFFE57373)),
                   onPressed: () => unawaited(_deleteSlideAt(_currentIndex)),
                 ),
-              const Spacer(),
-          IconButton(
-            tooltip: context.read<MindMapProvider>().t('pptx.prevSlide'),
-            icon: Icon(Icons.arrow_back_rounded, color: fg),
-            onPressed: _slides.isEmpty ? null : () => _go(-1),
-          ),
-          IconButton(
-            tooltip: context.read<MindMapProvider>().t('pptx.nextSlide'),
-            icon: Icon(Icons.arrow_forward_rounded, color: fg),
-            onPressed: _slides.isEmpty ? null : () => _go(1),
-          ),
-          // ── 画面分割で開く (= ユーザー要望「word もパワポも画面分割に
-          //   対応させて」) ──
-          // onSplitOpen が渡されている = 全画面 Dialog で開かれている時
-          // のみ表示。 画面分割パネル内で表示中 (= onSplitOpen == null)
-          // は二重に分割しないよう非表示。
-          // (左右の画面分割ボタンは廃止 = ユーザー要望: 分割表示中は
-          //  ファイルが自動でペインに開くため不要になった)
-          const SizedBox(width: 6),
-          // ── 保存 (= 編集内容を PPTx に書き戻す) ──
-          // dirty (変更あり) かつ保存中でない場合のみ有効化。
-          // 編集なしの状態でも「外部アプリで開く」 等は使えるよう、 保存ボタン
-          // は dirty 時のみ強調表示し、 通常時はやや薄く出して機能は残す。
-          TextButton.icon(
-            onPressed: _isSaving || !_dirty
-                ? null
-                : () async {
-                    await _savePptxFile();
+            // ★ = ユーザー要望「モバイルでレイアウトが崩れている所」。
+            //   狭い時は 2 段に積むだけで、 この段そのものは流れない
+            //   ままだった。 412px の画面では右半分 (保存 / 外部アプリで
+            //   開く / AI / 閉じる) がはみ出して押せない。 下の中段と
+            //   同じく、 横に流せるようにする。
+            Expanded(
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                IconButton(
+                  tooltip: context.read<MindMapProvider>().t('pptx.prevSlide'),
+                  icon: Icon(Icons.arrow_back_rounded, color: fg),
+                  onPressed: _slides.isEmpty ? null : () => _go(-1),
+                ),
+                IconButton(
+                  tooltip: context.read<MindMapProvider>().t('pptx.nextSlide'),
+                  icon: Icon(Icons.arrow_forward_rounded, color: fg),
+                  onPressed: _slides.isEmpty ? null : () => _go(1),
+                ),
+                // ── 画面分割で開く (= ユーザー要望「word もパワポも画面分割に
+                //   対応させて」) ──
+                // onSplitOpen が渡されている = 全画面 Dialog で開かれている時
+                // のみ表示。 画面分割パネル内で表示中 (= onSplitOpen == null)
+                // は二重に分割しないよう非表示。
+                // (左右の画面分割ボタンは廃止 = ユーザー要望: 分割表示中は
+                //  ファイルが自動でペインに開くため不要になった)
+                const SizedBox(width: 6),
+                // ── 保存 (= 編集内容を PPTx に書き戻す) ──
+                // dirty (変更あり) かつ保存中でない場合のみ有効化。
+                // 編集なしの状態でも「外部アプリで開く」 等は使えるよう、 保存ボタン
+                // は dirty 時のみ強調表示し、 通常時はやや薄く出して機能は残す。
+                TextButton.icon(
+                  onPressed: _isSaving || !_dirty
+                      ? null
+                      : () async {
+                          await _savePptxFile();
+                        },
+                  icon: _isSaving
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor:
+                                AlwaysStoppedAnimation<Color>(Color(0xFF43B97F)),
+                          ),
+                        )
+                      : Icon(
+                          _dirty ? Icons.save_rounded : Icons.save_outlined,
+                          size: 18,
+                          color: _dirty
+                              ? const Color(0xFF43B97F)
+                              : fg.withValues(alpha: 0.4),
+                        ),
+                  label: Text(
+                    _isSaving ? '保存中…' : (_dirty ? '保存 *' : '保存'),
+                    style: TextStyle(
+                      color: _dirty
+                          ? const Color(0xFF43B97F)
+                          : fg.withValues(alpha: 0.5),
+                      fontSize: 13,
+                      fontWeight: _dirty ? FontWeight.w700 : FontWeight.w500,
+                    ),
+                  ),
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                // ── 共同編集 (= ユーザー要望: Max 限定でファイルを共同編集) ──
+                _buildFileLiveMenu(
+                  context,
+                  provider: context.read<MindMapProvider>(),
+                  filePath: _currentFilePath,
+                  fileName: _currentFileName,
+                  isDirty: () => _dirty,
+                  fg: fg,
+                  dark: dark,
+                  onSession: (_) {
+                    _attachFileLive();
+                    if (mounted) setState(() {});
                   },
-            icon: _isSaving
-                ? const SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      valueColor:
-                          AlwaysStoppedAnimation<Color>(Color(0xFF43B97F)),
+                ),
+                // ダウンロード (別名で保存) — そのままの .pptx 形式で書き出す
+                PopupMenuButton<String>(
+                  tooltip: context.read<MindMapProvider>().t('fsv.download'),
+                  icon: Icon(Icons.download_rounded, color: fg),
+                  color: dark ? const Color(0xFF22222E) : Colors.white,
+                  onSelected: (v) async {
+                    if (v == 'pptx') {
+                      await _downloadCopy();
+                    } else if (v == 'pdf') {
+                      await _downloadAsPdf();
+                    } else if (v == 'png_current') {
+                      await _exportSlideAsPng(allSlides: false);
+                    } else if (v == 'png_all') {
+                      await _exportSlideAsPng(allSlides: true);
+                    }
+                  },
+                  itemBuilder: (_) => [
+                    PopupMenuItem(
+                      value: 'pptx',
+                      child: Row(children: [
+                        const Icon(Icons.slideshow_outlined,
+                            size: 16, color: Color(0xFFE65100)),
+                        const SizedBox(width: 8),
+                        Text(context.read<MindMapProvider>().t('pptx.saveAsPptx'),
+                            style: TextStyle(color: fg, fontSize: 13)),
+                      ]),
                     ),
-                  )
-                : Icon(
-                    _dirty ? Icons.save_rounded : Icons.save_outlined,
-                    size: 18,
-                    color: _dirty
-                        ? const Color(0xFF43B97F)
-                        : fg.withValues(alpha: 0.4),
+                    PopupMenuItem(
+                      value: 'pdf',
+                      child: Row(children: [
+                        const Icon(Icons.picture_as_pdf_outlined,
+                            size: 16, color: Color(0xFFFF6B6B)),
+                        const SizedBox(width: 8),
+                        Text(context.read<MindMapProvider>().t('pptx.saveAsPdf'),
+                            style: TextStyle(color: fg, fontSize: 13)),
+                      ]),
+                    ),
+                    const PopupMenuDivider(),
+                    PopupMenuItem(
+                      value: 'png_current',
+                      child: Row(children: [
+                        const Icon(Icons.image_outlined,
+                            size: 16, color: Color(0xFF4FC3F7)),
+                        const SizedBox(width: 8),
+                        Text(context.read<MindMapProvider>().t('pptx.saveCurrentPng'),
+                            style: TextStyle(color: fg, fontSize: 13)),
+                      ]),
+                    ),
+                    PopupMenuItem(
+                      value: 'png_all',
+                      child: Row(children: [
+                        const Icon(Icons.photo_library_outlined,
+                            size: 16, color: Color(0xFF43B97F)),
+                        const SizedBox(width: 8),
+                        Text(context.read<MindMapProvider>().t('pptx.saveAllPng'),
+                            style: TextStyle(color: fg, fontSize: 13)),
+                      ]),
+                    ),
+                  ],
+                ),
+                const SizedBox(width: 6),
+                TextButton.icon(
+                  onPressed: () async {
+                    if (_currentFilePath.isEmpty) {
+                      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+                        SnackBar(
+                          backgroundColor: const Color(0xFFE57373),
+                          content: Text(
+                              context.read<MindMapProvider>().t('pptx.notSavedYet')),
+                        ),
+                      );
+                      return;
+                    }
+                    try {
+                      final r = await OpenFilex.open(_currentFilePath);
+                      if (r.type != ResultType.done && mounted) {
+                        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+                          SnackBar(
+                            backgroundColor: const Color(0xFFE57373),
+                            content: Text(context
+                                .read<MindMapProvider>()
+                                .t('pptx.cannotOpenExternal')
+                                .replaceFirst('{err}', '${r.message}')),
+                          ),
+                        );
+                      }
+                    } catch (e) {
+                      if (mounted) {
+                        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+                          SnackBar(
+                            backgroundColor: const Color(0xFFE57373),
+                            content: Text(context
+                                .read<MindMapProvider>()
+                                .t('pptx.externalLaunchFailed')
+                                .replaceFirst('{err}', '$e')),
+                          ),
+                        );
+                      }
+                    }
+                  },
+                  icon: const Icon(Icons.open_in_new_rounded, size: 16),
+                  label: Text(context.read<MindMapProvider>().t('pptx.openExternal')),
+                  style: TextButton.styleFrom(
+                    foregroundColor: fg,
+                    backgroundColor:
+                        dark ? const Color(0xFF2A2A3E) : const Color(0xFFD0D0CA),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   ),
-            label: Text(
-              _isSaving ? '保存中…' : (_dirty ? '保存 *' : '保存'),
-              style: TextStyle(
-                color: _dirty
-                    ? const Color(0xFF43B97F)
-                    : fg.withValues(alpha: 0.5),
-                fontSize: 13,
-                fontWeight: _dirty ? FontWeight.w700 : FontWeight.w500,
-              ),
-            ),
-            style: TextButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            ),
-          ),
-          const SizedBox(width: 6),
-          // ── 共同編集 (= ユーザー要望: Max 限定でファイルを共同編集) ──
-          _buildFileLiveMenu(
-            context,
-            provider: context.read<MindMapProvider>(),
-            filePath: _currentFilePath,
-            fileName: _currentFileName,
-            isDirty: () => _dirty,
-            fg: fg,
-            dark: dark,
-            onSession: (_) {
-              _attachFileLive();
-              if (mounted) setState(() {});
-            },
-          ),
-          // ダウンロード (別名で保存) — そのままの .pptx 形式で書き出す
-          PopupMenuButton<String>(
-            tooltip: context.read<MindMapProvider>().t('fsv.download'),
-            icon: Icon(Icons.download_rounded, color: fg),
-            color: dark ? const Color(0xFF22222E) : Colors.white,
-            onSelected: (v) async {
-              if (v == 'pptx') {
-                await _downloadCopy();
-              } else if (v == 'pdf') {
-                await _downloadAsPdf();
-              } else if (v == 'png_current') {
-                await _exportSlideAsPng(allSlides: false);
-              } else if (v == 'png_all') {
-                await _exportSlideAsPng(allSlides: true);
-              }
-            },
-            itemBuilder: (_) => [
-              PopupMenuItem(
-                value: 'pptx',
-                child: Row(children: [
-                  const Icon(Icons.slideshow_outlined,
-                      size: 16, color: Color(0xFFE65100)),
-                  const SizedBox(width: 8),
-                  Text(context.read<MindMapProvider>().t('pptx.saveAsPptx'),
-                      style: TextStyle(color: fg, fontSize: 13)),
-                ]),
-              ),
-              PopupMenuItem(
-                value: 'pdf',
-                child: Row(children: [
-                  const Icon(Icons.picture_as_pdf_outlined,
-                      size: 16, color: Color(0xFFFF6B6B)),
-                  const SizedBox(width: 8),
-                  Text(context.read<MindMapProvider>().t('pptx.saveAsPdf'),
-                      style: TextStyle(color: fg, fontSize: 13)),
-                ]),
-              ),
-              const PopupMenuDivider(),
-              PopupMenuItem(
-                value: 'png_current',
-                child: Row(children: [
-                  const Icon(Icons.image_outlined,
-                      size: 16, color: Color(0xFF4FC3F7)),
-                  const SizedBox(width: 8),
-                  Text(context.read<MindMapProvider>().t('pptx.saveCurrentPng'),
-                      style: TextStyle(color: fg, fontSize: 13)),
-                ]),
-              ),
-              PopupMenuItem(
-                value: 'png_all',
-                child: Row(children: [
-                  const Icon(Icons.photo_library_outlined,
-                      size: 16, color: Color(0xFF43B97F)),
-                  const SizedBox(width: 8),
-                  Text(context.read<MindMapProvider>().t('pptx.saveAllPng'),
-                      style: TextStyle(color: fg, fontSize: 13)),
-                ]),
-              ),
-            ],
-          ),
-          const SizedBox(width: 6),
-          TextButton.icon(
-            onPressed: () async {
-              if (_currentFilePath.isEmpty) {
-                ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-                  SnackBar(
-                    backgroundColor: const Color(0xFFE57373),
-                    content: Text(
-                        context.read<MindMapProvider>().t('pptx.notSavedYet')),
+                ),
+                // ── 囲った所を AI で書き換え (= ユーザー要望)。 ──
+                if (_multiSel.isNotEmpty || _selectedShapeId != null)
+                  TextButton.icon(
+                    onPressed: _aiRewriting ? null : _aiRewriteSelection,
+                    icon: _aiRewriting
+                        ? const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: Colors.white))
+                        : const Icon(Icons.edit_note_rounded, size: 16),
+                    label: Text(context.read<MindMapProvider>().t('pptx.aiRewrite')),
+                    style: TextButton.styleFrom(
+                      foregroundColor: Colors.white,
+                      backgroundColor: const Color(0xFF7E57C2),
+                      padding:
+                          const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    ),
                   ),
-                );
-                return;
-              }
-              try {
-                final r = await OpenFilex.open(_currentFilePath);
-                if (r.type != ResultType.done && mounted) {
-                  ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-                    SnackBar(
-                      backgroundColor: const Color(0xFFE57373),
-                      content: Text(context
-                          .read<MindMapProvider>()
-                          .t('pptx.cannotOpenExternal')
-                          .replaceFirst('{err}', '${r.message}')),
-                    ),
-                  );
-                }
-              } catch (e) {
-                if (mounted) {
-                  ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-                    SnackBar(
-                      backgroundColor: const Color(0xFFE57373),
-                      content: Text(context
-                          .read<MindMapProvider>()
-                          .t('pptx.externalLaunchFailed')
-                          .replaceFirst('{err}', '$e')),
-                    ),
-                  );
-                }
-              }
-            },
-            icon: const Icon(Icons.open_in_new_rounded, size: 16),
-            label: Text(context.read<MindMapProvider>().t('pptx.openExternal')),
-            style: TextButton.styleFrom(
-              foregroundColor: fg,
-              backgroundColor:
-                  dark ? const Color(0xFF2A2A3E) : const Color(0xFFD0D0CA),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            ),
-          ),
-          // ── 囲った所を AI で書き換え (= ユーザー要望)。 ──
-          if (_multiSel.isNotEmpty || _selectedShapeId != null)
-            TextButton.icon(
-              onPressed: _aiRewriting ? null : _aiRewriteSelection,
-              icon: _aiRewriting
-                  ? const SizedBox(
-                      width: 14,
-                      height: 14,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2, color: Colors.white))
-                  : const Icon(Icons.edit_note_rounded, size: 16),
-              label: Text(context.read<MindMapProvider>().t('pptx.aiRewrite')),
-              style: TextButton.styleFrom(
-                foregroundColor: Colors.white,
-                backgroundColor: const Color(0xFF7E57C2),
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                // ── AI 補助 (= ユーザー要望: word と同じ位置に AI ボタン)。 ──
+                TextButton.icon(
+                  onPressed: _openAiAssistForPptx,
+                  icon: const Icon(Icons.auto_awesome_rounded, size: 16),
+                  label: const Text('AI'),
+                  style: TextButton.styleFrom(
+                    foregroundColor: Colors.white,
+                    backgroundColor: const Color(0xFFAB47BC),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                // ── ヘッダーを隠す (= ユーザー要望) ──
+                IconButton(
+                  tooltip: context.read<MindMapProvider>().t('text.hideHeader'),
+                  icon: Icon(Icons.keyboard_double_arrow_up_rounded,
+                      color: fg.withValues(alpha: 0.7)),
+                  onPressed: () => setState(() => _headerVisible = false),
+                ),
+                IconButton(
+                  tooltip: context.read<MindMapProvider>().t('btn.close'),
+                  icon: Icon(Icons.close_rounded, color: fg),
+                  // ── 閉じる前に未保存確認 ──
+                  // ユーザー要望「文字色 1 つ変えただけでも×ボタンで閉じる時に
+                  //   設定を保存するかの確認が出るようにして」 への対応。
+                  //   `_confirmDiscard` は `_slides[i].dirty` や `notesDirty` も
+                  //   含めた包括的な未保存判定を行い、 ユーザーが「破棄して閉じる」
+                  //   を選んだ場合のみダイアログを閉じる。
+                  onPressed: () async {
+                    if (await _confirmPptxDiscard(anchor: context)) {
+                      if (mounted) Navigator.of(context).pop();
+                    }
+                  },
+                ),
+                  ]),
+                ),
               ),
             ),
-          // ── AI 補助 (= ユーザー要望: word と同じ位置に AI ボタン)。 ──
-          TextButton.icon(
-            onPressed: _openAiAssistForPptx,
-            icon: const Icon(Icons.auto_awesome_rounded, size: 16),
-            label: const Text('AI'),
-            style: TextButton.styleFrom(
-              foregroundColor: Colors.white,
-              backgroundColor: const Color(0xFFAB47BC),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            ),
-          ),
-          const SizedBox(width: 6),
-          // ── ヘッダーを隠す (= ユーザー要望) ──
-          IconButton(
-            tooltip: context.read<MindMapProvider>().t('text.hideHeader'),
-            icon: Icon(Icons.keyboard_double_arrow_up_rounded,
-                color: fg.withValues(alpha: 0.7)),
-            onPressed: () => setState(() => _headerVisible = false),
-          ),
-          IconButton(
-            tooltip: context.read<MindMapProvider>().t('btn.close'),
-            icon: Icon(Icons.close_rounded, color: fg),
-            // ── 閉じる前に未保存確認 ──
-            // ユーザー要望「文字色 1 つ変えただけでも×ボタンで閉じる時に
-            //   設定を保存するかの確認が出るようにして」 への対応。
-            //   `_confirmDiscard` は `_slides[i].dirty` や `notesDirty` も
-            //   含めた包括的な未保存判定を行い、 ユーザーが「破棄して閉じる」
-            //   を選んだ場合のみダイアログを閉じる。
-            onPressed: () async {
-              if (await _confirmPptxDiscard(anchor: context)) {
-                if (mounted) Navigator.of(context).pop();
-              }
-            },
-          ),
             ],
           );
 
@@ -255737,6 +256314,22 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
   final List<_ImgShape> _annotShapes = [];
   _ImgShape? _shapeDraft;
 
+  /// 図形の大きさを固定して置くか (= ユーザー要望: PDF と同じように、
+  /// チェックなどを毎回同じ大きさ・形で出せるように)。 ON の間は押した所へ
+  /// [_annotFixedSize] の大きさで置き、 引いても大きさは変わらない。
+  bool _annotFixed = false;
+
+  /// 固定した時に置く大きさ (1 辺の px)。 自由に引いた最後の図形の大きさを
+  /// 覚えるので、 好きな大きさで 1 つ描いてから固定すれば揃う。
+  double _annotFixedSize = 44;
+
+  /// 面のある図形 (四角 / 楕円) の中を塗るか (= ユーザー要望)。
+  bool _annotFilled = false;
+
+  /// 中を塗れる (= 面のある) 道具か。
+  bool get _annotCanFill =>
+      _annotTool == 'rect' || _annotTool == 'ellipse';
+
   // ── 画像へのテキスト入力 ──
   // ユーザー要望「画像に文字を入力できるようにして」 への対応。
   // 注釈モードで「文字」 ボタンから追加し、 ドラッグで位置調整、 タップで
@@ -256460,6 +257053,19 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
     );
   }
 
+  /// 押した所に、 今の設定 (大きさ / 中を塗るか) で図形を 1 つ作る。
+  _ImgShape _makeAnnotShapeAt(Offset at) {
+    final half = (_annotFixed ? _annotFixedSize : 44.0) / 2;
+    return _ImgShape(
+      kind: _annotTool,
+      start: at - Offset(half, half),
+      end: at + Offset(half, half),
+      color: _annotColor,
+      width: _annotWidth,
+      filled: _annotFilled && _annotCanFill,
+    );
+  }
+
   /// 注釈レイヤー (= GestureDetector で描画)
   Widget _buildAnnotationOverlay() {
     final bool shapeMode = _annotTool != 'pen';
@@ -256470,27 +257076,23 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
         //   以前は 4px 未満の動きを黙って捨てていた。
         onTapUp: (d) {
           if (!shapeMode) return;
-          setState(() {
-            const half = 22.0;
-            _annotShapes.add(_ImgShape(
-              kind: _annotTool,
-              start: d.localPosition - const Offset(half, half),
-              end: d.localPosition + const Offset(half, half),
-              color: _annotColor,
-              width: _annotWidth,
-            ));
-          });
+          setState(() => _annotShapes.add(_makeAnnotShapeAt(d.localPosition)));
         },
         onPanStart: (d) {
           setState(() {
             if (shapeMode) {
-              _shapeDraft = _ImgShape(
-                kind: _annotTool,
-                start: d.localPosition,
-                end: d.localPosition,
-                color: _annotColor,
-                width: _annotWidth,
-              );
+              // 大きさを固定している時は、 引かずに決まった大きさで出す
+              // (指を動かした分は「置き場所」 になる = ユーザー要望)。
+              _shapeDraft = _annotFixed
+                  ? _makeAnnotShapeAt(d.localPosition)
+                  : _ImgShape(
+                      kind: _annotTool,
+                      start: d.localPosition,
+                      end: d.localPosition,
+                      color: _annotColor,
+                      width: _annotWidth,
+                      filled: _annotFilled && _annotCanFill,
+                    );
             } else {
               _curStroke = [d.localPosition];
             }
@@ -256499,7 +257101,17 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
         onPanUpdate: (d) {
           setState(() {
             if (shapeMode) {
-              _shapeDraft?.end = d.localPosition;
+              final sh = _shapeDraft;
+              if (sh == null) return;
+              if (_annotFixed) {
+                // 大きさは変えず、 指の位置へ中心を運ぶ。
+                final half = _annotFixedSize / 2;
+                sh
+                  ..start = d.localPosition - Offset(half, half)
+                  ..end = d.localPosition + Offset(half, half);
+              } else {
+                sh.end = d.localPosition;
+              }
             } else {
               _curStroke = [..._curStroke, d.localPosition];
             }
@@ -256509,8 +257121,15 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
           setState(() {
             if (shapeMode) {
               final sh = _shapeDraft;
-              if (sh != null && (sh.end - sh.start).distance >= 4) {
+              if (sh != null &&
+                  (_annotFixed || (sh.end - sh.start).distance >= 4)) {
                 _annotShapes.add(sh);
+                // 次に固定で置く時のために、 今の大きさを覚えておく。
+                if (!_annotFixed) {
+                  final r = Rect.fromPoints(sh.start, sh.end);
+                  final side = math.max(r.width.abs(), r.height.abs());
+                  if (side >= 8) _annotFixedSize = side.clamp(8.0, 600.0);
+                }
               }
               _shapeDraft = null;
             } else {
@@ -256746,78 +257365,90 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
                 onPressed: () => setState(() => _mode = 'view'),
               ),
             ] else if (isCutoutMode) ...[
-              // ── なげなわ切り抜き (= ユーザー要望: 人物や物体を切り取って
-              //    クリップボードへ) ──
-              // 切り抜き方の選択: 四角ブロック / フリーハンド (= ユーザー要望)。
-              IconButton(
-                tooltip: context.read<MindMapProvider>().t('imgCut.modeRect'),
-                icon: Icon(Icons.crop_square_rounded,
-                    color: _cutoutRect
-                        ? const Color(0xFFEC407A)
-                        : Colors.white54,
-                    size: 18),
-                onPressed: () => setState(() {
-                  _cutoutRect = true;
-                  _lassoPoints.clear();
-                  _lassoClosed = false;
-                }),
-              ),
-              IconButton(
-                tooltip: context.read<MindMapProvider>().t('imgCut.modeFree'),
-                icon: Icon(Icons.gesture_rounded,
-                    color: !_cutoutRect
-                        ? const Color(0xFFEC407A)
-                        : Colors.white54,
-                    size: 18),
-                onPressed: () => setState(() {
-                  _cutoutRect = false;
-                  _lassoPoints.clear();
-                  _lassoClosed = false;
-                }),
-              ),
-              // ★ 切り抜きを画像に確定する (= ユーザー要望)。
-              //   これまではコピーと別ファイル保存しか無かった。
-              TextButton.icon(
-                icon: const Icon(Icons.check_rounded,
-                    color: Color(0xFF43B97F), size: 18),
-                label: Text(context.read<MindMapProvider>().t('btn.apply'),
-                    style: const TextStyle(color: Color(0xFF43B97F))),
-                onPressed: _lassoClosed ? _applyCutout : null,
-              ),
-              TextButton.icon(
-                icon: const Icon(Icons.copy_rounded,
-                    color: Color(0xFF43B97F), size: 18),
-                label: Text(
-                    context.read<MindMapProvider>().t('imgCut.copy'),
-                    style: const TextStyle(color: Color(0xFF43B97F))),
-                onPressed:
-                    _lassoClosed ? _copyLassoCutoutToClipboard : null,
-              ),
-              TextButton.icon(
-                icon: const Icon(Icons.save_alt_rounded,
-                    color: Color(0xFF4FC3F7), size: 18),
-                label: Text(
-                    context.read<MindMapProvider>().t('imgCut.save'),
-                    style: const TextStyle(color: Color(0xFF4FC3F7))),
-                onPressed: _lassoClosed ? _saveLassoCutout : null,
-              ),
-              IconButton(
-                tooltip: context.read<MindMapProvider>().t('btn.clear'),
-                icon: const Icon(Icons.refresh_rounded,
-                    color: Colors.white60, size: 18),
-                onPressed: () => setState(() {
-                  _lassoPoints.clear();
-                  _lassoClosed = false;
-                }),
-              ),
-              TextButton(
-                child: Text(context.read<MindMapProvider>().t('btn.cancel'),
-                    style: const TextStyle(color: Colors.white54)),
-                onPressed: () => setState(() {
-                  _mode = 'view';
-                  _lassoPoints.clear();
-                  _lassoClosed = false;
-                }),
+              // ★ = ユーザー要望「モバイルでレイアウトが崩れている所」。
+              //   すぐ下の注釈モードは横に流せるようにしてあるのに、
+              //   切り抜きモードだけ素の Row のままで、 412px の画面では
+              //   キャンセルや保存がはみ出して押せなかった。 同じ形にする。
+              Expanded(
+                flex: 3,
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    // ── なげなわ切り抜き (= ユーザー要望: 人物や物体を切り取って
+                    //    クリップボードへ) ──
+                    // 切り抜き方の選択: 四角ブロック / フリーハンド (= ユーザー要望)。
+                    IconButton(
+                      tooltip: context.read<MindMapProvider>().t('imgCut.modeRect'),
+                      icon: Icon(Icons.crop_square_rounded,
+                          color: _cutoutRect
+                              ? const Color(0xFFEC407A)
+                              : Colors.white54,
+                          size: 18),
+                      onPressed: () => setState(() {
+                        _cutoutRect = true;
+                        _lassoPoints.clear();
+                        _lassoClosed = false;
+                      }),
+                    ),
+                    IconButton(
+                      tooltip: context.read<MindMapProvider>().t('imgCut.modeFree'),
+                      icon: Icon(Icons.gesture_rounded,
+                          color: !_cutoutRect
+                              ? const Color(0xFFEC407A)
+                              : Colors.white54,
+                          size: 18),
+                      onPressed: () => setState(() {
+                        _cutoutRect = false;
+                        _lassoPoints.clear();
+                        _lassoClosed = false;
+                      }),
+                    ),
+                    // ★ 切り抜きを画像に確定する (= ユーザー要望)。
+                    //   これまではコピーと別ファイル保存しか無かった。
+                    TextButton.icon(
+                      icon: const Icon(Icons.check_rounded,
+                          color: Color(0xFF43B97F), size: 18),
+                      label: Text(context.read<MindMapProvider>().t('btn.apply'),
+                          style: const TextStyle(color: Color(0xFF43B97F))),
+                      onPressed: _lassoClosed ? _applyCutout : null,
+                    ),
+                    TextButton.icon(
+                      icon: const Icon(Icons.copy_rounded,
+                          color: Color(0xFF43B97F), size: 18),
+                      label: Text(
+                          context.read<MindMapProvider>().t('imgCut.copy'),
+                          style: const TextStyle(color: Color(0xFF43B97F))),
+                      onPressed:
+                          _lassoClosed ? _copyLassoCutoutToClipboard : null,
+                    ),
+                    TextButton.icon(
+                      icon: const Icon(Icons.save_alt_rounded,
+                          color: Color(0xFF4FC3F7), size: 18),
+                      label: Text(
+                          context.read<MindMapProvider>().t('imgCut.save'),
+                          style: const TextStyle(color: Color(0xFF4FC3F7))),
+                      onPressed: _lassoClosed ? _saveLassoCutout : null,
+                    ),
+                    IconButton(
+                      tooltip: context.read<MindMapProvider>().t('btn.clear'),
+                      icon: const Icon(Icons.refresh_rounded,
+                          color: Colors.white60, size: 18),
+                      onPressed: () => setState(() {
+                        _lassoPoints.clear();
+                        _lassoClosed = false;
+                      }),
+                    ),
+                    TextButton(
+                      child: Text(context.read<MindMapProvider>().t('btn.cancel'),
+                          style: const TextStyle(color: Colors.white54)),
+                      onPressed: () => setState(() {
+                        _mode = 'view';
+                        _lassoPoints.clear();
+                        _lassoClosed = false;
+                      }),
+                    ),
+                  ]),
+                ),
               ),
             ] else if (isAnnotMode) ...[
               // ── 注釈ツールバー ──
@@ -256922,6 +257553,83 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
                           ),
                         )),
                     const SizedBox(width: 4),
+                    // ── 大きさ・形を固定して置く (= ユーザー要望: PDF と
+                    //    同じく、 チェックなどを毎回同じ大きさで出したい) ──
+                    if (_annotTool != 'pen')
+                      Tooltip(
+                        message:
+                            '${context.read<MindMapProvider>().t('imgAnno.fixedSize')}'
+                            ' (${_annotFixedSize.round()} px)',
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(6),
+                          onTap: () =>
+                              setState(() => _annotFixed = !_annotFixed),
+                          child: Container(
+                            width: 30,
+                            height: 30,
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              color: _annotFixed
+                                  ? const Color(0xFF6C63FF)
+                                  : Colors.transparent,
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Icon(
+                                _annotFixed
+                                    ? Icons.photo_size_select_small_rounded
+                                    : Icons.photo_size_select_large_rounded,
+                                size: 17,
+                                color: _annotFixed
+                                    ? Colors.white
+                                    : Colors.white60),
+                          ),
+                        ),
+                      ),
+                    // 固定している時だけ、 大きさを選べるバーを出す。
+                    if (_annotTool != 'pen' && _annotFixed)
+                      SizedBox(
+                        width: 90,
+                        child: Slider(
+                          value: _annotFixedSize.clamp(8.0, 300.0),
+                          min: 8,
+                          max: 300,
+                          activeColor: const Color(0xFF6C63FF),
+                          onChanged: (v) =>
+                              setState(() => _annotFixedSize = v),
+                        ),
+                      ),
+                    // ── 中を塗る / 中空 (= ユーザー要望) ──
+                    if (_annotCanFill)
+                      Tooltip(
+                        message: context.read<MindMapProvider>().t(
+                            _annotFilled
+                                ? 'imgAnno.hollow'
+                                : 'imgAnno.filled'),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(6),
+                          onTap: () =>
+                              setState(() => _annotFilled = !_annotFilled),
+                          child: Container(
+                            width: 30,
+                            height: 30,
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              color: _annotFilled
+                                  ? const Color(0xFF6C63FF)
+                                  : Colors.transparent,
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Icon(
+                                _annotFilled
+                                    ? Icons.square_rounded
+                                    : Icons.crop_square_rounded,
+                                size: 17,
+                                color: _annotFilled
+                                    ? Colors.white
+                                    : Colors.white60),
+                          ),
+                        ),
+                      ),
                     IconButton(
                       tooltip: context
                           .read<MindMapProvider>()
@@ -256938,9 +257646,12 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
                       onPressed: _undoStroke,
                     ),
                     IconButton(
+                      // ★ = ユーザー要望「クリアのアイコンが分かりにくい」。
+                      //   三本線 (clear_all) は「並び」 に見えるので、
+                      //   掃き出すごみ箱に変えた。
                       tooltip: context.read<MindMapProvider>().t('btn.clear'),
-                      icon: const Icon(Icons.clear_all_rounded,
-                          color: Colors.white60, size: 18),
+                      icon: const Icon(Icons.delete_sweep_rounded,
+                          color: Colors.white60, size: 20),
                       onPressed: _clearAnnotations,
                     ),
                     TextButton(
@@ -257324,12 +258035,17 @@ class _ImgShape {
   Offset end;
   final Color color;
   final double width;
+
+  /// 中を塗るか (= ユーザー要望: 図形の中を塗りつぶしたり中空にしたり)。
+  /// 面のある図形 (四角 / 楕円) だけで効く。
+  final bool filled;
   _ImgShape({
     required this.kind,
     required this.start,
     required this.end,
     required this.color,
     required this.width,
+    this.filled = false,
   });
 }
 
@@ -257377,11 +258093,18 @@ class _AnnotationPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..isAntiAlias = true;
     final rect = Rect.fromPoints(sh.start, sh.end);
+    // 中を塗る図形は、 先に中を塗ってから枠を描く (= ユーザー要望)。
+    final fillPaint = Paint()
+      ..color = sh.color
+      ..style = PaintingStyle.fill
+      ..isAntiAlias = true;
     switch (sh.kind) {
       case 'rect':
+        if (sh.filled) canvas.drawRect(rect, fillPaint);
         canvas.drawRect(rect, paint);
         break;
       case 'ellipse':
+        if (sh.filled) canvas.drawOval(rect, fillPaint);
         canvas.drawOval(rect, paint);
         break;
       case 'check':
@@ -259048,6 +259771,71 @@ class _PresenterModeDialogState extends State<_PresenterModeDialog>
   AnimationController? _animCtrl;
   DateTime _lastAnimAudiencePush = DateTime.fromMillisecondsSinceEpoch(0);
 
+  /// 直前の移動が「次へ」 だったか (= 切り替えの動く向きに使う)。
+  bool _navForward = true;
+
+  /// 今のスライドに設定された切り替え方で、 出入りの動きを作る
+  /// (= ユーザー要望: 本家のような画面の切り替え)。
+  ///
+  /// AnimatedSwitcher は入る側と出る側の両方にこの係を通すので、
+  /// 出る側は同じ動きが逆再生になる。
+  Widget _slideTransitionBuilder(Widget child, Animation<double> anim) {
+    final kind = _currentTransitionKind;
+    final dir = _navForward ? 1.0 : -1.0;
+    switch (kind) {
+      case 'fade':
+        return FadeTransition(opacity: anim, child: child);
+      case 'push':
+      case 'cover':
+        return SlideTransition(
+          position: Tween<Offset>(begin: Offset(dir, 0), end: Offset.zero)
+              .animate(CurvedAnimation(parent: anim, curve: Curves.easeOut)),
+          child: child,
+        );
+      case 'wipe':
+        return ClipRect(
+          child: AnimatedBuilder(
+            animation: anim,
+            builder: (_, c) => Align(
+              alignment: _navForward
+                  ? Alignment.centerLeft
+                  : Alignment.centerRight,
+              widthFactor: anim.value.clamp(0.0, 1.0),
+              child: c,
+            ),
+            child: child,
+          ),
+        );
+      case 'zoom':
+        return FadeTransition(
+          opacity: anim,
+          child: ScaleTransition(
+            scale: Tween<double>(begin: _navForward ? 0.82 : 1.18, end: 1.0)
+                .animate(
+                    CurvedAnimation(parent: anim, curve: Curves.easeOut)),
+            child: child,
+          ),
+        );
+      default: // 'cut' / '' = 動かさない
+        return child;
+    }
+  }
+
+  /// 今出しているスライドの切り替え方 ('' = 付けない)。
+  /// PowerPoint と同じで「これから出る側」 の設定で動かす。
+  String get _currentTransitionKind {
+    if (_currentIndex < 0 || _currentIndex >= widget.slides.length) return '';
+    final k = widget.slides[_currentIndex].transition;
+    return k == 'cut' ? '' : k;
+  }
+
+  /// 切り替えにかける長さ。 付けていない時は 1ms (= 一瞬で差し替え)。
+  Duration get _currentTransitionDuration {
+    if (_currentTransitionKind.isEmpty) return const Duration(milliseconds: 1);
+    final ms = widget.slides[_currentIndex].transitionMs.clamp(80, 3000);
+    return Duration(milliseconds: ms);
+  }
+
   List<List<_PptxAnim>> _animGroups(_PptxSlide s) {
     final groups = <List<_PptxAnim>>[];
     for (final a in s.anims) {
@@ -259327,6 +260115,7 @@ class _PresenterModeDialogState extends State<_PresenterModeDialog>
     }
     if (_currentIndex < widget.slides.length - 1) {
       setState(() {
+        _navForward = true;
         _currentIndex++;
         _clearStrokes();
         _resetAnim();
@@ -259345,6 +260134,7 @@ class _PresenterModeDialogState extends State<_PresenterModeDialog>
     }
     if (_currentIndex > 0) {
       setState(() {
+        _navForward = false;
         _currentIndex--;
         _clearStrokes();
         _animCtrl?.stop();
@@ -259833,9 +260623,26 @@ class _PresenterModeDialogState extends State<_PresenterModeDialog>
                               child: RepaintBoundary(
                                 key: _slideCaptureKey,
                                 child: Stack(children: [
+                                  // ── 画面の切り替え (= ユーザー要望) ──
+                                  //    スライドが変わる時だけ動く。 手書きの
+                                  //    注釈は動かさない (上に重ねたまま)。
                                   Positioned.fill(
-                                    child: _buildPresenterSlide(slide,
-                                        isCurrent: true),
+                                    child: AnimatedSwitcher(
+                                      duration: _currentTransitionDuration,
+                                      switchInCurve: Curves.easeOut,
+                                      switchOutCurve: Curves.easeIn,
+                                      transitionBuilder:
+                                          _slideTransitionBuilder,
+                                      layoutBuilder: (cur, prev) => Stack(
+                                        fit: StackFit.expand,
+                                        children: [...prev, if (cur != null) cur],
+                                      ),
+                                      child: KeyedSubtree(
+                                        key: ValueKey<int>(_currentIndex),
+                                        child: _buildPresenterSlide(slide,
+                                            isCurrent: true),
+                                      ),
+                                    ),
                                   ),
                                   Positioned.fill(
                                       child: _buildAnnotationOverlay()),
@@ -262219,8 +263026,13 @@ Future<T?> _showDialogNearAnchor<T>(
     builder: (dctx) {
       if (rect == null) return Builder(builder: builder);
       final screen = MediaQuery.of(dctx).size;
-      final left = (rect.center.dx - width / 2)
-          .clamp(8.0, math.max(8.0, screen.width - width - 8))
+      // ★ = ユーザー要望「モバイルでレイアウトが崩れている所を直して」。
+      //   呼び出し側の幅 (480 / 460 等) をそのまま Positioned に渡していた
+      //   ので、 412px の画面では左が 8 に張り付いて右へはみ出し、 Stack が
+      //   既定で切り取るため右端のボタンが見えず押せなかった。 画面に合わせる。
+      final w = math.min(width, math.max(240.0, screen.width - 16));
+      final left = (rect.center.dx - w / 2)
+          .clamp(8.0, math.max(8.0, screen.width - w - 8))
           .toDouble();
       var top = rect.bottom + 8;
       if (top + estHeight > screen.height - 8) {
@@ -262230,7 +263042,7 @@ Future<T?> _showDialogNearAnchor<T>(
         Positioned(
           left: left,
           top: top,
-          width: width,
+          width: w,
           child: Material(
             type: MaterialType.transparency,
             child: Builder(builder: builder),

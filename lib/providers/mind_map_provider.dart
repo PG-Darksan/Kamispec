@@ -16498,6 +16498,24 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Copiar',
       'ru': 'Копировать',
     },
+    'imgAnno.fixedSize': {
+      'ja': '大きさを固定して置く', 'en': 'Place at a fixed size',
+      'zh': '以固定大小放置', 'ko': '크기를 고정해서 두기',
+      'es': 'Colocar con tamano fijo', 'fr': 'Placer a taille fixe',
+      'de': 'In fester Groesse setzen', 'pt': 'Colocar em tamanho fixo',
+      'ru': 'Ставить фиксированного размера',
+    },
+    'imgAnno.filled': {
+      'ja': '中を塗る', 'en': 'Fill the inside', 'zh': '填充内部',
+      'ko': '안쪽 채우기', 'es': 'Rellenar el interior',
+      'fr': 'Remplir l interieur', 'de': 'Innen fuellen',
+      'pt': 'Preencher o interior', 'ru': 'Залить внутри',
+    },
+    'imgAnno.hollow': {
+      'ja': '中空にする', 'en': 'Make it hollow', 'zh': '改为中空',
+      'ko': '속을 비우기', 'es': 'Dejarlo hueco', 'fr': 'Laisser creux',
+      'de': 'Hohl machen', 'pt': 'Deixar vazado', 'ru': 'Сделать пустым',
+    },
     'imgAnno.addText': {
       'ja': '文字を追加',
       'en': 'Add text',
@@ -22864,6 +22882,21 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Não há página para adicionar',
       'ru': 'Нет страницы для добавления',
     },
+    'md.sendSelToAi': {
+      'ja': '選んだ文字を AI へ渡す', 'en': 'Send selection to AI',
+      'zh': '把所选文字交给 AI', 'ko': '선택한 글자를 AI에 넘기기',
+      'es': 'Enviar la seleccion a la IA',
+      'fr': 'Envoyer la selection a l IA',
+      'de': 'Auswahl an die KI senden', 'pt': 'Enviar a selecao para a IA',
+      'ru': 'Отправить выделенное в ИИ',
+    },
+    'md.sendAllToAi': {
+      'ja': '本文を AI へ渡す', 'en': 'Send the text to AI',
+      'zh': '把正文交给 AI', 'ko': '본문을 AI에 넘기기',
+      'es': 'Enviar el texto a la IA', 'fr': 'Envoyer le texte a l IA',
+      'de': 'Text an die KI senden', 'pt': 'Enviar o texto para a IA',
+      'ru': 'Отправить текст в ИИ',
+    },
     'md.copy': {
       'ja': '本文をコピー', 'en': 'Copy the source', 'zh': '复制正文',
       'ko': '본문 복사', 'es': 'Copiar el texto', 'fr': 'Copier le texte',
@@ -28128,6 +28161,16 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Preencher',
       'ru': 'Заливка',
     },
+    'paint.fillPaper': {
+      'ja': '用紙の色', 'en': 'Paper color', 'zh': '纸张颜色',
+      'ko': '종이 색', 'es': 'Color del papel', 'fr': 'Couleur du papier',
+      'de': 'Papierfarbe', 'pt': 'Cor do papel', 'ru': 'Цвет бумаги',
+    },
+    'paint.fillPaperClear': {
+      'ja': '元に戻す', 'en': 'Reset', 'zh': '还原', 'ko': '되돌리기',
+      'es': 'Restablecer', 'fr': 'Reinitialiser', 'de': 'Zuruecksetzen',
+      'pt': 'Redefinir', 'ru': 'Сбросить',
+    },
     'paint.fillHint': {
       'ja': '領域をタップで塗る / もう一度タップで解除',
       'en': 'Tap a region to fill, tap again to remove',
@@ -28140,15 +28183,15 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Нажмите на область для заливки, ещё раз — убрать',
     },
     'paint.fillNoRegion': {
-      'ja': '面のある図形（四角・楕円・三角・ひし形）の内側をタップしてください',
-      'en': 'Tap inside a filled-area shape (rect/ellipse/triangle/diamond)',
-      'zh': '请点按有面积的图形（矩形/椭圆/三角/菱形）内部',
-      'ko': '면이 있는 도형(사각형/타원/삼각형/마름모) 안을 탭하세요',
-      'es': 'Toca dentro de una forma con área',
-      'fr': 'Touchez l\'intérieur d\'une forme avec surface',
-      'de': 'Tippe in eine Flächenform',
-      'pt': 'Toque dentro de uma forma com área',
-      'ru': 'Нажмите внутри фигуры с площадью',
+      'ja': '囲まれた所を押すと塗れます (用紙の色は「用紙の色」 から)',
+      'en': 'Tap inside an enclosed area to fill (use "Paper color" for the page)',
+      'zh': '点按被围起来的区域即可填充（整页请用「纸张颜色」）',
+      'ko': '둘러싸인 곳을 누르면 채워집니다 (종이 색은 "종이 색"에서)',
+      'es': 'Toca dentro de un area cerrada (para la pagina usa "Color del papel")',
+      'fr': 'Touchez une zone fermee (pour la page, utilisez « Couleur du papier »)',
+      'de': 'In einen geschlossenen Bereich tippen (Seite: "Papierfarbe")',
+      'pt': 'Toque dentro de uma area fechada (para a pagina use "Cor do papel")',
+      'ru': 'Нажмите внутри замкнутой области (для страницы — «Цвет бумаги»)',
     },
     // ── レイヤー順 / グループ化 / 重なり塗り (= ユーザー要望) ──
     'paint.bringToFront': {
@@ -51236,6 +51279,106 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Monitoranordnung',
       'pt': 'Disposição dos monitores',
       'ru': 'Расположение экранов',
+    },
+    'osTheme.title': {
+      'ja': 'Windows の見た目 (明るい / 暗い)',
+      'en': 'Windows appearance (light / dark)',
+      'zh': 'Windows 外观（浅色 / 深色）',
+      'ko': 'Windows 모양 (밝게 / 어둡게)',
+      'es': 'Apariencia de Windows (claro / oscuro)',
+      'fr': 'Apparence de Windows (clair / sombre)',
+      'de': 'Windows-Darstellung (hell / dunkel)',
+      'pt': 'Aparencia do Windows (claro / escuro)',
+      'ru': 'Оформление Windows (светлое / тёмное)',
+    },
+    'osTheme.desc': {
+      'ja': 'パソコン自体の見た目を切り替えます。 Windows の '
+          '「設定 > 個人用設定 > 色」 と同じ所を変えるので、 他のアプリにも '
+          'すぐ効きます。',
+      'en': 'Switches the appearance of Windows itself. This changes the '
+          'same setting as Settings > Personalization > Colors, so other '
+          'apps follow right away.',
+      'zh': '切换电脑本身的外观。与「设置 > 个性化 > 颜色」相同，其他应用也会立即生效。',
+      'ko': 'PC 자체의 모양을 바꿉니다. Windows 설정 > 개인 설정 > 색과 같은 '
+          '곳을 바꾸므로 다른 앱에도 바로 적용됩니다.',
+      'es': 'Cambia la apariencia de Windows. Es el mismo ajuste que '
+          'Configuracion > Personalizacion > Colores.',
+      'fr': 'Change l apparence de Windows. C est le meme reglage que '
+          'Parametres > Personnalisation > Couleurs.',
+      'de': 'Aendert die Darstellung von Windows. Dies ist dieselbe '
+          'Einstellung wie Einstellungen > Personalisierung > Farben.',
+      'pt': 'Muda a aparencia do Windows. E o mesmo ajuste de '
+          'Configuracoes > Personalizacao > Cores.',
+      'ru': 'Меняет оформление самой Windows — то же, что «Параметры > '
+          'Персонализация > Цвета».',
+    },
+    'osTheme.apps': {
+      'ja': 'アプリ', 'en': 'Apps', 'zh': '应用', 'ko': '앱',
+      'es': 'Aplicaciones', 'fr': 'Applications', 'de': 'Apps',
+      'pt': 'Aplicativos', 'ru': 'Приложения',
+    },
+    'osTheme.appsHelp': {
+      'ja': 'エクスプローラーや設定などの中の色',
+      'en': 'Colors inside File Explorer, Settings and other apps',
+      'zh': '资源管理器和设置等应用内部的颜色',
+      'ko': '탐색기·설정 등 앱 내부의 색',
+      'es': 'Colores dentro del Explorador, Configuracion y otras apps',
+      'fr': 'Couleurs dans l Explorateur, les Parametres et les apps',
+      'de': 'Farben im Explorer, in den Einstellungen und in Apps',
+      'pt': 'Cores dentro do Explorador, Configuracoes e outros apps',
+      'ru': 'Цвета внутри проводника, параметров и приложений',
+    },
+    'osTheme.system': {
+      'ja': 'タスクバーとスタート', 'en': 'Taskbar and Start',
+      'zh': '任务栏和开始菜单', 'ko': '작업 표시줄과 시작',
+      'es': 'Barra de tareas e Inicio', 'fr': 'Barre des taches et Demarrer',
+      'de': 'Taskleiste und Start', 'pt': 'Barra de tarefas e Iniciar',
+      'ru': 'Панель задач и «Пуск»',
+    },
+    'osTheme.systemHelp': {
+      'ja': '画面の下の帯とスタートメニューの色',
+      'en': 'Colors of the bar at the bottom and the Start menu',
+      'zh': '屏幕下方的栏和开始菜单的颜色',
+      'ko': '화면 아래 막대와 시작 메뉴의 색',
+      'es': 'Colores de la barra inferior y del menu Inicio',
+      'fr': 'Couleurs de la barre du bas et du menu Demarrer',
+      'de': 'Farben der unteren Leiste und des Startmenues',
+      'pt': 'Cores da barra inferior e do menu Iniciar',
+      'ru': 'Цвета нижней панели и меню «Пуск»',
+    },
+    'osTheme.light': {
+      'ja': '明るい', 'en': 'Light', 'zh': '浅色', 'ko': '밝게',
+      'es': 'Claro', 'fr': 'Clair', 'de': 'Hell', 'pt': 'Claro',
+      'ru': 'Светлое',
+    },
+    'osTheme.dark': {
+      'ja': '暗い', 'en': 'Dark', 'zh': '深色', 'ko': '어둡게',
+      'es': 'Oscuro', 'fr': 'Sombre', 'de': 'Dunkel', 'pt': 'Escuro',
+      'ru': 'Тёмное',
+    },
+    'osTheme.allDark': {
+      'ja': 'まとめて暗くする', 'en': 'Make everything dark',
+      'zh': '全部改为深色', 'ko': '전부 어둡게',
+      'es': 'Poner todo oscuro', 'fr': 'Tout mettre en sombre',
+      'de': 'Alles dunkel', 'pt': 'Deixar tudo escuro',
+      'ru': 'Сделать всё тёмным',
+    },
+    'osTheme.allLight': {
+      'ja': 'まとめて明るくする', 'en': 'Make everything light',
+      'zh': '全部改为浅色', 'ko': '전부 밝게',
+      'es': 'Poner todo claro', 'fr': 'Tout mettre en clair',
+      'de': 'Alles hell', 'pt': 'Deixar tudo claro',
+      'ru': 'Сделать всё светлым',
+    },
+    'osTheme.failed': {
+      'ja': '見た目を変えられませんでした',
+      'en': 'Could not change the appearance',
+      'zh': '无法更改外观', 'ko': '모양을 바꾸지 못했습니다',
+      'es': 'No se pudo cambiar la apariencia',
+      'fr': 'Impossible de changer l apparence',
+      'de': 'Darstellung konnte nicht geaendert werden',
+      'pt': 'Nao foi possivel mudar a aparencia',
+      'ru': 'Не удалось изменить оформление',
     },
     'saver.title': {
       'ja': 'スクリーンセーバー',
@@ -87826,10 +87969,17 @@ $cleanQ
   /// 今いくつ共同編集で共有しているか。
   int get liveSharedPageCount => _publishedPages.length;
 
+  /// 共有の番号を用意して、 管理用の記録を書く。
+  ///
+  /// [save] を false にすると、 端末側の控え (SharedPreferences) を
+  /// その場では書かない (= ユーザー要望: まとめて共有が遅い)。 まとめて
+  /// 共有する時は 1 枚ごとに大きな控えを書き直していたので、 呼び出し側が
+  /// 最後に 1 回だけ [savePublishedPagesNow] を呼ぶ。
   Future<String> registerLivePage({
     required String pageId,
     required String title,
     String permission = 'edit',
+    bool save = true,
   }) async {
     if (!canUseMaxFeature) {
       throw Exception(t('paywall.maxRequiredLive'));
@@ -87870,10 +88020,13 @@ $cleanQ
       'pwHash': prev['pwHash'] ?? '',
       'updatedAt': now,
     };
-    await _savePublishedPages();
+    if (save) await _savePublishedPages();
     // 管理用の記録。 失敗しても共有自体 (セッション) は成立するので握り潰す。
+    // ★ 結果を見ていないので待たない (= ユーザー要望: まとめて共有が遅い)。
+    //   ここを待つと 1 枚ごとに 1 往復ぶん止まっていた。
+    unawaited(() async {
     try {
-      await http.patch(
+      await _lc.patch(
         Uri.parse('$_firestoreBaseUrl/published/$code'
             '?updateMask.fieldPaths=ownerUid'
             '&updateMask.fieldPaths=pageId'
@@ -87897,8 +88050,15 @@ $cleanQ
     } catch (e) {
       debugPrint('共同編集の記録に失敗: $e');
     }
-    notifyListeners();
+    }());
+    if (save) notifyListeners();
     return code;
+  }
+
+  /// 端末側の控えを今すぐ書く (= まとめて共有の最後に 1 回だけ呼ぶ)。
+  Future<void> savePublishedPagesNow() async {
+    await _savePublishedPages();
+    notifyListeners();
   }
 
   /// 公開を停止する (共有 URL を無効化)。
@@ -87977,9 +88137,37 @@ $cleanQ
   Timer? _liveTimer;
   Timer? _livePresenceTimer;
 
+  /// 共同編集の間だけ使い回す HTTP の口 (= ユーザー要望: レスポンスを速く)。
+  ///
+  /// ★ package:http の `http.get` / `http.patch` は**呼ぶたびに新しい
+  ///   Client を作って閉じる**ので、 1 回ごとに DNS + TCP + TLS の握手を
+  ///   やり直していた。 見回り 1 回で 4〜7 本も張り直すため、 これだけで
+  ///   1.2 秒の持ち時間を食い潰していた。 1 本を使い回して繋ぎっぱなしに
+  ///   する (keep-alive)。
+  http.Client? _liveHttpClient;
+  http.Client get _lc => _liveHttpClient ??= http.Client();
+
+  /// 読む側 / 送る側を別々に回すための札 (= ユーザー要望: リアルタイムに)。
+  ///
+  /// ★ 以前は 1 本のタイマーで「読む → 送る」 を直列に回し、 1 つの
+  ///   _liveBusy で囲っていた。 読むのが遅れるとその分だけ送るのが遅れ、
+  ///   1 回が 1.2 秒を超えると次の回がまるごと捨てられて、 実際の間隔が
+  ///   2.4 秒・3.6 秒へ伸びていた (両方向とも)。 別々に回す。
+  bool _livePullBusy = false;
+  bool _livePushBusy = false;
+  Timer? _livePullTimer;
+  Timer? _livePushTimer;
+
+  /// 「今すぐ送る」 をまとめるための札 (= ユーザー要望: 打った内容が
+  /// 次の見回りまで送られないのをやめる)。 連打を 1 回に纏める。
+  Timer? _liveKickTimer;
+  static const Duration _kLiveKickDelay = Duration(milliseconds: 180);
+
+  /// 直前に知らせた参加者の顔ぶれ (変わっていない時は描き直さないため)。
+  String _livePeersSig = '';
+
   /// 最後に取り込んだサーバー側の版 (= 変化検出用のタイムスタンプ)。
   int _liveRev = -1;
-  bool _liveBusy = false;
   bool _livePresenceBusy = false;
 
   /// 直近でサーバーへ送った内容 (nodeId → JSON 文字列)。 差分検出に使う。
@@ -88222,10 +88410,100 @@ $cleanQ
       await stopLiveSession();
       rethrow;
     }
-    _liveTimer = Timer.periodic(_kLiveTick, (_) => _liveTick());
+    // ── 読む側と送る側を別々に回す (= ユーザー要望: もっと速く) ──
+    //    それぞれ「終わってから次を予約する」 形なので、 遅い 1 回が
+    //    積み重ならず、 片方の遅れがもう片方を止めない。
+    _liveSchedulePull(const Duration(milliseconds: 1));
+    _liveSchedulePush(_kLiveTick);
     _livePresenceTimer =
         Timer.periodic(_kLivePresenceTick, (_) => _livePresenceTick());
     notifyListeners();
+  }
+
+  /// 次の「読む」 を予約する。
+  void _liveSchedulePull(Duration d) {
+    _livePullTimer?.cancel();
+    if (_liveCode == null || _disposed) return;
+    _livePullTimer = Timer(d, () => unawaited(_livePullLoop()));
+  }
+
+  /// 次の「送る」 を予約する。
+  void _liveSchedulePush(Duration d) {
+    _livePushTimer?.cancel();
+    if (_liveCode == null || _disposed) return;
+    _livePushTimer = Timer(d, () => unawaited(_livePushLoop()));
+  }
+
+  /// 打った内容を、 見回りを待たずに送る (= ユーザー要望)。
+  /// 連打はまとめて 1 回にする。
+  void _liveKick() {
+    if (_liveCode == null || _disposed || _liveKickTimer != null) return;
+    _liveKickTimer = Timer(_kLiveKickDelay, () {
+      _liveKickTimer = null;
+      unawaited(_livePushLoop());
+    });
+  }
+
+  /// 読む側の 1 周。
+  Future<void> _livePullLoop() async {
+    if (_liveCode == null || _disposed) return;
+    if (_livePullBusy) {
+      _liveSchedulePull(_kLiveTick);
+      return;
+    }
+    _livePullBusy = true;
+    try {
+      await _ensureFreshToken();
+      await _livePull();
+      // 落としきれていない添付を少しずつ片付ける。
+      await _liveDrainAttachments();
+      if (_liveBodyNeedsPull && _liveCode != null) {
+        _liveBodyNeedsPull = false;
+        await _livePullBody(_liveBodyRev);
+      }
+    } catch (e) {
+      _liveLastError = '$e';
+      debugPrint('共同編集 (読む) でエラー: $e');
+    } finally {
+      _livePullBusy = false;
+      _liveSchedulePull(_kLiveTick);
+    }
+  }
+
+  /// 送る側の 1 周。
+  Future<void> _livePushLoop() async {
+    if (_liveCode == null || _disposed) return;
+    if (_livePushBusy) {
+      _liveSchedulePush(_kLiveTick);
+      return;
+    }
+    _livePushBusy = true;
+    try {
+      await _ensureFreshToken();
+      await _livePush();
+      // 本文 (フリーノート / マークダウン) は、 変わった時だけまとめて送る。
+      if (_liveBodyDirty) {
+        final pg = _livePage;
+        if (pg != null && _liveHasBody(pg)) {
+          if (pg.pageType != 'markdown') {
+            await _liveUploadPaintImages(_liveCode!, pg.id);
+          }
+          await _livePushBody();
+        } else {
+          _liveBodyDirty = false;
+        }
+      }
+      // 「本文の版が変わった」 の知らせを書けていなかったら送り直す。
+      if (_liveBodyRevPending > 0 && _liveCode != null) {
+        await _livePushBodyRev(_liveCode!, _liveBodyRevPending);
+      }
+    } catch (e) {
+      _liveLastError = '$e';
+      debugPrint('共同編集 (送る) でエラー: $e');
+    } finally {
+      _livePushBusy = false;
+      _liveSchedulePush(_kLiveTick);
+    }
   }
 
   /// 共同編集を終了する (自分の参加者情報も消す)。
@@ -88249,8 +88527,29 @@ $cleanQ
     }
     _liveTimer?.cancel();
     _liveTimer = null;
+    _livePullTimer?.cancel();
+    _livePullTimer = null;
+    _livePushTimer?.cancel();
+    _livePushTimer = null;
+    _liveKickTimer?.cancel();
+    _liveKickTimer = null;
     _livePresenceTimer?.cancel();
     _livePresenceTimer = null;
+    _livePeersSig = '';
+    // 繋ぎっぱなしの口は、 セッションが終わったら手放す
+    //   (次に要る時は使う側が作り直す)。
+    {
+      final c = _liveHttpClient;
+      _liveHttpClient = null;
+      // 送信中の物があっても、 次のイベントループで閉じれば安全。
+      if (c != null) {
+        Future<void>.delayed(const Duration(seconds: 2), () {
+          try {
+            c.close();
+          } catch (_) {}
+        });
+      }
+    }
     final code = _liveCode;
     final cid = _liveClientId;
     _liveCode = null;
@@ -88269,7 +88568,7 @@ $cleanQ
     _liveClearAdds();
     if (code != null && cid.isNotEmpty && _idToken != null) {
       try {
-        await http
+        await _lc
             .delete(
               Uri.parse('$_firestoreBaseUrl/published/$code/peers/$cid'),
               headers: {'Authorization': 'Bearer $_idToken'},
@@ -88278,48 +88577,6 @@ $cleanQ
       } catch (_) {}
     }
     notifyListeners();
-  }
-
-  Future<void> _liveTick() async {
-    if (_liveBusy || _liveCode == null || _disposed) return;
-    _liveBusy = true;
-    try {
-      await _ensureFreshToken();
-      await _livePull();
-      await _livePush();
-      // ★ 落としきれていない添付を、 版が動いていなくても片付ける
-      //   (= 点検で判明: 予約を作るのが「版が変わった時」 の中だったので、
-      //   相手が編集をやめると残りを取りに行けなかった)。
-      await _liveDrainAttachments();
-      // 書き込みが弾かれた時は、 版に関わらず取りに行く (取り込んでから
-      // 送り直す。 これをしないと弾かれ続ける)。
-      if (_liveBodyNeedsPull && _liveCode != null) {
-        _liveBodyNeedsPull = false;
-        await _livePullBody(_liveBodyRev);
-      }
-      // 本文 (フリーノート / マークダウン) は、 変わった時だけまとめて送る。
-      if (_liveBodyDirty) {
-        final pg = _livePage;
-        if (pg != null && _liveHasBody(pg)) {
-          if (pg.pageType != 'markdown') {
-            await _liveUploadPaintImages(_liveCode!, pg.id);
-          }
-          await _livePushBody();
-        } else {
-          _liveBodyDirty = false;
-        }
-      }
-      // 「本文の版が変わった」 の知らせを書けていなかったら送り直す
-      // (= これが欠けると、 相手は本文が変わった事に気付けない)。
-      if (_liveBodyRevPending > 0 && _liveCode != null) {
-        await _livePushBodyRev(_liveCode!, _liveBodyRevPending);
-      }
-    } catch (e) {
-      _liveLastError = '$e';
-      debugPrint('共同編集 tick でエラー: $e');
-    } finally {
-      _liveBusy = false;
-    }
   }
 
   Future<void> _livePresenceTick() async {
@@ -88414,7 +88671,7 @@ $cleanQ
     final cond = (ifUpdateTime == null || ifUpdateTime.isEmpty)
         ? ''
         : '&currentDocument.updateTime=${Uri.encodeComponent(ifUpdateTime)}';
-    final res = await http.patch(
+    final res = await _lc.patch(
       Uri.parse('$_firestoreBaseUrl/published/$code?$mask$cond'),
       headers: {
         'Authorization': 'Bearer $_idToken',
@@ -88431,7 +88688,7 @@ $cleanQ
   Future<FileLiveInfo?> fileLiveFetch(String code) async {
     await _fileLiveReady();
     final c = code.trim().toUpperCase();
-    final res = await http.get(
+    final res = await _lc.get(
       Uri.parse('$_firestoreBaseUrl/published/$c'),
       headers: {'Authorization': 'Bearer $_idToken'},
     );
@@ -88478,6 +88735,17 @@ $cleanQ
     final url = await _fileLiveUploadBytes(code, name, bytes);
     if (url == null) throw Exception(t('fileLive.uploadFailed'));
     final now = DateTime.now().millisecondsSinceEpoch;
+    // ★ = ユーザー報告「pptx ファイルページ等が共同編集状態にならない」。
+    //   published/{code} の決まり (firestore.rules:182) は
+    //   `request.resource.data.ownerUid == request.auth.uid` を必須にしている。
+    //   ページの共有 (registerLivePage / publishPageToWeb / 束の番号) は
+    //   どれも ownerUid を書いているのに、 ファイルの共同編集だけ 'host' しか
+    //   書いていなかったので、 作る所で必ず 403 になり、 セッションが 1 度も
+    //   立ち上がらなかった。 'host' は後ろ向き互換のために残す。
+    final owner = (_uid ?? '').trim();
+    if (owner.isEmpty) {
+      throw Exception(t('sync.firebaseNotConfigured'));
+    }
     final err = await _fileLivePatch(code, {
       'kind': _fsStr('file'),
       'name': _fsStr(name),
@@ -88488,7 +88756,8 @@ $cleanQ
       'lockBy': _fsStr(fileLiveClientId),
       'lockName': _fsStr(fileLiveMyName),
       'lockAt': _fsInt(now),
-      'host': _fsStr(_uid ?? ''),
+      'ownerUid': _fsStr(owner),
+      'host': _fsStr(owner),
       'createdAt': _fsInt(now),
     });
     if (err != null) throw Exception('${t('fileLive.uploadFailed')} ($err)');
@@ -88498,7 +88767,7 @@ $cleanQ
   Future<Uint8List?> fileLiveDownload(String url) async {
     if (url.isEmpty) return null;
     try {
-      final res = await http.get(Uri.parse(url));
+      final res = await _lc.get(Uri.parse(url));
       if (res.statusCode != 200) return null;
       return res.bodyBytes;
     } catch (_) {
@@ -88567,7 +88836,7 @@ $cleanQ
       final base = localPath.split(RegExp(r'[\\/]')).last;
       final name = '${_uuid.v4().replaceAll('-', '').substring(0, 8)}_$base';
       final encoded = Uri.encodeComponent(_liveAttachPath(code, name));
-      final res = await http.post(
+      final res = await _lc.post(
         Uri.parse('$_storageUploadUrl?uploadType=media&name=$encoded'),
         headers: {
           'Authorization': 'Bearer $_idToken',
@@ -88651,7 +88920,7 @@ $cleanQ
         _liveAttachLocal[url] = path;
         return path;
       }
-      final res = await http.get(Uri.parse(url));
+      final res = await _lc.get(Uri.parse(url));
       if (res.statusCode != 200 || res.bodyBytes.isEmpty) return null;
       await f.writeAsBytes(res.bodyBytes);
       _liveAttachLocal[url] = path;
@@ -88669,13 +88938,14 @@ $cleanQ
     final code = _liveCode;
     if (code == null || _idToken == null) return;
     try {
-      final res = await http.get(
+      // ★ ここだけ時間切れが無く、 1 本詰まると見回りごと止まっていた。
+      final res = await _lc.get(
         Uri.parse('$_firestoreBaseUrl/published/$code/doc/main'
             '?mask.fieldPaths=access'
             '&mask.fieldPaths=editors'
             '&mask.fieldPaths=hostUid'),
         headers: {'Authorization': 'Bearer $_idToken'},
-      );
+      ).timeout(_kLiveHttpTimeout);
       if (res.statusCode != 200) return;
       final j = jsonDecode(res.body) as Map<String, dynamic>;
       final f = (j['fields'] as Map<String, dynamic>?) ?? {};
@@ -88715,7 +88985,7 @@ $cleanQ
     if (code == null || page == null || _idToken == null) return;
     final base = '$_firestoreBaseUrl/published/$code/doc/main';
     // まず版だけを取りに行く (毎秒フルで取ると重いため)。
-    final headRes = await http.get(
+    final headRes = await _lc.get(
       Uri.parse('$base?mask.fieldPaths=rev&mask.fieldPaths=lastActiveAt'
           '&mask.fieldPaths=closed&mask.fieldPaths=bodyRev'),
       headers: {'Authorization': 'Bearer $_idToken'},
@@ -88776,7 +89046,7 @@ $cleanQ
     //   (= ユーザー要望: 途中で閲覧のみに変えられるように)。
     if (!_liveIsHost) await _livePullAccess();
 
-    final res = await http.get(
+    final res = await _lc.get(
       Uri.parse(base),
       headers: {'Authorization': 'Bearer $_idToken'},
     ).timeout(_kLiveHttpTimeout);
@@ -89144,6 +89414,8 @@ $cleanQ
   void markLiveBodyDirty(String pageId) {
     if (!liveActive || _livePageId != pageId) return;
     _liveBodyDirty = true;
+    // 見回り (1.2 秒) を待たずに送る (= ユーザー要望: リアルタイムに)。
+    _liveKick();
   }
 
   /// 本文が同じか。 フリーノートは端末ごとの差 (画像のパス等) を無視する。
@@ -90086,8 +90358,16 @@ $cleanQ
       _liveLastPushedConns = pendingConns;
       _liveLastPushedDeco = pendingDeco;
       _liveLastPushedMeta = pendingMeta;
-      // 自分の書き込みで pull が走らないよう、 版を進めておく。
-      _liveRev = rev;
+      // ★ = ユーザー報告「相手の編集が届かない / 遅い」 の正体。
+      //   以前はここで `_liveRev = rev` と、 **自分が書いた版**を
+      //   「読んだ版」 として控えていた。 rev は書類ぜんぶで 1 つの値なので、
+      //   こちらが読んでから書くまでの間に相手が書いていると、 次の見回りで
+      //   「版は自分の物と同じ」 と見えてしまい、 相手の書いた欄を一度も
+      //   読まないまま終わっていた。 相手がそこで手を止めると、 その編集は
+      //   永久に画面に出てこない。
+      //   「読んだ版」 は読んだ時だけ進める。 自分の書き込みの後は必ず
+      //   1 回読み直す (自分が書いた分は、 送った控えと同じなので
+      //   取り込む所で弾かれる = 画面はちらつかない)。
       _liveLastError = null;
     } else {
       _liveLastError = 'HTTP ${res.statusCode}';
@@ -90237,6 +90517,16 @@ $cleanQ
       debugPrint('共同編集 参加者の解析に失敗: $e');
       return;
     }
+    // ★ 3 秒ごとに必ず notifyListeners() していたので、 画面ぜんぶ
+    //   (Consumer<MindMapProvider> 1 個で包まれている) が 3 秒おきに
+    //   組み直されていた。 顔ぶれが変わった時だけ知らせる。
+    final sig = [
+      for (final p in next)
+        '${p.clientId}|${p.name}|${p.colorRgb}|${p.lockNodeId ?? ''}'
+            '|${p.isStale ? 1 : 0}'
+    ].join(';');
+    final peersChanged = sig != _livePeersSig;
+    _livePeersSig = sig;
     _livePeers
       ..clear()
       ..addAll(next);
@@ -90257,7 +90547,7 @@ $cleanQ
         } catch (_) {}
       }
     }
-    notifyListeners();
+    if (peersChanged) notifyListeners();
   }
 
   // ─── マップ容量計算 ───────────────────────────────────────────────────
@@ -91995,6 +92285,10 @@ $cleanQ
 
   Future<void> _saveToStorage() {
     _lastLocalEditAt = DateTime.now();
+    // ★ 要素の追加 / 移動 / 書き換えは必ずここを通る。 共同編集の最中は、
+    //   見回り (1.2 秒) を待たずにまとめて送る (= ユーザー要望:
+    //   リアルタイムに反映されるように)。 連打は 0.18 秒でまとめる。
+    if (_liveCode != null) _liveKick();
     var completer = _saveDebounceCompleter;
     if (completer == null) {
       completer = Completer<void>();
