@@ -2886,6 +2886,13 @@ class _MindMapScreenState extends State<MindMapScreen>
   void Function()? _markdownHeaderToggle;
   bool Function()? _markdownHeaderIsHidden;
 
+  /// 右クリックのメニューから「プレビュー画面の切り替え」 と「AI で編集」
+  /// を使うための受け口 (= ユーザー要望)。 文言は「次に何になるか」 を
+  /// マークダウン側が組み立てて返す。
+  void Function()? _markdownCycleView;
+  String Function()? _markdownViewLabel;
+  void Function()? _markdownAiWrite;
+
   /// マークダウンの「サイトのタブ」 の上にカーソルが乗っているか
   /// (= ユーザー報告: サイトに飛んだ時にエリア内スクロールが効かない)。
   /// 分割パネルと同じで、 乗っている間はマップ側のホイール処理を止める。
@@ -27547,7 +27554,15 @@ class _MindMapScreenState extends State<MindMapScreen>
         provider.currentPage.pageType == 'markdown' &&
             _markdownHeaderToggle != null;
     final bool mdHeaderHidden = _markdownHeaderIsHidden?.call() ?? false;
-    final double menuH = mdHeaderItem ? 92.0 : 46.0;
+    // プレビューの切り替え / AI で編集 (= ユーザー要望)。
+    final bool mdViewItem = provider.currentPage.pageType == 'markdown' &&
+        _markdownCycleView != null;
+    final bool mdAiItem = provider.currentPage.pageType == 'markdown' &&
+        _markdownAiWrite != null;
+    final double menuH = 46.0 +
+        (mdViewItem ? 46.0 : 0) +
+        (mdAiItem ? 46.0 : 0) +
+        (mdHeaderItem ? 46.0 : 0);
     final double left = globalPos.dx.clamp(8.0, sw - menuW - 8.0);
     final double top = globalPos.dy
         .clamp(mq.padding.top + 8, sh - mq.padding.bottom - menuH - 8);
@@ -27591,6 +27606,29 @@ class _MindMapScreenState extends State<MindMapScreen>
                     unawaited(_showQuickPageSwitcher(provider));
                   },
                 ),
+                if (mdViewItem)
+                  _CtxMenuItem(
+                    icon: Icons.vertical_split_rounded,
+                    label: _markdownViewLabel?.call() ??
+                        provider.t('md.viewSplit'),
+                    color: const Color(0xFF4FC3F7),
+                    onTap: () {
+                      final f = _markdownCycleView;
+                      _removeOverlay();
+                      f?.call();
+                    },
+                  ),
+                if (mdAiItem)
+                  _CtxMenuItem(
+                    icon: Icons.auto_awesome_rounded,
+                    label: provider.t('md.aiWrite'),
+                    color: const Color(0xFFBA68C8),
+                    onTap: () {
+                      final f = _markdownAiWrite;
+                      _removeOverlay();
+                      f?.call();
+                    },
+                  ),
                 if (mdHeaderItem)
                   _CtxMenuItem(
                     icon: mdHeaderHidden
@@ -94865,7 +94903,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             ? null
             : () {
                 _removeOverlay();
-                _selectOnlyLinksAmongSelection(provider);
+                _selectOnlyLinksAmongSelection(provider, ctrl: ctrl);
               },
         // ★ このバーを閉じたら選択も選択モードも一緒に終わりにする
         //   (= ユーザー要望: 「〜個選択中」 が閉じると同時に選択モードも
@@ -95140,11 +95178,38 @@ class _MindMapScreenState extends State<MindMapScreen>
     ];
   }
 
-  /// 線だけを選んだ状態にする (= ユーザー要望: リンクだけを選べるように)。
-  /// 要素の選択は解いて、 線の操作 (色 / 太さ / 削除) に移れるようにする。
-  void _selectOnlyLinksAmongSelection(MindMapProvider provider) {
+  /// 線だけを選んだ状態にして、 そのまま線の設定パネルを出す。
+  ///
+  /// ★ = ユーザー報告「押してもまとめてリンクの節点や種類を変更する項目が
+  ///   出てこない」。 選び直すだけで終わっていたので、 線種 / 節点の数 /
+  ///   太さ / 矢印をまとめて変えるパネル (_ConnectionActionOverlay) を
+  ///   続けて開く。 要素の選択は解いて、 線の操作に移る。
+  void _selectOnlyLinksAmongSelection(MindMapProvider provider,
+      {TransformationController? ctrl}) {
     final links = _linksAmongSelection(provider);
     if (links.isEmpty) return;
+    // 選択を解く前に、 パネルを出す場所 (選んだ線のまん中) を出しておく。
+    Offset? at;
+    if (ctrl != null) {
+      double minX = double.infinity,
+          maxX = -double.infinity,
+          minY = double.infinity,
+          maxY = -double.infinity;
+      for (final c in links) {
+        for (final id in [c.fromId, c.toId]) {
+          final n = provider.nodes[id];
+          if (n == null) continue;
+          minX = math.min(minX, n.position.dx);
+          maxX = math.max(maxX, n.position.dx + n.width);
+          minY = math.min(minY, n.position.dy);
+          maxY = math.max(maxY, n.position.dy + n.height);
+        }
+      }
+      if (minX.isFinite && minY.isFinite) {
+        at = _canvasToGlobal(
+            Offset((minX + maxX) / 2, (minY + maxY) / 2), ctrl);
+      }
+    }
     setState(() {
       _selectedConnections
         ..clear()
@@ -95155,9 +95220,15 @@ class _MindMapScreenState extends State<MindMapScreen>
       _rangeStart = null;
       _rangeEnd = null;
     });
-    _showLockToast(provider
-        .t('multi.linksSelected')
-        .replaceFirst('{n}', '${links.length}'));
+    final mq = MediaQuery.of(context);
+    final pos = at ?? Offset(mq.size.width / 2, mq.size.height / 2);
+    // 直前に閉じたオーバーレイと入れ替わるので、 次のフレームで出す。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _selectedConnections.isEmpty) return;
+      _showConnectionDeleteOverlay(
+          _selectedConnections.first, pos, provider,
+          forceMulti: true);
+    });
   }
 
   void _showBulkEditSheet(BuildContext ctx, MindMapProvider provider) {
@@ -103684,6 +103755,109 @@ class _PowerTimeoutInlineState extends State<_PowerTimeoutInline> {
   }
 }
 
+/// スクリーンショットの十字の見本 (= ユーザー要望: 黒い所で見えるか確かめる)。
+/// OS へ当てる絵と同じ形を Flutter 側で描くだけの物。
+class _CrosshairPreview extends StatelessWidget {
+  final Color bg;
+  final Color fill;
+  final Color outline;
+  final double sizePx;
+  final int thickness;
+  final int gap;
+  const _CrosshairPreview({
+    required this.bg,
+    required this.fill,
+    required this.outline,
+    required this.sizePx,
+    required this.thickness,
+    required this.gap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    const box = 52.0;
+    return Container(
+      width: box,
+      height: box,
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: Colors.white24),
+      ),
+      child: CustomPaint(
+        painter: _CrosshairPainter(
+          fill: fill,
+          outline: outline,
+          // 見本の枠に収まるよう縮めて描く (px の比はそのまま)。
+          scale: (box - 4) / 128.0,
+          sizePx: sizePx,
+          thickness: thickness,
+          gap: gap,
+        ),
+      ),
+    );
+  }
+}
+
+class _CrosshairPainter extends CustomPainter {
+  final Color fill;
+  final Color outline;
+  final double scale;
+  final double sizePx;
+  final int thickness;
+  final int gap;
+  const _CrosshairPainter({
+    required this.fill,
+    required this.outline,
+    required this.scale,
+    required this.sizePx,
+    required this.thickness,
+    required this.gap,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final side = sizePx * scale;
+    final t = (thickness > 0 ? thickness : (sizePx / 10)) * scale;
+    final ow = math.max(1.0, t / 2);
+    final c = Offset(size.width / 2, size.height / 2);
+    final half = side / 2;
+    final hole = gap * scale;
+
+    void cross(double hw, double margin, Color color) {
+      final paint = Paint()..color = color;
+      final v = Rect.fromLTRB(
+          c.dx - hw, c.dy - half + margin, c.dx + hw, c.dy + half - margin);
+      final h = Rect.fromLTRB(
+          c.dx - half + margin, c.dy - hw, c.dx + half - margin, c.dy + hw);
+      if (hole <= 0) {
+        canvas.drawRect(v, paint);
+        canvas.drawRect(h, paint);
+        return;
+      }
+      canvas.save();
+      canvas.clipRect(
+          Rect.fromCenter(center: c, width: hole * 2, height: hole * 2),
+          clipOp: ui.ClipOp.difference);
+      canvas.drawRect(v, paint);
+      canvas.drawRect(h, paint);
+      canvas.restore();
+    }
+
+    cross(t / 2 + ow, 0, outline);
+    cross(t / 2, ow, fill);
+  }
+
+  @override
+  bool shouldRepaint(covariant _CrosshairPainter old) =>
+      old.fill != fill ||
+      old.outline != outline ||
+      old.sizePx != sizePx ||
+      old.thickness != thickness ||
+      old.gap != gap ||
+      old.scale != scale;
+}
+
 class _CursorAppearanceInline extends StatefulWidget {
   final MindMapProvider provider;
 
@@ -103766,6 +103940,39 @@ class _CursorAppearanceInlineState extends State<_CursorAppearanceInline> {
   /// ★ build のたびに `CursorStyleControl.defaultPixels` を呼ぶと、
   ///   測れなかった時に毎フレーム FFI を叩いてしまう (= 反証で見つかった穴)。
   int? _basePx;
+
+  // ── スクリーンショットの十字 (= ユーザー要望) ──
+  //    指を離した時だけ OS へ当てる (バーを動かしている間は見本だけ動かす)。
+  double? _crossSizeDrag;
+  double? _crossThickDrag;
+
+  double _crossSizeLive(MindMapProvider p) =>
+      _crossSizeDrag ?? p.crosshairSizePx.toDouble().clamp(16, 128);
+  double _crossThickLive(MindMapProvider p) =>
+      _crossThickDrag ?? p.crosshairThickness.toDouble().clamp(0, 24);
+
+  /// 十字の色を選ぶ札。
+  Widget _crossChip(MindMapProvider p, int argb, {required bool outline}) {
+    final on =
+        outline ? p.crosshairOutlineArgb == argb : p.crosshairArgb == argb;
+    return InkWell(
+      borderRadius: BorderRadius.circular(6),
+      onTap: () => unawaited(outline
+          ? p.setCrosshairAppearance(outlineArgb: argb)
+          : p.setCrosshairAppearance(argb: argb)),
+      child: Container(
+        width: 22,
+        height: 22,
+        decoration: BoxDecoration(
+          color: Color(argb),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(
+              color: on ? const Color(0xFF4FC3F7) : Colors.white24,
+              width: on ? 2 : 1),
+        ),
+      ),
+    );
+  }
 
   @override
   void initState() {
@@ -104031,6 +104238,112 @@ class _CursorAppearanceInlineState extends State<_CursorAppearanceInline> {
               for (final c in _outlineColors) colorChip(c, outline: true)
             ],
           ),
+          // ── スクリーンショットの十字 (+) (= ユーザー要望) ──
+          //    Windows の十字は絵のファイルを持たないので、 上の大きさ /
+          //    色の設定では変えられない。 ここだけ自分で描いて当てる。
+          label(p.t('cross.title')),
+          InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: () => unawaited(
+                p.setCrosshairAppearance(enabled: !p.crosshairEnabled)),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Row(children: [
+                Expanded(
+                  child: Text(p.t('cross.desc'),
+                      style: const TextStyle(
+                          color: Colors.white38,
+                          fontSize: 10,
+                          height: 1.35)),
+                ),
+                Switch(
+                  value: p.crosshairEnabled,
+                  onChanged: (v) => unawaited(
+                      p.setCrosshairAppearance(enabled: v)),
+                ),
+              ]),
+            ),
+          ),
+          if (p.crosshairEnabled) ...[
+            // 見本。 明るい所と暗い所を並べて、 黒背景でも見えるか確かめる。
+            Row(children: [
+              _CrosshairPreview(
+                  bg: const Color(0xFF000000),
+                  fill: Color(p.crosshairArgb),
+                  outline: Color(p.crosshairOutlineArgb),
+                  sizePx: _crossSizeLive(p),
+                  thickness: p.crosshairThickness,
+                  gap: p.crosshairGap),
+              const SizedBox(width: 6),
+              _CrosshairPreview(
+                  bg: const Color(0xFFFFFFFF),
+                  fill: Color(p.crosshairArgb),
+                  outline: Color(p.crosshairOutlineArgb),
+                  sizePx: _crossSizeLive(p),
+                  thickness: p.crosshairThickness,
+                  gap: p.crosshairGap),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                    '${_crossSizeLive(p).round()} px',
+                    style: const TextStyle(
+                        color: Colors.white54, fontSize: 11)),
+              ),
+            ]),
+            label(p.t('cross.size')),
+            Row(children: [
+              Expanded(
+                child: Slider(
+                  value: _crossSizeLive(p),
+                  min: 16,
+                  max: 128,
+                  divisions: 28,
+                  label: '${_crossSizeLive(p).round()} px',
+                  activeColor: const Color(0xFF4FC3F7),
+                  onChanged: (v) => setState(() => _crossSizeDrag = v),
+                  onChangeEnd: (v) {
+                    setState(() => _crossSizeDrag = null);
+                    unawaited(
+                        p.setCrosshairAppearance(sizePx: v.round()));
+                  },
+                ),
+              ),
+            ]),
+            label(p.t('cross.thickness')),
+            Row(children: [
+              Expanded(
+                child: Slider(
+                  value: _crossThickLive(p),
+                  min: 0,
+                  max: 24,
+                  divisions: 24,
+                  label: _crossThickLive(p) < 1
+                      ? p.t('cross.thicknessAuto')
+                      : '${_crossThickLive(p).round()} px',
+                  activeColor: const Color(0xFF4FC3F7),
+                  onChanged: (v) => setState(() => _crossThickDrag = v),
+                  onChangeEnd: (v) {
+                    setState(() => _crossThickDrag = null);
+                    unawaited(
+                        p.setCrosshairAppearance(thickness: v.round()));
+                  },
+                ),
+              ),
+            ]),
+            label(p.t('cross.fill')),
+            Wrap(spacing: 5, runSpacing: 5, children: [
+              for (final c in _paletteColors)
+                _crossChip(p, c, outline: false),
+              _crossChip(p, 0xFFFFFFFF, outline: false),
+            ]),
+            label(p.t('cross.outline')),
+            Wrap(spacing: 5, runSpacing: 5, children: [
+              _crossChip(p, 0xFF000000, outline: true),
+              for (final c in _paletteColors)
+                _crossChip(p, c, outline: true),
+              _crossChip(p, 0xFFFFFFFF, outline: true),
+            ]),
+          ],
           // ★ 自分で用意した絵をカーソルにする (= ユーザー要望)。
           label(p.t('cursorLook.image')),
           Row(children: [
@@ -134046,6 +134359,9 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
   /// 今ヘッダーが隠れているか (右クリックのメニューの文言に使う)。
   bool _isHeaderHidden() => _headerHidden;
 
+  /// 右クリックのメニューに出す「次はこの見え方になる」 の文言。
+  String _ctxViewLabel() => _viewModeLabel(widget.provider);
+
   /// ヘッダーの表示 / 非表示を切り替える (= ユーザー要望: 専用のボタンは
   /// 置かず、 ヘッダーの何も無い所を押す / 右クリックのメニューから)。
   void _toggleHeaderHidden() {
@@ -134142,6 +134458,9 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
       _mdHost?._markdownDropHandler = _onMarkdownDropFiles;
       _mdHost?._markdownHeaderToggle = _toggleHeaderHidden;
       _mdHost?._markdownHeaderIsHidden = _isHeaderHidden;
+      _mdHost?._markdownCycleView = _cycleViewMode;
+      _mdHost?._markdownViewLabel = _ctxViewLabel;
+      _mdHost?._markdownAiWrite = _askAiToWrite;
     });
   }
 
@@ -134191,6 +134510,11 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
     if (_mdHost?._markdownHeaderToggle == _toggleHeaderHidden) {
       _mdHost?._markdownHeaderToggle = null;
       _mdHost?._markdownHeaderIsHidden = null;
+    }
+    if (_mdHost?._markdownCycleView == _cycleViewMode) {
+      _mdHost?._markdownCycleView = null;
+      _mdHost?._markdownViewLabel = null;
+      _mdHost?._markdownAiWrite = null;
     }
     _mdMsgSub?.cancel();
     _scrollSyncThrottle?.cancel();
@@ -138173,20 +138497,8 @@ $body''';
                   () => setState(() => _memoOpen = !_memoOpen),
                   color:
                       _memoOpen ? const Color(0xFFFFC857) : Colors.white70),
-              // ── AI ボタンはブラウザ版 AI を開く (= ユーザー要望:
-              //    「AI に書いてもらう」 ボタンがあるので、 こちらは
-              //    ChatGPT / Gemini 等の外窓を開く)。 開く係が無い環境
-              //    (モバイル等) では従来どおり内蔵チャット欄を出す。 ──
-              _btn(Icons.smart_toy_outlined, provider.t('md.aiChat'), () {
-                final open = widget.onOpenBrowserAi;
-                if (open != null) {
-                  open();
-                } else {
-                  setState(() => _aiChatOpen = !_aiChatOpen);
-                }
-              },
-                  color:
-                      _aiChatOpen ? const Color(0xFFBA68C8) : Colors.white70),
+              // (「AI チャット」 のボタンは廃止 = ユーザー要望: ヘッダーに
+              //  既に AI のボタンがあるので要らない)
             ],
             // ── ページへの持ち出し / 取り込み (= ユーザー要望) ──
             //    ファイルから開いた時: 新規ページとして追加
@@ -176780,16 +177092,38 @@ class _MultiNodeActionOverlay extends StatelessWidget {
         size: btnSize,
         onTap: onDuplicate,
       ),
+      // ── 選んだ要素どうしを結ぶ線を、 まとめて編集する ──
+      //    (= ユーザー報告: 「リンク 4」 は 4 番目のリンクに読めておかしい。
+      //     何本が対象かはアイコンの右上の印で出す)。
       if (onSelectLinks != null)
-        multiBtn(
-          icon: Icons.timeline_rounded,
-          label: provider
-              .t('multi.selectLinks')
-              .replaceFirst('{n}', '$linkCount'),
-          color: const Color(0xFF29B6F6),
-          size: btnSize,
-          onTap: onSelectLinks!,
-        ),
+        Stack(clipBehavior: Clip.none, children: [
+          multiBtn(
+            icon: Icons.timeline_rounded,
+            label: provider.t('multi.selectLinks'),
+            color: const Color(0xFF29B6F6),
+            size: btnSize,
+            onTap: onSelectLinks!,
+          ),
+          if (linkCount > 0)
+            Positioned(
+              right: (btnWidth - btnSize) / 2 - 2,
+              top: -2,
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF29B6F6),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: const Color(0xFF1E1E32)),
+                ),
+                child: Text('$linkCount',
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 9,
+                        fontWeight: FontWeight.w700)),
+              ),
+            ),
+        ]),
       multiBtn(
         icon: Icons.drive_file_move_rounded,
         label: provider.t('multi.copy'),

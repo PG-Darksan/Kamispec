@@ -5414,6 +5414,60 @@ class MindMapProvider extends ChangeNotifier {
   String _cursorImagePath = '';
   String get cursorImagePath => _cursorImagePath;
 
+  // ── スクリーンショットの十字 (+) の見た目 (= ユーザー要望) ──────
+  //
+  // ★ = ユーザー報告「Windows でスクリーンショットを撮る時の + アイコンが
+  //   小さ過ぎて、 黒背景だと全く見えなくなる」。
+  //   上のカーソル差し替えは「レジストリに絵のファイルが登録されている
+  //   種類」 しか変えられず、 既定の設定では十字にファイルが無いため
+  //   大きさを変えても十字だけは変わらなかった。 十字は自分で描いて当てる。
+  bool _crosshairEnabled = false;
+  bool get crosshairEnabled => _crosshairEnabled;
+
+  /// 十字の大きさ (px)。
+  int _crosshairSizePx = 48;
+  int get crosshairSizePx => _crosshairSizePx;
+
+  /// 十字の中の色 / 縁取りの色 (ARGB)。 既定は黄色 + 黒の縁取り
+  /// (白い所でも黒い所でも見えるため)。
+  int _crosshairArgb = 0xFFFFD54F;
+  int get crosshairArgb => _crosshairArgb;
+  int _crosshairOutlineArgb = 0xFF000000;
+  int get crosshairOutlineArgb => _crosshairOutlineArgb;
+
+  /// 腕の太さ (px)。 0 = 大きさから決める。
+  int _crosshairThickness = 0;
+  int get crosshairThickness => _crosshairThickness;
+
+  /// 真ん中を空ける幅 (px)。 0 = 空けない。
+  int _crosshairGap = 0;
+  int get crosshairGap => _crosshairGap;
+
+  Future<void> setCrosshairAppearance({
+    bool? enabled,
+    int? sizePx,
+    int? argb,
+    int? outlineArgb,
+    int? thickness,
+    int? gap,
+  }) async {
+    if (enabled != null) _crosshairEnabled = enabled;
+    if (sizePx != null) _crosshairSizePx = sizePx.clamp(16, 256);
+    if (argb != null) _crosshairArgb = argb;
+    if (outlineArgb != null) _crosshairOutlineArgb = outlineArgb;
+    if (thickness != null) _crosshairThickness = thickness.clamp(0, 64);
+    if (gap != null) _crosshairGap = gap.clamp(0, 64);
+    final prefs = await _prefsWithRetry();
+    await prefs.setBool('crosshairEnabled', _crosshairEnabled);
+    await prefs.setInt('crosshairSizePx', _crosshairSizePx);
+    await prefs.setInt('crosshairArgb', _crosshairArgb);
+    await prefs.setInt('crosshairOutlineArgb', _crosshairOutlineArgb);
+    await prefs.setInt('crosshairThickness', _crosshairThickness);
+    await prefs.setInt('crosshairGap', _crosshairGap);
+    applyCursorAppearance();
+    notifyListeners();
+  }
+
   /// アプリを閉じた後もカーソルの設定を残すか (= ユーザー要望)。
   ///
   /// ★ 差し替えはサインインしている間ずっと・**全アプリに効く**ので、
@@ -5444,11 +5498,15 @@ class MindMapProvider extends ChangeNotifier {
     if (!CursorStyleControl.isSupported) return;
     _syncCursorKeepFlag();
     try {
-      if (CursorStyleControl.isDefaultLook(
-          sizePx: _cursorPixelSize,
-          fillArgb: _cursorColorArgb,
-          outlineArgb: _cursorOutlineArgb,
-          imagePath: _cursorImagePath)) {
+      final plain = CursorStyleControl.isDefaultLook(
+        sizePx: _cursorPixelSize,
+        fillArgb: _cursorColorArgb,
+        outlineArgb: _cursorOutlineArgb,
+        imagePath: _cursorImagePath,
+      );
+      if (plain) {
+        // 普通のカーソルは既定へ戻す。 十字だけ変えたい時もあるので、
+        // 戻した後に改めて十字を当てる。
         CursorStyleControl.restoreIfApplied();
       } else {
         CursorStyleControl.apply(
@@ -5456,6 +5514,15 @@ class MindMapProvider extends ChangeNotifier {
           fillArgb: _cursorColorArgb,
           outlineArgb: _cursorOutlineArgb,
           imagePath: _cursorImagePath.isEmpty ? null : _cursorImagePath,
+        );
+      }
+      if (_crosshairEnabled) {
+        CursorStyleControl.applyCrosshair(
+          sizePx: _crosshairSizePx,
+          fillArgb: _crosshairArgb,
+          outlineArgb: _crosshairOutlineArgb,
+          thickness: _crosshairThickness,
+          gap: _crosshairGap,
         );
       }
     } catch (e) {
@@ -51544,6 +51611,65 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Cor do contorno',
       'ru': 'Цвет контура',
     },
+    'cross.title': {
+      'ja': 'スクリーンショットの十字 (+)',
+      'en': 'Screenshot crosshair (+)',
+      'zh': '截图的十字 (+)',
+      'ko': '스크린샷 십자 (+)',
+      'es': 'Cruz de captura (+)',
+      'fr': 'Croix de capture (+)',
+      'de': 'Screenshot-Fadenkreuz (+)',
+      'pt': 'Cruz de captura (+)',
+      'ru': 'Перекрестие снимка (+)',
+    },
+    'cross.desc': {
+      'ja': '画面を切り取る時の「+」 を大きく / 目立つ色にします。 '
+          'Windows の十字は絵のファイルを持たないので、 上の大きさ・色では '
+          '変わりません。 ここだけ別に描いて当てます。',
+      'en': 'Makes the "+" used when snipping the screen bigger and easier '
+          'to see. Windows has no cursor file for the crosshair, so the '
+          'size and colors above do not affect it; this draws its own.',
+      'zh': '把截图时的「+」变大、变显眼。Windows 的十字没有光标文件，'
+          '所以上面的大小和颜色不会生效，这里单独绘制。',
+      'ko': '화면을 자를 때의 "+"를 크고 잘 보이게 합니다. Windows의 '
+          '십자는 커서 파일이 없어서 위의 크기·색이 적용되지 않습니다.',
+      'es': 'Hace mas grande y visible la "+" al recortar la pantalla. '
+          'Windows no tiene archivo de cursor para la cruz.',
+      'fr': 'Agrandit et rend visible la « + » lors de la capture. '
+          'Windows n a pas de fichier de curseur pour la croix.',
+      'de': 'Macht das "+" beim Ausschneiden groesser und besser sichtbar. '
+          'Windows hat keine Cursordatei fuer das Fadenkreuz.',
+      'pt': 'Deixa o "+" do recorte de tela maior e mais visivel. '
+          'O Windows nao tem arquivo de cursor para a cruz.',
+      'ru': 'Делает «+» при снимке экрана крупнее и заметнее. '
+          'В Windows нет файла курсора для перекрестия.',
+    },
+    'cross.size': {
+      'ja': '大きさ', 'en': 'Size', 'zh': '大小', 'ko': '크기',
+      'es': 'Tamano', 'fr': 'Taille', 'de': 'Groesse', 'pt': 'Tamanho',
+      'ru': 'Размер',
+    },
+    'cross.thickness': {
+      'ja': '線の太さ', 'en': 'Line thickness', 'zh': '线条粗细',
+      'ko': '선 굵기', 'es': 'Grosor', 'fr': 'Epaisseur',
+      'de': 'Liniendicke', 'pt': 'Espessura', 'ru': 'Толщина линии',
+    },
+    'cross.thicknessAuto': {
+      'ja': 'おまかせ', 'en': 'Auto', 'zh': '自动', 'ko': '자동',
+      'es': 'Auto', 'fr': 'Auto', 'de': 'Auto', 'pt': 'Auto',
+      'ru': 'Авто',
+    },
+    'cross.fill': {
+      'ja': '中の色', 'en': 'Fill color', 'zh': '填充色', 'ko': '안쪽 색',
+      'es': 'Color de relleno', 'fr': 'Couleur interieure',
+      'de': 'Fuellfarbe', 'pt': 'Cor de preenchimento',
+      'ru': 'Цвет заливки',
+    },
+    'cross.outline': {
+      'ja': '縁取りの色', 'en': 'Outline color', 'zh': '描边色',
+      'ko': '테두리 색', 'es': 'Color del borde', 'fr': 'Couleur du contour',
+      'de': 'Umrissfarbe', 'pt': 'Cor do contorno', 'ru': 'Цвет обводки',
+    },
     'cursorLook.image': {
       'ja': '自分の絵',
       'en': 'Custom image',
@@ -63555,15 +63681,10 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Перенести на другую страницу',
     },
     'multi.selectLinks': {
-      'ja': 'リンク {n}',
-      'en': 'Links {n}',
-      'zh': '连线 {n}',
-      'ko': '링크 {n}',
-      'es': 'Enlaces {n}',
-      'fr': 'Liens {n}',
-      'de': 'Linien {n}',
-      'pt': 'Ligações {n}',
-      'ru': 'Связи {n}',
+      'ja': 'リンク編集', 'en': 'Edit links', 'zh': '编辑连线',
+      'ko': '링크 편집', 'es': 'Editar enlaces', 'fr': 'Modifier les liens',
+      'de': 'Linien bearbeiten', 'pt': 'Editar ligacoes',
+      'ru': 'Изменить связи',
     },
     'multi.linksSelected': {
       'ja': 'リンクを {n} 本選びました',
@@ -76118,6 +76239,12 @@ class MindMapProvider extends ChangeNotifier {
     'blueLightPercent',
     'cursorSizeV2',
     'cursorKeepAfterExit',
+    'crosshairEnabled',
+    'crosshairSizePx',
+    'crosshairArgb',
+    'crosshairOutlineArgb',
+    'crosshairThickness',
+    'crosshairGap',
     'openTarget', 'mapSplitQuad', 'mapSplitRatioX',
     'mapSplitRatioY', 'mapSplitStacked', 'instagramLanding',
     'instagramUsername', 'weather_cityName', 'weather_lat', 'weather_lon',
@@ -91758,6 +91885,15 @@ $cleanQ
     _cursorOutlineArgb = prefs.getInt('cursorOutlineArgb');
     _cursorImagePath = prefs.getString('cursorImagePath') ?? '';
     _cursorKeepAfterExit = prefs.getBool('cursorKeepAfterExit') ?? false;
+    // スクリーンショットの十字 (+) (= ユーザー要望)。
+    _crosshairEnabled = prefs.getBool('crosshairEnabled') ?? false;
+    _crosshairSizePx = (prefs.getInt('crosshairSizePx') ?? 48).clamp(16, 256);
+    _crosshairArgb = prefs.getInt('crosshairArgb') ?? 0xFFFFD54F;
+    _crosshairOutlineArgb =
+        prefs.getInt('crosshairOutlineArgb') ?? 0xFF000000;
+    _crosshairThickness =
+        (prefs.getInt('crosshairThickness') ?? 0).clamp(0, 64);
+    _crosshairGap = (prefs.getInt('crosshairGap') ?? 0).clamp(0, 64);
     _syncCursorKeepFlag();
     // ★ 「既定は何 px か」 を控えておく (= ユーザー要望: 数値で示して)。
     //   「閉じた後もそのまま」 を選んでいると、 次に立ち上げた時にはもう
@@ -91782,11 +91918,12 @@ $cleanQ
         }
       }
     }
-    if (!CursorStyleControl.isDefaultLook(
-        sizePx: _cursorPixelSize,
-        fillArgb: _cursorColorArgb,
-        outlineArgb: _cursorOutlineArgb,
-        imagePath: _cursorImagePath)) {
+    if (_crosshairEnabled ||
+        !CursorStyleControl.isDefaultLook(
+            sizePx: _cursorPixelSize,
+            fillArgb: _cursorColorArgb,
+            outlineArgb: _cursorOutlineArgb,
+            imagePath: _cursorImagePath)) {
       applyCursorAppearance();
     }
     _loadCursorWrapEdges(prefs);

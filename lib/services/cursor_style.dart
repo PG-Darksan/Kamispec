@@ -52,6 +52,9 @@ const Map<int, String> _kCursorSlots = {
 ///  分からなくなるため)。
 const int _kOcrNormal = 32512;
 
+/// スクリーンショットの「+」 (十字) のカーソル。
+const int _kOcrCross = 32515;
+
 const int _imageCursor = 2;
 const int _lrLoadFromFile = 0x00000010;
 const int _spiSetCursors = 0x0057;
@@ -308,8 +311,10 @@ class CursorStyleControl {
     return _cursorFromBgra(rgba, side, side);
   }
 
-  /// BGRA の並びからカーソルを 1 本作る。 当たり所は左上。
-  static int _cursorFromBgra(Uint8List bgra, int w, int h) {
+  /// BGRA の並びからカーソルを 1 本作る。 当たり所は既定で左上
+  /// ([hotX]/[hotY] を渡すとその場所。 十字は真ん中に置く)。
+  static int _cursorFromBgra(Uint8List bgra, int w, int h,
+      {int hotX = 0, int hotY = 0}) {
     final hdc = w32.GetDC(0);
     final bi = calloc<w32.BITMAPINFO>();
     // マスクは 1bpp。 1 行あたり 4 バイト単位に切り上げる。
@@ -335,8 +340,8 @@ class CursorStyleControl {
       final ni = calloc<w32.ICONINFO>();
       try {
         ni.ref.fIcon = 0; // カーソル
-        ni.ref.xHotspot = 0;
-        ni.ref.yHotspot = 0;
+        ni.ref.xHotspot = hotX;
+        ni.ref.yHotspot = hotY;
         ni.ref.hbmMask = hbmMask;
         ni.ref.hbmColor = hbmColor;
         cur = w32.CreateIconIndirect(ni);
@@ -422,6 +427,119 @@ class CursorStyleControl {
     });
     if (done > 0) _applied = true;
     return done;
+  }
+
+  // ── スクリーンショットの十字 (+) ────────────────────────────────
+  //
+  // ★ = ユーザー報告「Windows でスクリーンショットを撮る時の + アイコンが
+  //   小さ過ぎて、 黒背景だと全く見えなくなる」。
+  //   上の apply() は「レジストリに絵のファイルが登録されている種類」 しか
+  //   差し替えられない。 既定のカーソル設定では十字 (Crosshair) にファイルが
+  //   登録されておらず Windows 内蔵の絵が使われるため、 大きさを変えても
+  //   十字だけはそのままだった。 そこでここでは**十字を自分で描いて**当てる。
+  //
+  //   差し替えは全アプリに効くので、 戻すのは restore() (= SPI_SETCURSORS)
+  //   がまとめて面倒を見る。
+
+  /// 十字の大きさとして選べる幅 (px)。
+  static const int crossMin = 16;
+  static const int crossMax = 256;
+
+  /// [size] px の十字を描いた BGRA を作る。
+  ///
+  /// [fillArgb] = 十字の中の色、 [outlineArgb] = 縁取りの色。
+  /// [thickness] = 腕の太さ (px)。 0 以下なら大きさから決める。
+  /// 縁取りがあるので、 白い所でも黒い所でも見える。
+  static Uint8List buildCrosshairBgra(int size,
+      {required int fillArgb,
+      required int outlineArgb,
+      int thickness = 0,
+      int gap = 0}) {
+    final side = size.clamp(crossMin, crossMax);
+    final t = (thickness > 0 ? thickness : (side / 10).round()).clamp(1, side);
+    // 縁取りの太さ。 細すぎると背景に負けるので、 腕の太さから決める。
+    final ow = (t / 2).round().clamp(1, 8);
+    final c = side ~/ 2;
+    final hwIn = (t / 2).floor().clamp(0, side); // 中の腕の半分の太さ
+    final hwOut = hwIn + ow;
+    // 真ん中を少し空けると、 狙っている点そのものが見える。
+    final hole = gap.clamp(0, side ~/ 4);
+
+    final fillB = fillArgb & 0xFF;
+    final fillG = (fillArgb >> 8) & 0xFF;
+    final fillR = (fillArgb >> 16) & 0xFF;
+    final outB = outlineArgb & 0xFF;
+    final outG = (outlineArgb >> 8) & 0xFF;
+    final outR = (outlineArgb >> 16) & 0xFF;
+
+    // 中 / 外の十字に入っているか (腕は縁取りのぶん内側で止める)。
+    bool inCross(int x, int y, int hw, int margin) {
+      final dx = (x - c).abs();
+      final dy = (y - c).abs();
+      if (hole > 0 && dx <= hole && dy <= hole) return false;
+      final vertical =
+          dx <= hw && y >= margin && y < side - margin;
+      final horizontal =
+          dy <= hw && x >= margin && x < side - margin;
+      return vertical || horizontal;
+    }
+
+    final bgra = Uint8List(side * side * 4); // すべて透明で始まる
+    for (var y = 0; y < side; y++) {
+      for (var x = 0; x < side; x++) {
+        final o = (y * side + x) * 4;
+        if (inCross(x, y, hwIn, ow)) {
+          bgra[o] = fillB;
+          bgra[o + 1] = fillG;
+          bgra[o + 2] = fillR;
+          bgra[o + 3] = 0xFF;
+        } else if (inCross(x, y, hwOut, 0)) {
+          bgra[o] = outB;
+          bgra[o + 1] = outG;
+          bgra[o + 2] = outR;
+          bgra[o + 3] = 0xFF;
+        }
+      }
+    }
+    return bgra;
+  }
+
+  /// 十字のカーソルを 1 本作る (見本を描く時にも使う)。 当たり所は真ん中。
+  static int buildCrosshairCursor(int size,
+      {required int fillArgb,
+      required int outlineArgb,
+      int thickness = 0,
+      int gap = 0}) {
+    if (!isSupported) return 0;
+    final side = size.clamp(crossMin, crossMax);
+    final bgra = buildCrosshairBgra(side,
+        fillArgb: fillArgb,
+        outlineArgb: outlineArgb,
+        thickness: thickness,
+        gap: gap);
+    return _cursorFromBgra(bgra, side, side,
+        hotX: side ~/ 2, hotY: side ~/ 2);
+  }
+
+  /// 十字を差し替える。 戻り値 true = 当てられた。
+  static bool applyCrosshair({
+    required int sizePx,
+    required int fillArgb,
+    required int outlineArgb,
+    int thickness = 0,
+    int gap = 0,
+  }) {
+    if (!isSupported) return false;
+    final h = buildCrosshairCursor(sizePx,
+        fillArgb: fillArgb,
+        outlineArgb: outlineArgb,
+        thickness: thickness,
+        gap: gap);
+    if (h == 0) return false;
+    // SetSystemCursor は渡した物を持って行くので、 こちらでは壊さない。
+    final ok = w32.SetSystemCursor(h, _kOcrCross) != 0;
+    if (ok) _applied = true;
+    return ok;
   }
 
   /// Windows の元のカーソルへ戻す。
