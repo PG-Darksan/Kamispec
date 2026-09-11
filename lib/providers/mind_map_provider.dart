@@ -23921,6 +23921,18 @@ class MindMapProvider extends ChangeNotifier {
       'ja': 'ノートを追加',
       'en': 'Add note',
     },
+    // ── 右クリックからノートを切り替える (= ユーザー要望) ──
+    'paint.switchNote': {
+      'ja': 'ノートを切り替え',
+      'en': 'Switch note',
+      'zh': '切换笔记本',
+      'ko': '노트 전환',
+      'es': 'Cambiar de cuaderno',
+      'fr': 'Changer de carnet',
+      'de': 'Notizbuch wechseln',
+      'pt': 'Trocar de caderno',
+      'ru': 'Сменить блокнот',
+    },
     'paint.noteName': {
       'ja': 'ノート名を変更',
       'en': 'Rename the note',
@@ -49440,6 +49452,35 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Примечание: предыдущий ответ оборвался посреди JSON и не был выполнен. '
           'Перепишите только {"tool":"…","args":{…}} целиком, без пояснений. '
           'Если получается длинно, разбейте элементы на несколько вызовов.\n',
+    },
+    // ── 作ったページが空のまま終わろうとした時の促し (= ユーザー報告:
+    //    新規マインドマップは出来るのに要素が 1 つも作られない) ──
+    'mcp.emptyPageNudge': {
+      'ja': '注意: 「{name}」 はまだ空です。 説明で終わらせず、 add_node で'
+          '中身を作ってください (親子は parentIndex で指定し、 動画やリンクは'
+          ' url 欄に入れる)。 本当に作り終えてから返事を書いてください。',
+      'en': 'Note: "{name}" is still empty. Do not finish with prose - call '
+          'add_node to create the contents (use parentIndex for parents, and '
+          'put videos and links in the url field). Only answer once the work '
+          'is actually done.',
+      'zh': '注意：「{name}」仍然是空的。请不要只用文字作答，先用 add_node 创建内容。',
+      'ko': '주의: 「{name}」 은(는) 아직 비어 있습니다. 설명으로 끝내지 말고 add_node 로 내용을 만들어 주세요.',
+      'es': 'Aviso: «{name}» sigue vacío. No termines con texto: usa add_node para crear el contenido.',
+      'fr': 'Attention : « {name} » est encore vide. Ne terminez pas par du texte : utilisez add_node pour créer le contenu.',
+      'de': 'Hinweis: „{name}“ ist noch leer. Nicht mit Text abschließen - erstelle den Inhalt mit add_node.',
+      'pt': 'Aviso: "{name}" ainda está vazio. Não termine com texto: use add_node para criar o conteúdo.',
+      'ru': 'Внимание: «{name}» всё ещё пуст. Не завершайте текстом - создайте содержимое через add_node.',
+    },
+    'mcp.retrying': {
+      'ja': 'やり直しています…',
+      'en': 'Retrying…',
+      'zh': '正在重试…',
+      'ko': '다시 시도하는 중…',
+      'es': 'Reintentando…',
+      'fr': 'Nouvelle tentative…',
+      'de': 'Erneuter Versuch…',
+      'pt': 'Tentando novamente…',
+      'ru': 'Повторная попытка…',
     },
     'mcp.tooManySteps': {
       'ja': '手順が多くなったため、ここで一旦止めました。'
@@ -78530,7 +78571,13 @@ class MindMapProvider extends ChangeNotifier {
     await awaitPlanReady();
     // 使えるか確かめ直してから諦める (= ユーザー報告: Dev なのに使えない)。
     if (await ensureRelayReady()) {
-      return askAiViaRelay(prompt, images: images);
+      // ★ 呼び出し側が決めた出力の上限と待ち時間を、 ちゃんと渡す
+      //   (= ユーザー報告: Claude のモデルにすると、 新規マップは出来るのに
+      //   中の要素が 1 つも作られずに終わる)。 ここで捨てていたので、
+      //   長い返事を書かせたい所でも代行サーバーの既定 (4096) 止まりになり、
+      //   要素をまとめて足す呼び出しが途中で切れていた。
+      return askAiViaRelay(prompt,
+          images: images, maxTokens: maxTokensOverride);
     }
     if (relayApiBase.isEmpty || _relayAvailable != true) {
       throw Exception(t('relay.notConfigured'));

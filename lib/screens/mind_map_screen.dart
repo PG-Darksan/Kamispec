@@ -143177,6 +143177,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
       _sheets = _note.pages;
       _sel = _note.selectedPage;
       _loaded = true;
+      _unmaskErasedTables();
     });
     // 読み込んだ旧 {sheets,sel} をここで v3 のノート/ページ形式として
     // 保存し直す。以後の起動でも同じ二階層構造を使い、移行を遅延させない。
@@ -143186,6 +143187,46 @@ class _PaintPageViewState extends State<_PaintPageView> {
     await _persist(markLive: false);
     await _importDocumentIntoSheetsIfNeeded();
     await _preloadImages();
+  }
+
+  /// 前に消しゴムで「消した」 表の覆いを外して、 見える状態に戻す。
+  ///
+  /// = ユーザー報告「消しゴムで表を消したのに、 行や列を足す項目が出続ける」。
+  ///   消しゴムは図形を消さずに覆いを足すだけなので、 見えなくなっても表は
+  ///   残っていた。 表は消しゴムでは消せないように直したが、 それ以前に
+  ///   隠してしまった表は見えないまま残ってしまう (見えないと選べないので
+  ///   Delete でも消せない)。 開いた時に覆いを外して、 選んで消せるようにする。
+  ///   表以外の図形の覆いはそのまま。
+  void _unmaskErasedTables() {
+    for (final note in _notes) {
+      for (final sheet in note.pages) {
+        final gids = <int>{};
+        for (final s in sheet.shapes) {
+          if (s.g != 0 && s.kind == 2) gids.add(s.g);
+        }
+        if (gids.isEmpty) continue;
+        // その紙の中で「表」 と言える組だけを選ぶ (罫線が縦横 2 本以上)。
+        final tableGids = <int>{};
+        for (final gid in gids) {
+          int h = 0, v = 0;
+          for (final s in sheet.shapes) {
+            if (s.g != gid || s.kind != 2) continue;
+            if ((s.a.dy - s.b.dy).abs() < 0.5) {
+              h++;
+            } else if ((s.a.dx - s.b.dx).abs() < 0.5) {
+              v++;
+            }
+          }
+          if (h >= 2 && v >= 2) tableGids.add(gid);
+        }
+        if (tableGids.isEmpty) continue;
+        for (final s in sheet.shapes) {
+          if (!tableGids.contains(s.g)) continue;
+          if (s.kind != 2 && !_isTableCellBg(s)) continue;
+          if (s.erasers.isNotEmpty) s.erasers.clear();
+        }
+      }
+    }
   }
 
   // ── 共同編集: 外から書き換わった中身を、 作り直さずに読み直す ──────────
@@ -144673,6 +144714,18 @@ class _PaintPageViewState extends State<_PaintPageView> {
       final sh = _sheet.shapes[i];
       // 選んでいるレイヤー以外は対象にしない (= ユーザー要望)。
       if (sh.lyr != _activeLayer) continue;
+      // ── 表そのものは消しゴムで消さない (= ユーザー報告: 消しゴムで表を
+      //    消したのに行や列を足す項目が出続ける) ──
+      //    消しゴムは図形を**消さず**に「隠す覆い」 を足すだけなので、
+      //    見えなくなっても罫線は残り続け、 表として数えられてしまう。
+      //    表は選んで Backspace / Delete で消す物にする。
+      //    ★ 罫線と、 セルの下地だけを守る。 マス目に書いた文字や線は
+      //      今までどおり消せる (`g` だけで判定すると中身まで守ってしまう)。
+      if (sh.g != 0 &&
+          (sh.kind == 2 || _isTableCellBg(sh)) &&
+          _isTableGid(sh.g)) {
+        continue;
+      }
       final tol = r + sh.width;
       // ★ 回した図形も、 回した分だけ戻してから当てる (= 点検で判明)。
       final p = _unrotateAround(
@@ -147274,29 +147327,51 @@ class _PaintPageViewState extends State<_PaintPageView> {
         Overlay.of(context).context.findRenderObject() as RenderBox?;
     if (overlay == null) return;
     PopupMenuItem<String> item(String v, IconData ic, String label,
-        {bool on = false}) {
-      return PopupMenuItem<String>(
-        value: v,
-        height: 36,
-        child: Row(children: [
-          Icon(ic,
-              size: 18,
-              color: on ? const Color(0xFF6C63FF) : Colors.white70),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                    color: on ? Colors.white : Colors.white70,
-                    fontSize: 13,
-                    fontWeight: on ? FontWeight.w700 : FontWeight.w400)),
+        {bool on = false, _PaintTool? sizeOf}) {
+      Widget row = Row(children: [
+        Icon(ic,
+            size: 18, color: on ? const Color(0xFF6C63FF) : Colors.white70),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                  color: on ? Colors.white : Colors.white70,
+                  fontSize: 13,
+                  fontWeight: on ? FontWeight.w700 : FontWeight.w400)),
+        ),
+        // 右クリックで大きさを変えられる道具には、 小さな目印を出す。
+        if (sizeOf != null)
+          const Icon(Icons.more_horiz_rounded,
+              size: 14, color: Colors.white24),
+        if (on)
+          const Icon(Icons.check_rounded, size: 16, color: Color(0xFF6C63FF)),
+      ]);
+      if (sizeOf != null) {
+        // ── 項目を右クリックすると、 その道具の大きさを選べる
+        //    (= ユーザー要望: 項目らを更に右クリックして大きさを変えたい) ──
+        //    ★ 高さ 36 の箱で包む。 PopupMenuItem は中身を 36px の中で縦に
+        //      中央寄せするので、 Row のままだと上下が「押しても何も
+        //      起きない帯」 になる。
+        //    ★ 長押しは付けない。 ゆっくり左クリックしただけで大きさの
+        //      メニューが出て、 道具が切り替わらなくなるため。
+        row = SizedBox(
+          height: 36,
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Builder(
+              builder: (ctx) => GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onSecondaryTapDown: (_) =>
+                    Navigator.of(ctx).pop('size:${sizeOf.name}'),
+                child: row,
+              ),
+            ),
           ),
-          if (on)
-            const Icon(Icons.check_rounded,
-                size: 16, color: Color(0xFF6C63FF)),
-        ]),
-      );
+        );
+      }
+      return PopupMenuItem<String>(value: v, height: 36, child: row);
     }
 
     // 押した所が表のマス目かどうか (紙の上の座標が分かる時だけ)。
@@ -147336,7 +147411,36 @@ class _PaintPageViewState extends State<_PaintPageView> {
         ],
         for (final t in _paintModeMenuTools())
           item('tool:${t.tool.name}', t.icon, t.label,
-              on: !_docModeInline && _tool == t.tool),
+              on: !_docModeInline && _tool == t.tool,
+              // 大きさを持つ道具だけ、 右クリックで変えられるようにする。
+              sizeOf: const {
+                _PaintTool.pen,
+                _PaintTool.eraser,
+                _PaintTool.shape,
+                _PaintTool.text,
+              }.contains(t.tool)
+                  ? t.tool
+                  : null),
+        // ── ページ / ノートの操作 (= ユーザー要望: 右クリックから新規ページ
+        //    追加・新規ノート追加・ノート切り替え・ページ削除もできるように) ──
+        const PopupMenuDivider(height: 6),
+        item('page:add', Icons.add_box_outlined, p.t('paint.addPage')),
+        item('note:add', Icons.note_add_outlined, p.t('paint.addNote')),
+        if (_sheets.length > 1)
+          item('page:del', Icons.delete_outline_rounded,
+              p.t('paint.deletePage')),
+        if (_notes.length > 1) ...[
+          PopupMenuItem<String>(
+            enabled: false,
+            height: 24,
+            child: Text(p.t('paint.switchNote'),
+                style:
+                    const TextStyle(color: Colors.white38, fontSize: 10.5)),
+          ),
+          for (var i = 0; i < _notes.length; i++)
+            item('note:sel:$i', Icons.menu_book_rounded, _notes[i].name,
+                on: i == _noteSel),
+        ],
         // ── 背景の絵を、 選べる要素 (奥のレイヤー) にする (= ユーザー要望:
         //    「背景」 という概念が変。 奥に置いた絵なら後から選べる) ──
         if ((_sheet.bgImage ?? '').isNotEmpty) ...[
@@ -147353,6 +147457,29 @@ class _PaintPageViewState extends State<_PaintPageView> {
       ],
     );
     if (v == null || !mounted) return;
+    if (v.startsWith('size:')) {
+      final name = v.substring(5);
+      final t = _PaintTool.values.where((e) => e.name == name).firstOrNull;
+      if (t != null) await _showToolSizeMenu(t, globalPos);
+      return;
+    }
+    if (v == 'page:add') {
+      _addPage();
+      return;
+    }
+    if (v == 'note:add') {
+      _addNote();
+      return;
+    }
+    if (v == 'page:del') {
+      await _deletePageAt(_sel);
+      return;
+    }
+    if (v.startsWith('note:sel:')) {
+      final i = int.tryParse(v.substring(9));
+      if (i != null) _selectNote(i);
+      return;
+    }
     if (v == 'bgToLayer') {
       _convertBgImageToBackLayer();
       return;
@@ -147367,6 +147494,112 @@ class _PaintPageViewState extends State<_PaintPageView> {
       return;
     }
     _applyPaintModeChoice(v);
+  }
+
+
+  /// 文字の大きさの目安 (= 右クリックから選ぶ用。 詳細行のつまみは
+  /// 10〜96 の無段階なので、 こちらはよく使う所だけ)。
+  static const _textSizes = [14.0, 20.0, 28.0, 40.0, 56.0, 80.0];
+
+  /// 道具の「大きさ」 を選ぶメニュー
+  /// (= ユーザー要望: 右クリックの項目を更に右クリックして大きさを変えたい)。
+  ///
+  /// ペンと図形は太さを共有しているので、 どちらから変えても同じ値が動く。
+  /// 塗りつぶし / 画像 / 選択 には大きさが無いので呼ばれない。
+  Future<void> _showToolSizeMenu(_PaintTool tool, Offset globalPos) async {
+    final p = widget.provider;
+    final overlay =
+        Overlay.of(context).context.findRenderObject() as RenderBox?;
+    if (overlay == null) return;
+    final List<double> values;
+    final double current;
+    final String title;
+    switch (tool) {
+      case _PaintTool.eraser:
+        values = _eraserWidths;
+        current = _eraserWidth;
+        title = p.t('pdfdraw.eraserSize');
+        break;
+      case _PaintTool.text:
+        values = _textSizes;
+        current = _textSize;
+        title = p.t('paint.size');
+        break;
+      case _PaintTool.pen:
+      case _PaintTool.shape:
+        values = _penWidths;
+        current = _penWidth;
+        title = p.t('pdfdraw.penWidth');
+        break;
+      default:
+        return;
+    }
+    final picked = await showMenu<double>(
+      context: context,
+      color: const Color(0xFF1E1E32),
+      position: RelativeRect.fromRect(
+        globalPos & const Size(1, 1),
+        Offset.zero & overlay.size,
+      ),
+      items: [
+        PopupMenuItem<double>(
+          enabled: false,
+          height: 26,
+          child: Text(title,
+              style: const TextStyle(color: Colors.white38, fontSize: 10.5)),
+        ),
+        for (final v in values)
+          PopupMenuItem<double>(
+            value: v,
+            height: 34,
+            child: Row(children: [
+              // 太さ / 大きさの見本 (詳細行の丸と同じ見た目)。
+              Container(
+                width: 24,
+                alignment: Alignment.center,
+                child: Container(
+                  width: (tool == _PaintTool.text ? v / 3.5 : v)
+                      .clamp(3.0, 20.0),
+                  height: (tool == _PaintTool.text ? v / 3.5 : v)
+                      .clamp(3.0, 20.0),
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: (v - current).abs() < 0.01
+                        ? const Color(0xFFEC407A)
+                        : Colors.white70,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Text('${v.round()}',
+                  style: TextStyle(
+                      color: (v - current).abs() < 0.01
+                          ? const Color(0xFFEC407A)
+                          : Colors.white70,
+                      fontSize: 12.5,
+                      fontWeight: (v - current).abs() < 0.01
+                          ? FontWeight.w700
+                          : FontWeight.w400)),
+            ]),
+          ),
+      ],
+    );
+    if (picked == null || !mounted) return;
+    setState(() {
+      switch (tool) {
+        case _PaintTool.eraser:
+          _eraserWidth = picked;
+          break;
+        case _PaintTool.text:
+          _textSize = picked;
+          break;
+        default:
+          _penWidth = picked;
+      }
+      // 選んだ道具に切り替えておく (大きさだけ変えて道具が別のままだと
+      //   何も変わっていないように見えるため)。
+      if (_tool != tool) _selectTool(tool);
+    });
   }
 
   /// 選んでいる物のレイヤー (全部同じなら その番号、 混ざっていれば null)。
@@ -149585,10 +149818,6 @@ class _PaintPageViewState extends State<_PaintPageView> {
             //    サイズの丸 等) は使わないので出さない (= ユーザー報告:
             //    文書モードのヘッダーが散らかり過ぎ)。 ページ切替のタブだけ
             //    残し、 書式は下の文書エディタ専用ツールバーで操作する。 ──
-            if (!_headerHidden) ...[
-              _buildSheetTabs(),
-              _docModeInline ? _buildDocModeBar() : _buildToolbar(),
-            ],
             // サイズ / 色などのオプション行はペイント専用。 文書モードでは
             //   丸ごと省く (= ユーザー要望: ヘッダーを隠すボタンの所が
             //   1 行分取っているのが気に入らない)。 ヘッダーを隠すボタンは
@@ -149597,13 +149826,31 @@ class _PaintPageViewState extends State<_PaintPageView> {
             //   一緒に隠す (= ユーザー報告: ヘッダーを隠すを押しても消しゴム
             //   などの設定項目が消えない)。 隠している間もトグルは上に浮いて
             //   いるので、 いつでも戻せる。
-            if (!_docModeInline && !_headerHidden)
-              SizedBox(
-                height: _kPaintOptionsBarH,
-                child: Row(children: [
-                  Expanded(child: _buildToolOptionsBar()),
-                  // トグルは上に浮かせたので、 ここには置かない。
-                  const SizedBox(width: 40),
+            //
+            // ── ヘッダーの空いた所を右クリックしても、 キャンバスと同じ
+            //    メニューを出す (= ユーザー要望) ──
+            //    ★ onSecondaryTapDown ではなく onSecondaryTapUp を使う。
+            //      押してから 0.1 秒経つと、 Down は勝敗に関係なく発火する
+            //      ので、 ページタブやレイヤーの札を少し長めに右クリック
+            //      すると、 その項目のメニューとこのメニューが 2 枚重なって
+            //      出てしまう。 Up は勝った時にしか来ない。
+            if (!_headerHidden)
+              GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onSecondaryTapUp: (d) =>
+                    unawaited(_showPaintModeMenu(d.globalPosition)),
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  _buildSheetTabs(),
+                  _docModeInline ? _buildDocModeBar() : _buildToolbar(),
+                  if (!_docModeInline)
+                    SizedBox(
+                      height: _kPaintOptionsBarH,
+                      child: Row(children: [
+                        Expanded(child: _buildToolOptionsBar()),
+                        // トグルは上に浮かせたので、 ここには置かない。
+                        const SizedBox(width: 40),
+                      ]),
+                    ),
                 ]),
               ),
             const Divider(color: Colors.white12, height: 1),
@@ -262026,6 +262273,21 @@ class _McpChatMsg {
 ///   `mounted` が false になり、 途中のツール実行がそのまま捨てられていた。
 ///   会話とループを画面の外 (ここ) に移し、 画面は覗いて表示するだけに
 ///   する。 閉じても走り続け、 開き直せば続きが見える。
+/// 検査用の入口: AI の返事から道具の呼び出しを読み取る所。
+///
+/// = ユーザー報告「Claude のモデルだと、 新規マップは出来るのに要素が
+///   1 つも作られない」。 道具の一覧と同じ形 ({"name":…, "input":…}) で
+///   返してくる事があり、 以前はそれを「呼び出しではない」 と見なして
+///   黙って終わっていた。 読み取れる形を検査で固定しておく。
+@visibleForTesting
+Map<String, dynamic>? parseToolCallForTest(String reply) =>
+    _McpChatDialogState._parseToolCall(reply);
+
+/// 検査用の入口: 「壊れた道具の呼び出し」 と見なすかどうか。
+@visibleForTesting
+bool looksLikeToolCallForTest(String reply) =>
+    _McpChatDialogState._looksLikeToolCall(reply);
+
 class _McpChatSession extends ChangeNotifier {
   _McpChatSession._();
   static final _McpChatSession instance = _McpChatSession._();
@@ -262050,6 +262312,10 @@ class _McpChatSession extends ChangeNotifier {
   /// 今どこまで進んだか (画面に「n / 24 手目」 と出す)。
   int step = 0;
   static const int maxRounds = 24;
+
+  /// 「作ったページが空のままだよ」 と促した回数 (この 1 回の指示につき)。
+  /// 繰り返しにならないよう上限を付ける。
+  int _emptyNudges = 0;
 
   /// この回の「お題」 (= 「AI で新規ページ作成」 から開いた時)。
   String? initialTask;
@@ -262201,6 +262467,7 @@ class _McpChatSession extends ChangeNotifier {
     provider.mcpResetDeleteBrake();
     var stopped = false;
     step = 0;
+    _emptyNudges = 0;
     _msgs.add(_McpChatMsg('user', shown, raw: raw));
     notifyListeners();
     unawaited(provider.appendMcpChat('user', shown));
@@ -262219,7 +262486,11 @@ class _McpChatSession extends ChangeNotifier {
         // 写真は最初の 1 往復にだけ付ける (毎回付けると同じ画像の分だけ
         //   何度も課金されてしまう)。
         final reply = await provider.askAi(prompt,
-            images: round == 0 && photos.isNotEmpty ? photos : null);
+            images: round == 0 && photos.isNotEmpty ? photos : null,
+            // ★ 要素をまとめて足す呼び出しは長くなる。 代行サーバーの既定
+            //   (4096) だと途中で切れるので、 この繰り返しでは広く取る
+            //   (= ユーザー報告: 新規マップは出来るのに要素が作られない)。
+            maxTokensOverride: 12288);
         if (_cancel) break;
         final call = _McpChatDialogState._parseToolCall(reply);
         final lastRound = round == maxRounds - 1;
@@ -262228,9 +262499,36 @@ class _McpChatSession extends ChangeNotifier {
             !lastRound &&
             _McpChatDialogState._looksLikeToolCall(reply)) {
           repairNote = provider.t('mcp.retryBrokenJson');
+          // 何が起きたのか分かるようにする (= 黙って止まっていたので、
+          //   考え込んでいるのか詰まっているのか見分けが付かなかった)。
+          add(_McpChatMsg('tool', '  ${provider.t('mcp.retrying')}', raw: ''));
           continue;
         }
         repairNote = '';
+        // ★ 「作ったページが空のまま終わる」 のを防ぐ (= ユーザー報告)。
+        //   道具を呼ばずに文章で終わろうとした時、 この回で作った
+        //   マインドマップがまだ空なら、 一度だけ作業の続きを促す。
+        //   種類が普通のページ以外 (フリーノート等) は中身がノードでは
+        //   ないので対象にしない。 回数を数えて、 繰り返しにならないようにする。
+        if (call == null && !lastRound && !_cancel && _emptyNudges < 2) {
+          final empty = <String>[];
+          for (final pid in _touchedPageIds) {
+            final page = provider.mcpPageById(pid);
+            if (page == null) continue;
+            final type = page.pageType;
+            if (type != null && type != 'normal') continue;
+            if (page.nodes.isEmpty) empty.add(page.name);
+          }
+          if (empty.isNotEmpty) {
+            _emptyNudges++;
+            repairNote = provider
+                .t('mcp.emptyPageNudge')
+                .replaceFirst('{name}', empty.join(' / '));
+            add(_McpChatMsg(
+                'tool', '  ${provider.t('mcp.retrying')}', raw: ''));
+            continue;
+          }
+        }
         if (call == null || lastRound) {
           _tidyTouched();
           final answer = (call != null && lastRound)
@@ -262245,6 +262543,13 @@ class _McpChatSession extends ChangeNotifier {
         final name = call['tool'] as String;
         final args =
             (call['args'] as Map?)?.cast<String, dynamic>() ?? const {};
+        // ★ AI 自身の手を会話に残す (= ユーザー報告: Claude のモデルだと
+        //   新規マップは出来るのに要素が 1 つも作られない)。 これが無いと
+        //   次の回に渡す会話が「依頼 → (誰かの) 実行結果」 になり、 自分が
+        //   何をしたのかが見えない。 そこから自然に続けると「もう出来て
+        //   いるらしい」 と判断して、 まとめの文章を返して終わってしまう。
+        //   画面には出さない (raw は履歴用ではないので空のまま)。
+        add(_McpChatMsg('act', jsonEncode({'tool': name, 'args': args})));
         // ★ 並べ直すのは「ノードを増やした」 ページだけ (= 動作確認で判明:
         //   pageId を含むツール全部を対象にしていたため、 「このノードを
         //   x=-5000 へ動かして」 と頼まれてその通り動かしても、 応答の
@@ -262547,6 +262852,16 @@ class _McpChatSession extends ChangeNotifier {
         case 'user':
           // 添付の中身は raw 側に入っている。
           b.writeln('ユーザー: ${m.raw ?? m.text}');
+          break;
+        case 'act':
+          // ★ AI 自身が出した道具の呼び出し。 これを渡さないと、 会話が
+          //   「ユーザーの依頼 → (誰かの) 実行結果」 という形になり、
+          //   自分が何をしたのかが AI から見えなくなる。 すると
+          //   「もう誰かがやったらしい」 と解釈して、 続きを書かずに
+          //   まとめの文章を返してしまう (= ユーザー報告: Claude のモデルで
+          //   新規マップは出来るのに要素が 1 つも作られずに完了する)。
+          //   画面には出さない行なので、 見た目は変わらない。
+          b.writeln('アシスタント: ${m.text}');
           break;
         case 'tool':
           // 画面用の要約ではなく、 実際の戻り値を渡す。
@@ -263727,7 +264042,20 @@ class _McpChatDialogState extends State<_McpChatDialog> {
       if (!t.startsWith('{')) return null;
       try {
         final j = jsonDecode(t);
-        if (j is Map<String, dynamic> && j['tool'] is String) return j;
+        if (j is! Map<String, dynamic>) return null;
+        if (j['tool'] is String) return j;
+        // ★ 道具の一覧は {name, description, inputSchema} の形で渡している
+        //   ので、 AI がその形 ({"name":…, "input":…}) で返してくる事がある。
+        //   以前はこれを「道具の呼び出しではない」 と見なして、 何もせずに
+        //   終わっていた (= ユーザー報告: 新規マップは出来るのに要素が
+        //   作られない)。 こちらの形に読み替える。
+        if (j['name'] is String) {
+          final a = j['input'] ?? j['arguments'] ?? j['args'] ?? j['parameters'];
+          return <String, dynamic>{
+            'tool': j['name'],
+            'args': a is Map ? a.cast<String, dynamic>() : const {},
+          };
+        }
       } catch (_) {}
       return null;
     }
@@ -263873,9 +264201,18 @@ class _McpChatDialogState extends State<_McpChatDialog> {
   }
 
   /// ツール呼び出しのつもりで書かれた返答か (= JSON として読めなくても)。
+  /// 「道具を呼ぼうとしたが JSON が壊れている」 返事かどうか。
+  ///
+  /// ★ 判定を広げる時は `_parseToolCall` の受け口も一緒に広げる事。
+  ///   片方だけ広げると、 読めないのに「書き直して」 を繰り返す輪に入る。
   static bool _looksLikeToolCall(String reply) =>
-      reply.contains('"tool"') &&
-      (reply.contains('"args"') || reply.trimLeft().startsWith('{'));
+      (reply.contains('"tool"') &&
+          (reply.contains('"args"') || reply.trimLeft().startsWith('{'))) ||
+      // 道具の一覧と同じ形 ({"name":…, "input":…}) で書いてきた時。
+      (reply.contains('"name"') &&
+          (reply.contains('"input"') ||
+              reply.contains('"arguments"') ||
+              reply.contains('"parameters"')));
 
   /// 処理中に投げた時の扱い。 true = 割り込み (今の作業に口を挟む) /
   /// false = 順番待ち (終わってから始める)。
@@ -264274,6 +264611,9 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                     itemCount: _msgs.length,
                     itemBuilder: (_, i) {
                       final m = _msgs[i];
+                      // AI 自身の道具の呼び出しは、 会話の続きを考えさせる
+                      //   ためだけに控えている行なので画面には出さない。
+                      if (m.role == 'act') return const SizedBox.shrink();
                       // 残りトークンの案内行 (= ユーザー要望: 出力の後に出す)。
                       if (m.role == 'meta') {
                         return Padding(
