@@ -174,6 +174,11 @@ flowchart TD
 |---|---|
 | `add_gallery_item` | ギャラリー (bookshelf) にタイル追加。`texts` で一括投入 (1 件ずつ呼ばせない) |
 | `add_paint_text` | フリーノート (paint) に文字を書く。`texts` で一括。x/y 省略で上から縦に積む |
+| `list_paint_tabs` | フリーノートの構成 (バインダーとタブ) を返す。番号はここで確かめる |
+| `add_paint_tabs` | タブ (紙) を足す。`names` でまとめて。`binder` 省略で今のバインダー |
+| `add_paint_binders` | バインダーを足す (中に空のタブが 1 枚) |
+| `select_paint_tab` | 見ているバインダー / タブを切り替える (= 書き込み先が変わる) |
+| `rename_paint_item` | バインダー / タブの名前を変える |
 | `append_document_text` | ノート (paint / document) の末尾に段落を追記。`texts` で一括<br/>★ `markdown` ページには使えない (`write_markdown` を使う) |
 | `write_markdown` | マークダウン (markdown) ページの本文を書く。`text` に**まるごと 1 回**で渡す (見出し・表・```mermaid も描ける)<br/>既定は総入れ替え。`append: true` で末尾に足す。書き終えるとそのページが開いた状態になる |
 | `add_video_editor_item` | 動画エディターのタイムラインに 1 項目。`kind` = text / video / image。`startMs` 省略でそのレイヤーの末尾、`durationMs` 既定 4000、`layer` 0 が最背面 |

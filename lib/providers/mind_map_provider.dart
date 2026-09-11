@@ -23907,8 +23907,8 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Очистить всё',
     },
     'paint.clearConfirm': {
-      'ja': 'このページの内容を全て消去しますか？',
-      'en': 'Erase all content of this page?',
+      'ja': 'このタブの内容を全て消去しますか？',
+      'en': 'Erase all content of this tab?',
       'zh': '要清除此画板的所有内容吗？',
       'ko': '이 시트의 내용을 모두 지울까요?',
       'es': '¿Borrar todo el contenido de esta hoja?',
@@ -23918,71 +23918,71 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Стереть всё содержимое этого листа?',
     },
     'paint.addNote': {
-      'ja': 'ノートを追加',
-      'en': 'Add note',
+      'ja': 'バインダーを追加',
+      'en': 'Add binder',
     },
     // ── 右クリックからノートを切り替える (= ユーザー要望) ──
     'paint.switchNote': {
-      'ja': 'ノートを切り替え',
-      'en': 'Switch note',
-      'zh': '切换笔记本',
-      'ko': '노트 전환',
-      'es': 'Cambiar de cuaderno',
-      'fr': 'Changer de carnet',
-      'de': 'Notizbuch wechseln',
-      'pt': 'Trocar de caderno',
-      'ru': 'Сменить блокнот',
+      'ja': 'バインダーを切り替え',
+      'en': 'Switch binder',
+      'zh': '切换活页夹',
+      'ko': '바인더 전환',
+      'es': 'Cambiar de carpeta',
+      'fr': 'Changer de classeur',
+      'de': 'Ordner wechseln',
+      'pt': 'Trocar de fichário',
+      'ru': 'Сменить папка',
     },
     'paint.noteName': {
-      'ja': 'ノート名を変更',
-      'en': 'Rename the note',
-      'zh': '重命名笔记本',
-      'ko': '노트 이름 변경',
-      'es': 'Renombrar el cuaderno',
-      'fr': 'Renommer le carnet',
-      'de': 'Notizbuch umbenennen',
-      'pt': 'Renomear o caderno',
-      'ru': 'Переименовать блокнот',
+      'ja': 'バインダー名を変更',
+      'en': 'Rename the binder',
+      'zh': '重命名活页夹',
+      'ko': '바인더 이름 변경',
+      'es': 'Renombrar el carpeta',
+      'fr': 'Renommer le classeur',
+      'de': 'Ordner umbenennen',
+      'pt': 'Renomear o fichário',
+      'ru': 'Переименовать папка',
     },
     'paint.deleteNote': {
-      'ja': 'ノートを削除',
-      'en': 'Delete note',
+      'ja': 'バインダーを削除',
+      'en': 'Delete binder',
     },
     'paint.deleteNoteConfirm': {
-      'ja': '「{name}」と中の全てのページを削除しますか？',
-      'en': 'Delete “{name}” and all of its pages?',
+      'ja': '「{name}」と中の全てのタブを削除しますか？',
+      'en': 'Delete “{name}” and all of its tabs?',
     },
     'paint.defaultNoteName': {
-      'ja': 'ノート{n}',
-      'en': 'Note {n}',
+      'ja': 'バインダー{n}',
+      'en': 'Binder {n}',
     },
     'paint.addPage': {
-      'ja': 'ページを追加',
-      'en': 'Add page',
+      'ja': 'タブを追加',
+      'en': 'Add tab',
     },
     // 「ページ名」 だけだと何をするボタンか分からない (= ユーザー要望)。
     'paint.pageName': {
-      'ja': 'ページ名を変更',
-      'en': 'Rename the page',
-      'zh': '重命名页面',
-      'ko': '페이지 이름 변경',
-      'es': 'Renombrar la página',
-      'fr': 'Renommer la page',
-      'de': 'Seite umbenennen',
-      'pt': 'Renomear a página',
-      'ru': 'Переименовать страницу',
+      'ja': 'タブ名を変更',
+      'en': 'Rename the tab',
+      'zh': '重命名标签标签页',
+      'ko': '탭 이름 변경',
+      'es': 'Renombrar la pestaña',
+      'fr': 'Renommer la onglet',
+      'de': 'Tab umbenennen',
+      'pt': 'Renomear a aba',
+      'ru': 'Переименовать вкладоку',
     },
     'paint.deletePage': {
-      'ja': 'ページを削除',
-      'en': 'Delete page',
+      'ja': 'タブを削除',
+      'en': 'Delete tab',
     },
     'paint.deletePageConfirm': {
       'ja': '「{name}」を削除しますか？',
       'en': 'Delete “{name}”?',
     },
     'paint.defaultPageName': {
-      'ja': 'ページ{n}',
-      'en': 'Page {n}',
+      'ja': 'タブ{n}',
+      'en': 'Tab {n}',
     },
     // フリーノートの二階層タブ用ラベル (= ユーザー要望: ノートとページの
     //   違いが分かるように)。 ノート = ページを束ねるノートブック、
@@ -23996,12 +23996,12 @@ class MindMapProvider extends ChangeNotifier {
       'en': 'Page',
     },
     'paint.tabsNoteHint': {
-      'ja': 'ノートブック（ページの束）',
-      'en': 'Notebook (a binder of pages)',
+      'ja': 'バインダー（タブの束）',
+      'en': 'Binder (a bundle of tabs)',
     },
     'paint.tabsPageHint': {
-      'ja': 'このノート内のページ',
-      'en': 'Pages inside this notebook',
+      'ja': 'このバインダー内のタブ',
+      'en': 'Tabs in this binder',
     },
     'paint.imagePickCancelled': {
       'ja': '画像の選択をキャンセルしました',
@@ -24429,16 +24429,52 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Selecionar / mover (Esc também alterna)',
       'ru': 'Выбрать / переместить (Esc также переключает)',
     },
+    // ★ 「ノート」 は同じ画面の中で 3 通りの意味に使われていたので、
+    //   横の書き込み欄は「メモ」 にする (= ユーザー要望: 混同しないように)。
+    // ── 選んだ文字を AI へ渡す (= ユーザー要望: マインドマップのように、
+    //    フリーノートでも範囲選択した文字を AI に渡せるように) ──
+    'paint.clipboardEmpty': {
+      'ja': 'クリップボードに貼り付けられる物がありません',
+      'en': 'There is nothing on the clipboard to paste',
+      'zh': '剪贴板中没有可粘贴的内容',
+      'ko': '클립보드에 붙여넣을 것이 없습니다',
+      'es': 'No hay nada que pegar en el portapapeles',
+      'fr': 'Il n’y a rien à coller dans le presse-papiers',
+      'de': 'In der Zwischenablage ist nichts zum Einfügen',
+      'pt': 'Não há nada para colar na área de transferência',
+      'ru': 'В буфере обмена нечего вставлять',
+    },
+    'paint.aiSelected': {
+      'ja': '選んだ文字を AI に渡す',
+      'en': 'Send the selected text to AI',
+      'zh': '将所选文字交给 AI',
+      'ko': '선택한 글자를 AI 에 전달',
+      'es': 'Enviar el texto seleccionado a la IA',
+      'fr': 'Envoyer le texte sélectionné à l’IA',
+      'de': 'Markierten Text an die KI geben',
+      'pt': 'Enviar o texto selecionado para a IA',
+      'ru': 'Передать выделенный текст ИИ',
+    },
+    /// AI へ渡す時に添える決まり事 ({page} = ページ id)。
+    'paint.aiRule': {
+      'ja': '上の文字は、 フリーノートのページ (id: {page}) で選ばれている '
+          '文字です。 書き足す時は add_paint_text を使い、 今開いているタブへ '
+          '置いてください。 場所を指定しない時は、 邪魔にならない空いた所へ。',
+      'en': 'The text above is the current selection on a free-note page '
+          '(id: {page}). To add something, use add_paint_text and put it on '
+          'the tab that is open now; if no position is given, choose an '
+          'empty spot that does not cover anything.',
+    },
     'paint.sideNote': {
-      'ja': 'ノート',
-      'en': 'Notes',
-      'zh': '笔记',
-      'ko': '노트',
-      'es': 'Notas',
-      'fr': 'Notes',
-      'de': 'Notizen',
-      'pt': 'Notas',
-      'ru': 'Заметки',
+      'ja': 'メモ',
+      'en': 'Memo',
+      'zh': '备忘',
+      'ko': '메모',
+      'es': 'Memo',
+      'fr': 'Mémo',
+      'de': 'Notizfeld',
+      'pt': 'Memo',
+      'ru': 'Заметка',
     },
     'paint.notePlaceholder': {
       'ja': 'ここに入力...',
@@ -24496,26 +24532,26 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Экспорт в JPG (этот лист)',
     },
     'paint.exportPngAll': {
-      'ja': '全ページを PNG で書き出し',
-      'en': 'Export all pages as PNG',
-      'zh': '将所有页面导出为 PNG',
-      'ko': '모든 페이지를 PNG로 내보내기',
-      'es': 'Exportar todas las páginas como PNG',
-      'fr': 'Exporter toutes les pages en PNG',
-      'de': 'Alle Seiten als PNG exportieren',
-      'pt': 'Exportar todas as páginas como PNG',
-      'ru': 'Экспорт всех страниц в PNG',
+      'ja': '全タブを PNG で書き出し',
+      'en': 'Export all tabs as PNG',
+      'zh': '将所有标签标签页导出为 PNG',
+      'ko': '모든 탭를 PNG로 내보내기',
+      'es': 'Exportar todas las pestañas como PNG',
+      'fr': 'Exporter toutes les onglets en PNG',
+      'de': 'Alle Tabs als PNG exportieren',
+      'pt': 'Exportar todas as abas como PNG',
+      'ru': 'Экспорт всех вкладок в PNG',
     },
     'paint.exportJpgAll': {
-      'ja': '全ページを JPG で書き出し',
-      'en': 'Export all pages as JPG',
-      'zh': '将所有页面导出为 JPG',
-      'ko': '모든 페이지를 JPG로 내보내기',
-      'es': 'Exportar todas las páginas como JPG',
-      'fr': 'Exporter toutes les pages en JPG',
-      'de': 'Alle Seiten als JPG exportieren',
-      'pt': 'Exportar todas as páginas como JPG',
-      'ru': 'Экспорт всех страниц в JPG',
+      'ja': '全タブを JPG で書き出し',
+      'en': 'Export all tabs as JPG',
+      'zh': '将所有标签标签页导出为 JPG',
+      'ko': '모든 탭를 JPG로 내보내기',
+      'es': 'Exportar todas las pestañas como JPG',
+      'fr': 'Exporter toutes les onglets en JPG',
+      'de': 'Alle Tabs als JPG exportieren',
+      'pt': 'Exportar todas as abas como JPG',
+      'ru': 'Экспорт всех вкладок в JPG',
     },
     'paint.exportPdfAll': {
       'ja': 'PDF で書き出し (全シート)',
@@ -24551,15 +24587,15 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Не удалось экспортировать PDF',
     },
     'paint.exportFolder': {
-      'ja': '全ページの保存先フォルダーを選択',
-      'en': 'Choose a folder for all pages',
-      'zh': '选择所有页面的保存文件夹',
-      'ko': '모든 페이지를 저장할 폴더 선택',
-      'es': 'Elegir una carpeta para todas las páginas',
-      'fr': 'Choisir un dossier pour toutes les pages',
-      'de': 'Ordner für alle Seiten auswählen',
-      'pt': 'Escolher uma pasta para todas as páginas',
-      'ru': 'Выберите папку для всех страниц',
+      'ja': '全タブの保存先フォルダーを選択',
+      'en': 'Choose a folder for all tabs',
+      'zh': '选择所有标签标签页的保存文件夹',
+      'ko': '모든 탭를 저장할 폴더 선택',
+      'es': 'Elegir una carpeta para todas las pestañas',
+      'fr': 'Choisir un dossier pour toutes les onglets',
+      'de': 'Ordner für alle Tabs auswählen',
+      'pt': 'Escolher uma pasta para todas as abas',
+      'ru': 'Выберите папку для всех вкладок',
     },
     'paint.savedCount': {
       'ja': '{count} 枚を保存しました',
@@ -42228,14 +42264,14 @@ class MindMapProvider extends ChangeNotifier {
     },
     // ── フリーノート: ノートの回転 (= ユーザー要望) ──
     'paint.rotateCanvas': {
-      'ja': 'ノートを回転',
-      'en': 'Rotate note',
+      'ja': '紙を回転',
+      'en': 'Rotate the sheet',
       'zh': '旋转画布',
-      'ko': '노트 회전',
-      'es': 'Rotar nota',
-      'fr': 'Pivoter la note',
-      'de': 'Notiz drehen',
-      'pt': 'Girar nota',
+      'ko': '용지 회전',
+      'es': 'Girar la hoja',
+      'fr': 'Pivoter la feuille',
+      'de': 'Blatt drehen',
+      'pt': 'Girar a folha',
       'ru': 'Повернуть лист',
     },
     // ── フリーノート: 表の挿入 (= ユーザー要望: 行・列数を指定して表を作成) ──
@@ -42370,8 +42406,8 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Поворот',
     },
     'paint.reorderNotes': {
-      'ja': 'ノートを並べ替え',
-      'en': 'Reorder notes',
+      'ja': 'バインダーを並べ替え',
+      'en': 'Reorder binders',
     },
     'paint.uiColors': {
       'ja': 'カーソル / 枠の色',
@@ -42472,7 +42508,7 @@ class MindMapProvider extends ChangeNotifier {
       'en': 'Tap to insert an image (drag to move, resize with the handle). Long-press (right-click on PC) to open the image stash.',
     },
     'paint.help.stash': {
-      'ja': '画像置き場を開閉します。ドラッグ&ドロップで画像を保管し、後からページへ入れられます。',
+      'ja': '画像置き場を開閉します。ドラッグ&ドロップで画像を保管し、後からタブへ入れられます。',
       'en': 'Opens the image stash. Store images by drag & drop and place them later.',
     },
     'paint.help.select': {
@@ -42484,8 +42520,8 @@ class MindMapProvider extends ChangeNotifier {
       'en': 'Undo the last action (Ctrl+Z). Redo with the next button (Ctrl+Y).',
     },
     'paint.help.clearAll': {
-      'ja': 'このページの内容を全て消します。',
-      'en': 'Clears everything on this page.',
+      'ja': 'このタブの内容を全て消します。',
+      'en': 'Clears everything on this tab.',
     },
     'paint.help.paperSize': {
       'ja': '用紙サイズ (A4/B5/16:9/カスタム等) を変更します。',
@@ -42500,8 +42536,8 @@ class MindMapProvider extends ChangeNotifier {
       'en': 'Tap to instantly insert a table with the default rows × columns. Long-press (right-click on PC) to set the defaults. Select a table to add rows/columns later.',
     },
     'paint.help.rotate': {
-      'ja': '押す度にノートが既定の角度 (15°) ずつ回転します。長押し (PC は右クリック) で角度・方向・自由回転を設定できます。回転したまま描けます。',
-      'en': 'Each tap rotates the note by the step angle (15° by default). Long-press (right-click on PC) to set the step, direction, or free angle. You can keep drawing while rotated.',
+      'ja': '押す度に紙が既定の角度 (15°) ずつ回転します。長押し (PC は右クリック) で角度・方向・自由回転を設定できます。回転したまま描けます。',
+      'en': 'Each tap rotates the binder by the step angle (15° by default). Long-press (right-click on PC) to set the step, direction, or free angle. You can keep drawing while rotated.',
     },
     // ── 回転ステップ / なげなわ塗り / 表の既定値 (= ユーザー要望 2026-07-31) ──
     'paint.rotateStep': {
@@ -42509,15 +42545,15 @@ class MindMapProvider extends ChangeNotifier {
       'en': 'Step per tap',
     },
     'paint.splitNeedsTwoPages': {
-      'ja': '分割表示にはページが 2 枚以上必要です',
-      'en': 'Split view needs at least two pages',
-      'zh': '分屏显示需要至少两页',
-      'ko': '분할 보기는 페이지가 2장 이상 필요합니다',
-      'es': 'La vista dividida necesita al menos dos páginas',
-      'fr': 'L affichage divisé nécessite au moins deux pages',
-      'de': 'Die geteilte Ansicht braucht mindestens zwei Seiten',
-      'pt': 'A visualização dividida precisa de pelo menos duas páginas',
-      'ru': 'Для разделённого вида нужно минимум две страницы',
+      'ja': '分割表示にはタブが 2 枚以上必要です',
+      'en': 'Split view needs at least two tabs',
+      'zh': '分屏显示需要至少两标签页',
+      'ko': '분할 보기는 탭가 2장 이상 필요합니다',
+      'es': 'La vista dividida necesita al menos dos pestañas',
+      'fr': 'L affichage divisé nécessite au moins deux onglets',
+      'de': 'Die geteilte Ansicht braucht mindestens zwei Tabs',
+      'pt': 'A visualização dividida precisa de pelo menos duas abas',
+      'ru': 'Для разделённого вида нужно минимум две вкладки',
     },
     'paint.rotateCw': {
       'ja': '時計回り',
@@ -42557,10 +42593,10 @@ class MindMapProvider extends ChangeNotifier {
     },
     // ── ページの画面分割 (= ユーザー要望 2026-07-31) ──
     'paint.splitView': {
-      'ja': 'ページを分割表示',
-      'en': 'Split view (two pages)',
-      'zh': '分屏显示页面',
-      'ko': '페이지 분할 보기',
+      'ja': 'タブを分割表示',
+      'en': 'Split view (two tabs)',
+      'zh': '分屏显示标签标签页',
+      'ko': '탭 분할 보기',
       'es': 'Vista dividida',
       'fr': 'Vue partagée',
       'de': 'Geteilte Ansicht',
@@ -42572,20 +42608,20 @@ class MindMapProvider extends ChangeNotifier {
       'en': 'editing',
     },
     'paint.splitEditThis': {
-      'ja': 'このページを編集する',
-      'en': 'Edit this page',
+      'ja': 'このタブを編集する',
+      'en': 'Edit this tab',
     },
     'paint.splitDropHint': {
-      'ja': '選択ツールで要素をここへドラッグするとこのページへ移動します',
-      'en': 'Drag items here with the select tool to move them to this page',
+      'ja': '選択ツールで要素をここへドラッグするとこのタブへ移動します',
+      'en': 'Drag items here with the select tool to move them to this tab',
     },
     'paint.movedToPage': {
       'ja': '「{name}」へ移動しました',
       'en': 'Moved to "{name}"',
     },
     'paint.help.split': {
-      'ja': '別のページを PC は左右 / モバイルは上下に並べて表示します。選択ツールで要素を分割側へドラッグするとそのページへ移動できます。',
-      'en': 'Shows another page side by side (top/bottom on mobile). Drag items onto the split pane with the select tool to move them to that page.',
+      'ja': '別のタブを PC は左右 / モバイルは上下に並べて表示します。選択ツールで要素を分割側へドラッグするとそのタブへ移動できます。',
+      'en': 'Shows another tab side by side (top/bottom on mobile). Drag items onto the split pane with the select tool to move them to that tab.',
     },
     // ── 表の行/列削除・拡大縮小 / 画像ボタン統合 (= ユーザー要望 2026-07-31) ──
     'paint.tableRemoveRow': {
@@ -42695,15 +42731,15 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Импортируется файл…',
     },
     'paint.fileImported': {
-      'ja': '{n} ページ追加しました',
-      'en': 'Added {n} pages',
-      'zh': '已添加 {n} 页',
-      'ko': '{n}페이지를 추가했습니다',
-      'es': 'Se añadieron {n} páginas',
-      'fr': '{n} pages ajoutées',
-      'de': '{n} Seiten hinzugefügt',
-      'pt': '{n} páginas adicionadas',
-      'ru': 'Добавлено страниц: {n}',
+      'ja': '{n} タブ追加しました',
+      'en': 'Added {n} tabs',
+      'zh': '已添加 {n} 标签页',
+      'ko': '{n}탭를 추가했습니다',
+      'es': 'Se añadieron {n} pestañas',
+      'fr': '{n} onglets ajoutées',
+      'de': '{n} Tabs hinzugefügt',
+      'pt': '{n} abas adicionadas',
+      'ru': 'Добавлено вкладок: {n}',
     },
     'paint.fileImportFailed': {
       'ja': 'ファイルを読み込めませんでした',
@@ -42928,15 +42964,15 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Добавить пояснения',
     },
     'paint.gradeAllPages': {
-      'ja': '全 {n} ページをまとめて採点する',
-      'en': 'Grade all {n} pages together',
-      'zh': '一起评分全部 {n} 页',
-      'ko': '전체 {n} 페이지를 함께 채점',
-      'es': 'Calificar las {n} páginas juntas',
-      'fr': 'Corriger les {n} pages ensemble',
-      'de': 'Alle {n} Seiten zusammen bewerten',
-      'pt': 'Corrigir todas as {n} páginas',
-      'ru': 'Проверить все {n} страниц вместе',
+      'ja': '全 {n} タブをまとめて採点する',
+      'en': 'Grade all {n} tabs together',
+      'zh': '一起评分全部 {n} 标签页',
+      'ko': '전체 {n} 탭를 함께 채점',
+      'es': 'Calificar las {n} pestañas juntas',
+      'fr': 'Corriger les {n} onglets ensemble',
+      'de': 'Alle {n} Tabs zusammen bewerten',
+      'pt': 'Corrigir todas as {n} abas',
+      'ru': 'Проверить все {n} вкладок вместе',
     },
     'paint.gradeNote': {
       'ja': '採点の基準 / 配点 (任意)',
@@ -43049,15 +43085,15 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Пояснения добавлены ниже на этом листе',
     },
     'paint.gradeExplainPage': {
-      'ja': '解説を次のページに',
-      'en': 'Put explanations on the next page',
-      'zh': '讲解放到下一页',
-      'ko': '해설을 다음 페이지에',
-      'es': 'Explicaciones en la página siguiente',
-      'fr': 'Explications sur la page suivante',
-      'de': 'Erklärungen auf die nächste Seite',
-      'pt': 'Explicações na próxima página',
-      'ru': 'Пояснения на следующей странице',
+      'ja': '解説を次のタブに',
+      'en': 'Put explanations on the next tab',
+      'zh': '讲解放到下一标签页',
+      'ko': '해설을 다음 탭에',
+      'es': 'Explicaciones en la pestaña siguiente',
+      'fr': 'Explications sur la onglet suivante',
+      'de': 'Erklärungen auf die nächste Tab',
+      'pt': 'Explicações na próxima aba',
+      'ru': 'Пояснения на следующей вкладоке',
     },
     'paint.gradeWritten': {
       'ja': '採点を紙の右上に書き込みました',
@@ -43082,15 +43118,15 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Пояснения',
     },
     'paint.gradeExplainAdded': {
-      'ja': '解説のページを足しました',
-      'en': 'Added a page with the explanations',
-      'zh': '已添加讲解页',
-      'ko': '해설 페이지를 추가했습니다',
-      'es': 'Se añadió una página con las explicaciones',
-      'fr': 'Page d\'explications ajoutée',
-      'de': 'Seite mit Erklärungen hinzugefügt',
-      'pt': 'Página de explicações adicionada',
-      'ru': 'Добавлена страница с пояснениями',
+      'ja': '解説のタブを足しました',
+      'en': 'Added a tab with the explanations',
+      'zh': '已添加讲解标签页',
+      'ko': '해설 탭를 추가했습니다',
+      'es': 'Se añadió una pestaña con las explicaciones',
+      'fr': 'Onglet d\'explications ajoutée',
+      'de': 'Tab mit Erklärungen hinzugefügt',
+      'pt': 'Aba de explicações adicionada',
+      'ru': 'Добавлена вкладока с пояснениями',
     },
     'paint.docModeExit': {
       'ja': '手書きに戻る',
@@ -43233,23 +43269,23 @@ class MindMapProvider extends ChangeNotifier {
     },
     // ── ページ一覧 / 番号詰め / 分割両編集 (= ユーザー要望 2026-07-31) ──
     'paint.pageList': {
-      'ja': 'ページ一覧',
-      'en': 'Page list',
-      'zh': '页面列表',
-      'ko': '페이지 목록',
-      'es': 'Lista de páginas',
-      'fr': 'Liste des pages',
-      'de': 'Seitenliste',
-      'pt': 'Lista de páginas',
-      'ru': 'Список страниц',
+      'ja': 'タブ一覧',
+      'en': 'Tab list',
+      'zh': '标签标签页列表',
+      'ko': '탭 목록',
+      'es': 'Lista de pestañas',
+      'fr': 'Liste des onglets',
+      'de': 'Tabsliste',
+      'pt': 'Lista de abas',
+      'ru': 'Список вкладок',
     },
     'paint.renumberTitle': {
-      'ja': 'ページ番号を詰めますか?',
-      'en': 'Renumber the pages?',
+      'ja': 'タブ番号を詰めますか?',
+      'en': 'Renumber the tabs?',
     },
     'paint.renumberDesc': {
-      'ja': '連番のページを削除しました。残りの「ページ n」を 1 から順に振り直しますか?(自分で付けた名前は変わりません)\nこの選択は記憶され、後からページ一覧の設定で変更できます。',
-      'en': 'A numbered page was deleted. Renumber the remaining default-named pages from 1? (Custom names are untouched.)\nYour choice is remembered and can be changed later in the page list.',
+      'ja': '連番のタブを削除しました。残りの「タブ n」を 1 から順に振り直しますか?(自分で付けた名前は変わりません)\nこの選択は記憶され、後からタブ一覧の設定で変更できます。',
+      'en': 'A numbered tab was deleted. Renumber the remaining default-named tabs from 1? (Custom names are untouched.)\nYour choice is remembered and can be changed later in the tab list.',
     },
     'paint.renumberDo': {
       'ja': '番号を詰める',
@@ -43260,8 +43296,8 @@ class MindMapProvider extends ChangeNotifier {
       'en': 'Keep as is',
     },
     'paint.renumberSetting': {
-      'ja': 'ページ削除時に番号を詰める',
-      'en': 'Renumber pages after deletion',
+      'ja': 'タブ削除時に番号を詰める',
+      'en': 'Renumber tabs after deletion',
     },
     'paint.splitTapToEdit': {
       'ja': 'タップ/クリックで編集対象になります',
@@ -43305,12 +43341,12 @@ class MindMapProvider extends ChangeNotifier {
       'en': 'Customizes the cursor and selection/text frame colors.',
     },
     'paint.help.export': {
-      'ja': 'このページやノート全体を PNG / JPG / PDF に書き出します。',
-      'en': 'Exports this page or the whole note as PNG / JPG / PDF.',
+      'ja': 'このタブやバインダー全体を PNG / JPG / PDF に書き出します。',
+      'en': 'Exports this tab or the whole binder as PNG / JPG / PDF.',
     },
     'paint.help.tabs': {
-      'ja': 'ページタブ: タップで切替、ダブルクリックで名前変更、ドラッグ (モバイルは長押し) で並べ替え。ホイールでもページをめくれます。',
-      'en': 'Page tabs: tap to switch, double-click to rename, drag (long-press on mobile) to reorder. Mouse wheel also flips pages.',
+      'ja': 'タブ: タップで切替、ダブルクリックで名前変更、ドラッグ (モバイルは長押し) で並べ替え。ホイールでもタブをめくれます。',
+      'en': 'Tab tabs: tap to switch, double-click to rename, drag (long-press on mobile) to reorder. Mouse wheel also flips tabs.',
     },
     // ── ビデオエディター: プロジェクトファイル (= ユーザー要望) ──
     've.projectShort': {
@@ -49470,6 +49506,65 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Hinweis: „{name}“ ist noch leer. Nicht mit Text abschließen - erstelle den Inhalt mit add_node.',
       'pt': 'Aviso: "{name}" ainda está vazio. Não termine com texto: use add_node para criar o conteúdo.',
       'ru': 'Внимание: «{name}» всё ещё пуст. Не завершайте текстом - создайте содержимое через add_node.',
+    },
+    // ── パネルの折り畳み (= ユーザー要望) ──
+    'mcp.collapse': {
+      'ja': '折り畳む',
+      'en': 'Collapse',
+      'zh': '折叠',
+      'ko': '접기',
+      'es': 'Contraer',
+      'fr': 'Replier',
+      'de': 'Einklappen',
+      'pt': 'Recolher',
+      'ru': 'Свернуть',
+    },
+    'mcp.expand': {
+      'ja': '元に戻す',
+      'en': 'Expand',
+      'zh': '展开',
+      'ko': '펼치기',
+      'es': 'Expandir',
+      'fr': 'Déplier',
+      'de': 'Ausklappen',
+      'pt': 'Expandir',
+      'ru': 'Развернуть',
+    },
+    // ── フリーノートの入れ物の操作 (会話欄に出す一行) ──
+    'mcp.actListTabs': {
+      'ja': 'タブの一覧を見る', 'en': 'List the tabs',
+      'zh': '查看标签页列表', 'ko': '탭 목록을 본다',
+      'es': 'Ver las pestañas', 'fr': 'Lister les onglets',
+      'de': 'Tabs auflisten', 'pt': 'Listar as abas',
+      'ru': 'Смотрю список вкладок',
+    },
+    'mcp.actAddTab': {
+      'ja': 'タブを足す', 'en': 'Add tabs',
+      'zh': '添加标签页', 'ko': '탭을 추가',
+      'es': 'Añadir pestañas', 'fr': 'Ajouter des onglets',
+      'de': 'Tabs hinzufügen', 'pt': 'Adicionar abas',
+      'ru': 'Добавляю вкладки',
+    },
+    'mcp.actAddBinder': {
+      'ja': 'バインダーを足す', 'en': 'Add binders',
+      'zh': '添加活页夹', 'ko': '바인더를 추가',
+      'es': 'Añadir carpetas', 'fr': 'Ajouter des classeurs',
+      'de': 'Ordner hinzufügen', 'pt': 'Adicionar fichários',
+      'ru': 'Добавляю папки',
+    },
+    'mcp.actSelectTab': {
+      'ja': 'タブを切り替える', 'en': 'Switch tab',
+      'zh': '切换标签页', 'ko': '탭을 전환',
+      'es': 'Cambiar de pestaña', 'fr': 'Changer d’onglet',
+      'de': 'Tab wechseln', 'pt': 'Trocar de aba',
+      'ru': 'Переключаю вкладку',
+    },
+    'mcp.actRenameTab': {
+      'ja': '名前を変える', 'en': 'Rename',
+      'zh': '重命名', 'ko': '이름을 변경',
+      'es': 'Renombrar', 'fr': 'Renommer',
+      'de': 'Umbenennen', 'pt': 'Renomear',
+      'ru': 'Переименовываю',
     },
     'mcp.retrying': {
       'ja': 'やり直しています…',
@@ -94841,6 +94936,232 @@ $cleanQ
 
   /// 保存してあるフリーノートの中から「今開いている紙」 を取り出す。
   /// 無ければ 1 枚作って、 入れ物ごと返す (書き戻す時は doc を保存する)。
+  // ─── フリーノートのバインダー / タブを AI から扱う (= ユーザー要望:
+  //     ノートの切り替えやタブの追加を AI アシスタントからも行えるように)
+  //     ────────────────────────────────────────────────────────────────
+  //
+  // ★ 中身は prefs (paint_<pageId>) にしか無いので、 ここで直に読み書きする。
+  //   ただし「今どれを見ているか」 (noteSel / sel) は**画面が持っている**。
+  //   prefs に書いただけでは画面に伝わらない (読み直しは中身が同じだと
+  //   早々に諦め、 しかも利用者が見ていたタブを id で復元し直す) ので、
+  //   開いている時は画面側へ直接頼む。 その受け口がこれ。
+  Future<bool> Function(String pageId, int? binder, int? tab)?
+      _paintSelectHandler;
+
+  /// フリーノートの画面が、 開いている間だけ登録する。
+  void registerPaintSelectHandler(
+      Future<bool> Function(String pageId, int? binder, int? tab)? h) {
+    _paintSelectHandler = h;
+  }
+
+  /// paint_<pageId> の中身を読む (無ければ null)。
+  Future<dynamic> _mcpPaintBody(String pageId) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString('paint_$pageId') ?? '';
+      if (raw.trim().isEmpty) return null;
+      return jsonDecode(raw);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 中身を書き戻して、 画面に知らせる。
+  Future<void> _mcpSavePaintBody(String pageId, dynamic body) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('paint_$pageId', jsonEncode(body));
+    _paintReloadTick++;
+    _mcpContentTick++;
+    _bumpPaintBodyTick(pageId);
+    markLiveBodyDirty(pageId);
+    notifyListeners();
+    _requestMcpFocus(pageId);
+  }
+
+  /// バインダーの一覧 (= 3 階層の入れ物) を取り出す。 形が違えば null。
+  List? _mcpPaintBinders(dynamic body) {
+    if (body is! Map) return null;
+    final n = body['notes'];
+    return n is List ? n : null;
+  }
+
+  /// 空のタブ 1 枚。
+  Map<String, dynamic> _mcpNewPaintTab(String name, String sizeId) => {
+        'id': 'p${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}',
+        'n': name,
+        'sz': sizeId,
+        's': [],
+        't': [],
+        'sh': [],
+        'im': [],
+      };
+
+  /// フリーノートの構成 (バインダーとタブ) を返す。
+  /// 見つからない / フリーノートでない時は null。
+  Future<Map<String, dynamic>?> mcpListPaintTabs(String pageId) async {
+    final page = mcpPageById(pageId);
+    if (page == null || page.pageType != 'paint') return null;
+    final body = await _mcpPaintBody(pageId);
+    final binders = _mcpPaintBinders(body);
+    if (binders == null) {
+      // まだ一度も開いていないフリーノート。
+      return {'binderSel': 0, 'binders': <dynamic>[]};
+    }
+    var bsel = (body['noteSel'] as num?)?.toInt() ?? 0;
+    if (bsel < 0 || bsel >= binders.length) bsel = 0;
+    return {
+      'binderSel': bsel,
+      'binders': [
+        for (var i = 0; i < binders.length; i++)
+          if (binders[i] is Map)
+            {
+              'index': i,
+              'name': '${(binders[i] as Map)['n'] ?? ''}',
+              'selected': i == bsel,
+              'tabs': () {
+                final pages = (binders[i] as Map)['pages'];
+                if (pages is! List) return <dynamic>[];
+                var sel = ((binders[i] as Map)['sel'] as num?)?.toInt() ?? 0;
+                if (sel < 0 || sel >= pages.length) sel = 0;
+                return [
+                  for (var j = 0; j < pages.length; j++)
+                    if (pages[j] is Map)
+                      {
+                        'index': j,
+                        'name': '${(pages[j] as Map)['n'] ?? ''}',
+                        'selected': i == bsel && j == sel,
+                        'items': ((pages[j] as Map)['s'] is List
+                                ? ((pages[j] as Map)['s'] as List).length
+                                : 0) +
+                            ((pages[j] as Map)['t'] is List
+                                ? ((pages[j] as Map)['t'] as List).length
+                                : 0) +
+                            ((pages[j] as Map)['sh'] is List
+                                ? ((pages[j] as Map)['sh'] as List).length
+                                : 0) +
+                            ((pages[j] as Map)['im'] is List
+                                ? ((pages[j] as Map)['im'] as List).length
+                                : 0),
+                      },
+                ];
+              }(),
+            },
+      ],
+    };
+  }
+
+  /// タブを足す。 [binder] を省くと今選んでいるバインダーへ。
+  /// 追加したタブの番号を返す (失敗したら空)。
+  Future<List<int>> mcpAddPaintTabs(String pageId, List<String> names,
+      {int? binder}) async {
+    final page = mcpPageById(pageId);
+    if (page == null || page.pageType != 'paint' || names.isEmpty) {
+      return const [];
+    }
+    final body = await _mcpPaintBody(pageId);
+    final binders = _mcpPaintBinders(body);
+    if (binders == null || binders.isEmpty) return const [];
+    var bi = binder ?? ((body['noteSel'] as num?)?.toInt() ?? 0);
+    if (bi < 0 || bi >= binders.length) bi = 0;
+    final note = binders[bi];
+    if (note is! Map) return const [];
+    final pages = note['pages'] is List ? note['pages'] as List : <dynamic>[];
+    // 用紙の大きさは、 その束の 1 枚目に合わせる。
+    final sizeId = (pages.isNotEmpty && pages.first is Map)
+        ? '${(pages.first as Map)['sz'] ?? 'a4p'}'
+        : 'a4p';
+    final added = <int>[];
+    for (final n in names) {
+      pages.add(_mcpNewPaintTab(n.trim().isEmpty ? 'Tab' : n.trim(), sizeId));
+      added.add(pages.length - 1);
+    }
+    note['pages'] = pages;
+    await _mcpSavePaintBody(pageId, body);
+    return added;
+  }
+
+  /// バインダーを足す (中に空のタブを 1 枚作る)。 追加した番号を返す。
+  Future<List<int>> mcpAddPaintBinders(
+      String pageId, List<String> names, String firstTabName) async {
+    final page = mcpPageById(pageId);
+    if (page == null || page.pageType != 'paint' || names.isEmpty) {
+      return const [];
+    }
+    final body = await _mcpPaintBody(pageId);
+    final binders = _mcpPaintBinders(body);
+    if (binders == null) return const [];
+    final added = <int>[];
+    for (final n in names) {
+      binders.add({
+        'id': 'n${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}',
+        'n': n.trim().isEmpty ? 'Binder' : n.trim(),
+        'sel': 0,
+        'pages': [_mcpNewPaintTab(firstTabName, 'a4p')],
+      });
+      added.add(binders.length - 1);
+    }
+    await _mcpSavePaintBody(pageId, body);
+    return added;
+  }
+
+  /// 見ているバインダー / タブを切り替える。
+  ///
+  /// 開いている時は画面へ直接頼む (prefs に書くだけでは伝わらない)。
+  /// 開いていない時は prefs を書き換えて、 次に開いた時にそこが出るようにする。
+  Future<bool> mcpSelectPaintTab(String pageId,
+      {int? binder, int? tab}) async {
+    final page = mcpPageById(pageId);
+    if (page == null || page.pageType != 'paint') return false;
+    final live = _paintSelectHandler;
+    if (live != null) {
+      final ok = await live(pageId, binder, tab);
+      if (ok) return true;
+    }
+    final body = await _mcpPaintBody(pageId);
+    final binders = _mcpPaintBinders(body);
+    if (binders == null || binders.isEmpty) return false;
+    var bi = binder ?? ((body['noteSel'] as num?)?.toInt() ?? 0);
+    if (bi < 0 || bi >= binders.length) return false;
+    body['noteSel'] = bi;
+    if (tab != null) {
+      final note = binders[bi];
+      if (note is Map && note['pages'] is List) {
+        final pages = note['pages'] as List;
+        if (tab < 0 || tab >= pages.length) return false;
+        note['sel'] = tab;
+      }
+    }
+    await _mcpSavePaintBody(pageId, body);
+    return true;
+  }
+
+  /// バインダー / タブの名前を変える。
+  Future<bool> mcpRenamePaintItem(String pageId,
+      {int? binder, int? tab, required String name}) async {
+    final page = mcpPageById(pageId);
+    if (page == null || page.pageType != 'paint' || name.trim().isEmpty) {
+      return false;
+    }
+    final body = await _mcpPaintBody(pageId);
+    final binders = _mcpPaintBinders(body);
+    if (binders == null || binders.isEmpty) return false;
+    var bi = binder ?? ((body['noteSel'] as num?)?.toInt() ?? 0);
+    if (bi < 0 || bi >= binders.length) return false;
+    final note = binders[bi];
+    if (note is! Map) return false;
+    if (tab == null) {
+      note['n'] = name.trim();
+    } else {
+      final pages = note['pages'];
+      if (pages is! List || tab < 0 || tab >= pages.length) return false;
+      final t = pages[tab];
+      if (t is! Map) return false;
+      t['n'] = name.trim();
+    }
+    await _mcpSavePaintBody(pageId, body);
+    return true;
+  }
+
   ({dynamic doc, Map<dynamic, dynamic> sheet}) _mcpPaintSheetOf(
       dynamic decoded) {
     Map<dynamic, dynamic>? sheet;
@@ -94878,7 +95199,7 @@ $cleanQ
       return (doc: decoded, sheet: <dynamic, dynamic>{});
     }
     final made = <String, dynamic>{
-      'n': 'Page 1',
+      'n': 'Tab 1',
       'sz': 'a4p',
       's': [],
       't': [],
@@ -94888,7 +95209,7 @@ $cleanQ
     return (
       doc: {
         'notes': [
-          {'n': 'Note 1', 'sel': 0, 'pages': [made]}
+          {'n': 'Binder 1', 'sel': 0, 'pages': [made]}
         ],
         'noteSel': 0,
       },
@@ -94951,7 +95272,7 @@ $cleanQ
       }
       if (sheet == null) {
         sheet = <String, dynamic>{
-          'n': 'Page 1',
+          'n': 'Tab 1',
           'sz': 'a4p',
           's': [],
           't': [],
@@ -94961,7 +95282,7 @@ $cleanQ
         decoded = {
           'notes': [
             {
-              'n': 'Note 1',
+              'n': 'Binder 1',
               'sel': 0,
               'pages': [sheet],
             }

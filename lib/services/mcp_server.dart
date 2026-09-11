@@ -694,6 +694,80 @@ class McpServer {
           'color': {'type': 'integer'},
         },
         ['pageId']),
+    // ── フリーノートの入れ物 (バインダー / タブ) を扱う
+    //    (= ユーザー要望: ノートの切り替えやタブの追加を AI からも) ──
+    _tool(
+        'list_paint_tabs',
+        'List the structure of a FREE NOTE page (pageType "paint"). A free '
+        'note holds BINDERS (バインダー), and each binder holds TABS (タブ) - '
+        'a tab is one sheet of paper. Everything you write with '
+        'add_paint_text goes onto the tab that is SELECTED right now, so '
+        'call this first whenever the user talks about a particular tab or '
+        'binder. Returns {binderSel, binders:[{index, name, selected, '
+        'tabs:[{index, name, selected, items}]}]} where "items" is how many '
+        'things are drawn on that tab.',
+        {
+          'pageId': {'type': 'string'},
+        },
+        ['pageId']),
+    _tool(
+        'add_paint_tabs',
+        'Add one or more TABS (sheets of paper) to a FREE NOTE page. Pass '
+        'ALL the names at once in "names" - do not call this once per tab. '
+        'Leave "binder" out to add them to the binder that is open now. '
+        'Returns the indexes of the tabs that were added.',
+        {
+          'pageId': {'type': 'string'},
+          'names': {
+            'type': 'array',
+            'items': {'type': 'string'},
+          },
+          'binder': {
+            'type': 'integer',
+            'description': 'Binder index from list_paint_tabs. Omit for the '
+                'binder that is currently open.',
+          },
+        },
+        ['pageId', 'names']),
+    _tool(
+        'add_paint_binders',
+        'Add one or more BINDERS to a FREE NOTE page. A binder is the '
+        'container that holds tabs; each new binder starts with one empty '
+        'tab. Pass ALL the names at once in "names". Returns the indexes of '
+        'the binders that were added.',
+        {
+          'pageId': {'type': 'string'},
+          'names': {
+            'type': 'array',
+            'items': {'type': 'string'},
+          },
+        },
+        ['pageId', 'names']),
+    _tool(
+        'select_paint_tab',
+        'Switch which BINDER and/or TAB of a FREE NOTE page is shown - and '
+        'therefore which tab add_paint_text writes on. Indexes come from '
+        'list_paint_tabs. Give "binder", "tab", or both. If the page is open '
+        'on screen the view changes immediately; otherwise it opens there '
+        'next time.',
+        {
+          'pageId': {'type': 'string'},
+          'binder': {'type': 'integer'},
+          'tab': {'type': 'integer'},
+        },
+        ['pageId']),
+    _tool(
+        'rename_paint_item',
+        'Rename a BINDER or a TAB of a FREE NOTE page. Give "binder" alone '
+        'to rename that binder; give "tab" as well to rename a tab inside '
+        'it. Indexes come from list_paint_tabs.',
+        {
+          'pageId': {'type': 'string'},
+          'binder': {'type': 'integer'},
+          'tab': {'type': 'integer'},
+          'name': {'type': 'string'},
+        },
+        ['pageId', 'name']),
     _tool(
         'write_markdown',
         'Write the body of a MARKDOWN page (pageType "markdown"). This is '
@@ -2091,6 +2165,66 @@ class McpServer {
               : _err('not a free-note page, or text empty: $pageId '
                   '- add_paint_text only works on pages whose type is '
                   '"paint"');
+        }
+      case 'list_paint_tabs':
+        {
+          final r = await _provider.mcpListPaintTabs(a['pageId'] as String? ?? '');
+          return r == null
+              ? _err('not a free-note page (pageType must be "paint"), or the '
+                  'page was not found')
+              : _ok(r);
+        }
+      case 'add_paint_tabs':
+        {
+          final names = _stringList(a['names']);
+          if (names.isEmpty) {
+            return _err('pass the tab names in "names" (array of strings)');
+          }
+          final added = await _provider.mcpAddPaintTabs(
+              a['pageId'] as String? ?? '', names,
+              binder: (a['binder'] as num?)?.toInt());
+          return added.isEmpty
+              ? _err('could not add tabs - check that pageId is a free-note '
+                  'page and that "binder" is a real index from list_paint_tabs')
+              : _ok({'added': added});
+        }
+      case 'add_paint_binders':
+        {
+          final names = _stringList(a['names']);
+          if (names.isEmpty) {
+            return _err('pass the binder names in "names" (array of strings)');
+          }
+          final added = await _provider.mcpAddPaintBinders(
+              a['pageId'] as String? ?? '', names, 'Tab 1');
+          return added.isEmpty
+              ? _err('could not add binders - check that pageId is a '
+                  'free-note page')
+              : _ok({'added': added});
+        }
+      case 'select_paint_tab':
+        {
+          final ok = await _provider.mcpSelectPaintTab(
+              a['pageId'] as String? ?? '',
+              binder: (a['binder'] as num?)?.toInt(),
+              tab: (a['tab'] as num?)?.toInt());
+          return ok
+              ? _ok({'ok': true})
+              : _err('could not switch - check the indexes with '
+                  'list_paint_tabs first');
+        }
+      case 'rename_paint_item':
+        {
+          final name = '${a['name'] ?? ''}'.trim();
+          if (name.isEmpty) return _err('"name" is required');
+          final ok = await _provider.mcpRenamePaintItem(
+              a['pageId'] as String? ?? '',
+              binder: (a['binder'] as num?)?.toInt(),
+              tab: (a['tab'] as num?)?.toInt(),
+              name: name);
+          return ok
+              ? _ok({'ok': true})
+              : _err('could not rename - check the indexes with '
+                  'list_paint_tabs first');
         }
       case 'write_markdown':
         {

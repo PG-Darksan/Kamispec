@@ -24,7 +24,7 @@ MindMapFolder (平坦。入れ子にならない)
 |---|---|---|
 | `normal` | マインドマップ | `add_node` / `connect_nodes` / `add_table_node` / `add_image_node` |
 | `bookshelf` | ギャラリー (棚) | `add_gallery_item` ★ `add_node` は使わない。座標も渡さない |
-| `paint` | フリーノート (自由に書ける紙) | `add_paint_text` / `append_document_text` |
+| `paint` | フリーノート (自由に書ける紙) | `add_paint_text` / `append_document_text` / `list_paint_tabs` / `add_paint_tabs` / `add_paint_binders` / `select_paint_tab` / `rename_paint_item` |
 | `document` | 便箋型メモ帳 (**文章はここ**) | `append_document_text` |
 | `markdown` | Markdown / 図 (Mermaid) | `write_markdown` (本文まるごと 1 回で書く) |
 | `videoEditor` | 動画タイムライン | `add_video_editor_item` |
@@ -136,6 +136,12 @@ left / full (全面の背景)。`imageQuery` (Web 検索用の短い英語 2〜4
     報告する (頼まれた数字をそのまま「できました」と言わない)。
 14. **空白だけの行は書き込めない**。`add_paint_text` / `append_document_text`
     は空白だけの文字列を捨てるので、頼まれたら先にそう伝える。
+14-b. **フリーノートは「バインダー」 の中に「タブ」 が並ぶ**。書き込みは
+    いつも*今開いているタブ*に行く。利用者が特定のタブやバインダーの話を
+    している時は、まず `list_paint_tabs` で番号を確かめ、必要なら
+    `select_paint_tab` で切り替えてから書く。タブやバインダーを増やす時は
+    `add_paint_tabs` / `add_paint_binders` に**名前をまとめて**渡す
+    (1 つずつ呼ばない)。
 15. **画像だけは 1 枚ずつ**。`add_image_node` にまとめて渡す形は無い。
     3 枚なら 3 回呼ぶ。配列を渡しても 1 枚しか付かないのに成功に見える。
 16. **戻せない操作の前に一声かける**。

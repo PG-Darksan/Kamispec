@@ -126036,6 +126036,31 @@ class _ShapeKindIconPainter extends CustomPainter {
 
 /// 図形の「面」 の Path (塗り領域計算・重なり塗りの共通ロジック)。
 /// _PaintCanvasPainter._drawShape と同じ頂点計算にすること。
+/// 印 (チェック / バツ) の線の形 (= ユーザー要望: PDF の書き込みのように
+/// チェックや × を挿入できるように)。 面を持たない「線の印」 なので、
+/// 領域塗りや当たり判定では四角として扱う。
+Path _paintMarkPathOf(int kind, Rect rect) {
+  final r = rect.shortestSide <= 0
+      ? Rect.fromCenter(center: rect.center, width: 24, height: 24)
+      : rect;
+  final p = Path();
+  if (kind == 12) {
+    // バツ: 対角線 2 本。
+    p
+      ..moveTo(r.left, r.top)
+      ..lineTo(r.right, r.bottom)
+      ..moveTo(r.right, r.top)
+      ..lineTo(r.left, r.bottom);
+    return p;
+  }
+  // チェック: 左下へ降りてから右上へ跳ね上げる 3 点。
+  p
+    ..moveTo(r.left + r.width * 0.08, r.top + r.height * 0.52)
+    ..lineTo(r.left + r.width * 0.38, r.bottom - r.height * 0.10)
+    ..lineTo(r.right - r.width * 0.05, r.top + r.height * 0.08);
+  return p;
+}
+
 Path _paintShapeAreaPathOf(_PaintShape s) {
   final rect = Rect.fromPoints(s.a, s.b);
   switch (s.kind) {
@@ -126077,7 +126102,8 @@ Path? _paintRegionAt(List<_PaintShape> shapes, Offset p) {
   final containing = <_PaintShape>[];
   final others = <_PaintShape>[];
   for (final s in shapes) {
-    if (s.kind == 2 || s.kind == 3) continue; // 線/矢印は面が無い
+    // 線と印 (チェック / バツ) は面を持たないので、 領域には数えない。
+    if (s.kind == 2 || s.kind == 3 || s.kind == 11 || s.kind == 12) continue;
     if (_paintShapeAreaPathOf(s).contains(p)) {
       containing.add(s);
     } else {
@@ -140063,9 +140089,10 @@ class _PaintPageViewState extends State<_PaintPageView> {
       // 背後のキャンバス (前ページで選択していたノード) の誤削除を防ぐため消費。
       return KeyEventResult.handled;
     }
-    // ── Ctrl+C / Ctrl+V: 選択オブジェクトのコピー & 複製 (= ユーザー要望) ──
+    // ── Ctrl+C / Ctrl+V: 選択した物のコピー & 複製 (= ユーザー要望) ──
     //   選択ツールの複数選択のほか、 画像/テキストツールの単体選択にも対応。
-    //   何も選択していない時は ignored にして背後 (マップ側) の処理へ流す。
+    //   Ctrl+C は何も選んでいなければ ignored (背後のマップへ流す)。
+    //   Ctrl+V は必ず消費する (裏のマップに見えないノードが作られるため)。
     final bool ctrl = HardwareKeyboard.instance.isControlPressed ||
         HardwareKeyboard.instance.isMetaPressed;
     // ── Ctrl/Cmd+Z / Ctrl/Cmd+Y: フリーノート内の元に戻す / 進める ──
@@ -140091,6 +140118,11 @@ class _PaintPageViewState extends State<_PaintPageView> {
     if (ctrl && k == LogicalKeyboardKey.keyV) {
       if (_paintClipboard.isNotEmpty) {
         _pastePaintClipboard();
+      } else {
+        // ★ アプリの中で copy した物が無ければ、 OS のクリップボードから貼る
+        //   (= ユーザー報告: 外から copy してきた文字が、 フリーノートでは
+        //   どこにも貼り付けられない)。 読み取りは非同期なので投げっぱなし。
+        unawaited(_pasteFromSystemClipboard());
       }
       // 空でも消費する: 背後 (マップ側) の _handlePaste に流れると、 ペイント
       //   ページの裏に見えないノードが作られてしまうため。
@@ -140255,6 +140287,103 @@ class _PaintPageViewState extends State<_PaintPageView> {
     _persist();
   }
 
+  /// OS のクリップボードから読んでいる最中か (押しっぱなしの連打よけ)。
+  bool _osPasteBusy = false;
+
+  /// 貼り付ける位置。 最後に触った所、 分からなければ紙の真ん中あたり。
+  Offset _paintPasteAnchor() {
+    final cs = _csize;
+    final fallback = Offset(cs.w * 0.12, cs.h * 0.18);
+    final g = _lastPointerPos;
+    if (g == null) return fallback;
+    final box =
+        _paintCanvasKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return fallback;
+    final local = box.globalToLocal(g) / math.max(_lastPaintFit, 0.01);
+    if (local.dx < 0 ||
+        local.dy < 0 ||
+        local.dx > cs.w ||
+        local.dy > cs.h) {
+      return fallback;
+    }
+    return local;
+  }
+
+  /// OS のクリップボードから貼り付ける
+  /// (= ユーザー報告: 外から copy した文字がフリーノートに貼れない)。
+  ///
+  /// 絵があれば絵を、 無ければ文字を置く。 どちらも無ければ知らせる。
+  Future<void> _pasteFromSystemClipboard() async {
+    if (_osPasteBusy) return;
+    _osPasteBusy = true;
+    try {
+      final at = _paintPasteAnchor();
+      // ── 絵 ──
+      final host = _paintHost;
+      if (host != null) {
+        try {
+          if (await host._osClipboardHasImage()) {
+            final path = await host._grabClipboardImageToFile();
+            if (!mounted) return;
+            if (path != null && path.isNotEmpty) {
+              await _addImageFileToSheet(path, centerCanvas: at);
+              return;
+            }
+          }
+        } catch (_) {
+          // 絵が読めなくても文字で続ける。
+        }
+      }
+      // ── 文字 ──
+      final data = await Clipboard.getData(Clipboard.kTextPlain);
+      if (!mounted) return;
+      final raw = (data?.text ?? '').trim();
+      if (raw.isEmpty) {
+        _snack(widget.provider.t('paint.clipboardEmpty'));
+        return;
+      }
+      _insertPaintTextFromClipboard(raw, at);
+    } finally {
+      _osPasteBusy = false;
+    }
+  }
+
+  /// 貼り付けた文字を 1 つの文字要素として置く。
+  ///
+  /// ★ 文字は自分で折り返さないので、 先に紙の幅で折ってから入れる
+  ///   (= 折らないと長い文章が紙の外へ流れて、 切り取られて読めなくなる)。
+  void _insertPaintTextFromClipboard(String raw, Offset at) {
+    final cs = _csize;
+    // 右端で貼っても細長い柱にならないよう、 置き場所を先に寄せる。
+    final double px = at.dx.clamp(0.0, math.max(0.0, cs.w - 260.0));
+    final pos = _snapTextPosToRule(Offset(px, at.dy));
+    final maxW = math.max(180.0, cs.w - px - 24.0);
+    final wrapped = _wrapForCanvas(raw, maxW, _textSize);
+    setState(() {
+      _redo.clear();
+      _sheet.texts.add(_PaintText(
+        pos,
+        wrapped,
+        _color.withValues(alpha: _textAlpha).toARGB32(),
+        _textSize,
+        bold: _textBold,
+        italic: _textItalic,
+        font: _textFont,
+        underline: _textUnderline,
+        strike: _textStrike,
+        curve: _textCurve,
+        // ★ リンクの判定は「折る前」 の文字で行う。 折ると改行が入り、
+        //   リンクとして見なされなくなる。
+        link: _autoDetectPaintLink(raw) ?? '',
+      )
+        ..z = _nextPaintZ()
+        ..lyr = _activeLayer);
+      _sheet.undo.add('text');
+      _dirty = true;
+    });
+    unawaited(_persist());
+  }
+
   /// 選択中オブジェクトをその場で複製する (= モバイル用の複製ボタン。
   /// Ctrl+C → Ctrl+V と同じ結果になる)。
   void _duplicatePaintSelection() {
@@ -140287,6 +140416,65 @@ class _PaintPageViewState extends State<_PaintPageView> {
   /// ペンの濃さ (不透明度) と 間隔/スケール (= ユーザー要望: 詳細設定)。
   double _penOpacity = 1.0;
   double _penInterval = 1.0;
+
+  // ── 図形の大きさと形を固定して「印」 として押す (= ユーザー要望) ──
+  //    入れている間は、 紙を押すだけで決まった大きさの図形が置かれる。
+  //    形は今選んでいる種類 (チェック / バツ / 丸など) のまま変わらない。
+  static const String _kShapeFixedKey = 'paintShapeFixed';
+  static const String _kShapeFixedLenKey = 'paintShapeFixedLen';
+  bool _shapeFixedSize = false;
+  double _shapeFixedLen = 48;
+
+  Future<void> _loadShapeFixedSize() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final on = sp.getBool(_kShapeFixedKey) ?? false;
+      final len =
+          (sp.getDouble(_kShapeFixedLenKey) ?? 48.0).clamp(12.0, 240.0);
+      if (!mounted) return;
+      setState(() {
+        _shapeFixedSize = on;
+        _shapeFixedLen = len;
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _persistShapeFixedSize() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setBool(_kShapeFixedKey, _shapeFixedSize);
+      await sp.setDouble(_kShapeFixedLenKey, _shapeFixedLen);
+    } catch (_) {}
+  }
+
+  /// 固定の大きさで [at] を中心に図形を 1 つ作る (= 印)。
+  _PaintShape _makeFixedShapeAt(Offset at) {
+    final half = _shapeFixedLen / 2;
+    return _PaintShape(
+        _shapeKind,
+        Offset(at.dx - half, at.dy - half),
+        Offset(at.dx + half, at.dy + half),
+        _color.toARGB32(),
+        _penWidth,
+        _shapeFillColor != null,
+        fillColor: _shapeFillColor);
+  }
+
+  /// 紙を押した所へ印を 1 つ置く (= ユーザー要望: 大きさを固定して押す)。
+  ///
+  /// ★ 押した後も図形ツールのままにする。 引いて描いた時のように選択ツールへ
+  ///   切り替えてしまうと、 続けて押せず 1 個ごとに戻す手間が要るため。
+  void _stampShapeAt(Offset at) {
+    setState(() {
+      _redo.clear();
+      _sheet.shapes.add(_makeFixedShapeAt(at)
+        ..z = _nextPaintZ()
+        ..lyr = _activeLayer);
+      _sheet.undo.add('shape');
+      _dirty = true;
+    });
+    unawaited(_persist());
+  }
 
   /// 「間隔」 (粒・波長・点線ピッチ) が効くペンかどうか。
   ///
@@ -141079,6 +141267,11 @@ class _PaintPageViewState extends State<_PaintPageView> {
         return _paintShapeAreaPathOf(shape).contains(p) ||
             (rect.inflate(tolerance).contains(p) &&
                 !rect.deflate(tolerance * 2).contains(p));
+      // ── 印 (チェック / バツ) は線が細く、 中身も空洞なので、 外接矩形の
+      //    中ならどこでも掴めるようにする (= 細い線を正確に突かせない)。 ──
+      case 11:
+      case 12:
+        return rect.inflate(tolerance).contains(p);
       default:
         final outer = rect.inflate(tolerance);
         if (!outer.contains(p) || shape.fill) return outer.contains(p);
@@ -142395,11 +142588,17 @@ class _PaintPageViewState extends State<_PaintPageView> {
     //   (= ユーザー報告: フリーノートの共同編集で書いた内容が相手に反映
     //   されない)。 詳しくは _onProviderChanged。
     widget.provider.addListener(_onProviderChanged);
+    // AI から「バインダー / タブを切り替えて」 と言われた時の受け口
+    //   (= ユーザー要望)。 開いている間だけ登録する。 prefs に書くだけでは
+    //   画面に伝わらない (読み直しは中身が同じだと諦め、 見ていたタブを
+    //   id で復元し直すため)。
+    widget.provider.registerPaintSelectHandler(_mcpSelectBinderTab);
     _load();
     _loadTextPresets();
     _loadTemplates();
     _loadHeaderHidden();
     _loadPaintUiColors();
+    _loadShapeFixedSize();
     _loadImageStash();
     // メインの DropTarget から画像ドロップを受け取れるよう自分を登録する
     // (= ユーザー要望: フリーノートへ画像を D&D で直接入れる)。
@@ -143178,6 +143377,9 @@ class _PaintPageViewState extends State<_PaintPageView> {
       _sel = _note.selectedPage;
       _loaded = true;
       _unmaskErasedTables();
+      // 昔の呼び名 (ページ1 / ノート1) を今の呼び名へ揃える
+      //   (= ユーザー要望: タブ / バインダー)。 自分で付けた名前は触らない。
+      _migrateDefaultNames();
     });
     // 読み込んだ旧 {sheets,sel} をここで v3 のノート/ページ形式として
     // 保存し直す。以後の起動でも同じ二階層構造を使い、移行を遅延させない。
@@ -143663,6 +143865,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
   @override
   void dispose() {
     widget.provider.removeListener(_onProviderChanged);
+    widget.provider.registerPaintSelectHandler(null);
     _liveAddMarksTimer?.cancel();
     if (_paintHost?._paintDropHandler == _onPaintDropFiles) {
       _paintHost?._paintDropHandler = null;
@@ -143816,9 +144019,13 @@ class _PaintPageViewState extends State<_PaintPageView> {
       });
     } else if (_tool == _PaintTool.shape) {
       setState(() {
-        _curShape = _PaintShape(_shapeKind, p, p, _color.toARGB32(), _penWidth,
-            _shapeFillColor != null,
-            fillColor: _shapeFillColor);
+        // 大きさを固定している時は、 引かずに最初から決まった大きさで出し、
+        //   指を動かした分は「置き場所」 として扱う (= ユーザー要望)。
+        _curShape = _shapeFixedSize
+            ? _makeFixedShapeAt(p)
+            : _PaintShape(_shapeKind, p, p, _color.toARGB32(), _penWidth,
+                _shapeFillColor != null,
+                fillColor: _shapeFillColor);
       });
     } else if (_tool == _PaintTool.fill) {
       // ── フリーハンドで囲った領域を塗る (= ユーザー要望)。 ドラッグで
@@ -143861,7 +144068,17 @@ class _PaintPageViewState extends State<_PaintPageView> {
         _curStroke!.points.add(q);
       });
     } else if (_curShape != null) {
-      setState(() => _curShape!.b = _constrainShapeEnd(_curShape!.a, p));
+      setState(() {
+        if (_shapeFixedSize && _tool == _PaintTool.shape) {
+          // 大きさは変えず、 指の位置へ中心を運ぶ。
+          final half = _shapeFixedLen / 2;
+          _curShape!
+            ..a = Offset(p.dx - half, p.dy - half)
+            ..b = Offset(p.dx + half, p.dy + half);
+          return;
+        }
+        _curShape!.b = _constrainShapeEnd(_curShape!.a, p);
+      });
     }
   }
 
@@ -143955,9 +144172,13 @@ class _PaintPageViewState extends State<_PaintPageView> {
         // ── 挿入した直後はその図形を選択状態にする (= ユーザー要望:
         //    挿入後すぐ塗りつぶし等を調整したい)。 選択ツールへ切り替え、
         //    選択バーから塗り / 透明度 / 回転などを変更できる。 ──
-        _tool = _PaintTool.select;
-        _resetPaintSelectionState();
-        _selShapeSet.add(_sheet.shapes.length - 1);
+        //    ★ 大きさを固定している間は切り替えない (= 印を続けて押せる
+        //      ようにするため)。
+        if (!_shapeFixedSize) {
+          _tool = _PaintTool.select;
+          _resetPaintSelectionState();
+          _selShapeSet.add(_sheet.shapes.length - 1);
+        }
       });
       _persist();
     }
@@ -145567,19 +145788,114 @@ class _PaintPageViewState extends State<_PaintPageView> {
   /// (= ユーザー要望: 途中のページを削除した後に追加しても同じ番号の
   /// ページが作られないように)。 既存名の最大番号 + 1 を使い、 それでも
   /// 衝突する場合は番号を進めて必ずユニークにする。
+  /// AI から頼まれて、 見ているバインダー / タブを切り替える。
+  ///
+  /// 画面が開いている時だけ呼ばれる。 番号が範囲の外なら false を返し、
+  /// provider 側は prefs を書く方へ回る。
+  Future<bool> _mcpSelectBinderTab(String pageId, int? binder, int? tab) async {
+    if (!mounted || pageId != widget.pageId || !_loaded) return false;
+    if (binder != null) {
+      if (binder < 0 || binder >= _notes.length) return false;
+      if (binder != _noteSel) _selectNote(binder);
+    }
+    if (tab != null) {
+      if (tab < 0 || tab >= _sheets.length) return false;
+      if (tab != _sel) _selectPage(tab);
+    }
+    return true;
+  }
+
+  /// 昔の既定名の形 (= 呼び名を変えた時に、 古いデータを見失わないため)。
+  ///
+  /// ★ 既定名の照合を「今の呼び名」 だけで行うと、 呼び名を変えた途端に
+  ///   今までの `ページ1` が「自分で付けた名前」 扱いになり、 次に足す物が
+  ///   `タブ1` になって番号が 2 系統に分かれる。 表示の言語を切り替えた
+  ///   だけでも同じ事が起きていた (前からの穴)。
+  ///   ここは**照合だけ**に使い、 新しく付ける名前は今の呼び名を使う。
+  static const List<String> _kLegacyTabTemplates = [
+    'タブ{n}', 'ページ{n}', 'シート{n}',
+    'Tab {n}', 'Page {n}', 'Sheet {n}',
+    '标签页{n}', '页面{n}', '页{n}',
+    '탭{n}', '페이지{n}',
+    'Pestaña {n}', 'Página {n}',
+    'Onglet {n}',
+    'Blatt {n}', 'Seite {n}',
+    'Aba {n}',
+    'Вкладка {n}', 'Страница {n}',
+  ];
+
+  static const List<String> _kLegacyBinderTemplates = [
+    'バインダー{n}', 'ノート{n}', 'ノートブック{n}',
+    'Binder {n}', 'Note {n}', 'Notebook {n}',
+    '活页夹{n}', '笔记本{n}',
+    '바인더{n}', '노트{n}',
+    'Carpeta {n}', 'Cuaderno {n}',
+    'Classeur {n}', 'Carnet {n}',
+    'Ordner {n}', 'Notizbuch {n}',
+    'Fichário {n}', 'Caderno {n}',
+    'Папка {n}', 'Блокнот {n}',
+  ];
+
+  /// `{n}` 入りの型から、 番号を拾う正規表現を作る。
+  static RegExp _defaultNameRe(String template) {
+    final parts = template.split('{n}');
+    final head = RegExp.escape(parts.first);
+    final tail = parts.length > 1 ? RegExp.escape(parts[1]) : '';
+    return RegExp('^' + head + r'(\d+)' + tail + r'$');
+  }
+
+  /// [name] が「既定名のどれか」 なら番号を返す。 違えば null。
+  static int? _defaultNameNumber(String name, List<String> templates) {
+    final t = name.trim();
+    for (final tmpl in templates) {
+      final m = _defaultNameRe(tmpl).firstMatch(t);
+      if (m != null) return int.tryParse(m.group(1) ?? '');
+    }
+    return null;
+  }
+
+  /// 開いた時に、 昔の呼び名の既定名を今の呼び名へ書き換える
+  /// (= ユーザー要望: ページ → タブ / ノート → バインダー)。
+  ///
+  /// 自分で付けた名前は触らない。 番号はそのまま残すので並びは変わらない。
+  /// 何も変わらなければ false (= 無駄な保存をしない)。
+  bool _migrateDefaultNames() {
+    final tabTmpl = widget.provider.t('paint.defaultPageName');
+    final binderTmpl = widget.provider.t('paint.defaultNoteName');
+    var changed = false;
+    for (final note in _notes) {
+      final nn = _defaultNameNumber(note.name, _kLegacyBinderTemplates);
+      if (nn != null) {
+        final want = binderTmpl.replaceFirst('{n}', '$nn');
+        if (note.name != want) {
+          note.name = want;
+          changed = true;
+        }
+      }
+      for (final sheet in note.pages) {
+        final sn = _defaultNameNumber(sheet.name, _kLegacyTabTemplates);
+        if (sn == null) continue;
+        final want = tabTmpl.replaceFirst('{n}', '$sn');
+        if (sheet.name != want) {
+          sheet.name = want;
+          changed = true;
+        }
+      }
+    }
+    return changed;
+  }
+
   String _uniqueDefaultName(String template, Iterable<String> existing) {
     final ex = existing.map((e) => e.trim()).toSet();
-    final re = RegExp('^' +
-        RegExp.escape(template)
-            .replaceFirst(RegExp(r'\\\{n\\\}'), r'(\d+)') +
-        r'$');
+    // ★ 昔の呼び名の既定名も数に入れる (= 呼び名を変えた後も番号が続くように)。
+    final legacy = template == widget.provider.t('paint.defaultNoteName')
+        ? _kLegacyBinderTemplates
+        : _kLegacyTabTemplates;
     var n = 0;
     for (final name in ex) {
-      final m = re.firstMatch(name);
-      if (m != null) {
-        final v = int.tryParse(m.group(1) ?? '') ?? 0;
-        if (v > n) n = v;
-      }
+      final v = _defaultNameNumber(name, legacy) ??
+          _defaultNameNumber(name, <String>[template]);
+      if (v != null && v > n) n = v;
     }
     n += 1;
     var cand = template.replaceFirst('{n}', '$n');
@@ -146024,12 +146340,12 @@ class _PaintPageViewState extends State<_PaintPageView> {
   /// 独自の名前を付けたページには触らない。
   void _renumberDefaultPages() {
     final template = widget.provider.t('paint.defaultPageName');
-    final re = RegExp('^' +
-        RegExp.escape(template).replaceFirst(RegExp(r'\\\{n\\\}'), r'(\d+)') +
-        r'$');
     var n = 1;
     for (final s in _sheets) {
-      if (re.hasMatch(s.name.trim())) {
+      // 昔の呼び名の既定名も対象にする (= 呼び名を変えた後に、 番号の
+      //   詰め直しが効かなくなるのを防ぐ)。
+      if (_defaultNameNumber(s.name, _kLegacyTabTemplates) != null ||
+          _defaultNameNumber(s.name, <String>[template]) != null) {
         s.name = template.replaceFirst('{n}', '$n');
         n++;
       }
@@ -146040,10 +146356,11 @@ class _PaintPageViewState extends State<_PaintPageView> {
   Future<void> _maybeRenumberAfterDelete() async {
     // 既定名 (連番) のページが無ければ何もしない。
     final template = widget.provider.t('paint.defaultPageName');
-    final re = RegExp('^' +
-        RegExp.escape(template).replaceFirst(RegExp(r'\\\{n\\\}'), r'(\d+)') +
-        r'$');
-    if (!_sheets.any((s) => re.hasMatch(s.name.trim()))) return;
+    if (!_sheets.any((s) =>
+        _defaultNameNumber(s.name, _kLegacyTabTemplates) != null ||
+        _defaultNameNumber(s.name, <String>[template]) != null)) {
+      return;
+    }
     if (_renumberOnDelete == null) {
       if (!mounted) return;
       final ans = await _showNearDialog<bool>(
@@ -150087,6 +150404,11 @@ class _PaintPageViewState extends State<_PaintPageView> {
                 final isEraser = _tool == _PaintTool.eraser;
                 final isSelect = _tool == _PaintTool.select;
                 final isFill = _tool == _PaintTool.fill;
+                // 大きさを固定した図形は「押すだけ」 で置ける
+                //   (= ユーザー要望)。 引かないと onPan* は来ないので、
+                //   tap の受け口を図形ツールにも開けておく。
+                final isStamp =
+                    _tool == _PaintTool.shape && _shapeFixedSize;
                 return ClipRect(
                   child: Align(
                     // ── 常に上寄せで固定 (= ユーザー要望: モバイルで文字を打つ
@@ -150215,7 +150537,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
                                         isText ||
                                         isImage ||
                                         isSelect ||
-                                        isFill)
+                                        isFill ||
+                                        isStamp)
                                     ? (d) {
                                         // 非アクティブ側は先にアクティブ化。
                                         if (!isActive) _selectPage(pageIdx);
@@ -150234,6 +150557,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
                                           _onImageTap(p);
                                         } else if (isFill) {
                                           _onFillTap(p);
+                                        } else if (isStamp) {
+                                          _stampShapeAt(p);
                                         } else {
                                           _onSelectTap(p, fit);
                                         }
@@ -151343,6 +151668,111 @@ class _PaintPageViewState extends State<_PaintPageView> {
     return out;
   }
 
+  /// 選んでいる文字を、 置いてある順 (上から下・左から右) に繋げて返す。
+  String _selectedTextsJoined() {
+    final picked = <_PaintText>[];
+    for (final i in _selTextSet) {
+      if (i < 0 || i >= _sheet.texts.length) continue;
+      final t = _sheet.texts[i];
+      if (t.text.trim().isEmpty) continue;
+      picked.add(t);
+    }
+    picked.sort((a, b) {
+      final dy = a.pos.dy.compareTo(b.pos.dy);
+      return dy != 0 ? dy : a.pos.dx.compareTo(b.pos.dx);
+    });
+    return picked.map((t) => t.text.trim()).join('\n\n');
+  }
+
+  /// 選んだ文字を AI アシスタントへ渡す
+  /// (= ユーザー要望: マインドマップと同じように、 範囲選択した文字を
+  /// AI に渡せるように)。
+  ///
+  /// 指示を打たせてから、 本体の AI アシスタントへそのまま投げる。
+  /// アシスタントは道具を持っているので、 その場で紙へ書き足す事もできる。
+  Future<void> _sendSelectedTextsToAi() async {
+    final p = widget.provider;
+    // 書きかけの文字があれば先に確定 (選択の番号がずれるため)。
+    if (_textEditPos != null) _commitTextEdit();
+    final body = _selectedTextsJoined();
+    if (body.isEmpty) {
+      _snack(p.t('ai.nodeEmpty'));
+      return;
+    }
+    // ★ 鍵が無いまま投げても必ず失敗する (会話の中でしか理由が出ないので、
+    //   閉じていると何も起きなかったように見える)。 先に確かめる。
+    if (!p.hasActiveAiKey) {
+      if (p.relayAvailable == null) await p.probeAiRelay();
+      if (!mounted) return;
+      if (!p.hasActiveAiKey) {
+        _snack(p.t('text.aiNeedKey'));
+        return;
+      }
+    }
+    final ctrl = TextEditingController();
+    final sent = await _showNearDialog<String>(
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: Text(p.t('paint.aiSelected'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          // 何を渡すのかが分かるように、 先頭だけ見せる。
+          Container(
+            width: double.infinity,
+            constraints: const BoxConstraints(maxHeight: 90),
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.05),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: SingleChildScrollView(
+              child: Text(body,
+                  style: const TextStyle(
+                      color: Colors.white60, fontSize: 11, height: 1.4)),
+            ),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: ctrl,
+            autofocus: true,
+            maxLines: 3,
+            minLines: 1,
+            style: const TextStyle(color: Colors.white, fontSize: 13),
+            decoration: InputDecoration(
+              hintText: p.t('doc.instructionHint'),
+              hintStyle:
+                  const TextStyle(color: Colors.white30, fontSize: 12),
+              filled: true,
+              fillColor: Colors.white10,
+              border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: BorderSide.none),
+            ),
+            onSubmitted: (v) => Navigator.pop(dctx, v),
+          ),
+        ]),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dctx),
+              child: Text(p.t('btn.cancel'))),
+          FilledButton(
+              onPressed: () => Navigator.pop(dctx, ctrl.text),
+              child: Text(p.t('btn.send'))),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    if (!mounted || sent == null || sent.trim().isEmpty) return;
+    final rule = p
+        .t('paint.aiRule')
+        .replaceFirst('{page}', widget.pageId);
+    final raw = '${p.t('ai.nodePromptAbout')}\n$body\n\n${sent.trim()}\n\n$rule';
+    _McpChatSession.instance
+      ..bind(p)
+      ..submit(shown: sent.trim(), raw: raw);
+    _snack(p.t('ai.nodePromptSent'));
+  }
+
   // ── 選択ツールのオプションバー ──
   //   図形を選択中: 形状 (四角/楕円/線/矢印) と塗りつぶしを変更できる。
   //   何か選択中: 複製 / 削除ボタン (モバイルでは Ctrl+C/V が無いため)。
@@ -151688,6 +152118,13 @@ class _PaintPageViewState extends State<_PaintPageView> {
                       _applyTextStyleToSelection(curve: v, persist: false),
                   onChangeEnd: (v) => _applyTextStyleToSelection(curve: v),
                 ),
+              ),
+              // ── 選んだ文字を AI へ渡す (= ユーザー要望: マインドマップの
+              //    ように、 範囲選択した文字を AI に渡せるように) ──
+              _toolBtn(
+                icon: Icons.auto_awesome_rounded,
+                tooltip: widget.provider.t('paint.aiSelected'),
+                onTap: () => unawaited(_sendSelectedTextsToAi()),
               ),
               div(),
             ],
@@ -152539,6 +152976,72 @@ class _PaintPageViewState extends State<_PaintPageView> {
           kindBtn(9, Icons.favorite_border_rounded,
               widget.provider.t('shape.heart')),
           kindBtn(10, Icons.add_rounded, widget.provider.t('shape.cross')),
+          // ── 印: チェック / バツ (= ユーザー要望: PDF の書き込みのように
+          //    チェックや × を挿入できるように) ──
+          kindBtn(11, Icons.check_rounded, widget.provider.t('pdfdraw.check')),
+          kindBtn(
+              12, Icons.close_rounded, widget.provider.t('pdfdraw.markCross')),
+          const SizedBox(width: 4),
+          div(),
+          // ── 大きさと形を固定して押す (= ユーザー要望) ──
+          //    入れている間は、 紙を押すだけで決まった大きさの図形が置かれ、
+          //    引いて大きさを決める操作をしない。 形は今選んでいる物のまま。
+          Tooltip(
+            message: widget.provider.t('pdfdraw.fixedSize'),
+            child: GestureDetector(
+              onTap: () {
+                setState(() => _shapeFixedSize = !_shapeFixedSize);
+                unawaited(_persistShapeFixedSize());
+              },
+              child: Container(
+                margin: const EdgeInsets.symmetric(horizontal: 2),
+                padding: const EdgeInsets.all(5),
+                decoration: BoxDecoration(
+                  color: _shapeFixedSize
+                      ? const Color(0xFFEC407A).withValues(alpha: 0.22)
+                      : Colors.transparent,
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(
+                      color: _shapeFixedSize
+                          ? const Color(0xFFEC407A)
+                          : Colors.white12),
+                ),
+                child: Icon(
+                    _shapeFixedSize
+                        ? Icons.push_pin_rounded
+                        : Icons.push_pin_outlined,
+                    size: 18,
+                    color: _shapeFixedSize
+                        ? const Color(0xFFEC407A)
+                        : Colors.white70),
+              ),
+            ),
+          ),
+          if (_shapeFixedSize) ...[
+            SizedBox(
+              width: 96,
+              height: 28,
+              child: SliderTheme(
+                data: SliderTheme.of(context).copyWith(
+                  trackHeight: 2,
+                  thumbShape:
+                      const RoundSliderThumbShape(enabledThumbRadius: 6),
+                  overlayShape:
+                      const RoundSliderOverlayShape(overlayRadius: 12),
+                ),
+                child: Slider(
+                  value: _shapeFixedLen.clamp(12.0, 240.0),
+                  min: 12,
+                  max: 240,
+                  activeColor: const Color(0xFFEC407A),
+                  onChanged: (v) => setState(() => _shapeFixedLen = v),
+                  onChangeEnd: (_) => unawaited(_persistShapeFixedSize()),
+                ),
+              ),
+            ),
+            Text('${_shapeFixedLen.round()}',
+                style: const TextStyle(color: Colors.white54, fontSize: 10)),
+          ],
           const SizedBox(width: 4),
           // ── 枠線 / 塗りの色 (= ユーザー要望: 「塗り」 チェックと不透明度は
           //    廃止。 塗り色は既定で未選択 = 中空、 色を選ぶと中まで塗られ、
@@ -153566,6 +154069,21 @@ class _PaintCanvasPainter extends CustomPainter {
         canvas.drawPath(diamond, stroke);
         if (alphaFill) canvas.drawPath(diamond, edge);
         break;
+      // ── 印: チェック / バツ (= ユーザー要望: PDF の書き込みのように
+      //    チェックや × を入れられるように)。 線で描く印なので塗らない。 ──
+      case 11:
+      case 12:
+        {
+          final mark = Paint()
+            ..color = Color(s.color)
+            ..strokeWidth = math.max(2.0, s.width)
+            ..style = PaintingStyle.stroke
+            ..strokeCap = StrokeCap.round
+            ..strokeJoin = StrokeJoin.round
+            ..isAntiAlias = true;
+          canvas.drawPath(_paintMarkPathOf(s.kind, rect), mark);
+          break;
+        }
       // ── 追加図形: 星 / 五角形 / 六角形 / ハート / 十字 (= ユーザー要望:
       //    挿入できる図形の種類を増やす)。 面 Path は領域塗りと共通。 ──
       case 6:
@@ -261247,6 +261765,30 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
     openExternalWebWindow(url);
   }
 
+  /// 折り畳む前の高さ (= 戻す時に使う)。 null なら畳んでいない。
+  double? _collapsedFrom;
+
+  /// 畳んでいるか (中身側から使う)。
+  bool get isCollapsed => _collapsedFrom != null;
+
+  /// 窓を「見出しの帯だけ」 に畳む / 元へ戻す
+  /// (= ユーザー要望: AI アシスタントのパネルを折り畳めるように)。
+  ///
+  /// ★ 畳んだ高さは覚えない (_scheduleSaveGeometry を呼ばない)。 覚えると
+  ///   次に開いた時に畳まれた細い窓で立ち上がってしまう。
+  void setCollapsed(bool v, {double barHeight = 46}) {
+    if (v == isCollapsed) return;
+    setState(() {
+      if (v) {
+        _collapsedFrom = _h;
+        _h = _headerH + _topGrab + barHeight;
+      } else {
+        _h = _collapsedFrom ?? widget.initialHeight;
+        _collapsedFrom = null;
+      }
+    });
+  }
+
   void _scheduleSaveGeometry() {
     if (_prefsKey == null) return;
     _saveTimer?.cancel();
@@ -262976,6 +263518,17 @@ class _McpChatSession extends ChangeNotifier {
         return provider.t('mcp.actAddGallery');
       case 'add_paint_text':
         return provider.t('mcp.actPaintText');
+      // ── フリーノートの入れ物 (= ユーザー要望) ──
+      case 'list_paint_tabs':
+        return provider.t('mcp.actListTabs');
+      case 'add_paint_tabs':
+        return provider.t('mcp.actAddTab');
+      case 'add_paint_binders':
+        return provider.t('mcp.actAddBinder');
+      case 'select_paint_tab':
+        return provider.t('mcp.actSelectTab');
+      case 'rename_paint_item':
+        return provider.t('mcp.actRenameTab');
       case 'append_document_text':
         return provider.t('mcp.actDocText');
       case 'write_markdown':
@@ -263161,6 +263714,89 @@ class _McpChatDialogState extends State<_McpChatDialog> {
   /// なく独自の欄に出す。 以前は会話の上で展開していて、 開くと画面から
   /// はみ出していた)。 開いている間は会話の代わりにこの欄を出す。
   bool _showCapabilityPanel = false;
+
+  /// パネルを畳んでいるか (= ユーザー要望: AI アシスタントのパネルを
+  /// 折り畳めるように)。 会話は残したまま、 見出しの帯だけにする。
+  bool _collapsed = false;
+
+  /// 畳む / 戻す。 浮かせている窓なら、 窓の高さも一緒に縮める
+  /// (縮めないと、 帯の下に何も無い大きな箱が残る)。
+  void _setCollapsed(bool v) {
+    if (_collapsed == v) return;
+    setState(() => _collapsed = v);
+    context
+        .findAncestorStateOfType<_FloatingPanelWindowState>()
+        ?.setCollapsed(v);
+  }
+
+  /// 畳んでいる時に出す細い帯。 掴んで窓を動かせる所は残す。
+  Widget _buildCollapsedBar(BuildContext context) {
+    final provider = widget.provider;
+    final busy = _session.busy;
+    return SizedBox(
+      height: 46,
+      child: Row(children: [
+        const SizedBox(width: 12),
+        const IgnorePointer(
+          child: Icon(Icons.auto_awesome_rounded,
+              size: 18, color: Color(0xFF80CBC4)),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onPanUpdate: (d) => context
+                .findAncestorStateOfType<_FloatingPanelWindowState>()
+                ?.dragWindowBy(d.delta),
+            onPanEnd: (_) => context
+                .findAncestorStateOfType<_FloatingPanelWindowState>()
+                ?.dragWindowEnd(),
+            child: Row(children: [
+              Flexible(
+                child: Text(provider.t('mcp.chatTitle'),
+                    maxLines: 1,
+                    softWrap: false,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700)),
+              ),
+              // 動いている間は、 畳んでいても進み具合が分かるようにする。
+              if (busy) ...[
+                const SizedBox(width: 10),
+                const SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Color(0xFF80CBC4)),
+                ),
+                const SizedBox(width: 6),
+                Text('${_session.step} / ${_McpChatSession.maxRounds}',
+                    style: const TextStyle(
+                        color: Colors.white38, fontSize: 11)),
+              ],
+            ]),
+          ),
+        ),
+        IconButton(
+          visualDensity: VisualDensity.compact,
+          tooltip: provider.t('mcp.expand'),
+          icon: const Icon(Icons.unfold_more_rounded,
+              color: Colors.white70, size: 19),
+          onPressed: () => _setCollapsed(false),
+        ),
+        IconButton(
+          visualDensity: VisualDensity.compact,
+          tooltip: provider.t('btn.close'),
+          icon: const Icon(Icons.close_rounded, color: Colors.white70),
+          onPressed: () => widget.paneMode
+              ? widget.onClosePane?.call()
+              : Navigator.of(context).pop(),
+        ),
+      ]),
+    );
+  }
 
   /// 「できること」 の専用欄。 高さは Expanded で決まり、 中はスクロール
   /// するので、 文章がどれだけ長くてもはみ出さない。
@@ -264293,6 +264929,15 @@ class _McpChatDialogState extends State<_McpChatDialog> {
     // 浮遡窓の中でも Dialog で包まない (= ユーザー報告: 窓の中にもう一枚
     // カードが浮いて、 枠が二重に見える)。 窓いっぱいに広げる。
     final pane = widget.paneMode || widget.floatingPanel;
+    // ── 畳んだ時は見出しの帯だけを出す (= ユーザー要望: パネルを
+    //    折り畳めるように)。 会話はそのまま残り、 動いている最中なら
+    //    「何手目か」 も帯に出す。 ──
+    if (_collapsed) {
+      return Material(
+        color: const Color(0xFF1A1A2E),
+        child: _buildCollapsedBar(context),
+      );
+    }
     Widget wrap(Widget child) => pane
         ? Material(color: const Color(0xFF1A1A2E), child: child)
         : Dialog(
@@ -264485,6 +265130,22 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                   setState(_msgs.clear);
                 },
               ),
+              // ── 折り畳む (= ユーザー要望: パネルを畳んでおけるように) ──
+              //    浮かせている窓の中でだけ出す。 分割ペインや全画面では
+              //    畳んでも空いた所が残るだけなので出さない。
+              if (context.findAncestorStateOfType<_FloatingPanelWindowState>() !=
+                  null)
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  constraints: _hdrBtnConstraints(context),
+                  padding: _narrowHeader(context)
+                      ? EdgeInsets.zero
+                      : const EdgeInsets.all(8),
+                  tooltip: provider.t('mcp.collapse'),
+                  icon: const Icon(Icons.unfold_less_rounded,
+                      color: Colors.white38, size: 19),
+                  onPressed: () => _setCollapsed(true),
+                ),
               IconButton(
                 visualDensity: VisualDensity.compact,
                 constraints: _hdrBtnConstraints(context),
