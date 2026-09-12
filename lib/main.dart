@@ -68,6 +68,7 @@ import 'services/cursor_style.dart';
 import 'services/display_light.dart';
 import 'services/pc_settings.dart';
 import 'services/wheel_scroll_scale.dart';
+import 'services/win_fresh_prefs.dart';
 // 録画窓の中のプレビュー再生 (デスクトップは fvp バックエンド)。
 import 'package:video_player/video_player.dart';
 // 録画窓が自分の窓の大きさを変える (GetWindowRect) のに使う。
@@ -3471,6 +3472,12 @@ void main(List<String> args) async {
   //     ここで読んだ値がそのまま engine の値)。
   WheelScrollScale.captureBaseline();
   WheelScrollBinding.ensureInitialized();
+  // ★ Windows の設定の読み書きを「控えを持たない」 実装へ差し替える
+  //   (= ユーザー要望: 複数ウィンドウで編集してもデータが食い違わないように)。
+  //   標準実装はプロセスごとに 1 回しか設定ファイルを読まないので、 2 つ目の
+  //   窓が保存すると 1 つ目の書き込みが丸ごと消えていた。 **設定を触る前**に
+  //   差し替える必要があるので、 ここが唯一の置き場所。
+  FreshSharedPreferencesWindows.registerIfWindows();
   // ★ 「もっと速く」 (加速の曲線の引き伸ばし) を画面から外したので、 前の版で
   //   伸ばしたままの人が**元に戻せなくなる**。 起動時に一度だけ戻す。
   //   何もしていない人には触らない (読むだけで終わる)。

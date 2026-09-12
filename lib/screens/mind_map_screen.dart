@@ -581,7 +581,25 @@ Future<T?> showDialogNearWidget<T>(
   final ro = anchorContext.findRenderObject();
   if (ro is RenderBox && ro.hasSize && ro.attached) {
     final o = ro.localToGlobal(Offset.zero);
-    if (o.dx.isFinite && o.dy.isFinite) anchor = o & ro.size;
+    if (o.dx.isFinite && o.dy.isFinite) {
+      // ★ 浮遊窓 (AI アシスタントなど) の中では、 このダイアログは
+      //   **窓自身の Navigator の Overlay** に載る。 Positioned はその
+      //   Overlay のローカル座標なので、 画面全体の座標をそのまま
+      //   渡すと窓の左上のぶんだけずれる (窓は自分の大きさを
+      //   画面の大きさとして見せる MediaQuery も被せているので、
+      //   端へ貼り付く形になる)。
+      //   根っこの Navigator では Overlay の原点が (0,0) なので、
+      //   この換算は既存の呼び出しの見た目を変えない。
+      final ov = Navigator.maybeOf(anchorContext,
+              rootNavigator: useRootNavigator)
+          ?.overlay
+          ?.context
+          .findRenderObject();
+      final base = (ov is RenderBox && ov.attached && ov.hasSize)
+          ? ov.globalToLocal(o)
+          : o;
+      anchor = base & ro.size;
+    }
   }
   return showDialog<T>(
     context: anchorContext,
@@ -2892,6 +2910,14 @@ class _MindMapScreenState extends State<MindMapScreen>
   void Function()? _markdownCycleView;
   String Function()? _markdownViewLabel;
   void Function()? _markdownAiWrite;
+
+  /// その場所はマークダウンのプレビューの中か (= ユーザー報告:
+  /// プレビュー側の右クリックで何も出ない)。
+  ///
+  /// プレビューは WebView なので、 中の JS で右クリックを横取りして
+  /// マークダウン側が自分で項目を出す。 こちらの「ページ切り替え」 の
+  /// 項目と二重に出ないよう、 中ならこちらは出さない。
+  bool Function(Offset globalPos)? _markdownPreviewOwnsRightClick;
 
   /// マークダウンの「サイトのタブ」 の上にカーソルが乗っているか
   /// (= ユーザー報告: サイトに飛んだ時にエリア内スクロールが効かない)。
@@ -27665,8 +27691,13 @@ class _MindMapScreenState extends State<MindMapScreen>
       MindMapProvider provider, Widget child) {
     if (!_isDesktop) return child;
     return GestureDetector(
-      onSecondaryTapUp: (d) =>
-          _showPageSwitchContextMenu(d.globalPosition, provider),
+      onSecondaryTapUp: (d) {
+        // マークダウンのプレビューの上なら、 そちらが自分で項目を出す。
+        if (_markdownPreviewOwnsRightClick?.call(d.globalPosition) == true) {
+          return;
+        }
+        _showPageSwitchContextMenu(d.globalPosition, provider);
+      },
       child: child,
     );
   }
@@ -131093,8 +131124,13 @@ Future<String?> askAndPutTableIntoPage(BuildContext context,
     {BuildContext? anchorContext}) async {
   if (rows.isEmpty) return null;
   // 図と同じく、 マインドマップとギャラリーのどちらにも置ける。
+  // ★ フリーノートも入れ先に加える (= ユーザー要望: マークダウンの表を
+  //   マインドマップ / ギャラリー / フリーノートに埋め込めるように)。
   final pages = provider.pages
-      .where((p) => p.pageType == 'normal' || p.pageType == 'bookshelf')
+      .where((p) =>
+          p.pageType == 'normal' ||
+          p.pageType == 'bookshelf' ||
+          p.pageType == 'paint')
       .toList();
   final chosen =
       await _pickTargetPageDialog(context, provider, pages, anchorContext);
@@ -131111,6 +131147,12 @@ Future<String?> askAndPutTableIntoPage(BuildContext context,
       return null;
     }
     pageId = made;
+  }
+  // フリーノートは紙の上に「本物の表」 (罫線 + 見出しの下敷き + 文字) を置く。
+  final target = provider.mcpPageById(pageId);
+  if (target != null && target.pageType == 'paint') {
+    final ok = await provider.mcpAddPaintTable(pageId, rows);
+    return ok ? (target.name) : null;
   }
   // 今ある物の右隣へ置く (図の方と同じ)。
   final pg0 = provider.mcpPageById(pageId);
@@ -131347,6 +131389,118 @@ String? _toggleMarkdownCheckLine(String line, bool checked) {
 /// 単純な「割合合わせ」 だと、 図が大きい所で盛大にずれる (mermaid の図は
 /// 元の文では 5 行でも、 描くと 600px になる)。 そこで **見出しと図の行番号**
 /// を目印として埋め込み、 目印の間だけ比例配分する。
+/// プレビューの中で **いつも**要る仕掛け (スクロール連動とは無関係)。
+///
+/// ★ ここに置く理由 (= ユーザー報告「プレビュー側を右クリックしても
+///   反応しない」の真因)。 右クリックとチェック項目の処理は、 以前は
+///   [_kMdScrollSyncJs] の中に書いてあった。 あの定数は
+///   **スクロール連動が ON の時しか HTML に差し込まれない**ので、
+///   連動を切っている人のプレビューには 1 行も入っていなかった。
+///   (同じ間違いを mdReady でも一度やっている。 このファイルの
+///    「この知らせは今までスクロール連動の script の中にしか無く」 の
+///    コメントを参照)。 連動の有無で消える場所には、 連動以外の物を
+///   置かないこと。
+const String _kMdPreviewUiJs = r"""
+<script>
+(function () {
+  // チェック項目を押したら、 元の文の何行目かを返す (= ユーザー要望:
+  // プレビュー画面からチェックを付けられるように)。 見た目はもう
+  // 変わっているので、 Flutter 側は文だけ直して描き直さない。
+  document.addEventListener('change', function (ev) {
+    var t = ev.target;
+    if (!t || t.tagName !== 'INPUT' || t.type !== 'checkbox') return;
+    var l = Number(t.getAttribute('data-src-line'));
+    if (!isFinite(l) || l <= 0) return;
+    try {
+      if (window.__mmPost) {
+        window.__mmPost({ type: 'mdCheck', line: l, checked: !!t.checked });
+      }
+    } catch (e) {}
+  });
+
+  // ── プレビューの上で右クリックしたら、 アプリ側の項目を出す ──
+  //    (= ユーザー報告: 本文とプレビューを開いている時、 プレビュー側で
+  //     右クリックしても何も出ない事がある)。
+  //
+  //    プレビューは WebView なので、 右ボタンは中の WebView が先に
+  //    受け取ってしまい、 Flutter の右クリック検出が働かない事がある
+  //    (WebView2 は自前の項目を出そうとして、 描画が texture なので
+  //     どこにも出ない)。 ここで確実に横取りして、 押した場所と
+  //    「何の上か」 をアプリへ渡す。
+  document.addEventListener('contextmenu', function (ev) {
+    try {
+      // ネットに公開した頁をふつうのブラウザで見ている時は、 受け口が無い
+      // (window.__mmPost が null)。 その時はブラウザ本来の項目を邪魔しない。
+      if (!window.__mmPost) return;
+      // ★ 横取りするのはデスクトップの WebView2 だけ。
+      //   モバイルは長押しが contextmenu になるので、 ここで止めると
+      //   標準の選択 / コピーまで死んで無反応になる (= 点検で発見)。
+      if (!(window.chrome && window.chrome.webview)) return;
+      var t = ev.target;
+      var closest = function (sel) {
+        return (t && t.closest) ? t.closest(sel) : null;
+      };
+      // 自前の項目を持っている所 (埋め込みマップ) と、 文字を打つ所は
+      // そのまま (= そちらの方が細かい事ができる)。
+      // ★ 黙って抜けると、 Flutter 側の保険が 180ms 後に必ず項目を出して
+      //   しまい、 埋め込みマップ自身の項目がその下に隅れて押せなくなる。
+      //   「見送った」 と伝えて保険を取り下げさせる。
+      if (closest('.mmap-node') || closest('[contenteditable="true"]') ||
+          closest('input') || closest('textarea')) {
+        try { window.__mmPost({ type: 'mdCtx', skip: true }); } catch (e) {}
+        return;
+      }
+      var sel = '';
+      try { sel = String(window.getSelection() || ''); } catch (e) {}
+      // 表の上なら、 その表の中身を一緒に渡す (= ユーザー要望: 表を
+      // マップ / ギャラリー / フリーノートへ入れられるように)。
+      var rows = null, tableTitle = '', tableIndex = -1;
+      var tbl = closest('table');
+      if (tbl) {
+        var all = document.querySelectorAll('table');
+        for (var k = 0; k < all.length; k++) {
+          if (all[k] === tbl) { tableIndex = k; break; }
+        }
+        rows = [];
+        var trs = tbl.querySelectorAll('tr');
+        for (var i = 0; i < trs.length; i++) {
+          var cs = trs[i].querySelectorAll('th,td');
+          var row = [];
+          for (var j = 0; j < cs.length; j++) {
+            row.push((cs[j].innerText || cs[j].textContent || '').trim());
+          }
+          if (row.length) rows.push(row);
+        }
+        // 直前の見出しを表の名前にする。
+        var prev = tbl.previousElementSibling;
+        while (prev) {
+          if (/^H[1-6]$/.test(prev.tagName)) {
+            tableTitle = (prev.innerText || prev.textContent || '').trim();
+            break;
+          }
+          prev = prev.previousElementSibling;
+        }
+      }
+      ev.preventDefault();
+      ev.stopPropagation();
+      {
+        window.__mmPost({
+          type: 'mdCtx',
+          x: ev.clientX,
+          y: ev.clientY,
+          sel: sel,
+          tableIndex: tableIndex,
+          tableTitle: tableTitle,
+          table: rows
+        });
+      }
+    } catch (e) {}
+  });
+
+})();
+</script>
+""";
+
 const String _kMdScrollSyncJs = r"""
 <script>
 (function () {
@@ -131433,21 +131587,6 @@ const String _kMdScrollSyncJs = r"""
       window.__mmPost({ type: 'mdReady' });
     }
   } catch (e) {}
-
-  // チェック項目を押したら、 元の文の何行目かを返す (= ユーザー要望:
-  // プレビュー画面からチェックを付けられるように)。 見た目はもう
-  // 変わっているので、 Flutter 側は文だけ直して描き直さない。
-  document.addEventListener('change', function (ev) {
-    var t = ev.target;
-    if (!t || t.tagName !== 'INPUT' || t.type !== 'checkbox') return;
-    var l = Number(t.getAttribute('data-src-line'));
-    if (!isFinite(l) || l <= 0) return;
-    try {
-      if (window.__mmPost) {
-        window.__mmPost({ type: 'mdCheck', line: l, checked: !!t.checked });
-      }
-    } catch (e) {}
-  });
 
   window.addEventListener('scroll', function () {
     if (Date.now() < suppressUntil) return;   // こちらが動かした直後は返さない
@@ -131549,7 +131688,9 @@ String _markdownPreviewHtml(String md, bool dark,
       ? 'html{scrollbar-width:none;}'
           'html::-webkit-scrollbar{width:0;height:0;}'
       : '';
-  final syncJs = syncScroll ? _kMdScrollSyncJs : '';
+  // ★ 右クリック / チェック項目は連動の ON/OFF に関係なく入れる
+  //   (= ユーザー報告: 連動を切っていると右クリックが効かなかった)。
+  final syncJs = (syncScroll ? _kMdScrollSyncJs : '') + _kMdPreviewUiJs;
   // 埋め込みマップ。 アプリ内のプレビューなら中身が空でも仕込んでおく
   // (後から ```map を書いた時に、 読み込み直さず描けるように)。
   // ★ 常に入れる。 以前は「マップを埋め込む時だけ」 だったので、 テキスト
@@ -134642,12 +134783,244 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
     );
   }
 
+  /// プレビューの枠 (= 押した場所を画面の座標に直すのに使う)。
+  final GlobalKey _previewBoxKey = GlobalKey();
+
+  /// JS の contextmenu が来なかった時のための保険 (= ユーザー報告:
+  /// プレビュー側を右クリックしても反応しない)。
+  ///
+  /// 本筋は プレビューの中の JS が \_kMdPreviewUiJs の contextmenu で
+  /// 知らせてくる経路。 ただし webview_windows は「最後にカーソルが
+  /// 居た場所」 を覚えて WebView2 へ渡すので、 一度もカーソルを動かさずに
+  /// 右クリックすると画面の左上で発火するし、 左ボタンを押したままだと
+  /// 右ボタン自体が送られない。 その取りこぼしをここで拾う。
+  Timer? _previewCtxFallbackTimer;
+
+  /// 保険で項目を出した時刻 (遅れて届いた mdCtx を見送る判断に使う)。
+  DateTime? _previewCtxShownAt;
+
+  void _armPreviewCtxFallback(Offset globalPos) {
+    _previewCtxFallbackTimer?.cancel();
+    // JS が先に知らせてきたら、 そちらが勝つ (上の mdCtx で cancel する)。
+    _previewCtxFallbackTimer = Timer(const Duration(milliseconds: 180), () {
+      _previewCtxFallbackTimer = null;
+      unawaited(_showPreviewContextMenuFromFlutter(globalPos));
+    });
+  }
+
+  /// プレビューの中身をこちらから問い合わせて、 自前で項目を出す。
+  Future<void> _showPreviewContextMenuFromFlutter(Offset globalPos) async {
+    if (!mounted) return;
+    final box =
+        _previewBoxKey.currentContext?.findRenderObject() as RenderBox?;
+    var sel = '';
+    var rows = <List<String>>[];
+    var title = '';
+    if (box != null && box.hasSize) {
+      final p = box.globalToLocal(globalPos);
+      // 押した所に何があるかを聞く。 executeScript は戻り値を返すので
+      //   往復の postMessage は要らない。
+      const js = r"""
+(function(x,y){
+  try{
+    var e = document.elementFromPoint(x, y);
+    var t = (e && e.closest) ? e.closest('table') : null;
+    var rows = [], title = '';
+    if (t) {
+      var trs = t.querySelectorAll('tr');
+      for (var i = 0; i < trs.length; i++) {
+        var cs = trs[i].querySelectorAll('th,td'), r = [];
+        for (var j = 0; j < cs.length; j++) {
+          r.push((cs[j].innerText || cs[j].textContent || '').trim());
+        }
+        if (r.length) rows.push(r);
+      }
+      var prev = t.previousElementSibling;
+      while (prev) {
+        if (/^H[1-6]$/.test(prev.tagName)) {
+          title = (prev.innerText || prev.textContent || '').trim();
+          break;
+        }
+        prev = prev.previousElementSibling;
+      }
+    }
+    var s = '';
+    try { s = String(window.getSelection() || ''); } catch (err) {}
+    return JSON.stringify({ sel: s, table: rows, tableTitle: title });
+  } catch (err) { return '{}'; }
+})(__X__, __Y__);
+""";
+      try {
+        final raw = await _win?.executeScript(js
+            .replaceFirst('__X__', '${p.dx.round()}')
+            .replaceFirst('__Y__', '${p.dy.round()}'));
+        final decoded = raw is String ? jsonDecode(raw) : raw;
+        if (decoded is Map) {
+          sel = '${decoded['sel'] ?? ''}';
+          title = '${decoded['tableTitle'] ?? ''}';
+          final t = decoded['table'];
+          if (t is List) {
+            rows = [
+              for (final r in t)
+                if (r is List) [for (final c in r) '$c']
+            ];
+          }
+        }
+      } catch (_) {
+        // 問い合わせに失敗しても、 項目そのものは出す (出ないのが一番困る)。
+      }
+    }
+    if (!mounted) return;
+    _previewCtxShownAt = DateTime.now();
+    final local = box?.globalToLocal(globalPos) ?? globalPos;
+    _showPreviewContextMenu(
+      x: local.dx,
+      y: local.dy,
+      selection: sel,
+      table: rows,
+      tableTitle: title,
+    );
+  }
+
+  /// その位置がプレビューの中か (本体の右クリックと二重に出さない為)。
+  /// 自分が右クリックの持ち主になる前の登録者 (閉じる時に返す)。
+  bool Function(Offset)? _prevOwnsRightClick;
+
+  bool _previewContainsGlobal(Offset globalPos) {
+    final box =
+        _previewBoxKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return false;
+    final local = box.globalToLocal(globalPos);
+    return local.dx >= 0 &&
+        local.dy >= 0 &&
+        local.dx <= box.size.width &&
+        local.dy <= box.size.height;
+  }
+
+  /// プレビューの上で右クリックした時に出す項目
+  /// (= ユーザー報告: プレビュー画面側で右クリックしても何も出ない)。
+  ///
+  /// プレビューは WebView なので、 右ボタンは中の WebView が先に取ってしまい
+  /// Flutter の右クリック検出まで届かない事がある (WebView2 は自前の項目を
+  /// 出そうとするが、 描画が texture なのでどこにも出ない)。 そこで
+  /// プレビューの中の JS で横取りして、 ここへ「押した場所」 を渡している。
+  void _showPreviewContextMenu({
+    required double x,
+    required double y,
+    required String selection,
+    required List<List<String>> table,
+    required String tableTitle,
+  }) {
+    if (!mounted) return;
+    final provider = widget.provider;
+    // WebView に渡している大きさは論理ピクセルなので、 中の座標はそのまま
+    // 枠の中の座標として使える。
+    final box =
+        _previewBoxKey.currentContext?.findRenderObject() as RenderBox?;
+    final origin = box?.localToGlobal(Offset(x, y)) ??
+        (_lastPointerPos ?? const Offset(120, 120));
+    final overlay =
+        Overlay.of(context).context.findRenderObject() as RenderBox?;
+    final screen = overlay?.size ?? MediaQuery.sizeOf(context);
+    final sel = selection.trim();
+    final entries = <PopupMenuEntry<String>>[];
+    PopupMenuItem<String> item(String value, IconData icon, String label,
+            {Color color = Colors.white70}) =>
+        PopupMenuItem<String>(
+          value: value,
+          height: 40,
+          child: Row(children: [
+            Icon(icon, size: 17, color: color),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.white, fontSize: 13)),
+            ),
+          ]),
+        );
+    // ★ 表の上で押した時は、 その表をそのままページへ入れられるようにする
+    //   (= ユーザー要望: マークダウンの表をマップ / ギャラリー /
+    //   フリーノートに埋め込めるように)。 どの表かは押した所で決まるので、
+    //   本文のボタンのように選び直す必要が無い。
+    if (table.length >= 2) {
+      entries.add(item('table', Icons.table_view_rounded,
+          provider.t('md.tableToPage'), color: const Color(0xFF4FC3F7)));
+    }
+    if (sel.isNotEmpty) {
+      entries.add(item('copy', Icons.copy_rounded, provider.t('md.copy')));
+      entries.add(item('ai', Icons.auto_awesome_rounded,
+          provider.t('md.sendSelToAi'), color: const Color(0xFFCE83D8)));
+    } else {
+      entries.add(item('ai', Icons.auto_awesome_rounded,
+          provider.t('md.sendAllToAi'), color: const Color(0xFFCE83D8)));
+    }
+    if (entries.isNotEmpty) entries.add(const PopupMenuDivider(height: 8));
+    entries.add(item('view', Icons.wysiwyg_rounded, _viewModeLabel(provider)));
+    entries.add(item(
+        'header',
+        _headerHidden
+            ? Icons.keyboard_double_arrow_down_rounded
+            : Icons.keyboard_double_arrow_up_rounded,
+        provider.t(_headerHidden ? 'md.showHeader' : 'md.hideHeader')));
+    if (!_aiBusy) {
+      entries.add(item('write', Icons.edit_note_rounded,
+          provider.t('md.aiWrite'), color: const Color(0xFFCE83D8)));
+    }
+    // プレビューの上では本体の右クリックを出さないので、 そこにあった
+    // 「ページ切り替え」 をこちらへ移す (= 項目を減らさない)。
+    if (_mdHost != null) {
+      entries.add(item('page', Icons.tab_rounded, provider.t('ctx.switchPage')));
+    }
+    unawaited(showMenu<String>(
+      context: context,
+      color: const Color(0xFF1E1E32),
+      position: RelativeRect.fromLTRB(
+        origin.dx,
+        origin.dy,
+        math.max(0, screen.width - origin.dx),
+        math.max(0, screen.height - origin.dy),
+      ),
+      items: entries,
+    ).then((value) {
+      if (value == null || !mounted) return;
+      switch (value) {
+        case 'table':
+          unawaited(_putTableIntoPage(table));
+          break;
+        case 'copy':
+          unawaited(Clipboard.setData(ClipboardData(text: sel)));
+          _appSnackTop(
+              context, provider.t('md.copied'), const Color(0xFF43B97F));
+          break;
+        case 'ai':
+          _sendMdTextToAi(override: sel.isEmpty ? null : sel);
+          break;
+        case 'view':
+          _cycleViewMode();
+          break;
+        case 'header':
+          _toggleHeaderHidden();
+          break;
+        case 'write':
+          _askAiToWrite();
+          break;
+        case 'page':
+          _mdHost?._showPageSwitchContextMenu(origin, provider);
+          break;
+      }
+    }));
+  }
+
   /// 選んでいる文字 (無ければ本文ぜんぶ) を AI へ渡す。
-  void _sendMdTextToAi() {
+  void _sendMdTextToAi({String? override}) {
     final sel = _ctrl.selection;
-    final text = (sel.isValid && !sel.isCollapsed)
-        ? _ctrl.text.substring(sel.start, sel.end)
-        : _ctrl.text;
+    // override = プレビュー側で選んだ文字 (= 右クリックのメニューから)。
+    final text = override ??
+        ((sel.isValid && !sel.isCollapsed)
+            ? _ctrl.text.substring(sel.start, sel.end)
+            : _ctrl.text);
     if (text.trim().isEmpty) return;
     final host = _mdHost;
     if (host != null && host.mounted) {
@@ -134767,6 +135140,11 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
       _mdHost?._markdownCycleView = _cycleViewMode;
       _mdHost?._markdownViewLabel = _ctxViewLabel;
       _mdHost?._markdownAiWrite = _askAiToWrite;
+      // ★ 先客を控えておく (= 点検で発見: 分割ペインで .md を開くと
+      //   本体のページの登録を奪い、 閉じる時に null へ戻すので、
+      //   以後本体側でメニューが二重に出るようになる)。
+      _prevOwnsRightClick = _mdHost?._markdownPreviewOwnsRightClick;
+      _mdHost?._markdownPreviewOwnsRightClick = _previewContainsGlobal;
     });
   }
 
@@ -134787,6 +135165,7 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
     _saveDebounce?.cancel();
     _renderDebounce?.cancel();
     _sideMemoDebounce?.cancel();
+    _previewCtxFallbackTimer?.cancel();
     // 閉じる直前の内容も確実に保存する。
     //
     // ★ ただし「AI (MCP) が本文を書き換えたせいで作り直された」 時は
@@ -134817,6 +135196,11 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
       _mdHost?._markdownHeaderToggle = null;
       _mdHost?._markdownHeaderIsHidden = null;
     }
+    if (_mdHost?._markdownPreviewOwnsRightClick == _previewContainsGlobal) {
+      // 自分が奇麗に最後の登録者なら、 先客へ返す。
+      _mdHost?._markdownPreviewOwnsRightClick = _prevOwnsRightClick;
+    }
+    _prevOwnsRightClick = null;
     if (_mdHost?._markdownCycleView == _cycleViewMode) {
       _mdHost?._markdownCycleView = null;
       _mdHost?._markdownViewLabel = null;
@@ -135922,6 +136306,39 @@ graph TD
         _previewLoadedOnce = true;
         // 読み込み中に打った分があれば、 ここで一度だけ追い付かせる。
         _pushPreviewText();
+        return;
+      }
+      // ── プレビューの上で右クリックした (= ユーザー報告: プレビュー側で
+      //    右クリックしても何も出ない事がある) ──
+      if (type == 'mdCtx') {
+        // JS が間に合ったので、 保険 (Flutter 側の受け口) は取り下げる。
+        _previewCtxFallbackTimer?.cancel();
+        _previewCtxFallbackTimer = null;
+        // ★ JS が「ここは自分で出すから見送った」 と言ってきた時は、
+        //   こちらも何も出さない (埋め込みマップの項目を隅さない為)。
+        if (m['skip'] == true) return;
+        // ★ 180ms を過ぎてから届いた場合、 既に保険が項目を出している。
+        //   そのまま出すと 2 枚重なるので見送る。
+        final shown = _previewCtxShownAt;
+        if (shown != null &&
+            DateTime.now().difference(shown) < const Duration(seconds: 1)) {
+          return;
+        }
+        final rows = <List<String>>[];
+        final rawTable = m['table'];
+        if (rawTable is List) {
+          for (final r in rawTable) {
+            if (r is! List) continue;
+            rows.add([for (final c in r) '$c']);
+          }
+        }
+        _showPreviewContextMenu(
+          x: (m['x'] as num?)?.toDouble() ?? 0,
+          y: (m['y'] as num?)?.toDouble() ?? 0,
+          selection: '${m['sel'] ?? ''}',
+          table: rows,
+          tableTitle: '${m['tableTitle'] ?? ''}',
+        );
         return;
       }
       // ── プレビュー側を動かした時の知らせ (= スクロール連動) ──
@@ -137807,7 +138224,22 @@ $body''';
     Widget preview;
     if (_isDesktopPlatform) {
       if (_winReady && _win != null) {
-        preview = wv_win.Webview(_win!);
+        // 右クリックの場所を画面の座標に直すため、 枠に目印を付ける
+        //   (= ユーザー要望: プレビュー側の右クリックで項目を出す)。
+        // 右クリックの場所を画面の座標に直すため、 枠に目印を付ける
+        //   (= ユーザー要望: プレビュー側の右クリックで項目を出す)。
+        // ★ Listener は WebView の中の Listener を殺さない (translucent)。
+        //   JS が先に知らせてきたらそちらが勝つ。
+        preview = Listener(
+          behavior: HitTestBehavior.translucent,
+          onPointerDown: (e) {
+            if (e.kind != PointerDeviceKind.mouse) return;
+            if ((e.buttons & kSecondaryMouseButton) == 0) return;
+            _armPreviewCtxFallback(e.position);
+          },
+          child:
+              KeyedSubtree(key: _previewBoxKey, child: wv_win.Webview(_win!)),
+        );
       } else if (_winFailed) {
         // WebView2 が使えない環境: 素のテキストをそのまま出して、 編集は
         //   続けられるようにする (= ユーザー要望: エラーを出しっぱなしにしない)。
@@ -137850,7 +138282,9 @@ $body''';
                     strokeWidth: 2, color: Color(0xFFBA68C8))));
       }
     } else {
-      preview = iaw.InAppWebView(
+      preview = KeyedSubtree(
+          key: _previewBoxKey,
+          child: iaw.InAppWebView(
         initialSettings: iaw.InAppWebViewSettings(
           javaScriptEnabled: true,
           transparentBackground: true,
@@ -137866,7 +138300,7 @@ $body''';
               });
           _render();
         },
-      );
+      ));
     }
 
     return CallbackShortcuts(
@@ -138418,7 +138852,15 @@ $body''';
       if (v == null || !mounted) return;
       pick = v;
     }
-    final cells = tables[pick];
+    await _putTableIntoPage(tables[pick]);
+  }
+
+  /// 表を「どのページへ入れるか」 選んでもらって入れる
+  /// (= ユーザー要望: マークダウンの表をマップ / ギャラリー / フリーノートへ)。
+  /// 本文のボタンからも、 プレビューの右クリックからも、 ここを通る。
+  Future<void> _putTableIntoPage(List<List<String>> cells) async {
+    final p = widget.provider;
+    if (cells.isEmpty) return;
     // 入れ先のページを選ぶ (マップ / ギャラリー / フリーノート)。
     final targets = p.pages
         .where((pg) =>
@@ -138457,9 +138899,15 @@ $body''';
     );
     if (target == null || !mounted) return;
     if (target.pageType == 'paint') {
-      // フリーノートには「文字」 として入れる (表の枠は罫線で表す)。
-      final ok = await p.mcpAppendPaintDocText(
-          target.id, _tableAsPlainText(cells));
+      // ★ フリーノートにも「本物の表」 を置く (= ユーザー要望: 埋め込める
+      //   ように)。 以前は等幅の文字に組み直して文字の層へ流していたので、
+      //   罫線が無くただの文章に見えていた。 罫線 + 見出しの下敷き + マスの
+      //   文字を、 画面の「表を挿入」 と同じ形で作る (後から手で直せる)。
+      var ok = await p.mcpAddPaintTable(target.id, cells);
+      // 知らない形の保存データで置けなかった時だけ、 文字として入れる。
+      ok = ok ||
+          await p.mcpAppendPaintDocText(
+              target.id, _tableAsPlainText(cells));
       if (!mounted) return;
       _appSnackTop(
           context,
@@ -164179,6 +164627,33 @@ v.addEventListener('play', function() {
   ///   動画 id で縛る。
   String? _initialPosVideoId;
 
+  /// YouTube の中で動画から動画へ移った時の後始末
+  /// (= ユーザー報告: 動画が切り替わるタイミングで再生が不安定)。
+  ///
+  /// `_navigateTo` (= 次へ / 前へ / 再読み込み) を通る移動では番号を進めて
+  /// いたが、 **画面の中で関連動画を押した時**は通らない。 そのため:
+  ///   * 前の動画のために仕掛けた遅れた処理 (タイトル取り等) が、 新しい
+  ///     動画のタイトルとして書き込まれる
+  ///   * 「続きから再生」 の済み印 (_initialPositionSeeked) が立ったままで、
+  ///     2 本目以降は前回の続きに戻らない
+  ///   * 「終わった」 の知らせと読み込みが取り合いになる
+  /// という取りこぼしが残っていた。 ここで **1 回の移動** として数え直す。
+  void _beginInPageVideoSwitch() {
+    final gen = ++_navGen;
+    _navTarget = _currentUrl;
+    // 次の動画には前の動画の「この時間へ飛ばす」 を効かせない。
+    _initialPositionSeeked = false;
+    // 読み込みが落ち着くまでは、 重ねて次へ進まない。
+    _switchingVideo = true;
+    _switchGuardTimer?.cancel();
+    _switchGuardTimer = Timer(const Duration(seconds: 3), () {
+      if (gen == _navGen) _switchingVideo = false;
+    });
+    // 自動送りの最中にここへ来たなら、 その送りは完了している。
+    _advanceGuardTimer?.cancel();
+    _advancing = false;
+  }
+
   Future<void> _restorePosition() async {
     if (_currentVideoId == null) return;
     // ── 優先順位 ──
@@ -165412,41 +165887,11 @@ v.addEventListener('play', function() {
           .replaceFirst('https://m.youtube.com/', 'https://www.youtube.com/')
           .replaceFirst('http://m.youtube.com/', 'https://www.youtube.com/');
 
-      var description = '';
-      Object? descriptionResult;
-      try {
-        descriptionResult = await _c?.evaluateJavascript(source: r'''
-        (function() {
-          try {
-            var visible = document.querySelector(
-              'ytm-expandable-video-description-body-renderer .description-text,' +
-              'ytm-expandable-video-description-body-renderer,' +
-              '#description-inline-expander #snippet-text,' +
-              '#description'
-            );
-            var text = visible ? (visible.innerText || visible.textContent || '') : '';
-            if (!text) {
-              var meta = document.querySelector(
-                'meta[name="description"], meta[itemprop="description"], meta[property="og:description"]'
-              );
-              text = meta ? (meta.getAttribute('content') || '') : '';
-            }
-            return text.trim();
-          } catch (e) { return ''; }
-        })();
-      ''');
-      } catch (_) {
-        // URL とタイトルだけでも共有できるため、説明取得失敗は無視する。
-      }
-      if (!isStillSameTarget()) return;
-      description = descriptionResult is String
-          ? descriptionResult
-          : (descriptionResult?.toString() ?? '');
-      description = description.replaceAll(RegExp(r'\s+'), ' ').trim();
-      if (description.length > 1200) {
-        description = '${description.substring(0, 1200)}…';
-      }
-
+      // ★ 概要欄は渡さない (= ユーザー要望: 共有の文面が長すぎる)。
+      //   以前は概要を 1200 字ぶん貼り付けていたので、 AI の入力欄が文字で
+      //   埋まって何を頼んでいるのか分からなくなっていた。 見出しと URL が
+      //   あれば AI 側で動画を引けるので、 その 2 つと「今どこを見ているか」
+      //   だけを渡して、 その場で要約させる。
       final position = await _getCurrentVideoTimeSec();
       if (!isStillSameTarget()) return;
 
@@ -165456,16 +165901,16 @@ v.addEventListener('play', function() {
           : (isVideoShare
               ? '${provider.t('fsv.videoAiUntitled')} ($videoIdSnapshot)'
               : shareUrl);
-      final metadata = <String, Object>{
-        'title': title,
-        'url': shareUrl,
-        if (position >= 1) 'currentPosition': _formatTimestamp(position),
-        if (description.isNotEmpty) 'description': description,
-      };
-
+      final at = (isVideoShare && position >= 1)
+          ? '\n(${_formatTimestamp(position)} →)'
+          : '';
       final prompt = provider
-          .t(isVideoShare ? 'fsv.videoAiPrompt' : 'fsv.pageAiPrompt')
-          .replaceAll('{metadata}', jsonEncode(metadata));
+          .t(isVideoShare
+              ? 'fsv.videoSummarizePrompt'
+              : 'fsv.pageSummarizePrompt')
+          .replaceAll('{title}', title)
+          .replaceAll('{url}', shareUrl)
+          .replaceAll('{at}', at);
       _openMemoTextInAi(
         prompt.trim(),
         copyToClipboard: false,
@@ -166779,165 +167224,51 @@ v.addEventListener('play', function() {
 
   /// モバイル YouTube のヘッダー配置。
   ///
-  /// ブラウズ中は全操作を一段の横スクロール列へまとめる。動画視聴中は、
-  /// 一段目を閉じる・履歴・更新・再生速度だけに固定し、残りを二段目へ送る。
+  /// ★ 動画を見ている時も **1 段**にまとめる (= ユーザー要望: 上に付ける
+  ///   配置がイマイチ)。 以前は 1 段目に 閉じる/履歴/更新 + 速度のつまみ、
+  ///   2 段目にその他… と 2 段に積んでいたので、 縦に 100px 近く取られて
+  ///   動画そのものが押し下げられていた。 速度は「1.0x」 のボタンから同じ
+  ///   つまみを開けるので、 1 段に並べても何も失われない。 入り切らない分は
+  ///   横スクロールで出す (ブラウズ中と同じ見せ方)。
   Widget _buildMobileYoutubeHeader(bool isVideo) {
-    if (!isVideo) {
-      const leadingIds = <String>[
-        _ytSideClose,
-        _ytSideHistoryBack,
-        _ytSideHistoryForward,
-        _ytSideReload,
-        // 非表示ボタンを右端へ置かず、画面上中央付近へ来る順にする。
-        _ytSideHideUi,
-      ];
-      final ids = <String>[
-        ...leadingIds,
-        for (final id in _youtubeSideActionOrder)
-          if (!leadingIds.contains(id)) id,
-      ];
-      return Container(
-        height: 52,
-        color: Colors.black,
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-        child: SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          physics: const ClampingScrollPhysics(),
-          child: Row(
-            children: [
-              for (final id in ids)
-                if (_buildMobileYoutubeSideAction(id) case final control?) ...[
-                  control,
-                  const SizedBox(width: 6),
-                ],
-            ],
-          ),
-        ),
-      );
-    }
-
-    const primaryIds = <String>{
-      _ytSideClose,
-      _ytSideHistoryBack,
-      _ytSideHistoryForward,
-      _ytSideReload,
-      _ytSidePlaybackRate,
-    };
-    final secondaryIds = <String>[
+    // 先頭に固定する物 (残りは配置設定の並び順のまま後ろへ続く)。
+    final List<String> leadingIds = isVideo
+        ? const <String>[
+            _ytSideClose,
+            _ytSideHistoryBack,
+            _ytSideHistoryForward,
+            _ytSideReload,
+            _ytSidePlaybackRate,
+          ]
+        : const <String>[
+            _ytSideClose,
+            _ytSideHistoryBack,
+            _ytSideHistoryForward,
+            _ytSideReload,
+            // 非表示ボタンを右端へ置かず、画面上中央付近へ来る順にする。
+            _ytSideHideUi,
+          ];
+    final ids = <String>[
+      ...leadingIds,
       for (final id in _youtubeSideActionOrder)
-        if (!primaryIds.contains(id)) id,
+        if (!leadingIds.contains(id)) id,
     ];
-    final provider = context.read<MindMapProvider>();
-    final maxRate = context.watch<MindMapProvider>().videoMaxRate;
-    final divisions = ((maxRate - 1.0) * 4).round().clamp(4, 60);
-
     return Container(
+      height: 52,
       color: Colors.black,
-      padding: const EdgeInsets.fromLTRB(4, 3, 4, 4),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // 一段目: 閉じる / 戻る / 進む / 更新 / 速度バー / 速度設定
-          Row(
-            children: [
-              IconButton(
-                tooltip: context.read<MindMapProvider>().t('btn.close'),
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                icon: const Icon(Icons.close_rounded,
-                    color: Color(0xFFFF8A80), size: 22),
-                onPressed: () => Navigator.pop(context),
-              ),
-              IconButton(
-                tooltip: provider.t('fsv.backHistory'),
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 32, minHeight: 36),
-                icon: Icon(Icons.arrow_back_ios_new_rounded,
-                    color: _canGoBack ? Colors.white70 : Colors.white24,
-                    size: 18),
-                onPressed: _canGoBack
-                    ? () async {
-                        try {
-                          await _c?.goBack();
-                        } catch (_) {}
-                      }
-                    : null,
-              ),
-              IconButton(
-                tooltip: provider.t('fsv.forwardHistory'),
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 32, minHeight: 36),
-                icon: Icon(Icons.arrow_forward_ios_rounded,
-                    color: _canGoForward ? Colors.white70 : Colors.white24,
-                    size: 18),
-                onPressed: _canGoForward
-                    ? () async {
-                        try {
-                          await _c?.goForward();
-                        } catch (_) {}
-                      }
-                    : null,
-              ),
-              IconButton(
-                tooltip: provider.t('fsv.reloadVideo'),
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 34, minHeight: 36),
-                icon: const Icon(Icons.refresh_rounded,
-                    color: Colors.white70, size: 20),
-                onPressed: _reloadCurrentVideo,
-              ),
-              Text('${_playbackRate.toStringAsFixed(2)}x',
-                  style: const TextStyle(color: Colors.white54, fontSize: 10)),
-              Expanded(
-                child: SliderTheme(
-                  data: SliderThemeData(
-                    trackHeight: 2,
-                    thumbShape:
-                        const RoundSliderThumbShape(enabledThumbRadius: 5),
-                    activeTrackColor: Colors.white.withValues(alpha: 0.5),
-                    inactiveTrackColor: Colors.white.withValues(alpha: 0.15),
-                    thumbColor: Colors.white,
-                    overlayShape:
-                        const RoundSliderOverlayShape(overlayRadius: 10),
-                  ),
-                  child: Slider(
-                    value: _playbackRate.clamp(1.0, maxRate),
-                    min: 1.0,
-                    max: maxRate,
-                    divisions: divisions,
-                    onChanged: _changeRate,
-                  ),
-                ),
-              ),
-              IconButton(
-                tooltip: provider.t('video.tip.maxRate'),
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 32, minHeight: 36),
-                icon: const Icon(Icons.tune_rounded,
-                    color: Color(0xFFFFB347), size: 19),
-                onPressed: () => _showMaxRateDialog(context),
-              ),
-            ],
-          ),
-          // 二段目: その他。収まり切らない操作は横スクロールで表示する。
-          SizedBox(
-            height: 48,
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              physics: const ClampingScrollPhysics(),
-              child: Row(
-                children: [
-                  for (final id in secondaryIds)
-                    if (_buildMobileYoutubeSideAction(id)
-                        case final control?) ...[
-                      control,
-                      const SizedBox(width: 6),
-                    ],
-                ],
-              ),
-            ),
-          ),
-        ],
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        physics: const ClampingScrollPhysics(),
+        child: Row(
+          children: [
+            for (final id in ids)
+              if (_buildMobileYoutubeSideAction(id) case final control?) ...[
+                control,
+                const SizedBox(width: 6),
+              ],
+          ],
+        ),
       ),
     );
   }
@@ -168450,11 +168781,22 @@ v.addEventListener('play', function() {
                                 if (mounted &&
                                     urlStr.isNotEmpty &&
                                     urlStr != _currentUrl) {
+                                  final prevVideoId = _currentVideoId;
                                   setState(() {
                                     _analyzeUrlSync(urlStr);
                                     // SPA 遷移時もタイトルをクリアして再取得 (動画→動画 等)
                                     _currentTitle = '';
                                   });
+                                  // ★ YouTube の中で動画から動画へ移った時も
+                                  //   「切り替え」 として扱う (= ユーザー報告:
+                                  //   動画が切り替わるタイミングで再生が不安定)。
+                                  //   _navigateTo を通らない移動なので、 これを
+                                  //   入れるまで前の動画のための仕掛けが
+                                  //   そのまま次の動画に流れ込んでいた。
+                                  if (_currentVideoId != null &&
+                                      _currentVideoId != prevVideoId) {
+                                    _beginInPageVideoSwitch();
+                                  }
                                   // 動画ページなら新タイトルを polling
                                   _pollVideoTitle();
                                   // ── SPA 遷移時のフォーカス CSS 切り替え ──
@@ -241783,6 +242125,77 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
   Timer? _mdSplitRenderDebounce;
   Timer? _mdScrollSyncThrottle;
 
+  /// プレビューの枠 (押した場所を画面の座標に直すため)。
+  final GlobalKey _mdPreviewBoxKey = GlobalKey();
+
+  /// プレビューで右クリックした時の項目。
+  ///
+  /// WebView は右ボタンを自分で取ってしまうので、 中の JS で横取りして
+  /// ここへ座標を渡している (マークダウンのページと同じ仕組み)。
+  void _showMdPreviewContextMenu(Offset at, String selection,
+      List<List<String>> table, String tableTitle) {
+    if (!mounted) return;
+    final provider = _providerRef ?? context.read<MindMapProvider>();
+    final box =
+        _mdPreviewBoxKey.currentContext?.findRenderObject() as RenderBox?;
+    final origin = box?.localToGlobal(at) ?? at;
+    final screen = MediaQuery.sizeOf(context);
+    final sel = selection.trim();
+    PopupMenuItem<String> item(String v, IconData ic, String label) =>
+        PopupMenuItem<String>(
+          value: v,
+          height: 40,
+          child: Row(children: [
+            Icon(ic, size: 17, color: const Color(0xFF4FC3F7)),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.white, fontSize: 13)),
+            ),
+          ]),
+        );
+    final entries = <PopupMenuEntry<String>>[];
+    if (table.length >= 2) {
+      entries.add(item(
+          'table', Icons.table_view_rounded, provider.t('md.tableToPage')));
+    }
+    if (sel.isNotEmpty) {
+      entries.add(item('copy', Icons.copy_rounded, provider.t('md.copy')));
+    }
+    entries.add(item(
+        'edit',
+        Icons.edit_rounded,
+        provider
+            .t('md.viewNext')
+            .replaceFirst('{mode}', provider.t('md.viewEditor'))));
+    unawaited(showMenu<String>(
+      context: context,
+      color: const Color(0xFF1E1E32),
+      position: RelativeRect.fromLTRB(
+        origin.dx,
+        origin.dy,
+        math.max(0, screen.width - origin.dx),
+        math.max(0, screen.height - origin.dy),
+      ),
+      items: entries,
+    ).then((v) {
+      if (v == null || !mounted) return;
+      if (v == 'copy') {
+        unawaited(Clipboard.setData(ClipboardData(text: sel)));
+      } else if (v == 'table') {
+        unawaited(askAndPutTableIntoPage(
+            context, provider, tableTitle, table));
+      } else if (v == 'edit') {
+        setState(() {
+          _mdPreview = false;
+          _mdSplitView = false;
+        });
+      }
+    }));
+  }
+
   void _onMdPreviewMessage(dynamic msg) {
     try {
       dynamic m = msg;
@@ -241797,6 +242210,26 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
       if (type == 'mdReady') {
         // 読み込み中に打った分をここで追い付かせる。
         _pushMdPreviewText();
+        return;
+      }
+      // ── プレビューの上で右クリックした (= ユーザー報告: プレビュー側で
+      //    右クリックしても何も出ない 事がある) ──
+      if (type == 'mdCtx') {
+        final rows = <List<String>>[];
+        final rawTable = m['table'];
+        if (rawTable is List) {
+          for (final r in rawTable) {
+            if (r is! List) continue;
+            rows.add([for (final c in r) '$c']);
+          }
+        }
+        _showMdPreviewContextMenu(
+          Offset((m['x'] as num?)?.toDouble() ?? 0,
+              (m['y'] as num?)?.toDouble() ?? 0),
+          '${m['sel'] ?? ''}',
+          rows,
+          '${m['tableTitle'] ?? ''}',
+        );
         return;
       }
       // ── プレビューでチェックを押した (= ユーザー要望) ──
@@ -242332,7 +242765,9 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
       if (!_mdWinReady || _mdWin == null) {
         return const Center(child: CircularProgressIndicator(strokeWidth: 2));
       }
-      return wv_win.Webview(_mdWin!);
+      // 右クリックの場所を画面の座標に直すため、 枠に目印を付ける。
+      return KeyedSubtree(
+          key: _mdPreviewBoxKey, child: wv_win.Webview(_mdWin!));
     }
     // HTML ファイルは書いた物をそのまま表示する (= ユーザー報告: html の
     // プレビューが出ない。 markdown として組み直していたのが原因)。
@@ -242342,9 +242777,12 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
     final uri =
         Uri.dataFromString(src, mimeType: 'text/html', encoding: utf8)
             .toString();
-    return iaw.InAppWebView(
-      initialUrlRequest: iaw.URLRequest(url: iaw.WebUri(uri)),
-      onWebViewCreated: (c) => _mdIaw = c,
+    return KeyedSubtree(
+      key: _mdPreviewBoxKey,
+      child: iaw.InAppWebView(
+        initialUrlRequest: iaw.URLRequest(url: iaw.WebUri(uri)),
+        onWebViewCreated: (c) => _mdIaw = c,
+      ),
     );
   }
 
@@ -265633,6 +266071,174 @@ class _McpChatDialogState extends State<_McpChatDialog> {
     );
   }
 
+  /// 外部のアプリ (Claude Desktop / Claude Code など) からこのアプリを
+  /// 操作できるようにする設定 (= ユーザー要望)。
+  ///
+  /// 仕組み自体は前からあったが、 ON にする入口も、 合言葉を見る
+  /// 手段も無かった (起動時の stdout に出すだけで、 配布版では見えない)。
+  Widget _buildExternalMcpSection(MindMapProvider provider) {
+    final on = provider.mcpExternalAllowed;
+    final url = provider.mcpServerUrl ?? '';
+    // 合言葉は URL にも入っているが、 クエリは履歴に残るので
+    //   接続例は Authorization ヘッダ側を正とする。
+    final plain = url.contains('?') ? url.split('?').first : url;
+    final token = provider.mcpToken;
+    Widget line(String text, {Color color = Colors.white60, double size = 11}) =>
+        Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Text(text,
+              style: TextStyle(color: color, fontSize: size, height: 1.5)),
+        );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(children: [
+          const Icon(Icons.lan_outlined, size: 15, color: Color(0xFF4FC3F7)),
+          const SizedBox(width: 7),
+          Expanded(
+            child: Text(provider.t('mcp.extTitle'),
+                style: const TextStyle(
+                    color: Color(0xFF4FC3F7),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700)),
+          ),
+          Switch(
+            value: on,
+            activeThumbColor: const Color(0xFF4FC3F7),
+            onChanged: (v) => unawaited(
+                provider.setMcpExternalAllowed(v).then((_) {
+              if (mounted) setState(() {});
+            })),
+          ),
+        ]),
+        line(provider.t('mcp.extNote')),
+        if (on) ...[
+          const SizedBox(height: 6),
+          // 待ち受けの URL と合言葉。 ここが唯一の入手手段。
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.04),
+              borderRadius: BorderRadius.circular(7),
+              border: Border.all(color: Colors.white12),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SelectableText(
+                  plain.isEmpty ? provider.t('mcp.extStarting') : plain,
+                  style: const TextStyle(
+                      color: Colors.white70,
+                      fontSize: 11,
+                      fontFamily: 'Consolas'),
+                ),
+                const SizedBox(height: 4),
+                SelectableText(
+                  token.isEmpty ? '-' : token,
+                  style: const TextStyle(
+                      color: Color(0xFF9CCC65),
+                      fontSize: 11,
+                      fontFamily: 'Consolas'),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 6),
+          Wrap(spacing: 6, runSpacing: 6, children: [
+            // Claude Code / Claude Desktop にそのまま貼る形で渡す。
+            OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                foregroundColor: const Color(0xFF4FC3F7),
+                side: const BorderSide(color: Colors.white24),
+                visualDensity: VisualDensity.compact,
+              ),
+              icon: const Icon(Icons.terminal_rounded, size: 15),
+              label: Text(provider.t('mcp.extCopyCmd'),
+                  style: const TextStyle(fontSize: 11)),
+              onPressed: plain.isEmpty
+                  ? null
+                  : () {
+                      unawaited(Clipboard.setData(ClipboardData(
+                          text: 'claude mcp add --transport http hisator '
+                              '"$plain" --header '
+                              '"Authorization: Bearer $token"')));
+                      showTopToast(context, provider.t('md.copied'),
+                          const Color(0xFF43B97F));
+                    },
+            ),
+            OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                foregroundColor: const Color(0xFF9CCC65),
+                side: const BorderSide(color: Colors.white24),
+                visualDensity: VisualDensity.compact,
+              ),
+              icon: const Icon(Icons.data_object_rounded, size: 15),
+              label: Text(provider.t('mcp.extCopyJson'),
+                  style: const TextStyle(fontSize: 11)),
+              onPressed: plain.isEmpty
+                  ? null
+                  : () {
+                      final cfg = StringBuffer()
+                        ..writeln('{')
+                        ..writeln('  "mcpServers": {')
+                        ..writeln('    "hisator": {')
+                        ..writeln('      "command": "npx",')
+                        ..writeln('      "args": [')
+                        ..writeln('        "-y", "mcp-remote",')
+                        ..writeln('        "$plain",')
+                        ..writeln('        "--allow-http",')
+                        ..writeln('        "--transport", "http-only",')
+                        ..writeln('        "--header",')
+                        ..writeln('        "Authorization: Bearer $token"')
+                        ..writeln('      ]')
+                        ..writeln('    }')
+                        ..writeln('  }')
+                        ..writeln('}');
+                      unawaited(Clipboard.setData(
+                          ClipboardData(text: cfg.toString())));
+                      showTopToast(context, provider.t('md.copied'),
+                          const Color(0xFF43B97F));
+                    },
+            ),
+            OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.white54,
+                side: const BorderSide(color: Colors.white24),
+                visualDensity: VisualDensity.compact,
+              ),
+              icon: const Icon(Icons.refresh_rounded, size: 15),
+              label: Text(provider.t('mcp.extRegen'),
+                  style: const TextStyle(fontSize: 11)),
+              onPressed: () => unawaited(
+                  provider.regenerateMcpToken().then((_) {
+                if (mounted) setState(() {});
+              })),
+            ),
+          ]),
+          const SizedBox(height: 8),
+          // パソコンの操作まで許すか (既定は許さない)。
+          Row(children: [
+            Expanded(
+              child: Text(provider.t('mcp.extPowerful'),
+                  style: const TextStyle(
+                      color: Colors.white60, fontSize: 11, height: 1.5)),
+            ),
+            Switch(
+              value: provider.mcpAllowPowerfulTools,
+              activeThumbColor: const Color(0xFFFFB347),
+              onChanged: (v) => unawaited(
+                  provider.setMcpAllowPowerfulTools(v).then((_) {
+                if (mounted) setState(() {});
+              })),
+            ),
+          ]),
+          line(provider.t('mcp.extWarn'), color: const Color(0xFFFFB347)),
+        ],
+      ],
+    );
+  }
+
   /// 「できること」 の専用欄。 高さは Expanded で決まり、 中はスクロール
   /// するので、 文章がどれだけ長くてもはみ出さない。
   Widget _buildCapabilityPanel(MindMapProvider provider) {
@@ -265698,6 +266304,14 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                           : provider.t('mcp.canDoBody'),
                       style: const TextStyle(
                           color: Colors.white70, fontSize: 11.5, height: 1.7)),
+                  if (!kIsWeb &&
+                      (Platform.isWindows ||
+                          Platform.isMacOS ||
+                          Platform.isLinux) &&
+                      !kStoreBuild) ...[
+                    const Divider(height: 20, color: Colors.white12),
+                    _buildExternalMcpSection(provider),
+                  ],
                 ]),
           ),
         ),
@@ -265747,6 +266361,17 @@ class _McpChatDialogState extends State<_McpChatDialog> {
       if (widget.initialTask == 'newPage' && mounted) {
         setState(() => _msgs
             .add(_McpChatMsg('ai', provider.t('drawer.aiNewPageGreeting'))));
+      }
+      // ── まだ何も話していない時は、 説明欄を開いておく
+      //    (= ユーザー要望: 説明欄の項目は最初から開かれた状態に) ──
+      //    会話が残っている人の邪魔はしない。 説明を出している間は
+      //    入力欄が隠れるので、 途中の会話を塞いでしまわないようにする。
+      //    閉じるのは見出しの × か、 ヘッダーの ⓘ。
+      if (mounted &&
+          _msgs.isEmpty &&
+          widget.initialTask == null &&
+          !_showCapabilityPanel) {
+        setState(() => _showCapabilityPanel = true);
       }
       _scrollToEnd();
     });
@@ -266031,13 +266656,12 @@ class _McpChatDialogState extends State<_McpChatDialog> {
   }
 
   /// 会話の一覧を出して切り替える (= ユーザー要望: セッションを分けて保存)。
-  Future<void> _showSessionPicker() async {
+  Future<void> _showSessionPicker([BuildContext? anchor]) async {
     final list = provider.mcpSessions.reversed.toList();
-    await showDialog<void>(
-      context: context,
-      // ★ 浮遊窓の中では窓自身の Navigator に出す。 既定 (根っこ) のままだと
-      //   窓の裏 = アプリ本体側に積まれて隠れる (= ユーザー報告)。
-      useRootNavigator: !widget.floatingPanel,
+    await _showChatDialogNear<void>(
+      anchor,
+      width: 420,
+      height: 460,
       builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
         // ── Ctrl / Shift でまとめて選んで消す (= ユーザー要望) ──
         //    Ctrl+クリック = 1 件ずつ足し引き、 Shift+クリック = 直前に触った
@@ -266104,7 +266728,9 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                   final ids = selecting
                       ? _sessionSel.toList()
                       : [for (final e in list) '${e['id']}'];
-                  if (!await _confirmDeleteSessions(ids.length)) return;
+                  if (!await _confirmDeleteSessions(ids.length, dctx)) {
+                    return;
+                  }
                   await deleteMany(ids);
                 },
               ),
@@ -266209,6 +266835,36 @@ class _McpChatDialogState extends State<_McpChatDialog> {
     });
   }
 
+  /// 押したボタンの近くに出す (= ユーザー要望: 画面中央ではなく
+  /// 会話一覧 / 前提条件のボタンの近くに出て欲しい)。
+  ///
+  /// [anchor] は押したボタン自身の BuildContext (Builder で作る)。
+  /// 無い時や、 既に消えている時は従来どおり中央へ落とす。
+  Future<T?> _showChatDialogNear<T>(
+    BuildContext? anchor, {
+    required WidgetBuilder builder,
+    double width = 420,
+    double height = 460,
+  }) {
+    final near = (anchor != null && anchor.mounted) ? anchor : null;
+    if (near == null) {
+      return showDialog<T>(
+        context: context,
+        // ★ 浮遊窓の中では窓自身の Navigator に出す。 既定 (根っこ) の
+        //   ままだと窓の裏 = アプリ本体側に積まれて隠れる。
+        useRootNavigator: !widget.floatingPanel,
+        builder: builder,
+      );
+    }
+    return showDialogNearWidget<T>(
+      near,
+      width: width,
+      height: height,
+      useRootNavigator: !widget.floatingPanel,
+      builder: builder,
+    );
+  }
+
   /// 会話一覧で選んでいる id (Ctrl / Shift の複数選択)。
   final Set<String> _sessionSel = <String>{};
 
@@ -266216,13 +266872,13 @@ class _McpChatDialogState extends State<_McpChatDialog> {
   int _sessionAnchor = -1;
 
   /// まとめて消す前の確認。
-  Future<bool> _confirmDeleteSessions(int n) async {
+  Future<bool> _confirmDeleteSessions(int n, [BuildContext? anchor]) async {
     if (n <= 0) return false;
-    final ok = await showDialog<bool>(
-      context: context,
-      // ★ 浮遊窓の中では窓自身の Navigator に出す。 既定 (根っこ) のままだと
-      //   窓の裏 = アプリ本体側に積まれて隠れる (= ユーザー報告)。
-      useRootNavigator: !widget.floatingPanel,
+    // 一覧だけ近く・確認だけ中央、 にならないよう揃える。
+    final ok = await _showChatDialogNear<bool>(
+      anchor,
+      width: 360,
+      height: 220,
       builder: (cctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E1E32),
         title: Text(provider.t('mcp.deleteConfirmTitle'),
@@ -266438,19 +267094,20 @@ class _McpChatDialogState extends State<_McpChatDialog> {
 
   /// AI にいつも守らせたい前提を書いておく画面 (= ユーザー要望)。
   /// Markdown のように箇条書きで書ける。 中身はそのまま指示の先頭に付く。
-  Future<void> _editPreamble() async {
+  Future<void> _editPreamble([BuildContext? anchor]) async {
     final ctrl = TextEditingController(text: provider.mcpPreamble);
-    await showDialog<void>(
-      context: context,
-      // ★ 浮遊窓の中では窓自身の Navigator に出す。 既定 (根っこ) のままだと
-      //   窓の裏 = アプリ本体側に積まれて隠れる (= ユーザー報告)。
-      useRootNavigator: !widget.floatingPanel,
+    await _showChatDialogNear<void>(
+      anchor,
+      width: 560,
+      height: 520,
       builder: (dctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E1E32),
         title: Text(provider.t('mcp.preamble'),
             style: const TextStyle(color: Colors.white, fontSize: 15)),
         content: SizedBox(
-          width: 520,
+          // ★ 幅を決め打ちにしない。 浮遊窓 (幅 520) の中で近くに出すと、
+          //   枠側の上限 (496) を内側の 520 が超えて横へはみ出す。
+          width: double.infinity,
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             Align(
               alignment: Alignment.centerLeft,
@@ -266833,6 +267490,24 @@ class _McpChatDialogState extends State<_McpChatDialog> {
               // ── 浮かせるボタンは廃止 (= ユーザー要望: AI アシスタントは
               //    アプリの中でしか使わないのでフローティングは要らない)。
               //    外に出す窓の仕組みは残してあるが、 ここからは開かない。 ──
+              // ── 折り畳む (= ユーザー要望: パネルを畳んでおけるように) ──
+              //    浮かせている窓の中でだけ出す。 分割ペインや全画面では
+              //    畳んでも空いた所が残るだけなので出さない。
+              //    ★ 置き場所は帯の**先頭** (= ユーザー要望: 閉じるボタンの
+              //    隣だと間違えて押してしまうので、 説明ボタンの左へ)。
+              if (context.findAncestorStateOfType<_FloatingPanelWindowState>() !=
+                  null)
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  constraints: _hdrBtnConstraints(context),
+                  padding: _narrowHeader(context)
+                      ? EdgeInsets.zero
+                      : const EdgeInsets.all(8),
+                  tooltip: provider.t('mcp.collapse'),
+                  icon: const Icon(Icons.unfold_less_rounded,
+                      color: Colors.white38, size: 19),
+                  onPressed: () => _setCollapsed(true),
+                ),
               // 説明をもう一度見る (= ユーザー要望: ヘッダーに ⓘ で置く)。
               IconButton(
                 visualDensity: VisualDensity.compact,
@@ -266850,16 +267525,23 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                         : Colors.white38,
                     size: 18),
                 // 説明の欄を開いている時は、 押したら会話へ戻る。
+                // ★ 開く時は**一発で中身まで**出す (= ユーザー要望: 説明欄の
+                //   項目は最初から開かれた状態に)。 以前は ⓘ で短い帯を出して、
+                //   その中の「できること (詳しく)」 をもう一度押させていた。
                 onPressed: () => setState(() {
                   if (_showCapabilityPanel) {
                     _showCapabilityPanel = false;
+                    _showMcpInfo = false;
                   } else {
-                    _showMcpInfo = !_showMcpInfo;
+                    _showCapabilityPanel = true;
                   }
                 }),
               ),
               // 前提条件 (= ユーザー要望: Markdown のように自分で書いて置ける)。
-              IconButton(
+              // ★ Builder で押したボタン自身の context を作る (= ユーザー要望:
+              //   画面中央ではなくボタンの近くに出す)。 帯を掴む板は帯の
+              //   **後ろ**に敷いてあるので、 Builder を挟んでも押下は奪われない。
+              Builder(builder: (bctx) => IconButton(
                 visualDensity: VisualDensity.compact,
                 constraints: _hdrBtnConstraints(context),
                 padding: _narrowHeader(context)
@@ -266871,8 +267553,8 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                         ? Colors.white54
                         : const Color(0xFF80CBC4),
                     size: 19),
-                onPressed: _editPreamble,
-              ),
+                onPressed: () => _editPreamble(bctx),
+              )),
               // 設定 (= ユーザー要望: 順番待ち / 割り込みはここで決める。
               //   処理中の帯には出さない)。
               PopupMenuButton<String>(
@@ -266919,7 +267601,8 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                 ],
               ),
               // 会話の一覧 (= ユーザー要望: セッションを分けて保存)。
-              IconButton(
+              // ★ こちらも押したボタンの近くへ (= ユーザー要望)。
+              Builder(builder: (bctx) => IconButton(
                 visualDensity: VisualDensity.compact,
                 constraints: _hdrBtnConstraints(context),
                 padding: _narrowHeader(context)
@@ -266928,8 +267611,8 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                 tooltip: provider.t('mcp.sessions'),
                 icon: const Icon(Icons.forum_outlined,
                     color: Colors.white54, size: 19),
-                onPressed: _showSessionPicker,
-              ),
+                onPressed: () => _showSessionPicker(bctx),
+              )),
               // 新しい会話を始める。
               IconButton(
                 visualDensity: VisualDensity.compact,
@@ -266965,22 +267648,6 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                   setState(_msgs.clear);
                 },
               ),
-              // ── 折り畳む (= ユーザー要望: パネルを畳んでおけるように) ──
-              //    浮かせている窓の中でだけ出す。 分割ペインや全画面では
-              //    畳んでも空いた所が残るだけなので出さない。
-              if (context.findAncestorStateOfType<_FloatingPanelWindowState>() !=
-                  null)
-                IconButton(
-                  visualDensity: VisualDensity.compact,
-                  constraints: _hdrBtnConstraints(context),
-                  padding: _narrowHeader(context)
-                      ? EdgeInsets.zero
-                      : const EdgeInsets.all(8),
-                  tooltip: provider.t('mcp.collapse'),
-                  icon: const Icon(Icons.unfold_less_rounded,
-                      color: Colors.white38, size: 19),
-                  onPressed: () => _setCollapsed(true),
-                ),
               IconButton(
                 visualDensity: VisualDensity.compact,
                 constraints: _hdrBtnConstraints(context),

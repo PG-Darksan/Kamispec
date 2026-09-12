@@ -38,6 +38,45 @@ import 'dart:typed_data';
 import 'package:ffi/ffi.dart' as pkgffi;
 import 'package:win32_registry/win32_registry.dart';
 
+// ── Windows の見た目 (明るい / 暗い) ─────────────────────────────────
+//   HKCU\...\Themes\Personalize の 2 つの値で決まる。
+//   1 = 明るい / 0 = 暗い。 書いた後は「設定が変わった」 と放送して、
+//   起動中のアプリにも反映させる。
+const String _kPersonalizeKey =
+    r'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize';
+const String _kAppsUseLightTheme = 'AppsUseLightTheme';
+const String _kSystemUsesLightTheme = 'SystemUsesLightTheme';
+const int _hwndBroadcast = 0xFFFF;
+const int _wmSettingChange = 0x001A;
+const int _smtoAbortIfHung = 0x0002;
+
+typedef _SendMsgTimeoutNative = ffi.IntPtr Function(
+    ffi.IntPtr hWnd,
+    ffi.Uint32 msg,
+    ffi.IntPtr wParam,
+    ffi.Pointer<pkgffi.Utf16> lParam,
+    ffi.Uint32 flags,
+    ffi.Uint32 timeout,
+    ffi.Pointer<ffi.IntPtr> result);
+typedef _SendMsgTimeoutDart = int Function(
+    int hWnd,
+    int msg,
+    int wParam,
+    ffi.Pointer<pkgffi.Utf16> lParam,
+    int flags,
+    int timeout,
+    ffi.Pointer<ffi.IntPtr> result);
+
+/// Windows の見た目 (明るい / 暗い) の今の状態。
+class PcThemeState {
+  /// アプリの見た目が暗いか。
+  final bool appsDark;
+
+  /// タスクバー / スタートの見た目が暗いか。
+  final bool systemDark;
+  const PcThemeState({required this.appsDark, required this.systemDark});
+}
+
 // ── SystemParametersInfo の種別 ──────────────────────────────────────
 const int _spiGetMouse = 0x0003;
 const int _spiSetMouse = 0x0004;
@@ -284,6 +323,76 @@ class PcSettings {
   static _SpiDart? _spiFn;
   static _SpiDart get _spi => _spiFn ??=
       _user32.lookupFunction<_SpiNative, _SpiDart>('SystemParametersInfoW');
+
+  // ── Windows の見た目 (明るい / 暗い) ───────────────────────────────
+  //
+  // ★ = ユーザー要望「PC 自体のダークモードとの切り替えもアプリの
+  //   ディスプレイ設定でできるように」。 Windows の「設定 > 個人用設定 >
+  //   色」 と同じ所 (レジストリ) を書く。 外の道具は使わない。
+
+  static _SendMsgTimeoutDart? _sendMsgFn;
+  static _SendMsgTimeoutDart get _sendMsg =>
+      _sendMsgFn ??= _user32.lookupFunction<_SendMsgTimeoutNative,
+          _SendMsgTimeoutDart>('SendMessageTimeoutW');
+
+  /// 今の見た目を読む。 値が無い時は Windows の既定 = 明るい。
+  static PcThemeState readTheme() {
+    if (!isSupported) {
+      return const PcThemeState(appsDark: false, systemDark: false);
+    }
+    var apps = false;
+    var sys = false;
+    try {
+      final key = Registry.openPath(RegistryHive.currentUser,
+          path: _kPersonalizeKey,
+          desiredAccessRights: AccessRights.readOnly);
+      apps = (key.getValueAsInt(_kAppsUseLightTheme) ?? 1) == 0;
+      sys = (key.getValueAsInt(_kSystemUsesLightTheme) ?? 1) == 0;
+      key.close();
+    } catch (_) {}
+    return PcThemeState(appsDark: apps, systemDark: sys);
+  }
+
+  /// 見た目を変える。 [appsDark] = アプリ、 [systemDark] = タスクバー /
+  /// スタート。 null の所は今のまま。 戻り値 true = 書けた。
+  static bool setTheme({bool? appsDark, bool? systemDark}) {
+    if (!isSupported) return false;
+    if (appsDark == null && systemDark == null) return false;
+    try {
+      final key = Registry.openPath(RegistryHive.currentUser,
+          path: _kPersonalizeKey,
+          desiredAccessRights: AccessRights.allAccess);
+      if (appsDark != null) {
+        key.createValue(
+            RegistryValue.int32(_kAppsUseLightTheme, appsDark ? 0 : 1));
+      }
+      if (systemDark != null) {
+        key.createValue(
+            RegistryValue.int32(_kSystemUsesLightTheme, systemDark ? 0 : 1));
+      }
+      key.close();
+    } catch (_) {
+      return false;
+    }
+    // 起動中のアプリにも今すぐ効かせる (無いと次に開いた窓からになる)。
+    _broadcastImmersiveColorSet();
+    return true;
+  }
+
+  /// 「色の設定が変わった」 と全部の窓へ知らせる。
+  static void _broadcastImmersiveColorSet() {
+    final lp = 'ImmersiveColorSet'.toNativeUtf16(allocator: pkgffi.calloc);
+    final res = pkgffi.calloc<ffi.IntPtr>();
+    try {
+      _sendMsg(_hwndBroadcast, _wmSettingChange, 0, lp, _smtoAbortIfHung,
+          200, res);
+    } catch (_) {
+      // 知らせられなくても、 レジストリには書けているので次回から効く。
+    } finally {
+      pkgffi.calloc.free(lp);
+      pkgffi.calloc.free(res);
+    }
+  }
 
   // ── マウス ────────────────────────────────────────────────────────
 

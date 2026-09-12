@@ -25,6 +25,35 @@ import '../utils/build_flags.dart';
 class McpServer {
   McpServer(this._provider);
 
+  /// 外部のアプリから HTTP で呼ばれた時に、 危ない道具を伸ばすか
+  /// (= ユーザーが「パソコンの操作も許す」 を選んだ時だけ true)。
+  ///
+  /// アプリ内の AI チャットは HTTP を通らず直接 [callTool] を呼ぶので、
+  /// この限定の外側にいる (今までどおり全部使える)。
+  bool allowPowerfulTools = false;
+
+  /// 外部からは伸ばさない道具 (危険度順)。
+  ///
+  /// ・ run_automation … パソコンそのものを動かす。
+  /// ・ read_device_file / pick_user_file … 端末のファイルを読む。
+  /// ・ create_document_file … ディスクへ書き出す (時に上書きする)。
+  /// ・ run_app_command … アプリのボタンを任意に押せる。
+  static const Set<String> kPowerfulTools = {
+    'run_automation',
+    'read_device_file',
+    'pick_user_file',
+    'create_document_file',
+    'run_app_command',
+    // ★ 開いているファイルの中身を全文返したり上書きする道具もこちら側。
+    //   (= 点検で発見: 「ファイルの読み書きは許さない」 と言いながら
+    //   この 2 つが抜け道になっていた)。
+    'text_file_read',
+    'text_file_edit',
+    'text_file_status',
+    // ★ 前払いの AI クレジットを使う = お金が減る。 外部からは既定で出さない。
+    'generate_page_background',
+  };
+
   final MindMapProvider _provider;
   HttpServer? _http;
 
@@ -50,7 +79,8 @@ class McpServer {
             ? 'http://127.0.0.1:$port/mcp'
             : 'http://127.0.0.1:$port/mcp?token=$token';
         _http!.listen(_handle, onError: (_) {});
-        debugLog('MCP サーバー起動: $url');
+        // ★ 合言葉はログへ出さない (= 点検: ?token= 付きで印字していた)。
+        debugLog('MCP サーバー起動: http://127.0.0.1:$port/mcp');
         return url;
       } on SocketException {
         continue; // ポートが塞がっていたら次を試す
@@ -71,7 +101,10 @@ class McpServer {
   /// URL の ?token=xxx でも受け付ける。
   bool _authorized(HttpRequest req) {
     final t = _token;
-    if (t == null || t.isEmpty) return true; // 合言葉なし運用
+    // ★ 合言葉無しの待ち受けは認めない。
+    //   127.0.0.1 だから安全、 とは言えない (同じ PC で動く別の
+    //   プログラムは誰でも叩ける)。 合言葉が無いなら入れない。
+    if (t == null || t.isEmpty) return false;
     final q = req.uri.queryParameters['token'];
     if (q != null && q == t) return true;
     final h = req.headers.value(HttpHeaders.authorizationHeader) ?? '';
@@ -88,6 +121,36 @@ class McpServer {
     try {
       if (req.uri.path != '/mcp') {
         req.response.statusCode = HttpStatus.notFound;
+        await req.response.close();
+        return;
+      }
+      // ── ブラウザ経由のなりすましを塞ぐ ──
+      //
+      //   ・ Host 検査: 攻撃者のページが自分のドメインを 127.0.0.1 へ
+      //     向け直す (DNS リバインディング) と、 同じ出所扱いになって
+      //     応答まで読まれる。 本物のクライアントは必ず 127.0.0.1 を名乗る。
+      //   ・ Origin 検査: 正規の MCP クライアントは Origin を送らない。
+      //     付いている = ブラウザからの要求なので断る。
+      //   ・ CORS の許可ヘッダは**付けない**。 OPTIONS も受けない。
+      // ★ dart:io の headers.host はポートを切り離して返す (ポートは
+      //   headers.port)。 以前は startsWith('127.0.0.1:') も見ていたが、
+      //   それは絶対に成立しない死にコードだった (= 点検で判明)。
+      final host = (req.headers.host ?? '').toLowerCase();
+      if (!const {'127.0.0.1', 'localhost', '::1', '[::1]'}.contains(host)) {
+        req.response.statusCode = HttpStatus.forbidden;
+        req.response.write('bad host');
+        await req.response.close();
+        return;
+      }
+      // Origin が付いている = ブラウザからの要求。 自分自身を名乗る
+      //   場合だけ通す (Electron の画面から叩く実装もあるため)。
+      final origin = (req.headers.value('origin') ?? '').toLowerCase();
+      if (origin.isNotEmpty &&
+          origin != 'null' &&
+          !origin.startsWith('http://127.0.0.1') &&
+          !origin.startsWith('http://localhost')) {
+        req.response.statusCode = HttpStatus.forbidden;
+        req.response.write('browser origin not allowed');
         await req.response.close();
         return;
       }
@@ -176,10 +239,34 @@ class McpServer {
       case 'ping':
         return {};
       case 'tools/list':
-        return {'tools': toolDefs};
+        // 外部へは、 許していない道具をそもそも見せない
+        //   (見えると AI が使おうとして失敗し続ける)。
+        return {
+          'tools': allowPowerfulTools
+              ? toolDefs
+              : [
+                  for (final t in toolDefs)
+                    if (!kPowerfulTools.contains(t['name'])) t,
+                ],
+        };
       case 'tools/call':
+        final name = params['name'] as String? ?? '';
+        if (!allowPowerfulTools && kPowerfulTools.contains(name)) {
+          return {
+            'content': [
+              {
+                'type': 'text',
+                'text': 'This tool is turned off for external apps. '
+                    'The user can allow it in the app '
+                    '(AI assistant → external access → '
+                    '"also allow operating the PC and files").',
+              }
+            ],
+            'isError': true,
+          };
+        }
         return callTool(
-          params['name'] as String? ?? '',
+          name,
           (params['arguments'] as Map?)?.cast<String, dynamic>() ?? const {},
         );
       default:

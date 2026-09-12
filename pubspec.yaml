@@ -5,7 +5,7 @@ description: >-
 publish_to: 'none'
 # ビルド番号 (b205 …) を正として揃える。 msix_version も同じ番号にする
 #   (= ストア用は 4 桁・末尾 0)。 リリースのたびに両方を上げること。
-version: 1.0.0+365
+version: 1.0.0+366
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -25,6 +25,10 @@ dependencies:
 
   provider: ^6.1.1
   shared_preferences: ^2.2.2
+  # Windows 用の「控えを持たない」 設定ストアを自分で差し替えるため
+  # (lib/services/win_fresh_prefs.dart)。 標準実装はプロセスごとに 1 回しか
+  # 設定ファイルを読まず、 2 つ目の窓が 1 つ目の書き込みを丸ごと消していた。
+  shared_preferences_platform_interface: ^2.4.1
 
   # WebView (mobile). 6.0.0 ピン止め (6.1.x は Windows 実装を巻き込むため)
   flutter_inappwebview: 6.0.0

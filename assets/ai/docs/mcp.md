@@ -459,13 +459,82 @@ flowchart TD
 
 ## 【9】接続の手順 (利用者向け)
 
+外部のアプリからこのアプリを操作する手順 (デスクトップだけ)。
+
 ```mermaid
 flowchart TD
-    A["⋮メニュー → MCP サーバー を ON"] --> B["「外部アプリからの接続を許可」も ON"]
-    B --> C["表示された URL (合言葉付き) をコピー<br/>例: http://127.0.0.1:8765/mcp?token=xxxxxxxx"]
-    C --> D["claude mcp add --transport http kamispec &quot;URL&quot;"]
-    D --> E["Claude 側から tools/list が飛んでくる"]
-    E --> F["「〇〇についてのマップを作って」と指示<br/>→ tools/call が飛び、アプリの画面がその場で書き換わる"]
+    A["AI アシスタントを開く (✨)"] --> B["ヘッダーの ⓘ を押して説明欄を出す"]
+    B --> C["一番下の「外部のアプリから操作を許す」を入れる"]
+    C --> D["「Claude Code 用をコピー」または「Claude Desktop 用をコピー」"]
+    D --> E["相手側へ貼る"]
+    E --> F["「〇〇についてのマップを作って」と指示<br/>→ アプリの画面がその場で書き換わる"]
 ```
 
-> ※ アプリを再起動すると合言葉が変わるので、URL を登録し直す必要がある。
+### 待ち受け方
+
+- `http://127.0.0.1:8765/mcp` (ポートが塞がっている時は 8774 まで順に探す)
+- 合言葉は `Authorization: Bearer <合言葉>` で送る (URL の `?token=` でも通るが、
+  クエリは履歴やログに残るのでヘッダが推奨)
+- 合言葉は**保存される**ので、 アプリを再起動しても URL は変わらない。
+  漏れた時は「合言葉を作り直す」で失効させる。
+
+### Claude Code
+
+```
+claude mcp add --transport http hisator "http://127.0.0.1:8765/mcp" \
+  --header "Authorization: Bearer <合言葉>"
+```
+
+### Claude Desktop
+
+設定ファイル (`claude_desktop_config.json`) は stdio が基本なので、
+`mcp-remote` で橋渡しする。 画面の「Claude Desktop 用をコピー」が
+この形をそのまま出す。
+
+```json
+{
+  "mcpServers": {
+    "hisator": {
+      "command": "npx",
+      "args": [
+        "-y", "mcp-remote", "http://127.0.0.1:8765/mcp",
+        "--allow-http",
+        "--transport", "http-only",
+        "--header", "Authorization: Bearer <合言葉>"
+      ]
+    }
+  }
+}
+```
+
+### ChatGPT はそのままでは繋がらない
+
+ChatGPT (web / デスクトップ) のコネクタは **OpenAI 側のサーバーが
+取りに来る**仕組みなので、 この PC の 127.0.0.1 には届かない。
+繋ぐには公開の HTTPS URL (トンネル) が要る = **本当に外へ晓す**ことに
+なるので推奨しない。 どうしても使うなら、 コマンド行の Codex CLI なら
+stdio の MCP を設定できるので、 上の `mcp-remote` 経由で同じ形になる。
+
+### 外部からは伸ばさない道具
+
+既定では次の 5 つを `tools/list` に出さない (呼んでも断る)。
+画面の「パソコンの操作と端末のファイルの読み書きも許す」を入れた時だけ出る。
+
+| 道具 | 何が出来てしまうか |
+|---|---|
+| `run_automation` | PC そのものを操作 (ブラウザを起動して打つ等) |
+| `read_device_file` | 端末の任意のファイルを読む |
+| `pick_user_file` | ファイル選択を開かせる |
+| `create_document_file` | ディスクへ書き出す (時に上書き) |
+| `run_app_command` | アプリのボタンを任意に押せる |
+
+### 安全のための検査
+
+- `Host` が 127.0.0.1 / localhost 以外なら 403 (DNS リバインディング対策)
+- `Origin` が付いていたら 403 (ブラウザからの要求 = なりすましの恐れ)
+- CORS の許可ヘッダは返さない。 `OPTIONS` も受けない
+- 合言葉が無い待ち受けは認めない (昇格を忘れて無防備にならないよう)
+
+**残る危険**: 外部の AI は、 自分が読んだ文章 (Web ページ・資料) に
+仕込まれた指示に従ってしまうことがある (プロンプトインジェクション)。
+これは仕組みで消しきれないので、 **使わない時は切っておく**のが一番安全。
