@@ -7569,8 +7569,12 @@ class MindMapProvider extends ChangeNotifier {
   }
 
   /// AIプロンプトに付与する言語指示（先頭に挿入）
-  String languageInstructionForAi() {
-    final name = _languageNameForAi(_appLanguage);
+  String languageInstructionForAi() =>
+      languageInstructionForCode(_appLanguage);
+
+  /// 指定した言葉で答えてもらうための指示文 (= CLI の言葉を選ぶ時にも使う)。
+  static String languageInstructionForCode(String code) {
+    final name = _languageNameForAi(code);
     return 'IMPORTANT: Respond ONLY in $name. All output text must be in $name.\n\n';
   }
 
@@ -48316,6 +48320,305 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'По умолчанию',
     },
     // ── マップ一覧ドロワー ──
+    'folder.expandHere': {
+      'ja': 'ここで開く / 閉じる',
+      'en': 'Expand / collapse here',
+      'zh': '在此展开 / 收起',
+      'ko': '여기서 펼치기 / 접기',
+      'es': 'Expandir / contraer aquí',
+      'fr': 'Développer / réduire ici',
+      'de': 'Hier aus- / einklappen',
+      'pt': 'Expandir / recolher aqui',
+      'ru': 'Развернуть / свернуть здесь',
+    },
+    // ★ ディスクと連動しているフォルダー (= 「フォルダーを開く」 で
+    //   取り込んだ本物のフォルダー) を一覧から外す時の言葉。
+    //   「削除」 と書くとディスクのファイルまで消えると誤解されるため
+    //   (= ユーザー要望: 誤ってフォルダーごと消せないように)。
+    'folder.unlink': {
+      'ja': '一覧から外す',
+      'en': 'Remove from list',
+      'zh': '从列表中移除',
+      'ko': '목록에서 제거',
+      'es': 'Quitar de la lista',
+      'fr': 'Retirer de la liste',
+      'de': 'Aus der Liste entfernen',
+      'pt': 'Remover da lista',
+      'ru': 'Убрать из списка',
+    },
+    'folder.unlinkTitle': {
+      'ja': 'このフォルダーを一覧から外しますか?',
+      'en': 'Remove this folder from the list?',
+      'zh': '要将此文件夹从列表中移除吗？',
+      'ko': '이 폴더를 목록에서 제거할까요?',
+      'es': '¿Quitar esta carpeta de la lista?',
+      'fr': 'Retirer ce dossier de la liste ?',
+      'de': 'Diesen Ordner aus der Liste entfernen?',
+      'pt': 'Remover esta pasta da lista?',
+      'ru': 'Убрать эту папку из списка?',
+    },
+    'folder.unlinkBody': {
+      'ja': '「{name}」 は次の場所と連動しています。\n{path}\n\n一覧から外すだけで、 パソコンの中のファイルは 1 つも削除されません。',
+      'en': '"{name}" is linked to this location:\n{path}\n\nThis only removes it from the list. No file on your computer is deleted.',
+      'zh': '“{name}” 与以下位置联动：\n{path}\n\n这只会将其从列表中移除，不会删除电脑上的任何文件。',
+      'ko': '"{name}" 은(는) 다음 위치와 연동되어 있습니다.\n{path}\n\n목록에서 제거할 뿐이며, 컴퓨터의 파일은 하나도 삭제되지 않습니다.',
+      'es': '"{name}" está vinculada a esta ubicación:\n{path}\n\nSolo se quita de la lista. No se elimina ningún archivo de tu equipo.',
+      'fr': '« {name} » est liée à cet emplacement :\n{path}\n\nCela le retire seulement de la liste. Aucun fichier de votre ordinateur n\'est supprimé.',
+      'de': '„{name}“ ist mit diesem Ort verknüpft:\n{path}\n\nEs wird nur aus der Liste entfernt. Keine Datei auf dem Computer wird gelöscht.',
+      'pt': '"{name}" está vinculada a este local:\n{path}\n\nIsso apenas a remove da lista. Nenhum arquivo do computador é excluído.',
+      'ru': '«{name}» связана с этим расположением:\n{path}\n\nПапка лишь убирается из списка. Ни один файл на компьютере не удаляется.',
+    },
+    'folder.unlinkAck': {
+      'ja': '上の説明を読みました',
+      'en': 'I have read the note above',
+      'zh': '我已阅读上述说明',
+      'ko': '위 설명을 읽었습니다',
+      'es': 'He leído la nota anterior',
+      'fr': 'J\'ai lu la note ci-dessus',
+      'de': 'Ich habe den Hinweis gelesen',
+      'pt': 'Li o aviso acima',
+      'ru': 'Я прочитал примечание выше',
+    },
+    'folder.unlinkAlsoPages': {
+      'ja': '中のページ {count} 枚も一緒に削除する',
+      'en': 'Also delete the {count} page(s) inside',
+      'zh': '同时删除其中的 {count} 个页面',
+      'ko': '안의 페이지 {count}개도 함께 삭제',
+      'es': 'Eliminar también las {count} páginas de dentro',
+      'fr': 'Supprimer aussi les {count} pages à l\'intérieur',
+      'de': 'Auch die {count} Seiten darin löschen',
+      'pt': 'Excluir também as {count} páginas dentro',
+      'ru': 'Также удалить {count} страниц внутри',
+    },
+    'folder.unlinkKeepNote': {
+      'ja': '中のページ {count} 枚は一覧の直下へ移ります。',
+      'en': 'The {count} page(s) inside move to the top level of the list.',
+      'zh': '其中的 {count} 个页面将移到列表的最上层。',
+      'ko': '안의 페이지 {count}개는 목록 최상위로 이동합니다.',
+      'es': 'Las {count} páginas de dentro pasan al nivel superior de la lista.',
+      'fr': 'Les {count} pages à l\'intérieur passent au niveau supérieur de la liste.',
+      'de': 'Die {count} Seiten darin wandern auf die oberste Ebene der Liste.',
+      'pt': 'As {count} páginas dentro vão para o nível superior da lista.',
+      'ru': '{count} страниц внутри переместятся на верхний уровень списка.',
+    },
+    'drawer.skippedLinkedFolders': {
+      'ja': '連動フォルダー {n} 個は、 誤って消さないよう対象から外しました。 1 つずつ 「一覧から外す」 で操作してください。',
+      'en': '{n} linked folder(s) were left out to prevent accidents. Remove them one at a time with "Remove from list".',
+      'zh': '为防止误操作，已排除 {n} 个联动文件夹。请使用“从列表中移除”逐个处理。',
+      'ko': '실수를 막기 위해 연동 폴더 {n}개는 제외했습니다. "목록에서 제거"로 하나씩 처리하세요.',
+      'es': 'Se excluyeron {n} carpetas vinculadas para evitar accidentes. Quítalas de una en una con "Quitar de la lista".',
+      'fr': '{n} dossier(s) lié(s) ont été exclus par sécurité. Retirez-les un par un avec « Retirer de la liste ».',
+      'de': '{n} verknüpfte Ordner wurden zur Sicherheit ausgelassen. Entferne sie einzeln über „Aus der Liste entfernen“.',
+      'pt': '{n} pasta(s) vinculada(s) foram deixadas de fora por segurança. Remova uma a uma com "Remover da lista".',
+      'ru': '{n} связанных папок исключено во избежание ошибок. Убирайте их по одной через «Убрать из списка».',
+    },
+    'drawer.newFileHere': {
+      'ja': 'ここに新しいファイルを作る',
+      'en': 'New file here',
+      'zh': '在此新建文件',
+      'ko': '여기에 새 파일 만들기',
+      'es': 'Nuevo archivo aquí',
+      'fr': 'Nouveau fichier ici',
+      'de': 'Neue Datei hier',
+      'pt': 'Novo arquivo aqui',
+      'ru': 'Создать здесь файл',
+    },
+    'drawer.newPageHere': {
+      'ja': 'ここに新しいページを作る',
+      'en': 'New page here',
+      'zh': '在此新建页面',
+      'ko': '여기에 새 페이지 만들기',
+      'es': 'Nueva página aquí',
+      'fr': 'Nouvelle page ici',
+      'de': 'Neue Seite hier',
+      'pt': 'Nova página aqui',
+      'ru': 'Создать здесь страницу',
+    },
+    'drawer.refreshList': {
+      'ja': '表示を更新',
+      'en': 'Refresh',
+      'zh': '刷新显示',
+      'ko': '표시 새로 고침',
+      'es': 'Actualizar',
+      'fr': 'Actualiser',
+      'de': 'Aktualisieren',
+      'pt': 'Atualizar',
+      'ru': 'Обновить',
+    },
+    'file.cannotOpen': {
+      'ja': 'このファイルを開けるアプリが見つかりませんでした',
+      'en': 'No app was found to open this file',
+      'zh': '找不到可以打开此文件的应用',
+      'ko': '이 파일을 열 수 있는 앱을 찾지 못했습니다',
+      'es': 'No se encontró una app para abrir este archivo',
+      'fr': 'Aucune application trouvée pour ouvrir ce fichier',
+      'de': 'Keine App zum Öffnen dieser Datei gefunden',
+      'pt': 'Nenhum app encontrado para abrir este arquivo',
+      'ru': 'Не найдено приложение для открытия файла',
+    },
+    // ★ 一覧に本物のフォルダー (デスクトップなど) を出せるようにしたので、
+    //   押しただけでプログラムが動き出さないよう一度たずねる。
+    'file.runConfirmTitle': {
+      'ja': 'プログラムを開こうとしています',
+      'en': 'This is a program',
+      'zh': '这是一个程序',
+      'ko': '이것은 프로그램입니다',
+      'es': 'Esto es un programa',
+      'fr': 'Ceci est un programme',
+      'de': 'Das ist ein Programm',
+      'pt': 'Isto é um programa',
+      'ru': 'Это программа',
+    },
+    'file.runConfirmBody': {
+      'ja': '「{name}」 はプログラムです。 開くとパソコンで実行されます。 心当たりのあるファイルですか?',
+      'en': '"{name}" is a program. Opening it will run it on your computer. Are you sure?',
+      'zh': '“{name}” 是一个程序。打开它会在您的电脑上运行。确定吗？',
+      'ko': '"{name}" 은(는) 프로그램입니다. 열면 컴퓨터에서 실행됩니다. 계속할까요?',
+      'es': '"{name}" es un programa. Al abrirlo se ejecutará en tu equipo. ¿Seguro?',
+      'fr': '« {name} » est un programme. L\'ouvrir l\'exécutera sur votre ordinateur. Continuer ?',
+      'de': '„{name}“ ist ein Programm. Beim Öffnen wird es auf dem Computer ausgeführt. Fortfahren?',
+      'pt': '"{name}" é um programa. Abri-lo irá executá-lo no seu computador. Tem certeza?',
+      'ru': '«{name}» — это программа. При открытии она будет запущена на компьютере. Продолжить?',
+    },
+    'file.runConfirmOk': {
+      'ja': 'このまま開く',
+      'en': 'Open anyway',
+      'zh': '仍要打开',
+      'ko': '그대로 열기',
+      'es': 'Abrir de todos modos',
+      'fr': 'Ouvrir quand même',
+      'de': 'Trotzdem öffnen',
+      'pt': 'Abrir mesmo assim',
+      'ru': 'Всё равно открыть',
+    },
+    'disk.openWithOs': {
+      'ja': '別のアプリで開く',
+      'en': 'Open with another app',
+      'zh': '用其他应用打开',
+      'ko': '다른 앱으로 열기',
+      'es': 'Abrir con otra app',
+      'fr': 'Ouvrir avec une autre application',
+      'de': 'Mit anderer App öffnen',
+      'pt': 'Abrir com outro app',
+      'ru': 'Открыть в другом приложении',
+    },
+    'drawer.openedFolder': {
+      'ja': '「{name}」 を開きました',
+      'en': 'Opened "{name}"',
+      'zh': '已打开 “{name}”',
+      'ko': '"{name}" 을(를) 열었습니다',
+      'es': 'Se abrió "{name}"',
+      'fr': '« {name} » ouvert',
+      'de': '„{name}“ geöffnet',
+      'pt': '"{name}" aberta',
+      'ru': 'Открыта «{name}»',
+    },
+    'drawer.openFolderSwitchHint': {
+      'ja': '開けるのは 1 つだけ。 今のフォルダーと入れ替わります',
+      'en': 'Only one at a time — this replaces the open folder',
+      'zh': '一次只能打开一个，将替换当前文件夹',
+      'ko': '한 번에 하나만 — 지금 연 폴더와 바뀝니다',
+      'es': 'Solo una a la vez: reemplaza la carpeta abierta',
+      'fr': 'Une seule à la fois — remplace le dossier ouvert',
+      'de': 'Immer nur einer — ersetzt den offenen Ordner',
+      'pt': 'Apenas uma por vez — substitui a pasta aberta',
+      'ru': 'Только одна за раз — заменит открытую папку',
+    },
+    // ★ いつも何かのフォルダーを開いた状態で使う (= ユーザー要望:
+    //   「閉じる」 は要らない)。 見出しから開く先を選び直す。
+    'drawer.switchFolder': {
+      'ja': '開くフォルダーを選ぶ',
+      'en': 'Switch folder',
+      'zh': '切换文件夹',
+      'ko': '폴더 전환',
+      'es': 'Cambiar de carpeta',
+      'fr': 'Changer de dossier',
+      'de': 'Ordner wechseln',
+      'pt': 'Trocar de pasta',
+      'ru': 'Сменить папку',
+    },
+    'drawer.pagesOutsideFolders': {
+      'ja': 'フォルダーの外のページ',
+      'en': 'Pages outside folders',
+      'zh': '文件夹外的页面',
+      'ko': '폴더 밖의 페이지',
+      'es': 'Páginas fuera de carpetas',
+      'fr': 'Pages hors dossiers',
+      'de': 'Seiten außerhalb von Ordnern',
+      'pt': 'Páginas fora de pastas',
+      'ru': 'Страницы вне папок',
+    },
+    // ★ 開くフォルダーの選び直し。 一覧は「最近開いた項目」 で、
+    //   要らない物は × でこの一覧から外せる (フォルダー自体は消さない)。
+    'drawer.recentFolders': {
+      'ja': '最近開いた項目',
+      'en': 'Recently opened',
+      'zh': '最近打开',
+      'ko': '최근에 연 항목',
+      'es': 'Abiertos recientemente',
+      'fr': 'Ouverts récemment',
+      'de': 'Zuletzt geöffnet',
+      'pt': 'Abertos recentemente',
+      'ru': 'Недавно открытые',
+    },
+    'drawer.removeFromRecent': {
+      'ja': 'この一覧から外す (フォルダーは消えません)',
+      'en': 'Remove from this list (the folder is kept)',
+      'zh': '从此列表中移除（不会删除文件夹）',
+      'ko': '이 목록에서 제거 (폴더는 삭제되지 않음)',
+      'es': 'Quitar de esta lista (la carpeta se conserva)',
+      'fr': 'Retirer de cette liste (le dossier est conservé)',
+      'de': 'Aus dieser Liste entfernen (Ordner bleibt erhalten)',
+      'pt': 'Remover desta lista (a pasta é mantida)',
+      'ru': 'Убрать из списка (папка останется)',
+    },
+    // ★ 端末は閉じても裏で動き続けるので、 終わった事を知らせる
+    //   (= ユーザー要望)。
+    'cli.doneOk': {
+      'ja': '「{name}」 が終わりました',
+      'en': '"{name}" finished',
+      'zh': '“{name}” 已完成',
+      'ko': '"{name}" 이(가) 끝났습니다',
+      'es': '"{name}" ha terminado',
+      'fr': '« {name} » est terminé',
+      'de': '„{name}“ ist fertig',
+      'pt': '"{name}" terminou',
+      'ru': '«{name}» завершено',
+    },
+    'cli.doneNg': {
+      'ja': '「{name}」 が終わりませんでした (コード {code})',
+      'en': '"{name}" did not finish (code {code})',
+      'zh': '“{name}” 未能完成（代码 {code}）',
+      'ko': '"{name}" 이(가) 끝나지 못했습니다 (코드 {code})',
+      'es': '"{name}" no terminó (código {code})',
+      'fr': '« {name} » ne s\'est pas terminé (code {code})',
+      'de': '„{name}“ wurde nicht beendet (Code {code})',
+      'pt': '"{name}" não terminou (código {code})',
+      'ru': '«{name}» не завершено (код {code})',
+    },
+    // ★ CLI が返事をする言葉 (= ユーザー要望: 言語設定を変えられるように)。
+    'cli.langSameAsApp': {
+      'ja': 'アプリと同じ言葉',
+      'en': 'Same as the app',
+      'zh': '与应用相同',
+      'ko': '앱과 동일',
+      'es': 'Igual que la app',
+      'fr': 'Comme l\'application',
+      'de': 'Wie die App',
+      'pt': 'Igual ao app',
+      'ru': 'Как в приложении',
+    },
+    'cli.langSet': {
+      'ja': 'CLI の返事を {name} にしました',
+      'en': 'The CLI will reply in {name}',
+      'zh': 'CLI 将以 {name} 回复',
+      'ko': 'CLI 가 {name} 로 답합니다',
+      'es': 'La CLI responderá en {name}',
+      'fr': 'La CLI répondra en {name}',
+      'de': 'Die CLI antwortet auf {name}',
+      'pt': 'A CLI responderá em {name}',
+      'ru': 'CLI будет отвечать на {name}',
+    },
     'drawer.title': {
       'ja': 'ページ一覧',
       'en': 'Pages',
@@ -49623,6 +49926,575 @@ class MindMapProvider extends ChangeNotifier {
           'txt / md / csv / json / PDF / Word / Excel / PowerPoint に対応しています。',
       'en': 'Could not read text from that file. '
           'Supported: txt / md / csv / json / PDF / Word / Excel / PowerPoint.',
+    },
+    'dataDir.title': {
+      'ja':
+          'データの保存先を決める',
+      'en':
+          'Choose where your data is kept',
+      'zh':
+          '选择数据的保存位置',
+      'ko':
+          '데이터를 보관할 곳 정하기',
+      'es':
+          'Elige dónde se guardan tus datos',
+      'fr':
+          'Choisir où vos données sont conservées',
+      'de':
+          'Speicherort für deine Daten wählen',
+      'pt':
+          'Escolha onde seus dados ficam',
+      'ru':
+          'Выберите, где хранить данные',
+    },
+    'dataDir.body': {
+      'ja':
+          'ここに決めたフォルダーの中へ、ページが自動でファイルになって出てきます。\n書き出しボタンを押さなくても中身が在るので、そのままコピーしたり移したりできます。\n後から設定で変えられます。',
+      'en':
+          'Your pages appear as files inside this folder, on their own.\nNothing to export by hand — just copy or move the files.\nYou can change this later.',
+      'zh':
+          '页面会自动成为文件出现在该文件夹中。\n无需手动导出，直接复制或移动即可。\n稍后可在设置中更改。',
+      'ko':
+          '여기서 정한 폴더 안에 페이지가 자동으로 파일이 되어 나타납니다.\n따로 내보낼 필요 없이 그대로 복사하거나 옮길 수 있습니다.\n나중에 바꿀 수 있습니다.',
+      'es':
+          'Tus páginas aparecen como archivos dentro de esta carpeta, solas.\nNo hay que exportar a mano: copia o mueve los archivos.\nPuedes cambiarlo después.',
+      'fr':
+          'Vos pages apparaissent comme des fichiers dans ce dossier, toutes seules.\nRien à exporter à la main : copiez ou déplacez les fichiers.\nModifiable plus tard.',
+      'de':
+          'Deine Seiten erscheinen von selbst als Dateien in diesem Ordner.\nNichts von Hand exportieren — einfach kopieren oder verschieben.\nSpäter änderbar.',
+      'pt':
+          'Suas páginas aparecem como arquivos dentro desta pasta, sozinhas.\nNada para exportar à mão — é só copiar ou mover.\nDá para mudar depois.',
+      'ru':
+          'Страницы сами появятся файлами в этой папке.\nНичего не нужно выгружать вручную — просто копируйте или переносите.\nМожно изменить позже.',
+    },
+    'dataDir.browse': {
+      'ja':
+          '選ぶ',
+      'en':
+          'Browse',
+      'zh':
+          '浏览',
+      'ko':
+          '찾아보기',
+      'es':
+          'Examinar',
+      'fr':
+          'Parcourir',
+      'de':
+          'Durchsuchen',
+      'pt':
+          'Procurar',
+      'ru':
+          'Обзор',
+    },
+    'dataDir.later': {
+      'ja':
+          '後で決める',
+      'en':
+          'Decide later',
+      'zh':
+          '稍后再定',
+      'ko':
+          '나중에 정하기',
+      'es':
+          'Decidir luego',
+      'fr':
+          'Plus tard',
+      'de':
+          'Später entscheiden',
+      'pt':
+          'Decidir depois',
+      'ru':
+          'Позже',
+    },
+    'dataDir.done': {
+      'ja':
+          '保存先を {path} にしました',
+      'en':
+          'Data will be kept in {path}',
+      'zh':
+          '数据将保存在 {path}',
+      'ko':
+          '데이터를 {path} 에 보관합니다',
+      'es':
+          'Los datos se guardarán en {path}',
+      'fr':
+          'Les données seront conservées dans {path}',
+      'de':
+          'Daten werden in {path} abgelegt',
+      'pt':
+          'Os dados ficarão em {path}',
+      'ru':
+          'Данные будут храниться в {path}',
+    },
+    'dataDir.failed': {
+      'ja':
+          'そのフォルダーを作れませんでした',
+      'en':
+          'Could not create that folder',
+      'zh':
+          '无法创建该文件夹',
+      'ko':
+          '그 폴더를 만들 수 없었습니다',
+      'es':
+          'No se pudo crear esa carpeta',
+      'fr':
+          'Impossible de créer ce dossier',
+      'de':
+          'Dieser Ordner konnte nicht angelegt werden',
+      'pt':
+          'Não foi possível criar essa pasta',
+      'ru':
+          'Не удалось создать эту папку',
+    },
+    'disk.open': {
+      'ja':
+          '開く',
+      'en':
+          'Open',
+      'zh':
+          '打开',
+      'ko':
+          '열기',
+      'es':
+          'Abrir',
+      'fr':
+          'Ouvrir',
+      'de':
+          'Oeffnen',
+      'pt':
+          'Abrir',
+      'ru':
+          'Открыть',
+    },
+    'disk.embed': {
+      'ja':
+          'このページに埋め込む',
+      'en':
+          'Embed in this page',
+      'zh':
+          '嵌入本页',
+      'ko':
+          '이 페이지에 넣기',
+      'es':
+          'Insertar en esta pagina',
+      'fr':
+          'Inserer dans cette page',
+      'de':
+          'In diese Seite einfuegen',
+      'pt':
+          'Inserir nesta pagina',
+      'ru':
+          'Вставить на эту страницу',
+    },
+    'disk.embedded': {
+      'ja':
+          '{name} を埋め込みました',
+      'en':
+          'Embedded {name}',
+      'zh':
+          '已嵌入 {name}',
+      'ko':
+          '{name} 을(를) 넣었습니다',
+      'es':
+          '{name} insertado',
+      'fr':
+          '{name} insere',
+      'de':
+          '{name} eingefuegt',
+      'pt':
+          '{name} inserido',
+      'ru':
+          '{name} вставлен',
+    },
+    'disk.showAppFiles': {
+      'ja':
+          'アプリのファイルも表示',
+      'en':
+          'Show app files too',
+      'zh':
+          '同时显示应用文件',
+      'ko':
+          '앱 파일도 표시',
+      'es':
+          'Mostrar también los archivos de la app',
+      'fr':
+          'Afficher aussi les fichiers de l\'appli',
+      'de':
+          'App-Dateien ebenfalls zeigen',
+      'pt':
+          'Mostrar tambem os arquivos do app',
+      'ru':
+          'Показывать и файлы приложения',
+    },
+    'folder.openInOs': {
+      'ja':
+          'エクスプローラーで開く',
+      'en':
+          'Show in file manager',
+      'zh':
+          '打开文件夹',
+      'ko':
+          '폴더 열기',
+      'es':
+          'Abrir carpeta',
+      'fr':
+          'Ouvrir le dossier',
+      'de':
+          'Ordner öffnen',
+      'pt':
+          'Abrir pasta',
+      'ru':
+          'Открыть папку',
+    },
+    'cli.login': {
+      'ja': 'ログイン',
+      'en': 'Sign in',
+      'zh': '登录',
+      'ko': '로그인',
+      'es': 'Iniciar sesión',
+      'fr': 'Se connecter',
+      'de': 'Anmelden',
+      'pt': 'Entrar',
+      'ru': 'Войти',
+    },
+    'cli.copyInstall': {
+      'ja': 'コマンドをコピー',
+      'en': 'Copy install command',
+      'zh': '复制安装命令',
+      'ko': '설치 명령 복사',
+      'es': 'Copiar comando de instalación',
+      'fr': 'Copier la commande',
+      'de': 'Installationsbefehl kopieren',
+      'pt': 'Copiar comando',
+      'ru': 'Скопировать команду',
+    },
+    'cli.install': {
+      'ja': 'インストール',
+      'en': 'Install',
+      'zh': '安装',
+      'ko': '설치',
+      'es': 'Instalar',
+      'fr': 'Installer',
+      'de': 'Installieren',
+      'pt': 'Instalar',
+      'ru': 'Установить',
+    },
+    'cli.installHint': {
+      'ja': 'この下で npm が動いています。終わったら閉じて、一覧の更新ボタンを押してください。',
+      'en': 'npm is running below. When it finishes, close this and press refresh in the list.',
+      'zh': '下方正在运行 npm。完成后关闭并在列表中点击刷新。',
+      'ko': '아래에서 npm 이 돌고 있습니다. 끝나면 닫고 목록의 새로고침을 눌러 주세요.',
+      'es': 'npm se esta ejecutando abajo. Al terminar, cierra y pulsa actualizar en la lista.',
+      'fr': 'npm tourne ci-dessous. A la fin, fermez et appuyez sur actualiser dans la liste.',
+      'de': 'npm laeuft unten. Danach schliessen und in der Liste auf Aktualisieren druecken.',
+      'pt': 'O npm esta rodando abaixo. Ao terminar, feche e toque em atualizar na lista.',
+      'ru': 'Ниже работает npm. По окончании закройте и нажмите обновить в списке.',
+    },
+    'cli.noNpmTitle': {
+      'ja': 'npm が見つかりません',
+      'en': 'npm was not found',
+      'zh': '未找到 npm',
+      'ko': 'npm 을 찾지 못했습니다',
+      'es': 'No se encontro npm',
+      'fr': 'npm est introuvable',
+      'de': 'npm nicht gefunden',
+      'pt': 'npm nao encontrado',
+      'ru': 'npm не найден',
+    },
+    'cli.noNpmBody': {
+      'ja': 'これらのコマンドは Node.js に付属する npm で入れます。先に Node.js を入れてください。',
+      'en': 'These commands are installed with npm, which comes with Node.js. Install Node.js first.',
+      'zh': '这些命令通过 Node.js 自带的 npm 安装。请先安装 Node.js。',
+      'ko': '이 명령들은 Node.js 에 딸린 npm 으로 설치합니다. 먼저 Node.js 를 설치해 주세요.',
+      'es': 'Estos comandos se instalan con npm, que viene con Node.js. Instala Node.js primero.',
+      'fr': 'Ces commandes s installent avec npm, fourni avec Node.js. Installez Node.js d abord.',
+      'de': 'Diese Befehle werden mit npm installiert, das zu Node.js gehoert. Installiere zuerst Node.js.',
+      'pt': 'Esses comandos sao instalados com o npm, que vem com o Node.js. Instale o Node.js primeiro.',
+      'ru': 'Эти команды ставятся через npm из состава Node.js. Сначала установите Node.js.',
+    },
+    'cli.getNode': {
+      'ja': 'Node.js を開く',
+      'en': 'Open Node.js',
+      'zh': '打开 Node.js',
+      'ko': 'Node.js 열기',
+      'es': 'Abrir Node.js',
+      'fr': 'Ouvrir Node.js',
+      'de': 'Node.js oeffnen',
+      'pt': 'Abrir Node.js',
+      'ru': 'Открыть Node.js',
+    },
+    'cli.backToChat': {
+      'ja': '会話へ戻る',
+      'en': 'Back to chat',
+      'zh': '返回对话',
+      'ko': '대화로 돌아가기',
+      'es': 'Volver al chat',
+      'fr': 'Retour au chat',
+      'de': 'Zurueck zum Chat',
+      'pt': 'Voltar ao chat',
+      'ru': 'Назад к чату',
+    },
+    'cli.title': {
+      'ja':
+          'パソコンに入れた AI を使う',
+      'en':
+          'Use the AI tools installed on this PC',
+      'zh':
+          '使用本机已安装的 AI 工具',
+      'ko':
+          '이 PC 에 설치한 AI 도구 사용',
+      'es':
+          'Usar las herramientas de IA instaladas en este PC',
+      'fr':
+          'Utiliser les outils IA installés sur ce PC',
+      'de':
+          'Auf diesem PC installierte KI-Tools nutzen',
+      'pt':
+          'Usar as ferramentas de IA instaladas neste PC',
+      'ru':
+          'Использовать ИИ-инструменты, установленные на этом ПК',
+    },
+    'cli.note': {
+      'ja':
+          'この PC の AI コマンドをここで動かします。契約しているぶんを使うので AI の残高は減りません。',
+      'en':
+          'Runs the AI commands on this PC. Uses your own subscription, so your AI balance is untouched.',
+      'zh':
+          '在这里运行本机的 AI 命令行。使用你自己的订阅，不消耗 AI 余额。',
+      'ko':
+          '이 PC 의 AI 명령을 여기서 실행합니다. 본인 구독을 쓰므로 AI 잔액은 줄지 않습니다.',
+      'es':
+          'Ejecuta los comandos de IA de este PC. Usa tu suscripcion, tu saldo de IA no se gasta.',
+      'fr':
+          'Execute les commandes IA de ce PC. Utilise votre abonnement, votre solde IA reste intact.',
+      'de':
+          'Fuehrt die KI-Befehle dieses PCs aus. Nutzt dein Abo, dein KI-Guthaben bleibt unberuehrt.',
+      'pt':
+          'Roda os comandos de IA deste PC. Usa sua assinatura, seu saldo de IA nao diminui.',
+      'ru':
+          'Запускает ИИ-команды этого ПК. Использует вашу подписку, баланс ИИ не расходуется.',
+    },
+    'cli.recheck': {
+      'ja':
+          '調べ直す',
+      'en':
+          'Check again',
+      'zh':
+          '重新检查',
+      'ko':
+          '다시 확인',
+      'es':
+          'Comprobar de nuevo',
+      'fr':
+          'Revérifier',
+      'de':
+          'Erneut prüfen',
+      'pt':
+          'Verificar de novo',
+      'ru':
+          'Проверить снова',
+    },
+    'hdr.openTerminal': {
+      'ja': 'ターミナル',
+      'en': 'Terminal',
+      'zh': '终端',
+      'ko': '터미널',
+      'es': 'Terminal',
+      'fr': 'Terminal',
+      'de': 'Terminal',
+      'pt': 'Terminal',
+      'ru': 'Терминал',
+    },
+    'cmdDesc.openTerminal': {
+      'ja': 'いま開いているページの置き場でターミナルを開きます。 盾の印から管理者としても開けます。',
+      'en': 'Opens a terminal in the folder that backs the current page. The shield opens it as administrator.',
+    },
+    'cli.terminal': {
+      'ja': 'ターミナル',
+      'en': 'Terminal',
+      'zh': '终端',
+      'ko': '터미널',
+      'es': 'Terminal',
+      'fr': 'Terminal',
+      'de': 'Terminal',
+      'pt': 'Terminal',
+      'ru': 'Терминал',
+    },
+    'cli.openAdmin': {
+      'ja': '管理者として開く (別の窓)',
+      'en': 'Open as administrator (separate window)',
+      'zh': '以管理员身份打开 (另一个窗口)',
+      'ko': '관리자로 열기 (별도 창)',
+      'es': 'Abrir como administrador (ventana aparte)',
+      'fr': 'Ouvrir en administrateur (fenetre separee)',
+      'de': 'Als Administrator oeffnen (eigenes Fenster)',
+      'pt': 'Abrir como administrador (janela separada)',
+      'ru': 'Открыть от имени администратора (отдельное окно)',
+    },
+    'cli.terminalNote': {
+      'ja': '右クリック (または盾の印) で管理者として開きます。 管理者はアプリの中に出せないので別の窓になります。',
+      'en': 'Right-click (or the shield) opens it as administrator. Elevated shells cannot run inside the app, so they open in a separate window.',
+      'zh': '右键 (或盾牌图标) 以管理员身份打开。管理员终端无法嵌入应用，会另开窗口。',
+      'ko': '오른쪽 클릭 (또는 방패 아이콘) 으로 관리자 권한으로 엽니다. 관리자 터미널은 앱 안에 넣을 수 없어 별도 창으로 열립니다.',
+      'es': 'Clic derecho (o el escudo) para abrir como administrador. No puede ir dentro de la app, se abre en otra ventana.',
+      'fr': 'Clic droit (ou le bouclier) pour ouvrir en administrateur. Impossible dans l application : une fenetre separee s ouvre.',
+      'de': 'Rechtsklick (oder das Schild) oeffnet als Administrator. Das geht nicht in der App, daher ein eigenes Fenster.',
+      'pt': 'Clique direito (ou o escudo) abre como administrador. Nao cabe dentro do app, abre em outra janela.',
+      'ru': 'Правый клик (или щит) открывает от имени администратора. Внутри приложения это невозможно, откроется отдельное окно.',
+    },
+    'cli.terminalNoDir': {
+      'ja': '(開いているページの置き場が無いので、 CLI 用の作業フォルダーで開きます)',
+      'en': '(The open page has no folder on disk, so the CLI work folder is used)',
+      'zh': '(当前页面没有磁盘目录，将使用 CLI 工作文件夹)',
+      'ko': '(열린 페이지에 디스크 폴더가 없어 CLI 작업 폴더를 사용합니다)',
+      'es': '(La pagina abierta no tiene carpeta en disco; se usa la carpeta de trabajo del CLI)',
+      'fr': '(La page ouverte n a pas de dossier sur le disque : le dossier de travail du CLI est utilise)',
+      'de': '(Die offene Seite hat keinen Ordner auf der Platte, daher wird der CLI-Arbeitsordner genutzt)',
+      'pt': '(A pagina aberta nao tem pasta em disco; sera usada a pasta de trabalho do CLI)',
+      'ru': '(У открытой страницы нет папки на диске, используется рабочая папка CLI)',
+    },
+    'cli.adminOpened': {
+      'ja': '管理者のターミナルを開きました。',
+      'en': 'Opened an administrator terminal.',
+      'zh': '已打开管理员终端。',
+      'ko': '관리자 터미널을 열었습니다.',
+      'es': 'Se abrio una terminal de administrador.',
+      'fr': 'Terminal administrateur ouvert.',
+      'de': 'Administrator-Terminal geoeffnet.',
+      'pt': 'Terminal de administrador aberto.',
+      'ru': 'Открыт терминал администратора.',
+    },
+    'cli.adminFailed': {
+      'ja': '管理者として開けませんでした。',
+      'en': 'Could not open it as administrator.',
+      'zh': '无法以管理员身份打开。',
+      'ko': '관리자로 열지 못했습니다.',
+      'es': 'No se pudo abrir como administrador.',
+      'fr': 'Impossible d ouvrir en administrateur.',
+      'de': 'Konnte nicht als Administrator geoeffnet werden.',
+      'pt': 'Nao foi possivel abrir como administrador.',
+      'ru': 'Не удалось открыть от имени администратора.',
+    },
+    'cli.open': {
+      'ja':
+          '開く',
+      'en':
+          'Open',
+      'zh':
+          '打开',
+      'ko':
+          '열기',
+      'es':
+          'Abrir',
+      'fr':
+          'Ouvrir',
+      'de':
+          'Öffnen',
+      'pt':
+          'Abrir',
+      'ru':
+          'Открыть',
+    },
+    'cli.ready': {
+      'ja':
+          'ログイン済みのようです',
+      'en':
+          'Looks signed in',
+      'zh':
+          '似乎已登录',
+      'ko':
+          '로그인되어 있는 것 같습니다',
+      'es':
+          'Parece que has iniciado sesión',
+      'fr':
+          'Semble connecté',
+      'de':
+          'Scheint angemeldet',
+      'pt':
+          'Parece conectado',
+      'ru':
+          'Похоже, вход выполнен',
+    },
+    'cli.needLogin': {
+      'ja':
+          '開いてログインしてください',
+      'en':
+          'Open it and sign in',
+      'zh':
+          '请打开并登录',
+      'ko':
+          '열어서 로그인해 주세요',
+      'es':
+          'Ábrelo e inicia sesión',
+      'fr':
+          'Ouvrez-le et connectez-vous',
+      'de':
+          'Öffnen und anmelden',
+      'pt':
+          'Abra e faça login',
+      'ru':
+          'Откройте и войдите',
+    },
+    'cli.notFound': {
+      'ja':
+          'この PC には見つかりません。入れるには:',
+      'en':
+          'Not found on this PC. To install:',
+      'zh':
+          '本机未找到。安装方法:',
+      'ko':
+          '이 PC 에서 찾지 못했습니다. 설치하려면:',
+      'es':
+          'No está en este PC. Para instalar:',
+      'fr':
+          'Introuvable sur ce PC. Pour installer :',
+      'de':
+          'Auf diesem PC nicht gefunden. Installation:',
+      'pt':
+          'Não encontrado neste PC. Para instalar:',
+      'ru':
+          'Не найдено на этом ПК. Установка:',
+    },
+    'cli.hintLogin': {
+      'ja':
+          'ブラウザが開いたら承認してください。 選択肢は下の ↑ ↓ と Enter で。',
+      'en':
+          'Your browser opens when it asks. Approve there and it comes back here. Use the ↑ ↓ and Enter buttons below to pick options.',
+      'zh':
+          '出现提示时浏览器会打开。在那里批准后会回到这里。用下方的 ↑ ↓ 和 Enter 选择。',
+      'ko':
+          '안내가 나오면 브라우저가 열립니다. 승인하면 여기로 돌아옵니다. 아래 ↑ ↓ 와 Enter 로 고르세요.',
+      'es':
+          'Tu navegador se abre cuando lo pida. Aprueba allí y vuelve aquí. Usa ↑ ↓ y Enter abajo.',
+      'fr':
+          'Votre navigateur s’ouvre le moment venu. Validez là-bas et cela revient ici. Utilisez ↑ ↓ et Entrée en bas.',
+      'de':
+          'Der Browser öffnet sich, wenn gefragt wird. Dort bestätigen, dann geht es hier weiter. Unten ↑ ↓ und Enter nutzen.',
+      'pt':
+          'Seu navegador abre quando pedir. Aprove lá e volta para cá. Use ↑ ↓ e Enter abaixo.',
+      'ru':
+          'Браузер откроется, когда потребуется. Подтвердите там — и вернётесь сюда. Ниже ↑ ↓ и Enter.',
+    },
+    'cli.hintReady': {
+      'ja':
+          'そのまま指示を打てます。',
+      'en':
+          'Type your instructions here. To let it edit this app’s pages, also turn on “Let external apps operate this app”.',
+      'zh':
+          '可直接输入指令。若要让它编辑本应用的页面，请同时开启「允许外部应用操作本应用」。',
+      'ko':
+          '바로 지시를 입력할 수 있습니다. 이 앱의 페이지를 다루게 하려면 「외부 앱에서 이 앱을 조작하도록 허용」 도 켜 주세요.',
+      'es':
+          'Escribe tus instrucciones aquí. Para que edite las páginas de esta app, activa también “Permitir que apps externas controlen esta app”.',
+      'fr':
+          'Tapez vos instructions ici. Pour lui laisser modifier les pages de cette appli, activez aussi « Autoriser les applis externes à piloter cette appli ».',
+      'de':
+          'Tippe hier deine Anweisungen. Damit es die Seiten dieser App bearbeiten darf, schalte auch „Externen Apps erlauben, diese App zu steuern“ ein.',
+      'pt':
+          'Digite suas instruções aqui. Para deixá-lo editar as páginas deste app, ligue também “Permitir que apps externos operem este app”.',
+      'ru':
+          'Пишите указания здесь. Чтобы он мог править страницы этого приложения, включите также «Разрешить внешним приложениям управлять этим приложением».',
     },
     'mcp.extTitle': {
       'ja':
@@ -53439,6 +54311,61 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Não é possível excluir a última página',
       'ru': 'Нельзя удалить последнюю страницу',
     },
+    'page.blankAfterDelete': {
+      'ja': '新しいページ',
+      'en': 'New page',
+      'zh': '新页面',
+      'ko': '새 페이지',
+      'es': 'Pagina nueva',
+      'fr': 'Nouvelle page',
+      'de': 'Neue Seite',
+      'pt': 'Nova pagina',
+      'ru': 'Новая страница',
+    },
+    'page.blankAdded': {
+      'ja': '最後の 1 枚だったので、 白紙を 1 枚だけ置きました',
+      'en': 'That was the last one, so a single blank page was added',
+      'zh': '这是最后一张，因此新建了一张空白页',
+      'ko': '마지막 한 장이었으므로 빈 페이지를 한 장 두었습니다',
+      'es': 'Era la ultima, asi que se anadio una pagina en blanco',
+      'fr': 'C etait la derniere, une page vierge a ete ajoutee',
+      'de': 'Das war die letzte, daher wurde eine leere Seite angelegt',
+      'pt': 'Era a ultima, entao uma pagina em branco foi criada',
+      'ru': 'Это была последняя, поэтому добавлена одна пустая страница',
+    },
+    'page.noneTitle': {
+      'ja': 'ページがありません',
+      'en': 'No pages',
+      'zh': '没有页面',
+      'ko': '페이지가 없습니다',
+      'es': 'Sin paginas',
+      'fr': 'Aucune page',
+      'de': 'Keine Seiten',
+      'pt': 'Sem paginas',
+      'ru': 'Нет страниц',
+    },
+    'page.noneBody': {
+      'ja': '1 枚もありません。新しく作るか、フォルダーから読み込んでください。',
+      'en': 'There are none. Create one, or open a folder.',
+      'zh': '一张也没有。请新建，或从文件夹打开。',
+      'ko': '한 장도 없습니다. 새로 만들거나 폴더에서 여세요.',
+      'es': 'No hay ninguna. Crea una o abre una carpeta.',
+      'fr': 'Il n y en a aucune. Creez-en une ou ouvrez un dossier.',
+      'de': 'Es gibt keine. Lege eine an oder oeffne einen Ordner.',
+      'pt': 'Nao ha nenhuma. Crie uma ou abra uma pasta.',
+      'ru': 'Ни одной нет. Создайте новую или откройте папку.',
+    },
+    'page.noneCreate': {
+      'ja': '新しいページを作る',
+      'en': 'Create a page',
+      'zh': '新建页面',
+      'ko': '새 페이지 만들기',
+      'es': 'Crear una pagina',
+      'fr': 'Créer une page',
+      'de': 'Seite anlegen',
+      'pt': 'Criar uma pagina',
+      'ru': 'Создать страницу',
+    },
     'page.deleted': {
       'ja': 'ページ「{name}」を削除しました',
       'en': 'Deleted page "{name}"',
@@ -56228,8 +57155,8 @@ class MindMapProvider extends ChangeNotifier {
           'Удалить {folders} папок и {pages} карт. Карты внутри папок также удалятся. Действие необратимо.',
     },
     'drawer.bulkDeleteWarning': {
-      'ja': '⚠ 全てのマップを削除することはできません。最低 1 マップは残してください。',
-      'en': '⚠ Cannot delete all maps. At least one map must remain.',
+      'ja': '全て消します。 消した後に空のマップが 1 枚だけ作られます。',
+      'en': 'Everything will be deleted. One empty map is created afterwards.',
       'zh': '⚠ 不能删除全部地图,必须保留至少一张。',
       'ko': '⚠ 모든 맵을 삭제할 수 없습니다. 최소 1개는 남아야 합니다.',
       'es':
@@ -56600,7 +57527,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'напр.: Проект A',
     },
     'drawer.newFolderDefault': {
-      'ja': '新規テーマ',
+      'ja': '新しいフォルダー',
       'en': 'New folder',
       'zh': '新文件夹',
       'ko': '새 폴더',
@@ -65088,7 +66015,7 @@ class MindMapProvider extends ChangeNotifier {
       'jv': 'Folder anyar',
     },
     'drawer.newFolderHint': {
-      'ja': 'ページをグループ化するテーマを作成',
+      'ja': 'ページをまとめるフォルダーを作成',
       'en': 'Create a folder to group pages',
       'zh': '创建文件夹以分组页面',
       'ko': '페이지를 그룹화할 폴더 만들기',
@@ -65143,8 +66070,8 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Восстановить страницы из .json файлов',
     },
     'drawer.openFolder': {
-      'ja': 'フォルダーを開く（自動保存）',
-      'en': 'Open folder (auto-save)',
+      'ja': 'フォルダーを開く',
+      'en': 'Open folder',
       'zh': '打开文件夹（批量导入）',
       'ko': '폴더 열기 (일괄 가져오기)',
       'es': 'Abrir carpeta (importación por lotes)',
@@ -65494,7 +66421,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Корень убран как база Ctrl+1-9',
     },
     'folder.tip.shortcutBase': {
-      'ja': 'このテーマ内のページが Ctrl+1〜9 の対象になります',
+      'ja': 'このフォルダー内のページが Ctrl+1〜9 の対象になります',
       'en': 'Pages in this folder are mapped to Ctrl+1-9',
       'zh': '此文件夹内的页面被分配到 Ctrl+1-9',
       'ko': '이 폴더 안의 페이지가 Ctrl+1-9 대상입니다',
@@ -65583,8 +66510,8 @@ class MindMapProvider extends ChangeNotifier {
     // 旧称「ディレクトリとして書き出し」。"ディレクトリ" がピンと来ないという
     // 指摘を受けて、何が起きるかを直接説明するラベルに変更した。
     'folder.exportAsDir': {
-      'ja': 'フォルダーとして保存（自動保存）',
-      'en': 'Save as folder (auto-save)',
+      'ja': 'フォルダーとして保存',
+      'en': 'Save as folder',
       'zh': '每张地图导出为单独文件',
       'ko': '맵별로 개별 파일로 내보내기',
       'es': 'Exportar cada mapa como archivo aparte',
@@ -65627,7 +66554,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Некоторые не удались',
     },
     'export.dir.empty': {
-      'ja': 'このテーマにはマップがありません',
+      'ja': 'このフォルダーにはマップがありません',
       'en': 'No maps in this folder',
       'zh': '此文件夹内没有地图',
       'ko': '이 폴더에 맵이 없음',
@@ -65733,7 +66660,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Сохранить все страницы папки в один файл',
     },
     'folder.delete': {
-      'ja': 'テーマを削除',
+      'ja': 'フォルダーを削除',
       'en': 'Delete folder',
       'zh': '删除文件夹',
       'ko': '폴더 삭제',
@@ -65755,7 +66682,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Вы можете выбрать судьбу страниц',
     },
     'folder.deleteTitle': {
-      'ja': 'テーマを削除しますか?',
+      'ja': 'フォルダーを削除しますか?',
       'en': 'Delete this folder?',
       'zh': '删除此文件夹？',
       'ko': '이 폴더를 삭제하시겠습니까?',
@@ -69612,6 +70539,12 @@ class MindMapProvider extends ChangeNotifier {
   }
 
   Future<void> _loadEssentialUiState() async {
+    // データの保存先。 初回の案内を出すかを initialLoadDone の前に
+    //   決めたいので、 この最優先のローダーで読む。
+    try {
+      final prefs0 = await SharedPreferences.getInstance();
+      _dataRootDir = prefs0.getString('dataRootDir');
+    } catch (_) {}
     final SharedPreferences prefs;
     try {
       prefs = await _prefsWithRetry();
@@ -70238,6 +71171,20 @@ class MindMapProvider extends ChangeNotifier {
       prefs.setString(
           'galleryHeaderButtons', jsonEncode(_galleryHeaderButtons));
     }
+    // ── ターミナルの入口を足す (= ユーザー要望: ヘッダーボタンとしても) ──
+    //    デスクトップだけの機能なので、 Windows / macOS / Linux でのみ。
+    if (!kIsWeb &&
+        (Platform.isWindows || Platform.isMacOS || Platform.isLinux) &&
+        prefs.getBool('mig_open_terminal_button_v1') != true) {
+      if (!_customHeaderButtons.contains('openTerminal')) {
+        final insertAt = _customHeaderButtons.contains('aiAssistant')
+            ? _customHeaderButtons.indexOf('aiAssistant') + 1
+            : _customHeaderButtons.length;
+        _customHeaderButtons.insert(insertAt, 'openTerminal');
+      }
+      prefs.setBool('mig_open_terminal_button_v1', true);
+      prefs.setString('customHeaderButtons', jsonEncode(_customHeaderButtons));
+    }
     if (prefs.getBool('mig_share_page_lan_header_v1') != true) {
       void addShareButton(List<String> buttons) {
         if (buttons.contains('sharePageLan')) return;
@@ -70590,8 +71537,27 @@ class MindMapProvider extends ChangeNotifier {
   /// 判定すれば、確実にロード完了後の値で初回起動フローを分岐できる。
   final Completer<void> _initialLoadCompleter = Completer<void>();
   Future<void> get initialLoadDone => _initialLoadCompleter.future;
+
+  /// 最初の読み込みが終わったか (画面の分岐用の同期版)。
+  ///
+  /// ★ 0 枚の時に「まだ読み込み中なのか、 本当に 1 枚も無いのか」 を
+  ///   見分けるため。 これが無いと 0 枚を常に「読み込み中」 と見なして
+  ///   スピナーを回し続けてしまう。
+  bool get initialLoadFinished => _initialLoadCompleter.isCompleted;
   bool _disposed = false;
   Timer? _startupSafetyTimer;
+
+  /// 保存済みページの読み込みが結論を出したか (「0 枚だった」 も結論)。
+  /// ★ 起動の安全網は「0 枚 = まだ読み込み中」 と見なしていたので、
+  ///   本当に全部消した人のところで既定ページを作り直していた
+  ///   (= ユーザー報告: 最後のマップを消しても戻ってくる)。
+  bool _pageLoadSettled = false;
+
+  /// 保存済みページの読み込みが終わったか (「0 枚だった」 も終わり)。
+  /// 画面はこれを見て「読み込み中の輪」 と「1 枚もありません」 を出し分ける
+  /// (= 点検で判明: 別の旗を見ていたので、 読み込みの途中でも「ありません」 と
+  /// 出てしまう事があった)。
+  bool get pageLoadSettled => _pageLoadSettled;
 
   /// 初回起動フラグ（言語選択ダイアログ表示に使用）
   bool _isFirstLaunch = false;
@@ -83161,7 +84127,57 @@ $cleanQ
 
   List<MindMapPage> get pages => List.unmodifiable(_pages);
   int get currentPageIndex => _currentPageIndex;
-  MindMapPage get currentPage => _pages[_currentPageIndex];
+  /// 1 枚も無い時の「仮のページ」。
+  ///
+  /// ★ 一覧 (_pages) には入れない。 入れてしまうと「消したのに
+  ///   同じものが出る」 になる (= ユーザー報告)。
+  ///   ここに何か書かれたら、 保存の時に本物として _pages へ入れる
+  ///   ([_materializePlaceholderIfUsed])。 これが無いと書いた物が黙って消える。
+  /// 0 枚でも落ちない clamp。
+  ///
+  /// ★ 素の `clamp(0, _pages.length - 1)` は、 0 枚だと上限が -1 になり
+  ///   ArgumentError を投げる。
+  int _clampPageIndex(int i) {
+    if (_pages.isEmpty) return 0;
+    if (i < 0) return 0;
+    if (i >= _pages.length) return _pages.length - 1;
+    return i;
+  }
+
+  MindMapPage? _emptyPlaceholder;
+
+  /// 今開いているページ。 1 枚も無ければ仮のページを返す。
+  MindMapPage get currentPage {
+    if (_pages.isEmpty) {
+      return _emptyPlaceholder ??=
+          MindMapPage(id: _uuid.v4(), name: t('page.blankAfterDelete'));
+    }
+    if (_currentPageIndex < 0 || _currentPageIndex >= _pages.length) {
+      _currentPageIndex = _clampPageIndex(_currentPageIndex);
+    }
+    return _pages[_currentPageIndex];
+  }
+
+  /// 仮のページに何か書かれていたら、 本物として一覧へ入れる。
+  ///
+  /// 保存の入口で必ず呼ぶ。 これが無いと、 0 枚の状態で要素を置いても
+  /// 保存されずに消える。
+  void _materializePlaceholderIfUsed() {
+    if (_pages.isNotEmpty) return;
+    final ph = _emptyPlaceholder;
+    if (ph == null) return;
+    final used = ph.nodes.isNotEmpty ||
+        ph.connections.isNotEmpty ||
+        ph.decorations.isNotEmpty ||
+        (ph.backgroundImagePath ?? '').isNotEmpty;
+    if (!used) return;
+    _pages.add(ph);
+    _emptyPlaceholder = null;
+    _currentPageIndex = 0;
+  }
+
+  /// ページが 1 枚も無いか (画面側の空状態の判定に使う)。
+  bool get hasNoPages => _pages.isEmpty;
   Map<String, MindMapNode> get nodes => Map.unmodifiable(currentPage.nodes);
   List<NodeConnection> get connections =>
       List.unmodifiable(currentPage.connections);
@@ -83442,7 +84458,7 @@ $cleanQ
     }).catchError((Object e, StackTrace st) {
       // ★ 起動ハング対策: ロードが reject されても永久ローディングにしない。
       debugPrint('起動ロードチェーンでエラー (復旧): $e\n$st');
-      if (_pages.isEmpty) {
+      if (_pages.isEmpty && !_pageLoadSettled) {
         try {
           _addDefaultPage(force: true);
         } catch (_) {}
@@ -83451,11 +84467,14 @@ $cleanQ
       notifyListeners();
     });
     // ★ 最終安全網: 何らかの理由 (プラグイン応答なし等) で 8 秒経っても
-    //   ページが 1 枚も無い＝ローディングのままなら、 強制的にデフォルトページを
-    //   作って UI を出す。 これで「ずっと読み込み中」が物理的に起こり得なくなる。
+    //   読み込みが終わらない＝ローディングのままなら、 強制的にデフォルト
+    //   ページを作って UI を出す。 これで「ずっと読み込み中」が起こり得ない。
+    //   ★★ 「0 枚」 は読み込み中の印にしない (= ユーザー報告: 最後のマップを
+    //      消しても 8 秒後に「マップ 1」 が戻ってきていた)。 読み込みが
+    //      結論を出していない時だけ作る。
     _startupSafetyTimer = Timer(const Duration(seconds: 8), () {
       if (_disposed) return;
-      if (_pages.isEmpty) {
+      if (_pages.isEmpty && !_pageLoadSettled) {
         debugPrint('起動安全網: 8秒経過してもページ空 → デフォルトページを強制作成');
         try {
           _addDefaultPage(force: true);
@@ -91633,9 +92652,9 @@ $cleanQ
       final newIndex = _pages.indexWhere((page) => page.id == currentPageId);
       _currentPageIndex = newIndex >= 0
           ? newIndex
-          : _currentPageIndex.clamp(0, _pages.length - 1);
+          : _clampPageIndex(_currentPageIndex);
     } else {
-      _currentPageIndex = _currentPageIndex.clamp(0, _pages.length - 1);
+      _currentPageIndex = _clampPageIndex(_currentPageIndex);
     }
     if (_selectedNodeId != null &&
         !_pages[_currentPageIndex].nodes.containsKey(_selectedNodeId)) {
@@ -92236,6 +93255,9 @@ $cleanQ
   }
 
   Future<void> _loadFromStorage() async {
+    // 一度でもページを保存した事があるか (= 初めての起動ではない印)。
+    // catch からも見るので try の外に置く。
+    var hasSavedBefore = false;
     try {
       // フォルダー一覧を先に読む（ページ読み込み時に検証で使う）。
       // ここで失敗してもページ読み込みは続行する。
@@ -92272,8 +93294,25 @@ $cleanQ
         needsCoordinatedMigration = loaded;
       }
 
-      final bool freshOrEmpty = _pages.isEmpty;
+      // ★ 利用者が自分で全部消した場合は、 既定ページを作り直さない
+      //   (= ユーザー要望: 消したのに戻ってくるのはおかしい)。
+      //   初回起動 (一度も作ったことが無い) の時だけ用意する。
+      //
+      //   ★★ 旗 (seededDefaultPages) が付く前から使っている人は、 全部消すと
+      //      毎回この旗が立っておらず、 起動のたびに「マップ 1」 が戻って
+      //      いた (= ユーザー報告)。 保存の跡そのものを「初めてではない」
+      //      印として見て、 跡があれば二度と作らない。
+      final bool seeded = prefs.getBool('seededDefaultPages') ?? false;
+      hasSavedBefore = prefs.containsKey(_coordinatedStorageKey) ||
+          prefs.containsKey(_storageKey) ||
+          prefs.containsKey('mindmap_pages_v2');
+      if (hasSavedBefore && !seeded) {
+        // 次からは旗だけで判定できるようにしておく。
+        unawaited(prefs.setBool('seededDefaultPages', true));
+      }
+      final bool freshOrEmpty = _pages.isEmpty && !seeded && !hasSavedBefore;
       if (freshOrEmpty) {
+        unawaited(prefs.setBool('seededDefaultPages', true));
         _seedDefaultPages();
         // 新規インストールは補充不要 (二重作成防止のためフラグだけ立てる)。
         // ignore: discarded_futures
@@ -92306,10 +93345,16 @@ $cleanQ
         // ignore: discarded_futures
         _saveToStorage();
       }
+      // ここまで来たら「0 枚」 も含めて読み込みの結論が出ている。
+      _pageLoadSettled = true;
     } catch (e, st) {
+      // 失敗した時も、 これ以上待っても結論は変わらない。
+      _pageLoadSettled = true;
       debugPrint('_loadFromStorage 致命的エラー (ローディング固まり防止のため復旧): $e\n$st');
       // 最後の砦: 何が起きても使える UI を保証する。
-      if (_pages.isEmpty) {
+      // ただし、 保存の跡がある人には作らない (= ユーザー要望: 消したページが
+      // 戻ってこないように)。 0 枚でも空の画面は出るので困らない。
+      if (_pages.isEmpty && !hasSavedBefore) {
         try {
           _addDefaultPage(force: true);
         } catch (_) {}
@@ -92527,6 +93572,8 @@ $cleanQ
   DateTime? _lastLocalEditAt;
 
   Future<void> _saveToStorage() {
+    // ★ 0 枚の状態で要素を置いたなら、 ここで本物のページにする。
+    _materializePlaceholderIfUsed();
     _lastLocalEditAt = DateTime.now();
     // ★ 要素の追加 / 移動 / 書き換えは必ずここを通る。 共同編集の最中は、
     //   見回り (1.2 秒) を待たずにまとめて送る (= ユーザー要望:
@@ -93038,14 +94085,19 @@ $cleanQ
   bool get canUndoDeletedPage => _lastDeletedPageUndo != null;
 
   void deletePage(int index) {
-    if (_pages.length <= 1) return;
+    _lastDeleteCreatedBlank = false;
+    // ★ 最後の 1 枚でも消せる (= ユーザー要望)。
+    //   0 枚になったら下で白紙を 1 枚置く。
     if (index < 0 || index >= _pages.length) return;
     final deletedPage = _pages[index];
     final deletedId = deletedPage.id;
     _lastDeletedPageUndo = _captureDeletedPageUndo(deletedPage, index);
     _markPageDeletedForStorage(deletedId);
     _pages.removeAt(index);
-    _currentPageIndex = _currentPageIndex.clamp(0, _pages.length - 1);
+    // ★ clamp より先に白紙を置く。 0 枚だと上限が -1 になり、
+    //   clamp が ArgumentError を投げる。
+    _ensureAtLeastOnePage();
+    _currentPageIndex = _clampPageIndex(_currentPageIndex);
     _selectedNodeId = null;
     // AI 追加質問の文脈もページ削除と同時に消す (孤立データを残さない)
     _clearDeletedPageRuntimeState(deletedId);
@@ -93072,7 +94124,26 @@ $cleanQ
       ..lastModifiedAt = DateTime.now().toUtc();
     _pageDeletionTombstones.remove(pageId);
     _pages.insert(insertAt, restored);
-    _currentPageIndex = insertAt;
+    // ★ 削除の時に自動で足した白紙がまだ手つかずなら片付ける
+    //   (= 点検で発見: 最後の 1 枚を消して Ctrl+Z すると 2 枚になっていた)。
+    final blankId = _autoBlankPageId;
+    if (blankId != null && blankId != pageId) {
+      final bi = _pages.indexWhere((e) => e.id == blankId);
+      if (bi >= 0) {
+        final b = _pages[bi];
+        final untouched = b.nodes.isEmpty &&
+            b.connections.isEmpty &&
+            b.decorations.isEmpty;
+        if (untouched) {
+          _pages.removeAt(bi);
+          _markPageDeletedForStorage(blankId);
+        }
+      }
+      _autoBlankPageId = null;
+    }
+    _currentPageIndex = _pages.indexWhere((e) => e.id == pageId);
+    if (_currentPageIndex < 0) _currentPageIndex = insertAt;
+    _currentPageIndex = _clampPageIndex(_currentPageIndex);
     _selectedNodeId = null;
     if (record.undoStack != null) {
       _undoStacks[pageId] = List<_PageSnapshot>.from(record.undoStack!);
@@ -93258,17 +94329,47 @@ $cleanQ
     //   ここでも同じ pagesInFolder を使わないと「一番上のマップに Ctrl+2」
     //   のような番号ずれが起きる。
     final List<MindMapPage> scope;
+    final openId = drawerOpenFolderId;
     if (_shortcutFolderId != null &&
         _shortcutFolderId != shortcutRootSentinel &&
         _folders.any((f) => f.id == _shortcutFolderId)) {
       // 指定フォルダー内のページが対象
       scope = pagesInFolder(_shortcutFolderId);
+    } else if (openId != null && _folders.any((f) => f.id == openId)) {
+      // ★ フォルダーを開いている間は、 その中が対象 (= 点検で判明: 一覧に
+      //   出ていないルートのページへ飛んでしまい、 Ctrl+N の印も消えていた)。
+      scope = pagesInFolder(openId);
     } else {
       // null / sentinel / 不正 ID → ルート (フォルダー外) のページのみ
       scope = pagesInFolder(null);
     }
     if (idx >= scope.length) return null;
     return scope[idx];
+  }
+
+  /// フォルダーの並び順を変える (= ユーザー要望: 開いているフォルダーの
+  /// 階層を移動できるように)。 ページの並べ替えと同じ作法。
+  void reorderFolders(int oldIndex, int newIndex) {
+    if (oldIndex < 0 || oldIndex >= _folders.length) return;
+    var to = newIndex;
+    if (to > oldIndex) to -= 1;
+    if (to < 0) to = 0;
+    if (to >= _folders.length) to = _folders.length - 1;
+    if (to == oldIndex) return;
+    final f = _folders.removeAt(oldIndex);
+    _folders.insert(to, f);
+    _saveFoldersToStorage();
+    notifyListeners();
+  }
+
+  /// [folderId] を [targetFolderId] の直前 / 直後へ動かす。
+  /// [before] が true なら前、 false なら後ろ。
+  void moveFolderNear(String folderId, String targetFolderId,
+      {required bool before}) {
+    final from = _folders.indexWhere((e) => e.id == folderId);
+    final at = _folders.indexWhere((e) => e.id == targetFolderId);
+    if (from < 0 || at < 0 || from == at) return;
+    reorderFolders(from, before ? at : at + 1);
   }
 
   void reorderPages(int oldIndex, int newIndex) {
@@ -93295,15 +94396,66 @@ $cleanQ
   String? linkedDirectoryForPage(String pageId) {
     final p = _pages.firstWhere((e) => e.id == pageId,
         orElse: () => MindMapPage(id: '', name: ''));
-    if (p.id.isEmpty || p.folderId == null) return null;
-    final f = _folders.firstWhere((e) => e.id == p.folderId,
-        orElse: () => MindMapFolder(id: '', name: ''));
-    final path = f.linkedDirPath?.trim();
-    if (f.id.isEmpty || path == null || path.isEmpty) return null;
-    return path;
+    if (p.id.isEmpty) return null;
+    if (p.folderId != null) {
+      final f = _folders.firstWhere((e) => e.id == p.folderId,
+          orElse: () => MindMapFolder(id: '', name: ''));
+      final path = f.linkedDirPath?.trim();
+      if (f.id.isNotEmpty && path != null && path.isNotEmpty) return path;
+    }
+    // ★ フォルダーに連動先が無いページは、 アプリ全体の保存先へ出す
+    //   (= ユーザー要望: 保存先を決めただけなのに、 そのフォルダー自体が
+    //   一覧の上に現れるのはおかしい)。 ドロワーの見た目は変えずに、
+    //   ディスクへは出る、 という形にする。
+    final root = _dataRootDir?.trim();
+    if (root != null && root.isNotEmpty) return root;
+    return null;
   }
 
   /// 新規フォルダーを作成して、その ID を返す
+  // ── データの保存先フォルダー (= ユーザー要望: 最初にどこへ格納するか
+  //    決めて、 そこへ自動でファイルが出来るように。 書き出しボタンを
+  //    押さなくても、 そのままコピーして持ち出せる) ──
+  //
+  //    新しい保存の仕組みは作っていない。 既にある「フォルダーのディスク
+  //    連動」 (MindMapFolder.linkedDirPath) をアプリ全体の既定として
+  //    使い回すだけ。 ここで決めた場所に連動フォルダーを 1 つ作れば、
+  //    以後そのフォルダーのページは保存のたびに <ページ名>.json として
+  //    ディスクへ出る。
+  String? _dataRootDir;
+  String? get dataRootDir => _dataRootDir;
+
+  /// 保存先を決める。 **必ずフォルダーを作ってから**控える。
+  /// (autoSavePageIfLinked は「無ければ黙って諦める」 ので、 作る責任は
+  ///  こちら側にある)。
+  Future<void> setDataRootDir(String path) async {
+    final p = path.trim();
+    if (p.isEmpty) return;
+    try {
+      final dir = Directory(p);
+      if (!await dir.exists()) await dir.create(recursive: true);
+    } catch (e) {
+      debugPrint('setDataRootDir failed: $e');
+      return;
+    }
+    _dataRootDir = p;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('dataRootDir', p);
+    } catch (_) {}
+    notifyListeners();
+  }
+
+  /// 保存先の設定を消す (連動そのものはフォルダー側の設定で切る)。
+  Future<void> clearDataRootDir() async {
+    _dataRootDir = null;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('dataRootDir');
+    } catch (_) {}
+    notifyListeners();
+  }
+
   String addFolder({String? name, String? linkedDirPath}) {
     final id = _uuid.v4();
     _folders.add(MindMapFolder(
@@ -93317,6 +94469,42 @@ $cleanQ
   }
 
   /// 既存フォルダーに連動ディレクトリを設定 / 解除する
+  /// 実在するフォルダーを指している時だけ、 開いているフォルダーの id を返す
+  /// (= 点検で判明: 消えたフォルダーの id が残ると、 作ったページがどこにも
+  /// 出てこなくなる)。
+  String? get _validOpenFolderId {
+    final id = drawerOpenFolderId;
+    if (id == null || id.isEmpty) return null;
+    return _folders.any((f) => f.id == id) ? id : null;
+  }
+
+  /// いま開いているフォルダー (= 作業中のフォルダー) の id。
+  ///
+  /// 覚えておくのは画面側 (prefs `open_folder_id`) で、 ここはその写し。
+  /// Ctrl+1〜9 の対象や、 MCP が作るページの行き先がこれを見る
+  /// (= 点検で判明: 開いている間、 Ctrl+1〜9 が見えないページへ飛んでいた)。
+  String? drawerOpenFolderId;
+
+  /// そのディスクのフォルダーに紐づいた一覧のフォルダーを探す (無ければ null)。
+  ///
+  /// 同じフォルダーを二度「開く」 た時に、 同じ物が二つ並ばないようにする
+  /// (= ユーザー要望: vscode と同じで、 開けるフォルダーは 1 つだけ)。
+  /// Windows なので大小文字を無視し、 区切りと末尾の \ を揃えて比べる。
+  String? folderIdForLinkedDir(String dirPath) {
+    String norm(String x) => x
+        .trim()
+        .replaceAll('/', '\\')
+        .toLowerCase()
+        .replaceAll(RegExp(r'\\+$'), '');
+    final want = norm(dirPath);
+    if (want.isEmpty) return null;
+    for (final f in _folders) {
+      final linked = (f.linkedDirPath ?? '').trim();
+      if (linked.isNotEmpty && norm(linked) == want) return f.id;
+    }
+    return null;
+  }
+
   Future<void> setFolderLinkedDir(String folderId, String? path) async {
     final f = _folders.firstWhere((e) => e.id == folderId,
         orElse: () => MindMapFolder(id: '', name: ''));
@@ -93338,6 +94526,28 @@ $cleanQ
   /// data:URL や http(s)://、空のものはそのまま。
   Future<Map<String, dynamic>> _pageToPortableJson(MindMapPage p) async {
     final json = p.toJson();
+    // ★ 本文も入れる (= 点検で発見: フリーノート / 文書 /
+    //   マークダウンの中身はページの JSON に無く prefs にあるので、
+    //   そのまま書き出すと**中身の無いファイル**になっていた)。
+    //   クラウド同期は paintJson だけ別途足していたが、 こちらは
+    //   代表と残りの両方を拾う (文書は絵と文章の 2 つを使う)。
+    try {
+      final key = _liveBodyPrefsKey(p);
+      if (key != null) {
+        final prefs = await SharedPreferences.getInstance();
+        final body = prefs.getString(key);
+        if (body != null && body.isNotEmpty) json['bodyKey'] = key;
+        if (body != null && body.isNotEmpty) json['body'] = body;
+        final extras = <String, String>{};
+        for (final e in _liveBodyExtraKeys(p)) {
+          final v = prefs.getString(e.value);
+          if (v != null && v.isNotEmpty) extras[e.key] = v;
+        }
+        if (extras.isNotEmpty) json['bodyExtras'] = extras;
+      }
+    } catch (e) {
+      debugPrint('portable body failed: $e');
+    }
     final nodes = json['nodes'];
     if (nodes is! List) return json;
     for (final n in nodes) {
@@ -93427,10 +94637,39 @@ $cleanQ
           'version': 3,
           'pages': [pageJson],
         });
-        await File(filePath).writeAsString(json);
+        await _writeFileAtomically(filePath, json);
       }
     } catch (e) {
       debugPrint('syncFolderToLinkedDir failed: $e');
+    }
+  }
+
+  /// ファイルを「途中で切れない」 書き方で置き換える。
+  ///
+  /// ★ `writeAsString` は開いた時点で中身を空にするので、 書き終える前に
+  ///   アプリが終わると 0 バイトのファイルが残る (= ユーザー報告: ページを
+  ///   全部消すと謎の .json が出てくる。 実測 0 バイト)。 いったん別名で
+  ///   書き切ってから置き換えるので、 途中で切れても元のファイルが残る。
+  Future<void> _writeFileAtomically(String filePath, String contents) async {
+    final tmp = File('$filePath.tmp');
+    try {
+      await tmp.writeAsString(contents, flush: true);
+      try {
+        await tmp.rename(filePath);
+      } on FileSystemException {
+        // 置き換えに失敗する環境 (別プロセスが開いている等) では、
+        // 従来どおり直接書く。
+        await File(filePath).writeAsString(contents, flush: true);
+        try {
+          if (await tmp.exists()) await tmp.delete();
+        } catch (_) {}
+      }
+    } catch (e) {
+      debugPrint('_writeFileAtomically failed: $e');
+      try {
+        if (await tmp.exists()) await tmp.delete();
+      } catch (_) {}
+      rethrow;
     }
   }
 
@@ -93439,24 +94678,26 @@ $cleanQ
   Future<void> autoSavePageIfLinked(String pageId) async {
     final p = _pages.firstWhere((e) => e.id == pageId,
         orElse: () => MindMapPage(id: '', name: ''));
-    if (p.id.isEmpty || p.folderId == null) return;
-    final f = _folders.firstWhere((e) => e.id == p.folderId,
-        orElse: () => MindMapFolder(id: '', name: ''));
-    if (f.id.isEmpty || f.linkedDirPath == null) return;
+    // ★ フォルダーに入っていないページも書き出す
+    //   (= 点検で発見: folderId == null で抜けていたため、
+    //   保存先を決めてもルート直下のページがディスクに出なかった)。
+    if (p.id.isEmpty) return;
+    // ★ フォルダーの連動先 → 無ければアプリ全体の保存先。
+    final target = linkedDirectoryForPage(pageId);
+    if (target == null || target.isEmpty) return;
     try {
-      final dir = Directory(f.linkedDirPath!);
+      final dir = Directory(target);
       if (!await dir.exists()) return;
       var safeName = p.name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
       if (safeName.isEmpty) safeName = p.id;
-      final filePath =
-          '${f.linkedDirPath}${Platform.pathSeparator}$safeName.json';
+      final filePath = '$target${Platform.pathSeparator}$safeName.json';
       // 画像/PDF をポータブルな data:URL に埋め込んで書き出す
       final pageJson = await _pageToPortableJson(p);
       final json = jsonEncode({
         'version': 3,
         'pages': [pageJson],
       });
-      await File(filePath).writeAsString(json);
+      await _writeFileAtomically(filePath, json);
     } catch (e) {
       debugPrint('autoSavePageIfLinked failed: $e');
     }
@@ -93482,22 +94723,50 @@ $cleanQ
     notifyListeners();
   }
 
+  /// そのフォルダーがディスクの本物のフォルダーと連動しているか
+  /// (= 「フォルダーを開く」 で取り込んだ物)。
+  bool folderIsDiskLinked(String folderId) {
+    for (final f in _folders) {
+      if (f.id == folderId) {
+        return (f.linkedDirPath ?? '').trim().isNotEmpty;
+      }
+    }
+    return false;
+  }
+
   /// フォルダーを削除（中のページはルートに戻す。中身のページは削除しない）
-  void deleteFolder(String folderId, {bool deletePages = false}) {
+  ///
+  /// ★ ディスクと連動しているフォルダー (= デスクトップなどを「フォルダーを
+  ///   開く」 で取り込んだ物) は、 [force] を付けない限り消さない
+  ///   (= ユーザー要望: 開いた後に誤ってフォルダーごと削除できないように)。
+  ///   消えるのはアプリの一覧の見出しだけで、 ディスクのファイルには元々
+  ///   触らないが、 中のページごと消えると取り返しがつかないため。
+  ///   1 つずつの「一覧から外す」 (確認付き) だけが force を渡す。
+  void deleteFolder(String folderId,
+      {bool deletePages = false, bool force = false}) {
     final idx = _folders.indexWhere((e) => e.id == folderId);
     if (idx < 0) return;
+    if (!force && (_folders[idx].linkedDirPath ?? '').trim().isNotEmpty) {
+      debugPrint('deleteFolder: skipped disk-linked folder $folderId');
+      return;
+    }
     if (deletePages) {
       // フォルダー内のページも削除
       final toDelete = _pages.where((p) => p.folderId == folderId).toList();
       for (final p in toDelete) {
         final i = _pages.indexOf(p);
-        if (i >= 0 && _pages.length > 1) {
+        if (i >= 0) {
           _markPageDeletedForStorage(p.id);
           _pages.removeAt(i);
           // クラウド上のデータは残す (deletePage と同じ理由)。
         }
       }
-      _currentPageIndex = _currentPageIndex.clamp(0, _pages.length - 1);
+      // ★ 全ページがこのフォルダーにあると 0 枚になり、
+      //   clamp の上限が -1 になって ArgumentError で落ちる
+      //   (= 点検で発見。 ここだけ _ensureAtLeastOnePage を通っていなかった)。
+      _lastDeleteCreatedBlank = false;
+      _ensureAtLeastOnePage();
+      _currentPageIndex = _clampPageIndex(_currentPageIndex);
     } else {
       // 中のページはルートに戻す
       for (final p in _pages) {
@@ -93505,6 +94774,8 @@ $cleanQ
       }
     }
     _folders.removeAt(idx);
+    // 開いていたフォルダーを消したなら、 開いている指定も外す。
+    if (drawerOpenFolderId == folderId) drawerOpenFolderId = null;
     // 削除したフォルダーが Ctrl+1〜9 の基準なら null にリセット
     if (_shortcutFolderId == folderId) {
       _shortcutFolderId = null;
@@ -93520,10 +94791,36 @@ $cleanQ
   /// - 既存の deleteFolder/deletePage を内部で再利用するが、notifyListeners は
   ///   最後に 1 回だけ発火する (UI のチラつき防止)
   /// - 削除後に最低 1 ページ残るよう自動で保護する
+  /// ページが 0 枚になったら白紙を 1 枚置く (= ユーザー要望: 最後の 1 枚でも
+  /// 消せるように)。
+  ///
+  /// 0 枚のままだと `currentPage` (= `_pages[_currentPageIndex]`) を見る所が
+  /// ことごとく落ちる。 また `clamp(0, _pages.length - 1)` は上限が -1 に
+  /// なると ArgumentError を投げるので、 clamp より**先**にここを通すこと。
+  /// 直前の削除で白紙を作ったか (画面の文面を切り替えるため)。
+  bool _lastDeleteCreatedBlank = false;
+  bool get lastDeleteCreatedBlankPage => _lastDeleteCreatedBlank;
+
+  /// 自動で足した白紙の id (Ctrl+Z で戻す時に片付ける)。
+  String? _autoBlankPageId;
+
+  /// ★ もう白紙は作らない (= ユーザー要望: 本当に 0 枚にしたい)。
+  ///   0 枚の間は currentPage が「仮のページ」 を返すので落ちない。
+  void _ensureAtLeastOnePage() {
+    if (_pages.isNotEmpty) return;
+    _currentPageIndex = 0;
+    _emptyPlaceholder = null;
+  }
+
   void bulkDeletePagesAndFolders({
     required List<String> folderIds,
     required List<String> pageIds,
   }) {
+    _lastDeleteCreatedBlank = false;
+    // ★ ディスクと連動しているフォルダーは、 まとめて削除では絶対に触らない
+    //   (= ユーザー要望: デスクトップなどを開いた後に、 誤ってフォルダーごと
+    //   消せないように)。 中のページも巻き添えにしない。
+    folderIds = [for (final id in folderIds) if (!folderIsDiskLinked(id)) id];
     if (folderIds.isEmpty && pageIds.isEmpty) return;
     // 削除対象ページ ID を集計 (重複なし)
     final allTargetPages = <String>{};
@@ -93534,18 +94831,21 @@ $cleanQ
       }
     }
     // ── ページ削除 ──
-    // 最低 1 ページは残す (currentPage アクセスでクラッシュしないため)
+    // ★ 全部消せる (= ユーザー要望)。 以前は「最低 1 枚は残す」 として
+    //   途中で止めていたが、 それは currentPage を見る所で落ちないようにする
+    //   ためだった。 全部消した後で白紙を 1 枚作れば同じ事。
     for (final pid in allTargetPages) {
-      if (_pages.length <= 1) break;
       final i = _pages.indexWhere((e) => e.id == pid);
       if (i < 0) continue;
       _markPageDeletedForStorage(pid);
       _pages.removeAt(i);
       // クラウド上のデータは残す (deletePage と同じ理由)。
     }
-    _currentPageIndex = _currentPageIndex.clamp(0, _pages.length - 1);
+    _ensureAtLeastOnePage();
+    _currentPageIndex = _clampPageIndex(_currentPageIndex);
     // ── フォルダー削除 ──
     for (final fid in folderIds) {
+      if (drawerOpenFolderId == fid) drawerOpenFolderId = null;
       _folders.removeWhere((f) => f.id == fid);
       // 残ったページがそのフォルダーを参照していたらルートに戻す
       for (final p in _pages) {
@@ -95147,9 +96447,8 @@ $cleanQ
       return 'no page has the id "$pageId". Call list_pages and use an id '
           'from it (ids are not guessable). Do not try other ids.';
     }
-    if (_pages.length <= 1) {
-      return 'cannot delete "$pageId": it is the last remaining page.';
-    }
+    // ★ 最後の 1 枚でも消せる (= ユーザー要望)。
+    //   消した後は自動で白紙が 1 枚置かれる。
     final now = DateTime.now();
     _mcpRecentPageDeletes
         .removeWhere((t) => now.difference(t) > _kMcpDeleteBurstWindow);
@@ -95349,22 +96648,22 @@ $cleanQ
     if (!canCreatePageType(t)) return null;
     switch (t) {
       case 'bookshelf':
-        addBookshelfPage(name: name);
+        addBookshelfPage(name: name, folderId: _validOpenFolderId);
         break;
       case 'paint':
-        addPaintPage(name: name);
+        addPaintPage(name: name, folderId: _validOpenFolderId);
         break;
       case 'videoEditor':
-        addVideoEditorPage(name: name);
+        addVideoEditorPage(name: name, folderId: _validOpenFolderId);
         break;
       case 'document':
-        addDocumentPage(name: name);
+        addDocumentPage(name: name, folderId: _validOpenFolderId);
         break;
       case 'markdown':
-        addMarkdownPage(name: name);
+        addMarkdownPage(name: name, folderId: _validOpenFolderId);
         break;
       default:
-        addPage(name: name);
+        addPage(name: name, folderId: _validOpenFolderId);
     }
     if (_pages.isEmpty) return null;
     final created = _pages.last.id;
@@ -97093,7 +98392,7 @@ $cleanQ
     }
     if (wanted.isEmpty) return [for (final p in _pages) p.id];
     // 現在ページを id で覚えておく (並べ替えで番号がずれるため)。
-    final currentId = _pages[_currentPageIndex.clamp(0, _pages.length - 1)].id;
+    final currentId = _pages[_clampPageIndex(_currentPageIndex)].id;
     final rest = [
       for (final p in _pages)
         if (!wanted.contains(p.id)) p
@@ -97147,6 +98446,11 @@ $cleanQ
   /// 同じ暴走止め (_mcpRecentPageDeletes) を通す。
   String? mcpDeleteFolder(String folderId, {bool deletePages = false}) {
     if (!_folders.any((f) => f.id == folderId)) return 'folder not found';
+    // ★ 本物のフォルダーを開いた物は、 外からは消せない (= ユーザー要望)。
+    if (folderIsDiskLinked(folderId)) {
+      return 'this folder is linked to a real directory on disk; '
+          'ask the user to remove it from the list by hand';
+    }
     if (deletePages) {
       final inside = _pages.where((p) => p.folderId == folderId).length;
       if (inside > 0) {

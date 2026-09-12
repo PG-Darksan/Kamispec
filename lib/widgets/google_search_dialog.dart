@@ -1767,7 +1767,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     final selected = await showMenu<String>(
       context: context,
       color: const Color(0xFF1E1E32),
-      position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx, pos.dy),
+      position: RelativeRect.fromLTRB(pos.dx + 6, pos.dy + 6, pos.dx + 6, pos.dy + 6),
       items: _aiMenuItems(),
     );
     if (selected != null) _openAiPanel(selected);
@@ -4409,7 +4409,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     final selected = await showMenu<String>(
       context: context,
       color: const Color(0xFF22222E),
-      position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx, pos.dy),
+      position: RelativeRect.fromLTRB(pos.dx + 6, pos.dy + 6, pos.dx + 6, pos.dy + 6),
       items: [
         PopupMenuItem<String>(
           value: 'folder',
@@ -4441,7 +4441,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     final selected = await showMenu<String>(
       context: context,
       color: const Color(0xFF22222E),
-      position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx, pos.dy),
+      position: RelativeRect.fromLTRB(pos.dx + 6, pos.dy + 6, pos.dx + 6, pos.dy + 6),
       items: _gsSites
           .map((s) => PopupMenuItem<String>(
                 value: s.$1,

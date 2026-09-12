@@ -5,7 +5,7 @@ description: >-
 publish_to: 'none'
 # ビルド番号 (b205 …) を正として揃える。 msix_version も同じ番号にする
 #   (= ストア用は 4 桁・末尾 0)。 リリースのたびに両方を上げること。
-version: 1.0.0+366
+version: 1.0.0+376
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -37,6 +37,23 @@ dependencies:
   webview_windows: ^0.2.2
 
   uuid: ^4.3.3
+  # 擬似端末 (Windows は ConPTY)。 AI の CLI (Claude Code / Codex /
+  # Gemini) をアプリの中で動かし、 ログインの対話を成立させる為。
+  # VSCode の統合ターミナルと同じ仕組み (向こうは node-pty)。
+  # ★ pub.dev 版ではなく packages/ の複製を使う。
+  #   0.4.2 の Windows 実装はコマンドラインを
+  #   `exe exe arg...` と組む (argv[0] が二重になる) 不具合があり、
+  #   npm も CLI も自分のパスを引数として受け取って失敗する。
+  #   引用符も付けないので空白入りのパスで割れる。
+  #   packages/flutter_pty/src/flutter_pty_win.c の build_command を直してある。
+  flutter_pty:
+    path: packages/flutter_pty
+  # ★ 本物の端末表示 (= ユーザー要望: 選択肢を Enter で決めたり、 指示を
+  #   投げたりできるように)。 これが無いと、 CLI が画面を組み立てるための
+  #   カーソル移動を捨てて素の文字だけ出す事になり、 文字が詰まって並び、
+  #   矢印キーで選んでいる所も分からない。 flutter_pty と同じ作者の対。
+  #   Dart だけで出来ているので、 ネイティブのビルドには影響しない。
+  xterm: ^4.0.0
   # 共有パスワードのハッシュ化 (SHA-256) に使用。
   # 元々 transitive で入っていたものを直接依存に昇格しただけなので
   # 依存解決は変わらない。

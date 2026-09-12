@@ -279,6 +279,53 @@ class HomeShortcutService {
     return null;
   }
 
+  /// ショートカット (.lnk) が指している先のパスを返す (読めなければ null)。
+  ///
+  /// ページ一覧でショートカットを押した時に、 中身 (フォルダーやファイル) を
+  /// そのまま開くために使う。 作る時と同じ IShellLink を読み取りで使うので、
+  /// 外部プロセスは起動しない (= セキュリティソフトに止められない)。
+  ///
+  /// 指している物が見つからなくても探し回らせない (`Resolve` は呼ばない)。
+  /// 探し回ると、 消えたショートカットを押すたびに画面が固まる。
+  static String? resolveShortcutTarget(String lnkPath) {
+    if (!Platform.isWindows) return null;
+    if (!lnkPath.toLowerCase().endsWith('.lnk')) return null;
+    final init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    final needUninit = init == S_OK || init == S_FALSE;
+    ShellLink? link;
+    IPersistFile? file;
+    final pLnk = lnkPath.toNativeUtf16();
+    final buf = calloc<Uint16>(MAX_PATH + 1).cast<Utf16>();
+    final fd = calloc<WIN32_FIND_DATA>();
+    try {
+      link = ShellLink.createInstance();
+      file = IPersistFile.from(link);
+      if (file.load(pLnk, STGM_READ) != S_OK) return null;
+      // 第 4 引数 0 = そのままのパス (短縮名や UNC への置き換えをしない)。
+      if (link.getPath(buf, MAX_PATH, fd, 0) != S_OK) return null;
+      final target = buf.toDartString().trim();
+      return target.isEmpty ? null : target;
+    } catch (e) {
+      debugPrint('.lnk の読み取りに失敗: $e');
+      return null;
+    } finally {
+      // ★ release() は自分で呼ばない (= 点検で判明: win32 5.x は後始末係
+      //   (Finalizer) を付けており、 自分で release すると二度解放になって
+      //   落ちる事がある)。 使い終わった印を消すだけにする。
+      link = null;
+      file = null;
+      calloc
+        ..free(pLnk)
+        ..free(buf)
+        ..free(fd);
+      if (needUninit) {
+        try {
+          CoUninitialize();
+        } catch (_) {}
+      }
+    }
+  }
+
   /// IShellLink (COM) で .lnk を書く。 外部プロセスは起動しない。
   static bool _writeShellLink({
     required String lnkPath,

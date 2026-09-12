@@ -33,6 +33,8 @@ import '../providers/mind_map_provider.dart';
 import '../services/google_auth.dart';
 import '../services/billing_service.dart';
 import '../services/home_shortcut_service.dart';
+import '../services/agent_cli.dart';
+import '../services/agent_cli_session.dart';
 import '../services/mcp_server.dart';
 import '../services/screen_capture.dart' as scap;
 import '../services/screen_recorder.dart';
@@ -56,6 +58,7 @@ import '../utils/embedded_oauth_guard.dart';
 // メッセージ機能 (messaging_dialog.dart) はユーザー要望で廃止したため import 削除。
 import '../widgets/calc_body.dart';
 import '../widgets/anchor_below_layout.dart';
+import '../widgets/agent_terminal.dart';
 import '../widgets/connection_painter.dart';
 import '../widgets/node_widget.dart';
 import '../widgets/google_search_dialog.dart';
@@ -641,6 +644,56 @@ Future<T?> showDialogNearWidget<T>(
       ]);
     },
   );
+}
+
+/// OS の既定のアプリでファイル (または URL) を開く。 開けたら true。
+///
+/// ★ open_filex の Windows 実装は `cmd /c start "" <path>` を素で呼ぶので、
+///   空白を含むパス (C:\Program Files\… など) が開けず、 黒い窓も一瞬出る。
+///   デスクトップでは url_launcher (Windows は ShellExecute) を先に使い、
+///   それでも駄目な時だけ open_filex に回す。 最後の手段として Windows は
+///   「プログラムから開く」 の窓を出す (= .dll など既定のアプリが無い種類も
+///   開けるように)。
+Future<bool> openPathWithOs(String path) async {
+  final p = path.trim();
+  if (p.isEmpty) return false;
+  final isUrl = p.startsWith('http://') || p.startsWith('https://');
+  if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+    try {
+      final uri = isUrl ? Uri.parse(p) : Uri.file(p);
+      if (await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+        return true;
+      }
+    } catch (e) {
+      debugPrint('openPathWithOs launchUrl failed: $e');
+    }
+  }
+  try {
+    final res = await OpenFilex.open(p);
+    if (res.type == ResultType.done) return true;
+  } catch (e) {
+    debugPrint('openPathWithOs OpenFilex failed: $e');
+  }
+  // 既定のアプリが無い種類 (.dll など) は「プログラムから開く」 を出す。
+  // ★ 実物が無い時はここへ来ない (= 点検で判明: rundll32 は何を渡しても
+  //   起動に成功するので、 「開けませんでした」 の知らせが出せなくなる)。
+  if (!isUrl && !kIsWeb && Platform.isWindows) {
+    try {
+      if (!File(p).existsSync() && !Directory(p).existsSync()) return false;
+    } catch (_) {
+      return false;
+    }
+    try {
+      await Process.start(
+          'rundll32.exe',
+          ['shell32.dll,OpenAs_RunDLL', p.replaceAll('/', '\\')],
+          mode: ProcessStartMode.detached);
+      return true;
+    } catch (e) {
+      debugPrint('openPathWithOs OpenAs failed: $e');
+    }
+  }
+  return false;
 }
 
 class MindMapScreen extends StatefulWidget {
@@ -2380,6 +2433,110 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// drawer 上のフラットインデックス (0 始まり) を保持。
   /// drawer の表示順 (フォルダー → そのページ群 → ルートページ群) で連番。
   int? _drawerLastAnchorIndex;
+
+  // ── 開いているフォルダー (= ユーザー要望: vscode でフォルダーを開いた時
+  //    と同じように、 フォルダーの行は出さず中身を一番上から並べる) ──
+  //    ここに id が入っている間、 ページ一覧はそのフォルダーの中身だけを出す。
+  //    名前と「閉じる」 は一覧の見出しに出す。 開いたフォルダーは覚えるので、
+  //    次に立ち上げた時も同じフォルダーが開いている (= vscode と同じ)。
+  String? _drawerOpenFolderId;
+
+  /// 開いているフォルダーを覚える / 読み直す (= vscode と同じで、 開けるのは
+  /// 1 つだけ。 閉じるまでその中だけを一覧に出す)。
+  static const String _kOpenFolderPrefsKey = 'open_folder_id';
+
+  /// 最近開いたフォルダー (新しい順)。 開く先を選び直す時の一覧に使う。
+  /// フォルダーそのものとは別物で、 × で外しても中身は消えない。
+  static const String _kRecentFoldersPrefsKey = 'recent_open_folders';
+  static const int _kRecentFoldersMax = 12;
+  final List<String> _recentFolderIds = [];
+
+  Future<void> _loadRecentFolders() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final list = prefs.getStringList(_kRecentFoldersPrefsKey);
+      if (!mounted || list == null || list.isEmpty) return;
+      setState(() {
+        _recentFolderIds
+          ..clear()
+          ..addAll(list);
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _persistRecentFolders() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(_kRecentFoldersPrefsKey, _recentFolderIds);
+    } catch (_) {}
+  }
+
+  /// 開いたフォルダーを一覧の先頭へ。
+  void _pushRecentFolder(String id) {
+    if (id.isEmpty) return;
+    _recentFolderIds.remove(id);
+    _recentFolderIds.insert(0, id);
+    if (_recentFolderIds.length > _kRecentFoldersMax) {
+      _recentFolderIds.removeRange(_kRecentFoldersMax, _recentFolderIds.length);
+    }
+    unawaited(_persistRecentFolders());
+  }
+
+  /// 「最近開いた項目」 から外す (フォルダー自体は消さない)。
+  void _removeRecentFolder(String id) {
+    if (!_recentFolderIds.remove(id)) return;
+    if (mounted) setState(() {});
+    unawaited(_persistRecentFolders());
+  }
+
+  Future<void> _loadOpenFolderId() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final id = prefs.getString(_kOpenFolderPrefsKey);
+      if (!mounted || id == null || id.isEmpty) return;
+      setState(() => _drawerOpenFolderId = id);
+      // Ctrl+1〜9 や MCP もここを見るので、 provider へ写す。
+      context.read<MindMapProvider>().drawerOpenFolderId = id;
+      // 前に開いていたフォルダーも「最近開いた項目」 に入れておく。
+      _pushRecentFolder(id);
+    } catch (_) {}
+  }
+
+  /// 開くフォルダーを入れ替える ([folderId] が null なら閉じる)。
+  Future<void> _setOpenFolder(String? folderId) async {
+    if (mounted) {
+      setState(() {
+        _drawerOpenFolderId = folderId;
+        // ★ 前のフォルダーで選んでいた物を持ち越さない (= 点検で判明:
+        //   見えていないページが選ばれたままになり、 Del でまとめて
+        //   消せてしまう)。 範囲選択の基準も捨てる。
+        _drawerSelectedPageIds.clear();
+        _drawerSelectedFolderIds.clear();
+        _drawerLastAnchorIndex = null;
+      });
+      // Ctrl+1〜9 や MCP もここを見るので、 provider へ写す。
+      context.read<MindMapProvider>().drawerOpenFolderId = folderId;
+    }
+    if (folderId != null && folderId.isNotEmpty) _pushRecentFolder(folderId);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (folderId == null || folderId.isEmpty) {
+        await prefs.remove(_kOpenFolderPrefsKey);
+      } else {
+        await prefs.setString(_kOpenFolderPrefsKey, folderId);
+      }
+    } catch (_) {}
+  }
+
+  /// いま開いているフォルダー。 消えていたり開いていなければ null。
+  MindMapFolder? _openedDrawerFolder(MindMapProvider provider) {
+    final id = _drawerOpenFolderId;
+    if (id == null) return null;
+    for (final f in provider.folders) {
+      if (f.id == id) return f;
+    }
+    return null;
+  }
 
   // ── フォルダー名のその場編集 (= ユーザー要望: 新規フォルダーの名前は
   //    画面中央のダイアログではなく、 ページ一覧に置かれるその位置で編集する) ──
@@ -5772,6 +5929,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     _loadSplitVideoFillMode();
     // ユーザーが無効化したショートカットの一覧も復元。
     _loadDisabledShortcuts();
+    // 開いていたフォルダーを開き直す (= vscode と同じ)。
+    unawaited(_loadRecentFolders().then((_) => _loadOpenFolderId()));
+    unawaited(_loadShowAppFiles());
     // チェック (✓) の大きさを読む (= ユーザー要望)。
     unawaited(_loadPdfCheckScale());
     _loadMapSplitPrefs();
@@ -6112,6 +6272,9 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// Esc や他のショートカットは既存の KeyboardListener（Focus ベース）が担当する。
   bool _handleMainGlobalArrowKey(KeyEvent event) {
     if (!mounted) return false;
+    // ★ CLI の端末に打っている間は、 アプリ側では一切拾わない
+    //   (= ユーザー報告: 端末に打てない)。 Esc も矢印も CLI が使う。
+    if (_agentTerminalFocused()) return false;
     // ── Esc: クラウド同期 (アップロード/ダウンロード) 中なら中断する
     //    (= ユーザー要望: Esc で転送をキャンセル) ──
     if (event is KeyDownEvent &&
@@ -6197,6 +6360,10 @@ class _MindMapScreenState extends State<MindMapScreen>
           route.isCurrent &&
           // ギャラリーでも続けて作れるようにする (= ユーザー要望: マップと
           //   同じように Ctrl+Shift+N を押すたびに次の要素を作りたい)。
+          // ★ 1 枚も無い時は、 ここで作らない (= 点検で判明: 仮のページに
+          //   要素が置かれて、 消したはずのページが「新しいページ」 として
+          //   一覧の直下に生えていた)。 作るのは画面の案内ボタンから。
+          !provider.hasNoPages &&
           (provider.currentPage.pageType == 'normal' ||
               provider.currentPage.pageType == 'bookshelf') &&
           // 編集中のノード以外の入力欄 (検索欄など) では邪魔しない。
@@ -6392,7 +6559,18 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (ctx == null) return false;
     final widget = ctx.widget;
     if (widget is EditableText) return true;
-    return ctx.findAncestorWidgetOfExactType<EditableText>() != null;
+    if (ctx.findAncestorWidgetOfExactType<EditableText>() != null) return true;
+    // ★ CLI の端末も「文字を打っている所」 として扱う (= ユーザー報告:
+    //   端末に打てない)。 端末は TextField ではないので、 上の見分け方では
+    //   引っ掛からず、 アプリ全体のキー処理が先に奪っていた。
+    return ctx.findAncestorStateOfType<AgentTerminalState>() != null;
+  }
+
+  /// CLI の端末に焦点があるか (= その間はアプリ側のキー処理を止める)。
+  bool _agentTerminalFocused() {
+    final ctx = FocusManager.instance.primaryFocus?.context;
+    if (ctx == null) return false;
+    return ctx.findAncestorStateOfType<AgentTerminalState>() != null;
   }
 
   bool _primaryFocusOwnsEmbeddedF2() {
@@ -7395,6 +7573,149 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// メルカトル風の世界地図をタップ (= 経度から UTC オフセットを推定) または
   /// 1 時間単位の −/+ で UTC オフセットを選び、 時計の時差として保存する。
   /// 選択後はユーザー名ダイアログへ進む。
+  /// OS のファイル管理でそのフォルダーを開く (= ユーザー要望: vscode の
+  /// ように、 ボタンでフォルダーの中が開かれるように)。
+  ///
+  /// 既にある explorer 呼び出しは 4 か所とも `/select,` で**ファイルを指す**
+  /// 形なので流用しない。 こちらはフォルダーそのものを開く。
+  Future<void> _revealDirectory(String dir) async {
+    if (dir.trim().isEmpty) return;
+    try {
+      if (Platform.isWindows) {
+        await Process.start('explorer', [dir.replaceAll('/', '\\')],
+            mode: ProcessStartMode.detached);
+      } else if (Platform.isMacOS) {
+        await Process.start('open', [dir], mode: ProcessStartMode.detached);
+      } else {
+        await Process.start('xdg-open', [dir],
+            mode: ProcessStartMode.detached);
+      }
+    } catch (e) {
+      debugPrint('reveal failed: $e');
+    }
+  }
+
+  /// データの保存先フォルダーを決めてもらう (= ユーザー要望)。
+  ///
+  /// 決めた場所に「連動フォルダー」 を 1 つ作り、 今あるページをそこへ入れる。
+  /// 以後、 そのフォルダーのページは保存のたびに <ページ名>.json として
+  /// ディスクへ出るので、 書き出しボタンを押さなくてもファイルが在る。
+  Future<void> _showDataFolderPicker(MindMapProvider provider,
+      {bool fromSettings = false}) async {
+    if (!mounted) return;
+    // 既定の候補 (書類フォルダーの下)。
+    var suggested = '';
+    try {
+      final docs = await getApplicationDocumentsDirectory();
+      suggested = '${docs.path}${Platform.pathSeparator}HisatorNotebook';
+    } catch (_) {}
+    if (!mounted) return;
+    final ctrl = TextEditingController(
+        text: provider.dataRootDir ?? suggested);
+    final chosen = await showDialog<String>(
+      context: context,
+      builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1E1E32),
+          title: Row(children: [
+            const Icon(Icons.folder_special_rounded,
+                color: Color(0xFF4FC3F7), size: 19),
+            const SizedBox(width: 9),
+            Expanded(
+              child: Text(provider.t('dataDir.title'),
+                  style: const TextStyle(color: Colors.white, fontSize: 15)),
+            ),
+          ]),
+          content: SizedBox(
+            width: 520,
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(provider.t('dataDir.body'),
+                    style: const TextStyle(
+                        color: Colors.white60, fontSize: 12, height: 1.6)),
+              ),
+              const SizedBox(height: 12),
+              Row(children: [
+                Expanded(
+                  child: TextField(
+                    controller: ctrl,
+                    style: const TextStyle(
+                        color: Colors.white, fontSize: 12.5),
+                    decoration: InputDecoration(
+                      isDense: true,
+                      filled: true,
+                      fillColor: Colors.white.withValues(alpha: 0.05),
+                      border: const OutlineInputBorder(),
+                      hintText: suggested,
+                      hintStyle: const TextStyle(
+                          color: Colors.white24, fontSize: 12),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFF4FC3F7),
+                    side: const BorderSide(color: Colors.white24),
+                  ),
+                  icon: const Icon(Icons.folder_open_rounded, size: 16),
+                  label: Text(provider.t('dataDir.browse'),
+                      style: const TextStyle(fontSize: 11.5)),
+                  onPressed: () async {
+                    final dir = await FilePicker.platform.getDirectoryPath(
+                        dialogTitle: provider.t('dataDir.title'));
+                    if (dir != null && dir.isNotEmpty) {
+                      setD(() => ctrl.text = dir);
+                    }
+                  },
+                ),
+              ]),
+            ]),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dctx),
+              child: Text(provider.t('dataDir.later'),
+                  style: const TextStyle(color: Colors.white38)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF4FC3F7)),
+              onPressed: () => Navigator.pop(dctx, ctrl.text.trim()),
+              child: Text(provider.t('btn.ok'),
+                  style: const TextStyle(
+                      color: Colors.white, fontWeight: FontWeight.w700)),
+            ),
+          ],
+        );
+      }),
+    );
+    ctrl.dispose();
+    final path = (chosen ?? '').trim();
+    if (path.isEmpty || !mounted) return;
+    await provider.setDataRootDir(path);
+    if (provider.dataRootDir == null) {
+      if (mounted) {
+        showTopToast(context, provider.t('dataDir.failed'),
+            const Color(0xFFE53935));
+      }
+      return;
+    }
+    // ★ ドロワーにフォルダーを作らない (= ユーザー報告: 保存先を決めただけなのに
+    //   そのフォルダー自体が一覧の上に見えているのが分からない)。
+    //   保存先はアプリ全体の既定として持ち、 どのページもそこへ出る。
+    //   今あるページを一度だけ書き出して、 フォルダーの中を埋めておく。
+    for (final pg in provider.pages) {
+      unawaited(provider.autoSavePageIfLinked(pg.id));
+    }
+    if (!mounted) return;
+    showTopToast(
+        context,
+        provider.t('dataDir.done').replaceFirst('{path}', path),
+        const Color(0xFF43B97F));
+  }
+
   void _showTimezonePicker(MindMapProvider provider) {
     // 端末ローカルの UTC オフセット (分) を初期選択に。
     final deviceUtcMin = DateTime.now().timeZoneOffset.inMinutes;
@@ -7530,6 +7851,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                   onPressed: () {
                     finish();
                     if (dctx.mounted) Navigator.pop(dctx);
+                    // 初回の案内の最後に「どこへ保存するか」 を聞く
+                    //   (= ユーザー要望: ページを作る前に決めたい)。
+                    if (mounted) _showDataFolderPicker(provider);
                   },
                   child: Text(provider.t('btn.continue'),
                       style: const TextStyle(
@@ -26812,7 +27136,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           );
           if (choice == 'external') {
             try {
-              await OpenFilex.open(urlOrPath);
+              await openPathWithOs(urlOrPath);
             } catch (_) {}
             return;
           }
@@ -35645,6 +35969,218 @@ class _MindMapScreenState extends State<MindMapScreen>
     await _openCreatedFileInChosenPane(destPath, result['slot'], parentNodeId);
   }
 
+  /// 指定したフォルダーの中に、 空のファイルを 1 つ作る (開かない)。
+  /// (= ユーザー要望: ページ一覧のフォルダー内を右クリックして、 新規ファイルを
+  ///  開かずに作成できるように)
+  ///
+  /// `_createAndAttachFile` と違い、 添付先のノードを作らず、 保存先も
+  /// アプリの attachments ではなく渡されたフォルダー。 作った後は一覧の
+  /// 読み取り結果を捨てて読み直すので、 その場に出てくる。
+  Future<String?> _createBlankFileInDir(MindMapProvider provider, String dirPath,
+      String type, String baseName) async {
+    try {
+      final dir = Directory(dirPath);
+      if (!await dir.exists()) await dir.create(recursive: true);
+      final sep = Platform.pathSeparator;
+      var safeBase = baseName
+          .replaceAll(RegExp(r'[\\/:*?"<>|]'), '_')
+          .replaceAll('.', '_')
+          .trim();
+      if (safeBase.isEmpty) safeBase = 'file';
+      var fileName = '$safeBase.$type';
+      var destPath = '${dir.path}$sep$fileName';
+      var counter = 1;
+      while (await File(destPath).exists()) {
+        fileName = '${safeBase}_$counter.$type';
+        destPath = '${dir.path}$sep$fileName';
+        counter++;
+      }
+      await File(destPath)
+          .writeAsBytes(_OfficeFileTemplate.buildEmpty(type), flush: true);
+      // 一覧に出すため、 そのフォルダーの読み取り結果を捨てて読み直す。
+      // (`_scanDir` は `_diskLoading` に残っていると素通りするので両方消す)
+      _diskCache.remove(dirPath);
+      _diskLoading.remove(dirPath);
+      if (mounted) {
+        setState(() {});
+        unawaited(_scanDir(dirPath));
+        showTopToast(
+            context,
+            provider.t('file.created').replaceFirst('{name}', fileName),
+            const Color(0xFF43B97F));
+      }
+      return destPath;
+    } catch (e) {
+      debugPrint('_createBlankFileInDir failed: $e');
+      if (mounted) {
+        showTopToast(context, '$e', const Color(0xFFE53935));
+      }
+      return null;
+    }
+  }
+
+  /// 一覧の「今いる場所」 に当たるディスク上のフォルダー (無ければ null)。
+  ///
+  /// 開いているフォルダーに連動先があればそこ。 一覧の根に居る時は保存先。
+  /// どちらでも無い時は null (= ファイルの置き場が無いので、 その項目は出さない)。
+  String? _drawerTargetDiskDir(MindMapProvider provider) {
+    final opened = _openedDrawerFolder(provider);
+    if (opened != null) {
+      final linked = (opened.linkedDirPath ?? '').trim();
+      return linked.isEmpty ? null : linked;
+    }
+    final root = (provider.dataRootDir ?? '').trim();
+    return root.isEmpty ? null : root;
+  }
+
+  /// 開くフォルダーを選び直す (= ユーザー要望: 「閉じる」 ではなく
+  /// 「切り替え」。 いつも何かのフォルダーを開いた状態で使う)。
+  void _showFolderSwitchMenu(MindMapProvider provider, BuildContext anchorCtx) {
+    if (!mounted) return;
+    final overlay = Overlay.of(context).context.findRenderObject();
+    RelativeRect position = const RelativeRect.fromLTRB(80, 90, 0, 0);
+    final ro = anchorCtx.findRenderObject();
+    if (overlay is RenderBox && ro is RenderBox && ro.attached) {
+      final tl = ro.localToGlobal(Offset.zero, ancestor: overlay);
+      final br = ro.localToGlobal(ro.size.bottomRight(Offset.zero),
+          ancestor: overlay);
+      position = RelativeRect.fromRect(
+          Rect.fromPoints(tl, br), Offset.zero & overlay.size);
+    }
+    final openId = _drawerOpenFolderId;
+    // 「最近開いた項目」 (新しい順)。 消えたフォルダーは出さない。
+    // 今開いている物が控えに無い時は、 先頭に足して必ず出す。
+    final byId = {for (final f in provider.folders) f.id: f};
+    final recent = <MindMapFolder>[
+      for (final id in _recentFolderIds)
+        if (byId[id] != null) byId[id]!,
+    ];
+    if (openId != null &&
+        byId[openId] != null &&
+        !recent.any((f) => f.id == openId)) {
+      recent.insert(0, byId[openId]!);
+    }
+    final rootPages = provider
+        .pagesInFolder(null)
+        .where((p) => !provider.isPageHidden(p.id))
+        .length;
+    showMenu<String>(
+      context: context,
+      position: position,
+      color: const Color(0xFF1E1E32),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(10),
+        side: BorderSide(color: Colors.white.withValues(alpha: 0.12)),
+      ),
+      items: <PopupMenuEntry<String>>[
+        // 見出し (押せない)。 ここは「今あるフォルダー」 ではなく
+        // 「最近開いた物」 の一覧だと分かるようにする (= ユーザー要望)。
+        PopupMenuItem<String>(
+          enabled: false,
+          height: 26,
+          child: Text(provider.t('drawer.recentFolders'),
+              style: const TextStyle(
+                  color: Colors.white38,
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.w700)),
+        ),
+        for (final f in recent)
+          PopupMenuItem<String>(
+            value: 'f:${f.id}',
+            height: 38,
+            child: Row(children: [
+              Icon(
+                  f.id == openId
+                      ? Icons.folder_open_rounded
+                      : Icons.folder_rounded,
+                  size: 16,
+                  color: f.id == openId
+                      ? const Color(0xFF43B97F)
+                      : const Color(0xFFFFB347)),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(f.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: Colors.white, fontSize: 12.5)),
+              ),
+              // ★ 今開いている物以外は、 この一覧から外せる (= ユーザー要望)。
+              //   フォルダー自体は消えない。
+              if (f.id != openId)
+                Builder(builder: (itemCtx) {
+                  return Tooltip(
+                    message: provider.t('drawer.removeFromRecent'),
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () => Navigator.pop(itemCtx, 'rm:${f.id}'),
+                      child: const Padding(
+                        padding: EdgeInsets.only(left: 10),
+                        child: Icon(Icons.close_rounded,
+                            size: 14, color: Colors.white38),
+                      ),
+                    ),
+                  );
+                }),
+            ]),
+          ),
+        // フォルダーに入っていないページがある時だけ、 その置き場も出す。
+        if (rootPages > 0)
+          _menuItem<String>(
+              value: 'root',
+              icon: Icons.inbox_rounded,
+              iconColor: Colors.white54,
+              label: provider.t('drawer.pagesOutsideFolders')),
+        const PopupMenuDivider(),
+        _menuItem<String>(
+            value: 'pick',
+            icon: Icons.drive_folder_upload_rounded,
+            iconColor: const Color(0xFF4FC3F7),
+            label: provider.t('drawer.openFolder')),
+      ],
+    ).then((v) {
+      if (v == null || !mounted) return;
+      if (v == 'pick') {
+        unawaited(_importJsonFromDirectory(context, provider));
+      } else if (v == 'root') {
+        unawaited(_setOpenFolder(null));
+      } else if (v.startsWith('rm:')) {
+        // 一覧から外して、 そのまま開き直す (続けて選べるように)。
+        _removeRecentFolder(v.substring(3));
+        _showFolderSwitchMenu(provider, anchorCtx);
+      } else if (v.startsWith('f:')) {
+        unawaited(_setOpenFolder(v.substring(2)));
+      }
+    });
+  }
+
+  /// ページ一覧 (ドロワー) を開いて「ページ一覧」 タブにする。
+  /// フォルダーを開いた直後に、 その中身が見えるようにするため。
+  void _openDrawerToMaps() {
+    if (!mounted) return;
+    if (_drawerView != 'maps') setState(() => _drawerView = 'maps');
+    if (_scaffoldKey.currentState?.isDrawerOpen != true) {
+      _scaffoldKey.currentState?.openDrawer();
+    }
+  }
+
+  /// ページ一覧の「何も無い所」 を右クリックした時のメニュー。
+  /// ★ 「+」 と同じ項目を出す (= ユーザー要望)。 出す場所だけが違う。
+  void _showDrawerBlankAreaMenu(MindMapProvider provider, Offset at) {
+    if (!mounted) return;
+    _showDrawerAddMenu(context, provider, null, at);
+  }
+
+  /// 種類と名前を聞いてから、 そのフォルダーに空のファイルを作る (開かない)。
+  Future<void> _createFileInDirWithPrompt(
+      MindMapProvider provider, String dir) async {
+    final spec = await _promptCreateFileTypeName(context, provider,
+        allowOpenInPane: false, inPane: false);
+    if (spec == null || !mounted) return;
+    await _createBlankFileInDir(
+        provider, dir, spec['type'] ?? 'txt', spec['name'] ?? '');
+  }
+
   /// 右クリック位置に新規ファイル (txt / md / docx 等) のノードを作る
   /// (= ユーザー要望: 右クリックからファイルを生成できるように。
   /// ギャラリーでは棚のセルへ自動配置)。
@@ -35668,22 +36204,29 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 生成先が違う複数の入口 (ノード右クリック / キャンバス右クリック) で共用。
   /// [markdownAsPage] = true の時、 Markdown は「ファイル」 ではなく
   /// 「Markdown のページ」 を意味する (= ユーザー要望: 同じ並びで選べる)。
+  /// [allowOpenInPane] を false にすると「どの分割ペインで開くか」 の行を
+  /// 出さない (= ユーザー要望: ページ一覧から作る時は、 開かずに作るだけ)。
+  /// [inPane] は出す位置の基準 (ドロワーから開く時は画面全体にする)。
   Future<Map<String, String>?> _promptCreateFileTypeName(
       BuildContext ctx, MindMapProvider provider,
-      {bool markdownAsPage = false}) async {
+      {bool markdownAsPage = false,
+      bool allowOpenInPane = true,
+      bool inPane = true}) async {
     String selectedType = markdownAsPage ? 'md' : 'docx'; // デフォルト
     // ── 作ったファイルをどの分割ペインで開くか (= ユーザー要望: 画面分割
     //    した状態でファイルを作成した時、 どの画面に埋め込むかを選べる) ──
     //    null = 開かない (今までどおり。 ノードを作るだけ)。
     int? openSlot;
-    final splitSlots = _mapSplitOpen ? _visibleSplitSlots() : const <int>[];
+    final splitSlots =
+        (allowOpenInPane && _mapSplitOpen) ? _visibleSplitSlots() : const <int>[];
     final nameCtrl =
         TextEditingController(text: provider.t('file.defaultName'));
     // クリックした場所の近くに出す (= ユーザー要望: 画面中央ではなく)。
     final result = await _showNearDialogMain<Map<String, String>>(
       width: 480,
       // 「開く場所」 の行が増える分だけ縦を伸ばす (= ユーザー要望)。
-      height: _mapSplitOpen ? 510 : 430,
+      height: (allowOpenInPane && _mapSplitOpen) ? 510 : 430,
+      inPane: inPane,
       builder: (dctx) {
         return StatefulBuilder(builder: (sctx, setS) {
           return AlertDialog(
@@ -43377,6 +43920,14 @@ class _MindMapScreenState extends State<MindMapScreen>
       'color': Color(0xFF9575CD),
     },
     {
+      // ターミナル (= ユーザー要望: ターミナルを開くボタン)。
+      //   いま開いているページの置き場で開く。 右クリックで管理者。
+      'id': 'openTerminal',
+      'labelKey': 'hdr.openTerminal',
+      'icon': Icons.terminal_rounded,
+      'color': Color(0xFF7E57C2),
+    },
+    {
       // 無音カメラ (= ユーザー要望)。
       'id': 'silentCamera',
       'labelKey': 'hdr.silentCamera',
@@ -43621,7 +44172,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         // 'pomodoro' はタイマーに統合したため一覧から外した (= ユーザー
         // 要望)。 配置済みのボタンはモバイルでは今までどおり動く。
         'calculator', 'stopwatch', 'weather', 'alarm',
-        'silentCamera', 'screenRecord',
+        'silentCamera', 'screenRecord', 'openTerminal',
         'calendar', 'focusLock', 'appLock',
         // ガント/予定表/フラッシュカードはツールとしてここから追加 (= ユーザー要望)。
         'gantt', 'memberSchedule', 'flashcards',
@@ -45714,10 +46265,87 @@ class _MindMapScreenState extends State<MindMapScreen>
     'openAi',
     'webAutomation',
     'createFile',
+    'openTerminal',
   };
 
   /// いま実行中の単発コマンド。
   final Set<String> _runningSingleFlight = <String>{};
+
+  // ── ヘッダーの「ターミナル」 (= ユーザー要望: ヘッダーボタンとしても) ──
+  //
+  //   開く場所は**いま開いているページの置き場**。 盾の印を押すと管理者。
+  //   管理者はアプリの中には出せない (昇格は別プロセスでしか得られない)
+  //   ので、 その時だけ OS の窓が開く。
+  Future<void> _openTerminalFromHeader(MindMapProvider provider) async {
+    final dir = await terminalBaseDir(provider);
+    if (!mounted) return;
+    final session = AgentCliRunner.begin(buildShellSession(provider, dir));
+    final size = MediaQuery.sizeOf(context);
+    await showDialog<void>(
+      context: context,
+      builder: (dctx) => Dialog(
+        backgroundColor: const Color(0xFF14141F),
+        insetPadding: const EdgeInsets.all(24),
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        child: SizedBox(
+          width: math.min(880.0, size.width - 48),
+          height: math.min(620.0, size.height - 48),
+          child: Column(children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 6, 0),
+              child: Row(children: [
+                const Icon(Icons.terminal_rounded,
+                    size: 16, color: Color(0xFF9CCC65)),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(dir,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          color: Colors.white54, fontSize: 11)),
+                ),
+                Tooltip(
+                  message: provider.t('cli.openAdmin'),
+                  child: IconButton(
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints(minWidth: 30, minHeight: 30),
+                    icon: const Icon(Icons.shield_outlined,
+                        size: 17, color: Color(0xFFFFB347)),
+                    onPressed: () {
+                      final ok = AgentCli.openAdminTerminal(dir);
+                      if (!mounted) return;
+                      showTopToast(
+                          context,
+                          ok
+                              ? provider.t('cli.adminOpened')
+                              : provider.t('cli.adminFailed'),
+                          ok
+                              ? const Color(0xFF43B97F)
+                              : const Color(0xFFE53935));
+                    },
+                  ),
+                ),
+                IconButton(
+                  tooltip: provider.t('btn.close'),
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 30, minHeight: 30),
+                  icon: const Icon(Icons.close_rounded,
+                      size: 18, color: Colors.white70),
+                  onPressed: () => Navigator.pop(dctx),
+                ),
+              ]),
+            ),
+            Expanded(
+              child: AgentTerminal(session: session, showHeader: false),
+            ),
+          ]),
+        ),
+      ),
+    );
+  }
 
   void _executeHeaderCommand(String commandId, MindMapProvider provider) {
     // 使った順を覚えておく (= ユーザー要望: ショートカットの選択肢が
@@ -46436,6 +47064,12 @@ class _MindMapScreenState extends State<MindMapScreen>
             _globalToCanvas(_editorViewportCenter(provider, global: true),
                     _ctrlFor(provider.currentPage.id)) -
                 const Offset(80, 21)));
+        break;
+      case 'openTerminal':
+        // ターミナルを開く (= ユーザー要望)。 いま開いているページの置き場が
+        //   基点。 右クリック (長押し) は管理者として別窓で開く。
+        _removeOverlay();
+        unawaited(_openTerminalFromHeader(provider));
         break;
       case 'ocrSearch':
         // APIキー必須のAI OCR実装だったため廃止。既存配置が残っていても起動しない。
@@ -57828,9 +58462,62 @@ class _MindMapScreenState extends State<MindMapScreen>
         _closeSplitIfPageNotEligible(provider.currentPage);
       }
       if (provider.pages.isEmpty) {
-        return const Scaffold(
-          backgroundColor: Color(0xFF0F0F1A),
-          body: Center(child: CircularProgressIndicator()),
+        // ★ 読み込みが終わっているのに 0 枚 = 利用者が全部消した。
+        //   その時までスピナーを回すと永遠に画面が出ない
+        //   (= 以前は 0 枚を「読み込み中」 としか見ていなかった)。
+        // ★ ページの読み込みが終わるまでは輪を回す (= 点検で判明: 別の旗を
+        //   見ていたので、 まだ読んでいる途中でも「1 枚もありません」 と出て、
+        //   そこで作ったページが読み込みとぶつかる恐れがあった)。
+        if (!provider.pageLoadSettled) {
+          return const Scaffold(
+            backgroundColor: Color(0xFF0F0F1A),
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+        return Scaffold(
+          // ★ 鍵を付けないと、 0 枚の間はプログラムからドロワーを開けない
+          //   (= 点検で判明: フォルダーを開いても一覧が出てこない)。
+          key: _scaffoldKey,
+          backgroundColor: const Color(0xFF0F0F1A),
+          drawer: _buildDrawer(context, provider),
+          // ★ ページが 1 枚も無くても、 いつもの帯をそのまま出す
+          //   (= ユーザー要望: 設定・AI アシスタント・画面分割・自分で並べた
+          //   ボタンが消えてしまう)。 ページが無い間は仮のページを返すので、
+          //   帯の中身はそのまま組み立てられる。
+          appBar: _buildAppBar(context, provider),
+          // ★ 左右・下に置いたカスタムボタンもそのまま出す (= ユーザー要望:
+          //   ヘッダーのカスタムボタンも載せて欲しい)。 帯の中に置いた物は
+          //   appBar 側、 それ以外はこの台が出す。
+          body: Stack(children: [
+            _buildDesktopHeaderButtonsDock(provider),
+            Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.note_add_outlined,
+                    size: 46, color: Colors.white24),
+                const SizedBox(height: 14),
+                Text(provider.t('page.noneBody'),
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                        color: Colors.white38, fontSize: 12.5, height: 1.6)),
+                const SizedBox(height: 18),
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF6C63FF)),
+                  icon: const Icon(Icons.add_rounded,
+                      size: 18, color: Colors.white),
+                  label: Text(provider.t('page.noneCreate'),
+                      style: const TextStyle(color: Colors.white)),
+                  // ★ どの種類のページを作るか選んでもらってから作る
+                  //   (= ユーザー要望: 押したらいきなりマップが出来るのでは
+                  //    なく、 確認の一覧を出す)。
+                  onPressed: () => _addPageDialog(context, provider),
+                ),
+              ],
+            ),
+          ),
+          ]),
         );
       }
       final pageId = provider.currentPage.id;
@@ -64280,7 +64967,9 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   PreferredSizeWidget _buildAppBar(
       BuildContext context, MindMapProvider provider) {
-    final isRangeMode = _rangeSelectMode;
+    // ★ ページが 1 枚も無い時は、 範囲選択 / 移動の最中でも普通の帯を出す
+    //   (= 点検で判明: 出しっぱなしだとハンバーガーも ⋮ も消えてしまう)。
+    final isRangeMode = _rangeSelectMode && !provider.hasNoPages;
     // 図形 (折れ線・四角など) だけを選んでいる時も「〜個選択中」 と出す
     // (= ユーザー報告: 全選択で図形をまとめて削除できない)。
     final hasRangeSelection =
@@ -64384,7 +65073,8 @@ class _MindMapScreenState extends State<MindMapScreen>
             ),
         ],
       ),
-      automaticallyImplyLeading: _moveModeNodeId == null && !isRangeMode,
+      automaticallyImplyLeading:
+          (_moveModeNodeId == null || provider.hasNoPages) && !isRangeMode,
       leading: _moveModeNodeId != null
           ? null
           : isRangeMode
@@ -64513,7 +65203,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                                         child: GestureDetector(
                                           behavior:
                                               HitTestBehavior.deferToChild,
-                                          onTap: (_moveModeNodeId != null ||
+                                          // ★ 0 枚の時は押しても打った名前が
+                                          //   捨てられるだけなので入らない。
+                                          onTap: (provider.hasNoPages ||
+                                                  _moveModeNodeId != null ||
                                                   isRangeMode ||
                                                   _editingMapName)
                                               ? null
@@ -64528,7 +65221,13 @@ class _MindMapScreenState extends State<MindMapScreen>
                                               : () => _showHeaderColorPicker(
                                                   provider),
                                           child: Text(
-                                              provider.currentPage.name,
+                                              // ページが 1 枚も無い時は、
+                                              // 仮のページの名前ではなく
+                                              // 「ページがありません」 と出す。
+                                              provider.hasNoPages
+                                                  ? provider
+                                                      .t('page.noneTitle')
+                                                  : provider.currentPage.name,
                                               maxLines: 1,
                                               overflow: TextOverflow.ellipsis,
                                               style: const TextStyle(
@@ -68170,14 +68869,52 @@ class _MindMapScreenState extends State<MindMapScreen>
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 16, 8, 8),
               child: Row(children: [
-                const Icon(Icons.map_outlined, color: Colors.white54, size: 18),
-                const SizedBox(width: 10),
-                Expanded(
-                    child: Text(provider.t('drawer.title'),
-                        style: const TextStyle(
-                            color: Colors.white70,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600))),
+                // ★ フォルダーを開いている間は、 見出しをそのフォルダーの名前に
+                //   差し替える (= ユーザー要望: 一覧の中にフォルダーの行は出さず、
+                //   中身を一番上から並べる)。 左の矢印で一覧へ戻る。
+                if (_openedDrawerFolder(provider) != null) ...[
+                  // ★ 「閉じる」 は出さない (= ユーザー要望: いつも何かの
+                  //   フォルダーを開いて、 その下に作っていく形にしたい)。
+                  //   見出しを押すと、 開く先を選び直せる。
+                  Expanded(
+                    child: Builder(builder: (btnCtx) {
+                      return InkWell(
+                        borderRadius: BorderRadius.circular(6),
+                        onTap: () => _showFolderSwitchMenu(provider, btnCtx),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 4),
+                          child: Row(children: [
+                            const Icon(Icons.folder_open_rounded,
+                                color: Color(0xFFFFB347), size: 16),
+                            const SizedBox(width: 8),
+                            Flexible(
+                              child: Text(_openedDrawerFolder(provider)!.name,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w700)),
+                            ),
+                            const SizedBox(width: 3),
+                            const Icon(Icons.expand_more_rounded,
+                                color: Colors.white38, size: 16),
+                          ]),
+                        ),
+                      );
+                    }),
+                  ),
+                ] else ...[
+                  const Icon(Icons.map_outlined,
+                      color: Colors.white54, size: 18),
+                  const SizedBox(width: 10),
+                  Expanded(
+                      child: Text(provider.t('drawer.title'),
+                          style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600))),
+                ],
                 if (_isDesktop)
                   Container(
                     padding:
@@ -68298,6 +69035,513 @@ class _MindMapScreenState extends State<MindMapScreen>
   }
 
   /// Drawer の本体: フォルダー → そのページ → ルートページの順で表示
+  // ── 保存先フォルダーの中身をそのまま出す (= ユーザー要望: vscode と
+  //    同じようなファイルの開き方に。関係ないファイルも表示だけして、
+  //    ページ一覧から投げて埋め込めるように) ──
+  //
+  //    build の中でディスクを触らない。読んだ結果をここに溜めて、
+  //    build はそれを読むだけにする (毎フレーム列挙すると固まる)。
+  final Map<String, List<_DiskEntry>> _diskCache = {};
+  final Set<String> _diskOpen = {};
+  final Set<String> _diskLoading = {};
+
+  /// アプリが書いた .json も出すか (既定は隠す。ページのタイルと二重になる)。
+  /// 一覧の右クリックで切り替えられる (= 点検で判明: 隠したまま戻せなかった)。
+  bool _diskShowAppFiles = false;
+  static const String _kShowAppFilesPrefsKey = 'diskShowAppFiles';
+
+  Future<void> _loadShowAppFiles() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final v = prefs.getBool(_kShowAppFilesPrefsKey);
+      if (!mounted || v == null || v == _diskShowAppFiles) return;
+      setState(() => _diskShowAppFiles = v);
+    } catch (_) {}
+  }
+
+  Future<void> _toggleShowAppFiles() async {
+    if (!mounted) return;
+    setState(() => _diskShowAppFiles = !_diskShowAppFiles);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_kShowAppFilesPrefsKey, _diskShowAppFiles);
+    } catch (_) {}
+  }
+
+  /// ディレクトリごとの走査の世代。 古い走査が後から終わっても、 新しい結果を
+  /// 上書きしないようにするため (= 点検で判明: 作ったのに出てこない事がある)。
+  final Map<String, int> _diskScanGen = {};
+
+  /// 1 つのディレクトリを 1 階層だけ読む。
+  Future<void> _scanDir(String dir) async {
+    if (_diskLoading.contains(dir)) return;
+    _diskLoading.add(dir);
+    // この走査の世代。 走っている間に読み直しを頼まれたら、 古い方の結果は
+    // 捨てる (= 点検で判明: 作ったファイルが出てこない事がある)。
+    final gen = (_diskScanGen[dir] ?? 0) + 1;
+    _diskScanGen[dir] = gen;
+    final out = <_DiskEntry>[];
+    try {
+      final entries = await Directory(dir).list(followLinks: false).toList();
+      for (final e in entries) {
+        final name = e.path.split(Platform.pathSeparator).last;
+        if (name.startsWith('.')) continue;
+        // ★ Word / Excel / PowerPoint が開いている間だけ作る控えのファイル
+        //   (~$なんとか.pptx) は、 中身が無く開けない (= ユーザー報告:
+        //   開こうとすると「ファイルを開けませんでした」 になる)。 出さない。
+        if (name.startsWith(r'~$')) continue;
+        // 書き込み途中の控え (= 置き換える前の一時ファイル) も出さない。
+        if (name.toLowerCase().endsWith('.tmp')) continue;
+        // Windows が勝手に置く物も出さない。
+        final lower = name.toLowerCase();
+        if (lower == 'thumbs.db' || lower == 'desktop.ini') continue;
+        out.add(_DiskEntry(
+            path: e.path, name: name, isDir: e is Directory));
+      }
+      // フォルダーを先に、その中で名前順。
+      out.sort((a, b) {
+        if (a.isDir != b.isDir) return a.isDir ? -1 : 1;
+        return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+      });
+      // 多すぎる時は打ち切る (全部作ると一覧が固まる)。
+      const maxPerDir = 300;
+      if (out.length > maxPerDir) {
+        final rest = out.length - maxPerDir;
+        out.removeRange(maxPerDir, out.length);
+        out.add(_DiskEntry(
+            path: '', name: '… $rest', isDir: false, isMore: true));
+      }
+      // ★ アプリがページを書き出した .json は一覧に出さない
+      //   (= ユーザー要望: ページを消した後に残る .json が気になる)。
+      //   中身の頭だけ見て見分ける (名前はページ名と同じとは限らないため)。
+      //   打ち切った後に見るので、 何百個あっても読むのは出す分だけ。
+      for (var i = 0; i < out.length; i++) {
+        final e = out[i];
+        if (e.isDir || e.isMore) continue;
+        if (!e.name.toLowerCase().endsWith('.json')) continue;
+        if (await _looksLikeAppPageJson(e.path)) {
+          out[i] = _DiskEntry(
+              path: e.path, name: e.name, isDir: false, isAppPage: true);
+        }
+      }
+    } catch (_) {
+      // 権限が無い等。空のまま置く (毎回試さないように印は残す)。
+    }
+    _diskLoading.remove(dir);
+    if (!mounted) return;
+    // 自分より新しい走査が始まっていたら、 この結果は捨てる。
+    if ((_diskScanGen[dir] ?? 0) != gen) return;
+    setState(() => _diskCache[dir] = out);
+  }
+
+  /// アプリがページを書き出した .json か (頭の 120 バイトだけ見る)。
+  ///
+  /// 連動フォルダーへの書き出しは `{"version":3,"pages":[…]}` の形なので、
+  /// 名前ではなく中身で見分ける。 ページを消した後に残った物も隠せる。
+  Future<bool> _looksLikeAppPageJson(String path) async {
+    try {
+      final f = File(path);
+      final len = await f.length();
+      // ★ 中身が空の .json は、 書き出しが途中で切れた残骸なので隠す
+      //   (= ユーザー報告: ページを全部消すと謎の .json が出てくる)。
+      //   「アプリのファイルも表示」 を入れれば出る。
+      if (len == 0) return true;
+      if (len < 20 || len > 64 * 1024 * 1024) return false;
+      final raf = await f.open();
+      List<int> head;
+      try {
+        head = await raf.read(len < 120 ? len : 120);
+      } finally {
+        await raf.close();
+      }
+      final text = String.fromCharCodes(head).replaceAll(' ', '');
+      return text.startsWith('{"version":') && text.contains('"pages":');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// ディスクの行を組み立てる (開いているディレクトリだけ深く潜る)。
+  List<Widget> _buildDiskRows(
+      MindMapProvider provider, String dir, double indent) {
+    final cached = _diskCache[dir];
+    if (cached == null) {
+      unawaited(_scanDir(dir));
+      return [
+        Padding(
+          padding: EdgeInsets.only(left: indent + 8, top: 4, bottom: 4),
+          child: const SizedBox(
+              width: 13,
+              height: 13,
+              child: CircularProgressIndicator(strokeWidth: 1.6)),
+        ),
+      ];
+    }
+    final rows = <Widget>[];
+    for (final e in cached) {
+      if (e.isMore) {
+        rows.add(Padding(
+          padding: EdgeInsets.only(left: indent + 10, top: 2, bottom: 2),
+          child: Text(e.name,
+              style: const TextStyle(color: Colors.white24, fontSize: 10)),
+        ));
+        continue;
+      }
+      // ★ アプリがページを書き出した .json だけを隠す (= 中身で見分ける)。
+      //   名前が同じというだけでは隠さない (= 点検で判明: 利用者が作った
+      //   ファイルまで消えて、 戻す手段が無かった)。
+      if (!e.isDir && e.isAppPage && !_diskShowAppFiles) continue;
+      rows.add(_buildDiskRow(provider, e, indent));
+      if (e.isDir && _diskOpen.contains(e.path)) {
+        rows.addAll(_buildDiskRows(provider, e.path, indent + 14));
+      }
+    }
+    return rows;
+  }
+
+  Widget _buildDiskRow(
+      MindMapProvider provider, _DiskEntry e, double indent) {
+    final row = InkWell(
+      onTap: () {
+        if (e.isDir) {
+          setState(() {
+            if (!_diskOpen.remove(e.path)) _diskOpen.add(e.path);
+          });
+        } else {
+          unawaited(_openAttachment(e.path));
+        }
+      },
+      onSecondaryTapUp: (d) => _showDiskRowMenu(provider, e, d.globalPosition),
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(indent + 6, 4, 8, 4),
+        child: Row(children: [
+          if (e.isDir)
+            Icon(
+                _diskOpen.contains(e.path)
+                    ? Icons.keyboard_arrow_down_rounded
+                    : Icons.chevron_right_rounded,
+                size: 14,
+                color: Colors.white38)
+          else
+            const SizedBox(width: 14),
+          const SizedBox(width: 2),
+          if (e.isDir)
+            const Icon(Icons.folder_rounded,
+                size: 13, color: Color(0xFFFFB347))
+          else
+            Text(_folderFileIcon(e.name),
+                style: const TextStyle(fontSize: 11)),
+          const SizedBox(width: 5),
+          Expanded(
+            child: Text(e.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    color: e.isDir ? Colors.white70 : Colors.white54,
+                    fontSize: 11)),
+          ),
+        ]),
+      ),
+    );
+    if (e.isDir) return row;
+    // ファイルはページへ投げて埋め込める (= ユーザー要望)。
+    return Draggable<_DrawerFileDragData>(
+      data: _DrawerFileDragData(e.path, e.name),
+      dragAnchorStrategy: pointerDragAnchorStrategy,
+      feedback: Material(
+        color: Colors.transparent,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1E1E32),
+            borderRadius: BorderRadius.circular(7),
+            border: Border.all(color: const Color(0xFF4FC3F7)),
+          ),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Text(_folderFileIcon(e.name),
+                style: const TextStyle(fontSize: 11)),
+            const SizedBox(width: 5),
+            Text(e.name,
+                style:
+                    const TextStyle(color: Colors.white, fontSize: 11)),
+          ]),
+        ),
+      ),
+      childWhenDragging: Opacity(opacity: 0.35, child: row),
+      onDragStarted: () => _draggingDiskFile = e.path,
+      onDraggableCanceled: (_, __) => _draggingDiskFile = null,
+      onDragEnd: (_) => _draggingDiskFile = null,
+      child: row,
+    );
+  }
+
+  /// いま掴んでいるディスクのファイル (キャンバスが受け取る時に見る)。
+  String? _draggingDiskFile;
+
+  void _showDiskRowMenu(
+      MindMapProvider provider, _DiskEntry e, Offset at) {
+    showMenu<String>(
+      context: context,
+      color: const Color(0xFF1E1E32),
+      position: RelativeRect.fromLTRB(at.dx + 6, at.dy + 6, at.dx + 6, at.dy + 6),
+      items: [
+        _menuItem<String>(
+            value: 'open',
+            icon: e.isDir
+                ? Icons.folder_open_rounded
+                : Icons.open_in_new_rounded,
+            iconColor: const Color(0xFF4FC3F7),
+            label: provider.t('disk.open')),
+        if (!e.isDir)
+          _menuItem<String>(
+              value: 'embed',
+              icon: Icons.add_box_outlined,
+              iconColor: const Color(0xFF6C63FF),
+              label: provider.t('disk.embed')),
+        // ★ アプリの中で開けない種類でも、 OS の既定のアプリへ渡せるように
+        //   (= ユーザー要望: .dll なども開けるように)。
+        if (!e.isDir)
+          _menuItem<String>(
+              value: 'openWithOs',
+              icon: Icons.launch_rounded,
+              iconColor: Colors.white54,
+              label: provider.t('disk.openWithOs')),
+        // ★ フォルダーの中に新しいファイルを作る (開かない = ユーザー要望)。
+        if (e.isDir)
+          _menuItem<String>(
+              value: 'newFileIn',
+              icon: Icons.insert_drive_file_outlined,
+              iconColor: const Color(0xFF4FC3F7),
+              label: provider.t('drawer.newFileHere')),
+        _menuItem<String>(
+            value: 'reveal',
+            icon: Icons.folder_open_rounded,
+            iconColor: const Color(0xFF4FC3F7),
+            label: provider.t('folder.openInOs')),
+      ],
+    ).then((v) {
+      if (v == null || !mounted) return;
+      if (v == 'open') {
+        if (e.isDir) {
+          setState(() {
+            if (!_diskOpen.remove(e.path)) _diskOpen.add(e.path);
+          });
+        } else {
+          unawaited(_openAttachment(e.path));
+        }
+      } else if (v == 'embed') {
+        unawaited(_embedDiskFileIntoCurrentPage(provider, e));
+      } else if (v == 'openWithOs') {
+        unawaited(openPathWithOs(e.path));
+      } else if (v == 'newFileIn') {
+        unawaited(_createFileInDirWithPrompt(provider, e.path));
+        // 作った物が見えるように、 そのフォルダーを開いた状態にする。
+        setState(() => _diskOpen.add(e.path));
+      } else if (v == 'reveal') {
+        final dir = e.isDir
+            ? e.path
+            : e.path.substring(
+                0, e.path.lastIndexOf(Platform.pathSeparator).clamp(0, e.path.length));
+        unawaited(_revealDirectory(dir));
+      }
+    });
+  }
+
+  /// ディスクのファイルを今のページへ埋め込む。
+  Future<void> _embedDiskFileIntoCurrentPage(
+      MindMapProvider provider, _DiskEntry e) async {
+    try {
+      final id = _embedFileAsNode(provider, e.path, e.name);
+      if (!mounted) return;
+      if (id != null) {
+        showTopToast(
+            context,
+            provider.t('disk.embedded').replaceFirst('{name}', e.name),
+            const Color(0xFF43B97F));
+      }
+    } catch (err) {
+      if (mounted) showTopToast(context, '$err', const Color(0xFFE53935));
+    }
+  }
+
+  /// そのディスクのパスが、データの保存先の中にあるか。
+  ///
+  /// Windows なので大小文字を無視し、区切りも揃えて比べる。
+  bool _isUnderDataRoot(MindMapProvider provider, String? path) {
+    final root = (provider.dataRootDir ?? '').trim();
+    final p = (path ?? '').trim();
+    if (root.isEmpty || p.isEmpty) return false;
+    // ★ 末尾の \ を落とす (= 点検で判明: 以前の r'\+$' は「+」 を落として
+    //   いたので、 'D:\' のような保存先で中身が全部「外」 扱いになっていた)。
+    String norm(String x) => x
+        .replaceAll('/', r'\')
+        .toLowerCase()
+        .replaceAll(RegExp(r'[\\]+$'), '');
+    final a = norm(root);
+    final b = norm(p);
+    return b == a || b.startsWith('$a\\');
+  }
+
+  /// 「根」の行 (= vscode で言うワークスペースのフォルダー)。
+  Widget _buildDrawerRootHeader(
+      MindMapProvider provider, String path, String label,
+      {required bool expanded, required VoidCallback onToggle}) {
+    return InkWell(
+      onTap: onToggle,
+      child: Container(
+        margin: const EdgeInsets.fromLTRB(0, 2, 0, 2),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.05),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.white12),
+        ),
+        child: Row(children: [
+          Icon(
+              expanded
+                  ? Icons.keyboard_arrow_down_rounded
+                  : Icons.chevron_right_rounded,
+              color: Colors.white54,
+              size: 17),
+          const SizedBox(width: 3),
+          const Icon(Icons.folder_special_rounded,
+              color: Color(0xFF4FC3F7), size: 15),
+          const SizedBox(width: 7),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700)),
+                if (path.isNotEmpty)
+                  Text(path,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          color: Colors.white30, fontSize: 9.5)),
+              ],
+            ),
+          ),
+          if (path.isNotEmpty)
+            IconButton(
+              tooltip: provider.t('folder.openInOs'),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+              icon: const Icon(Icons.folder_open_rounded,
+                  size: 15, color: Colors.white38),
+              onPressed: () => unawaited(_revealDirectory(path)),
+            ),
+        ]),
+      ),
+    );
+  }
+
+  /// ページ一覧の中身を組み立てる (= ユーザー要望: vscode のように
+  /// フォルダーの直下だけが見えるように)。
+  ///
+  /// 保存先 (dataRootDir) を決めていれば、それを「根」として一段作り、
+  /// 論理フォルダーとフォルダー外のページをその子として下げる。
+  /// 保存先の外を指す連動フォルダーは「もう 1 つの根」として別に出す
+  /// (= 実際の在処が別なので、同じ根の下に置くと表示が嘘になる)。
+  List<Widget> _buildDrawerTree(
+      BuildContext context,
+      MindMapProvider provider,
+      List<MindMapFolder> folders,
+      List<MindMapPage> rootPages) {
+    // ★ フォルダーを開いている間は、 そのフォルダーの中身だけを一番上から
+    //   並べる (= ユーザー要望: vscode でフォルダーを開いた時と同じ形)。
+    //   フォルダー自身の行は出さず、 名前と「戻る」 は見出しに出す。
+    final opened = _openedDrawerFolder(provider);
+    if (opened != null) {
+      final dir = (opened.linkedDirPath ?? '').trim();
+      return [
+        ...provider
+            .pagesInFolder(opened.id)
+            .where((p) => !provider.isPageHidden(p.id))
+            .map((p) => _buildPageTile(context, provider, p)),
+        // 連動フォルダーなら、 アプリが開けない種類もそのまま並べる。
+        if (dir.isNotEmpty) ..._buildDiskRows(provider, dir, 0),
+      ];
+    }
+    final root = (provider.dataRootDir ?? '').trim();
+    // 保存先の外を指す連動フォルダー = 別の根。
+    final outside = <MindMapFolder>[
+      for (final f in folders)
+        if ((f.linkedDirPath ?? '').trim().isNotEmpty &&
+            !_isUnderDataRoot(provider, f.linkedDirPath))
+          f,
+    ];
+    final inside = <MindMapFolder>[
+      for (final f in folders)
+        if (!outside.contains(f)) f,
+    ];
+
+    List<Widget> folderBlock(MindMapFolder f, double indent) => [
+          Padding(
+            padding: EdgeInsets.only(left: indent),
+            child: _buildFolderHeader(context, provider, f),
+          ),
+          if (f.expanded)
+            ...provider
+                .pagesInFolder(f.id)
+                .where((p) => !provider.isPageHidden(p.id))
+                .map((p) => _buildPageTile(context, provider, p,
+                    indent: indent + 18)),
+          // ★ 連動フォルダーは、 その場でディスクの中身も出す (= 点検で判明:
+          //   保存先の外にあるフォルダーは中身がどこにも出ていなかった)。
+          if (f.expanded && (f.linkedDirPath ?? '').trim().isNotEmpty)
+            ..._buildDiskRows(
+                provider, (f.linkedDirPath ?? '').trim(), indent + 18),
+        ];
+
+    // 保存先を決めていない時は、今までどおりの平らな一覧に落とす (退行なし)。
+    if (root.isEmpty) {
+      return [
+        for (final f in folders) ...folderBlock(f, 0),
+        if (folders.isNotEmpty && _draggingMapPage)
+          _buildDrawerRootDropTarget(context, provider),
+        if (folders.isNotEmpty && rootPages.isNotEmpty && _draggingMapPage)
+          const Divider(color: Colors.white10, height: 8),
+        ...rootPages.map((p) => _buildPageTile(context, provider, p)),
+      ];
+    }
+
+    final rootName = root.split(Platform.pathSeparator).last;
+    return [
+      _buildDrawerRootHeader(provider, root,
+          rootName.isEmpty ? root : rootName,
+          expanded: _drawerRootExpanded,
+          onToggle: () =>
+              setState(() => _drawerRootExpanded = !_drawerRootExpanded)),
+      if (_drawerRootExpanded) ...[
+        for (final f in inside) ...folderBlock(f, 14),
+        if (_draggingMapPage)
+          Padding(
+            padding: const EdgeInsets.only(left: 14),
+            child: _buildDrawerRootDropTarget(context, provider),
+          ),
+        ...rootPages
+            .map((p) => _buildPageTile(context, provider, p, indent: 14)),
+        // ★ 保存先の中身をそのまま出す (= ユーザー要望)。
+        //   このアプリが開けない種類も表示だけする。
+        ..._buildDiskRows(provider, root, 14),
+      ],
+      // 保存先の外にある連動フォルダー (= デスクトップなどを開いた物)。
+      // ★ ふつうのフォルダーの帯として出す (= 点検で判明: 以前は「別の根」 の
+      //   行にしていたため、 中身も ⋮ メニューも出ず、 一覧から外す事すら
+      //   できなかった)。 帯を押せばそのフォルダーを開く。
+      for (final f in outside) ...folderBlock(f, 0),
+    ];
+  }
+
+  /// 根の行を開いているか (= ページ一覧の一番上のフォルダー)。
+  bool _drawerRootExpanded = true;
+
   Widget _buildDrawerBody(BuildContext context, MindMapProvider provider) {
     final folders = provider.folders;
     // 非表示ページをフィルタリング (= 「このページを非表示」 の項目で hidePage
@@ -68313,10 +69557,15 @@ class _MindMapScreenState extends State<MindMapScreen>
       if (_drawerMultiSelectActive)
         _buildDrawerMultiSelectBar(context, provider),
       Expanded(
-        // マップが多くなった時に「どこを見ているか」が分かりにくかったので、
-        // 暗い drawer 上でもはっきり見える白系のスクロールバーを常時表示する。
-        // RawScrollbar はカスタム配色がそのまま反映される (Theme に依存しない)。
-        child: RawScrollbar(
+        // ★ 何も無い所の右クリック (= ユーザー要望: フォルダーの中を右クリック
+        //   して、 開かずに新しいファイルを作れるように)。 行の上での右クリック
+        //   は、 それぞれの行の受け口が先に取る (ディスクの行など)。
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onSecondaryTapUp: _isDesktop
+              ? (d) => _showDrawerBlankAreaMenu(provider, d.globalPosition)
+              : null,
+          child: RawScrollbar(
           controller: _drawerListScrollCtrl,
           thumbColor: Colors.white.withValues(alpha: 0.85),
           // ホバー時は更に明るく強調
@@ -68333,29 +69582,8 @@ class _MindMapScreenState extends State<MindMapScreen>
           child: ListView(
             controller: _drawerListScrollCtrl,
             padding: const EdgeInsets.fromLTRB(0, 6, 12, 6),
-            children: [
-              // フォルダー(展開可能)
-              for (final folder in folders) ...[
-                _buildFolderHeader(context, provider, folder),
-                if (folder.expanded)
-                  ...provider
-                      .pagesInFolder(folder.id)
-                      .where((p) => !provider.isPageHidden(p.id))
-                      .map((p) =>
-                          _buildPageTile(context, provider, p, indent: 18)),
-              ],
-              // フォルダー内のページを上位階層 (= フォルダーなし) へ戻す
-              // ドロップ先。
-              // ★ 常に出していると「フォルダーなし」 という帯がページ一覧に
-              //   居座って見た目が悪い (= ユーザー指摘)。 ページを掴んでいる
-              //   間だけ出す (置き場所が要るのはその時だけ)。
-              if (folders.isNotEmpty && _draggingMapPage)
-                _buildDrawerRootDropTarget(context, provider),
-              if (folders.isNotEmpty && rootPages.isNotEmpty && _draggingMapPage)
-                const Divider(color: Colors.white10, height: 8),
-              // ルート(フォルダー外)のページ
-              ...rootPages.map((p) => _buildPageTile(context, provider, p)),
-            ],
+            children: _buildDrawerTree(context, provider, folders, rootPages),
+          ),
           ),
         ),
       ),
@@ -68862,12 +70090,12 @@ class _MindMapScreenState extends State<MindMapScreen>
       final tappedIdx = flat.indexWhere(
           (it) => it.kind == _DrawerFlatItemKind.page && it.id == pageId);
       if (tappedIdx >= 0) {
-        final lo = tappedIdx < _drawerLastAnchorIndex!
-            ? tappedIdx
-            : _drawerLastAnchorIndex!;
-        final hi = tappedIdx > _drawerLastAnchorIndex!
-            ? tappedIdx
-            : _drawerLastAnchorIndex!;
+        // ★ 一覧の長さは開いているフォルダーで変わるので、 控えておいた
+        //   基準がはみ出している事がある (= 点検で判明: 切り替えた後に
+        //   Shift+クリックすると落ちる)。 必ず今の長さに収める。
+        final anchor = _drawerLastAnchorIndex!;
+        final lo = (tappedIdx < anchor ? tappedIdx : anchor).clamp(0, flat.length - 1);
+        final hi = (tappedIdx > anchor ? tappedIdx : anchor).clamp(0, flat.length - 1);
         setState(() {
           for (int i = lo; i <= hi; i++) {
             final it = flat[i];
@@ -68911,16 +70139,29 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 物理的に挟まれているマップを全て一発選択できる。
   List<_DrawerFlatItem> _drawerFlatItems(MindMapProvider provider) {
     final items = <_DrawerFlatItem>[];
+    // ★ フォルダーを開いている間は、 一覧に出ている物だけを数える
+    //   (= 点検で判明: Shift+クリックの範囲選択が、 見えないページまで
+    //   選んでいた)。 見えている順番と番号を必ず一致させる。
+    final opened = _openedDrawerFolder(provider);
+    if (opened != null) {
+      for (final p in provider.pagesInFolder(opened.id)) {
+        if (provider.isPageHidden(p.id)) continue;
+        items.add(_DrawerFlatItem(kind: _DrawerFlatItemKind.page, id: p.id));
+      }
+      return items;
+    }
     for (final folder in provider.folders) {
       items.add(
           _DrawerFlatItem(kind: _DrawerFlatItemKind.folder, id: folder.id));
       if (folder.expanded) {
         for (final p in provider.pagesInFolder(folder.id)) {
+          if (provider.isPageHidden(p.id)) continue;
           items.add(_DrawerFlatItem(kind: _DrawerFlatItemKind.page, id: p.id));
         }
       }
     }
     for (final p in provider.pagesInFolder(null)) {
+      if (provider.isPageHidden(p.id)) continue;
       items.add(_DrawerFlatItem(kind: _DrawerFlatItemKind.page, id: p.id));
     }
     return items;
@@ -68946,12 +70187,12 @@ class _MindMapScreenState extends State<MindMapScreen>
       final tappedIdx = flat.indexWhere(
           (it) => it.kind == _DrawerFlatItemKind.folder && it.id == folderId);
       if (tappedIdx >= 0) {
-        final lo = tappedIdx < _drawerLastAnchorIndex!
-            ? tappedIdx
-            : _drawerLastAnchorIndex!;
-        final hi = tappedIdx > _drawerLastAnchorIndex!
-            ? tappedIdx
-            : _drawerLastAnchorIndex!;
+        // ★ 一覧の長さは開いているフォルダーで変わるので、 控えておいた
+        //   基準がはみ出している事がある (= 点検で判明: 切り替えた後に
+        //   Shift+クリックすると落ちる)。 必ず今の長さに収める。
+        final anchor = _drawerLastAnchorIndex!;
+        final lo = (tappedIdx < anchor ? tappedIdx : anchor).clamp(0, flat.length - 1);
+        final hi = (tappedIdx > anchor ? tappedIdx : anchor).clamp(0, flat.length - 1);
         setState(() {
           for (int i = lo; i <= hi; i++) {
             final it = flat[i];
@@ -69011,11 +70252,62 @@ class _MindMapScreenState extends State<MindMapScreen>
         final isSelected = _drawerSelectedFolderIds.contains(folder.id);
         // 「・・・」ボタンの位置でメニューをポップオーバーするための GlobalKey
         final moreBtnKey = GlobalKey();
-        return InkWell(
+        // ★ フォルダー同士の並べ替え (= ユーザー要望)。
+        //   帯を長押しして上下へ運ぶと、 放した相手の前へ入る。
+        //   ページの受け取り (上の DragTarget) とは別の型なので混ざらない。
+        Widget wrapReorder(Widget child) => DragTarget<_DrawerFolderDragData>(
+              onWillAcceptWithDetails: (d) => d.data.folderId != folder.id,
+              onAcceptWithDetails: (d) {
+                provider.moveFolderNear(d.data.folderId, folder.id,
+                    before: true);
+                setState(() {});
+              },
+              builder: (c2, cand2, rej2) => Container(
+                decoration: cand2.isEmpty
+                    ? null
+                    : const BoxDecoration(
+                        border: Border(
+                            top: BorderSide(
+                                color: Color(0xFF4FC3F7), width: 2.5))),
+                child: LongPressDraggable<_DrawerFolderDragData>(
+                  data: _DrawerFolderDragData(folder.id, folder.name),
+                  dragAnchorStrategy: pointerDragAnchorStrategy,
+                  feedback: Material(
+                    color: Colors.transparent,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1E1E32),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: const Color(0xFF4FC3F7)),
+                      ),
+                      child: Row(mainAxisSize: MainAxisSize.min, children: [
+                        const Icon(Icons.folder_rounded,
+                            size: 15, color: Color(0xFF4FC3F7)),
+                        const SizedBox(width: 6),
+                        Text(folder.name,
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 12)),
+                      ]),
+                    ),
+                  ),
+                  childWhenDragging: Opacity(opacity: 0.35, child: child),
+                  child: child,
+                ),
+              ),
+            );
+        return wrapReorder(InkWell(
+          // ★ 右クリックはこのフォルダーのメニュー (= 点検で判明)。
+          onSecondaryTapUp: (_) =>
+              _showFolderContextMenu(context, provider, folder, moreBtnKey),
           onTap: () {
             // Shift/Ctrl 押下中、または選択モード中なら選択トグルのみ
             if (_toggleDrawerFolderSelectionIfModifier(folder.id)) return;
-            provider.toggleFolderExpanded(folder.id);
+            // ★ 押したらそのフォルダーを開く (= ユーザー要望: 中身が一番上に
+            //   並び、 フォルダーの行は消える)。 その場で開け閉てしたい時は
+            //   左端の矢印を押す。
+            unawaited(_setOpenFolder(folder.id));
           },
           onLongPress: () =>
               _showFolderContextMenu(context, provider, folder, moreBtnKey),
@@ -69040,12 +70332,21 @@ class _MindMapScreenState extends State<MindMapScreen>
               borderRadius: BorderRadius.circular(8),
             ),
             child: Row(children: [
-              Icon(
-                folder.expanded
-                    ? Icons.keyboard_arrow_down_rounded
-                    : Icons.chevron_right_rounded,
-                color: Colors.white54,
-                size: 18,
+              // 左端の矢印だけは今までどおり「その場で開け閉て」 (= 帯を押すと
+              // フォルダーを開くように変えたため、 逃げ道として残す)。
+              Tooltip(
+                message: provider.t('folder.expandHere'),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(4),
+                  onTap: () => provider.toggleFolderExpanded(folder.id),
+                  child: Icon(
+                    folder.expanded
+                        ? Icons.keyboard_arrow_down_rounded
+                        : Icons.chevron_right_rounded,
+                    color: Colors.white54,
+                    size: 18,
+                  ),
+                ),
               ),
               const SizedBox(width: 4),
               Icon(
@@ -69173,7 +70474,7 @@ class _MindMapScreenState extends State<MindMapScreen>
               ),
             ]),
           ),
-        );
+        ));
       },
     );
   }
@@ -69314,12 +70615,12 @@ class _MindMapScreenState extends State<MindMapScreen>
         Navigator.pop(context);
         _renamePageDialog(context, provider, i);
       },
-      onDelete: provider.pages.length > 1
-          ? () {
-              Navigator.pop(context);
-              _confirmDeletePageAt(context, provider, i);
-            }
-          : null,
+      // ★ 最後の 1 枚でも消せる (= ユーザー要望)。
+      //   消した後は自動で白紙が 1 枚置かれる。
+      onDelete: () {
+        Navigator.pop(context);
+        _confirmDeletePageAt(context, provider, i);
+      },
       // 追加機能: 長押し / 「・・・」メニュー
       // btnCtx を受け取り、その RenderBox 位置に showMenu でポップオーバー。
       // 長押しフォールバック (btnCtx が null) の時は anchorKey を使う。
@@ -69487,15 +70788,21 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 新: showMenu で「+」ボタンの右隣にポップオーバー表示。drawer を閉じずに済む。
   /// `anchorCtx` は IconButton の Builder 内で渡された BuildContext で、その
   /// RenderBox 位置がメニューのアンカーになる。
+  /// 「+」 のメニュー。 [at] を渡すと、 ボタンの隣ではなくその場所に出す
+  /// (= ユーザー要望: 一覧の何も無い所を右クリックしたら同じ項目を出す)。
   void _showDrawerAddMenu(BuildContext context, MindMapProvider provider,
-      [BuildContext? anchorCtx]) {
+      [BuildContext? anchorCtx, Offset? at]) {
     if (!mounted) return;
     final ctx = this.context;
+    // 一覧の中で右クリックした時に、 ここへ作れるフォルダー (無ければ null)。
+    final dir = _drawerTargetDiskDir(provider);
 
     // 表示位置の計算
     RelativeRect position;
     final overlay = Overlay.of(ctx).context.findRenderObject() as RenderBox;
-    if (anchorCtx != null) {
+    if (at != null) {
+      position = RelativeRect.fromLTRB(at.dx + 6, at.dy + 6, at.dx + 6, at.dy + 6);
+    } else if (anchorCtx != null) {
       final ro = anchorCtx.findRenderObject();
       if (ro is RenderBox && ro.attached) {
         final topLeft = ro.localToGlobal(Offset.zero, ancestor: overlay);
@@ -69582,12 +70889,40 @@ class _MindMapScreenState extends State<MindMapScreen>
             label: provider.t('live.joinTitle')),
         // (「マップだけ読み込む」 は上の 1 項目に統合した = ユーザー要望。
         //  .json / .html も同じ入口から読める)
+        // ★ 開けるフォルダーは 1 つだけ (= ユーザー要望: vscode と同じ)。
+        //   ここを押すと、 今開いているフォルダーと入れ替わる。
         _menuItem<_AddMenuAction>(
             value: _AddMenuAction.openFolder,
             icon: Icons.folder_open_rounded,
             iconColor: const Color(0xFF4FC3F7),
             label: provider.t('drawer.openFolder'),
-            formatHint: provider.t('drawer.openFolderFormats')),
+            formatHint: _openedDrawerFolder(provider) != null
+                ? provider.t('drawer.openFolderSwitchHint')
+                : provider.t('drawer.openFolderFormats')),
+        if (dir != null) ...[
+          const PopupMenuDivider(),
+          _menuItem<_AddMenuAction>(
+              value: _AddMenuAction.refreshList,
+              icon: Icons.refresh_rounded,
+              iconColor: Colors.white54,
+              label: provider.t('drawer.refreshList')),
+          // ★ 隠している「ページの書き出し .json」 を出す / 隠す
+          //   (= 点検で判明: 一度隠すと戻せなかった)。
+          _menuItem<_AddMenuAction>(
+              value: _AddMenuAction.revealInOs,
+              icon: Icons.folder_open_rounded,
+              iconColor: const Color(0xFF4FC3F7),
+              label: provider.t('folder.openInOs')),
+          _menuItem<_AddMenuAction>(
+              value: _AddMenuAction.toggleAppFiles,
+              icon: _diskShowAppFiles
+                  ? Icons.visibility_rounded
+                  : Icons.visibility_off_rounded,
+              iconColor: _diskShowAppFiles
+                  ? const Color(0xFF43B97F)
+                  : Colors.white38,
+              label: provider.t('disk.showAppFiles')),
+        ],
         // ★ ここに区切り線を置かない (= ユーザー報告: 項目を消した後の線が
         //   いちばん下に残っている)。 下に続く項目が無くなったため。
         // ── 「AI で新規ページ作成」 はユーザー要望で削除 ──
@@ -69623,7 +70958,14 @@ class _MindMapScreenState extends State<MindMapScreen>
           _addDocumentPageDialog(ctx, provider);
           break;
         case _AddMenuAction.newMarkdownPage:
-          _addMarkdownPageDialog(ctx, provider);
+          // ★ 「新規ファイル」 は 1 つだけ (= ユーザー要望: 「ここに作る」 と
+          //   二つ並んでいて分かりにくい)。 フォルダーを開いている時は、
+          //   その中に作って開かない。 開いていない時は今までどおり。
+          if (dir != null) {
+            unawaited(_createFileInDirWithPrompt(provider, dir));
+          } else {
+            _addMarkdownPageDialog(ctx, provider);
+          }
           break;
         case _AddMenuAction.newVideoEditorPage:
           if (!kStoreBuild) _addVideoEditorPageDialog(ctx, provider);
@@ -69643,6 +70985,22 @@ class _MindMapScreenState extends State<MindMapScreen>
           break;
         case _AddMenuAction.openFolder:
           _importJsonFromDirectory(ctx, provider);
+          break;
+        case _AddMenuAction.newFileHere:
+          if (dir != null) unawaited(_createFileInDirWithPrompt(provider, dir));
+          break;
+        case _AddMenuAction.refreshList:
+          if (dir != null) {
+            _diskCache.remove(dir);
+            _diskLoading.remove(dir);
+            setState(() {});
+          }
+          break;
+        case _AddMenuAction.revealInOs:
+          if (dir != null) unawaited(_revealDirectory(dir));
+          break;
+        case _AddMenuAction.toggleAppFiles:
+          unawaited(_toggleShowAppFiles());
           break;
         case _AddMenuAction.aiNewPage:
           // AI アシスタントを「新しいページを作る」 前提で開く (= ユーザー要望)。
@@ -69669,6 +71027,11 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// そのまま打てるようにする (= ユーザー要望)。 既定名は最初から全選択して
   /// おくので、 打ち始めればそのまま置き換わる。
   void _addFolderDialog(BuildContext context, MindMapProvider provider) {
+    // フォルダーを開いている最中は、 フォルダーの行が出ないので一覧へ戻す
+    // (= 新しいフォルダーの名前をその場で打てるように)。
+    if (_drawerOpenFolderId != null) {
+      unawaited(_setOpenFolder(null));
+    }
     // ページ一覧 (drawer) が閉じていると編集欄が見えないので開いておく。
     if (_scaffoldKey.currentState?.isDrawerOpen != true) {
       setState(() => _drawerView = 'maps');
@@ -69785,11 +71148,19 @@ class _MindMapScreenState extends State<MindMapScreen>
             icon: Icons.folder_zip_rounded,
             iconColor: const Color(0xFF43B97F),
             label: provider.t('folder.exportAsDir')),
+        // ★ 本物のフォルダーを開いた物 (= 連動フォルダー) は「削除」 と
+        //   書かず「一覧から外す」 にする (= ユーザー要望: デスクトップなどを
+        //   開いた後に、 誤ってフォルダーごと消してしまわないように)。
+        //   ディスクのファイルには元々触らないが、 言葉でもはっきりさせる。
         _menuItem<_FolderAction>(
             value: _FolderAction.delete,
-            icon: Icons.delete_outline_rounded,
+            icon: (folder.linkedDirPath ?? '').trim().isEmpty
+                ? Icons.delete_outline_rounded
+                : Icons.playlist_remove_rounded,
             iconColor: const Color(0xFFFF6B6B),
-            label: provider.t('folder.delete')),
+            label: (folder.linkedDirPath ?? '').trim().isEmpty
+                ? provider.t('folder.delete')
+                : provider.t('folder.unlink')),
       ]);
     } else {
       // ── 一括操作 (複数選択中) ──
@@ -69805,6 +71176,18 @@ class _MindMapScreenState extends State<MindMapScreen>
           label: provider.t('drawer.tip.clearSelection')));
     }
 
+    // ★ 連動先があるフォルダーには「フォルダーを開く」 を出す
+    //   (= ユーザー要望: vscode のように中が開かれるように)。
+    if ((folder.linkedDirPath ?? '').trim().isNotEmpty) {
+      items.insert(
+          0,
+          _menuItem<_FolderAction>(
+              value: _FolderAction.openInOs,
+              icon: Icons.folder_open_rounded,
+              iconColor: const Color(0xFF4FC3F7),
+              label: provider.t('folder.openInOs')));
+    }
+
     showMenu<_FolderAction>(
       context: ctx,
       position: position,
@@ -69817,6 +71200,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     ).then((action) {
       if (action == null || !mounted) return;
       switch (action) {
+        case _FolderAction.openInOs:
+          unawaited(_revealDirectory(folder.linkedDirPath ?? ''));
+          break;
         case _FolderAction.rename:
           // ダイアログではなく一覧のその行で打ち替える (= ユーザー要望)
           _beginFolderRename(folder);
@@ -69876,7 +71262,21 @@ class _MindMapScreenState extends State<MindMapScreen>
     return PopupMenuItem<T>(
       value: value,
       height: hasFormatHint ? 48 : 38,
-      child: Row(children: [
+      // ★ 項目の上で右クリックしても閉じる (= ユーザー報告: メニューが
+      //   閉じずに残り続ける)。 既定では項目の上の右クリックは何も起きず、
+      //   カーソルがメニューに乗っていると閉じられなくなる。
+      //   受けは行いっぱいに広げる (= 点検で判明: 中身の分だけだと、 行の
+      //   上下左右に効かない帯が残る)。
+      padding: EdgeInsets.zero,
+      child: Builder(builder: (itemCtx) {
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onSecondaryTap: () => Navigator.maybePop(itemCtx),
+          child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          alignment: Alignment.centerLeft,
+          child: Row(children: [
         Icon(icon, color: iconColor, size: 18),
         const SizedBox(width: 12),
         Expanded(
@@ -69913,7 +71313,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                     fontWeight: FontWeight.w700)),
           ),
         ],
-      ]),
+          ]),
+          ),
+        );
+      }),
     );
   }
 
@@ -69922,19 +71325,35 @@ class _MindMapScreenState extends State<MindMapScreen>
   Future<void> _confirmBulkDelete(
       BuildContext context, MindMapProvider provider,
       {required List<String> folderIds, required List<String> pageIds}) async {
+    // ★ 本物のフォルダーを開いた物 (= 連動フォルダー) は、 まとめて削除では
+    //   触らない (= ユーザー要望: デスクトップなどを開いた後に、 誤って
+    //   フォルダーごと消せないように)。 1 つずつの確認付きでだけ外せる。
+    final keptLinked = folderIds.where(provider.folderIsDiskLinked).length;
+    folderIds = folderIds.where((id) => !provider.folderIsDiskLinked(id)).toList();
+    if (folderIds.isEmpty && pageIds.isEmpty) {
+      if (keptLinked > 0 && context.mounted) {
+        showTopToast(
+            context,
+            provider
+                .t('drawer.skippedLinkedFolders')
+                .replaceAll('{n}', '$keptLinked'),
+            const Color(0xFFFFB347));
+      }
+      return;
+    }
     // フォルダー内のページを集計 (削除対象に追加するか別フォルダーへ移すか)
     final pagesInFolders = <String>[];
     for (final fid in folderIds) {
       pagesInFolders.addAll(provider.pagesInFolder(fid).map((p) => p.id));
     }
     final totalPagesAffected = {...pageIds, ...pagesInFolders}.length;
-    // 全ページ削除すると 0 になる場合は中止 (ProvidedRule: pages.length > 1)
-    final remaining =
-        provider.pages.length - {...pageIds, ...pagesInFolders}.length;
-    final allPagesWillBeDeleted = remaining < 1;
 
-    final confirmed = await showDialog<bool>(
-      context: context,
+    // ★ 画面の中央ではなく、 押したボタンのすぐ近くに出す (= ユーザー要望:
+    //   押しやすさのため)。 ドロワーから開くので分割ペインは基準にしない。
+    final confirmed = await _showNearDialogMain<bool>(
+      width: 420,
+      height: 200,
+      inPane: false,
       builder: (dctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E1E32),
         title: Row(children: [
@@ -69944,6 +71363,8 @@ class _MindMapScreenState extends State<MindMapScreen>
           Text(provider.t('drawer.bulkDelete'),
               style: const TextStyle(color: Colors.white, fontSize: 15)),
         ]),
+        // ★ 「消した後に空のマップが 1 枚作られます」 の注意書きは出さない
+        //   (= ユーザー要望: 余計)。
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -69954,20 +71375,15 @@ class _MindMapScreenState extends State<MindMapScreen>
                     .replaceAll('{folders}', folderIds.length.toString())
                     .replaceAll('{pages}', totalPagesAffected.toString()),
                 style: const TextStyle(color: Colors.white, fontSize: 13)),
-            if (allPagesWillBeDeleted) ...[
+            // 連動フォルダーを外した時は、 その事だけ伝える。
+            if (keptLinked > 0) ...[
               const SizedBox(height: 8),
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFFF6B6B).withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(
-                      color: const Color(0xFFFF6B6B).withValues(alpha: 0.5)),
-                ),
-                child: Text(provider.t('drawer.bulkDeleteWarning'),
-                    style: const TextStyle(
-                        color: Color(0xFFFF6B6B), fontSize: 11)),
-              ),
+              Text(
+                  provider
+                      .t('drawer.skippedLinkedFolders')
+                      .replaceAll('{n}', '$keptLinked'),
+                  style: const TextStyle(
+                      color: Color(0xFFFFB347), fontSize: 11.5, height: 1.5)),
             ],
           ],
         ),
@@ -69982,8 +71398,7 @@ class _MindMapScreenState extends State<MindMapScreen>
               disabledBackgroundColor: const Color(0xFF6E404A),
               disabledForegroundColor: Colors.white60,
             ),
-            onPressed:
-                allPagesWillBeDeleted ? null : () => Navigator.pop(dctx, true),
+            onPressed: () => Navigator.pop(dctx, true),
             icon: const Icon(Icons.delete_forever_rounded, size: 16),
             label: Text(provider.t('btn.delete')),
           ),
@@ -70013,6 +71428,113 @@ class _MindMapScreenState extends State<MindMapScreen>
   void _confirmDeleteFolder(
       BuildContext context, MindMapProvider provider, MindMapFolder folder) {
     final pageCount = provider.pagesInFolder(folder.id).length;
+    final linkedDir = (folder.linkedDirPath ?? '').trim();
+    // ── 本物のフォルダーを開いた物 (= 連動フォルダー) は、 一段重い確認にする
+    //    (= ユーザー要望: デスクトップなどを開いた後に、 誤ってフォルダーごと
+    //    削除できないように)。 消えるのは一覧の見出しだけで、 パソコンの中の
+    //    ファイルには触らない。 説明を読んだ印を付けるまでボタンは押せない。 ──
+    if (linkedDir.isNotEmpty) {
+      var acked = false;
+      var alsoPages = false;
+      showDialog<void>(
+        context: context,
+        builder: (ctx) => StatefulBuilder(builder: (ctx, setS) {
+          return AlertDialog(
+            backgroundColor: const Color(0xFF2A2A3E),
+            title: Row(children: [
+              const Icon(Icons.folder_off_rounded,
+                  color: Color(0xFFFFB347), size: 20),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Text(provider.t('folder.unlinkTitle'),
+                    style: const TextStyle(color: Colors.white, fontSize: 15)),
+              ),
+            ]),
+            content: SizedBox(
+              width: 420,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                      provider
+                          .t('folder.unlinkBody')
+                          .replaceAll('{name}', folder.name)
+                          .replaceAll('{path}', linkedDir),
+                      style: const TextStyle(
+                          color: Colors.white70, fontSize: 12.5, height: 1.6)),
+                  if (pageCount > 0) ...[
+                    const SizedBox(height: 10),
+                    if (!alsoPages)
+                      Text(
+                        provider
+                            .t('folder.unlinkKeepNote')
+                            .replaceAll('{count}', '$pageCount'),
+                        style: const TextStyle(
+                            color: Colors.white38, fontSize: 11.5),
+                      ),
+                    CheckboxListTile(
+                      value: alsoPages,
+                      onChanged: (v) => setS(() => alsoPages = v ?? false),
+                      activeColor: const Color(0xFFFF6B6B),
+                      contentPadding: EdgeInsets.zero,
+                      controlAffinity: ListTileControlAffinity.leading,
+                      dense: true,
+                      title: Text(
+                          provider
+                              .t('folder.unlinkAlsoPages')
+                              .replaceAll('{count}', '$pageCount'),
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 12.5)),
+                    ),
+                  ],
+                  CheckboxListTile(
+                    value: acked,
+                    onChanged: (v) => setS(() => acked = v ?? false),
+                    activeColor: const Color(0xFF43B97F),
+                    contentPadding: EdgeInsets.zero,
+                    controlAffinity: ListTileControlAffinity.leading,
+                    dense: true,
+                    title: Text(provider.t('folder.unlinkAck'),
+                        style: const TextStyle(
+                            color: Colors.white, fontSize: 12.5)),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: Text(provider.t('btn.cancel'),
+                      style: const TextStyle(color: Colors.white54))),
+              ElevatedButton.icon(
+                // 説明を読んだ印を付けるまで押せない (= 誤操作よけ)。
+                onPressed: !acked
+                    ? null
+                    : () {
+                        provider.deleteFolder(folder.id,
+                            deletePages: alsoPages && pageCount > 0,
+                            force: true);
+                        if (_drawerOpenFolderId == folder.id) {
+                          unawaited(_setOpenFolder(null));
+                        }
+                        Navigator.pop(ctx);
+                      },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFFF6B6B),
+                  foregroundColor: Colors.white,
+                  disabledBackgroundColor: const Color(0xFF553640),
+                  disabledForegroundColor: Colors.white38,
+                ),
+                icon: const Icon(Icons.playlist_remove_rounded, size: 16),
+                label: Text(provider.t('folder.unlink')),
+              ),
+            ],
+          );
+        }),
+      );
+      return;
+    }
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -70037,6 +71559,9 @@ class _MindMapScreenState extends State<MindMapScreen>
             TextButton(
               onPressed: () {
                 provider.deleteFolder(folder.id, deletePages: false);
+                if (_drawerOpenFolderId == folder.id) {
+                  unawaited(_setOpenFolder(null));
+                }
                 Navigator.pop(ctx);
               },
               child: Text(provider.t('folder.deleteKeepPages'),
@@ -70045,6 +71570,9 @@ class _MindMapScreenState extends State<MindMapScreen>
           ElevatedButton(
             onPressed: () {
               provider.deleteFolder(folder.id, deletePages: pageCount > 0);
+              if (_drawerOpenFolderId == folder.id) {
+                unawaited(_setOpenFolder(null));
+              }
               Navigator.pop(ctx);
             },
             style: ElevatedButton.styleFrom(
@@ -70405,12 +71933,12 @@ class _MindMapScreenState extends State<MindMapScreen>
               icon: Icons.drive_file_move_rounded,
               iconColor: const Color(0xFFFFB347),
               label: provider.t('page.moveAllToMap')),
-        if (provider.pages.length > 1)
-          _menuItem<_PageAction>(
-              value: _PageAction.delete,
-              icon: Icons.delete_outline_rounded,
-              iconColor: const Color(0xFFFF6B6B),
-              label: provider.t('page.delete')),
+        // ★ 最後の 1 枚でも出す (= ユーザー要望)。
+        _menuItem<_PageAction>(
+            value: _PageAction.delete,
+            icon: Icons.delete_outline_rounded,
+            iconColor: const Color(0xFFFF6B6B),
+            label: provider.t('page.delete')),
         // ── 区切り ──
         const PopupMenuDivider(),
         // ── ピン止め (現在開いているページに対して) ──
@@ -71751,7 +73279,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     final selected = await showMenu<String>(
       context: context,
       color: const Color(0xFF22222E),
-      position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx, pos.dy),
+      position: RelativeRect.fromLTRB(pos.dx + 6, pos.dy + 6, pos.dx + 6, pos.dy + 6),
       items: [
         // 今見ている画面をそのまま読み直す (= ユーザー要望: 更新でホームに
         //   戻らないように)。
@@ -75772,7 +77300,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     final sel = await showMenu<String>(
       context: context,
       color: const Color(0xFF1E1E32),
-      position: RelativeRect.fromLTRB(globalPos.dx, globalPos.dy,
+      // カーソルの真下だと、 出た瞬間にカーソルがメニューの上に乗って
+      // 右クリックで閉じられなくなる (= 点検で判明)。 少しずらす。
+      position: RelativeRect.fromLTRB(globalPos.dx + 6, globalPos.dy + 6,
           size.width - globalPos.dx, size.height - globalPos.dy),
       items: [
         // ── 何かを埋め込んでいる時は「窓に戻す / 閉じる」 だけにする
@@ -82326,7 +83856,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       if (!mounted) return;
       // 0 件読み込み成功ならフォルダー削除
       if (totalPages == 0) {
-        provider.deleteFolder(folderId, deletePages: false);
+        // 今ここで作ったばかりの入れ物なので、 連動フォルダーの門は通す。
+        provider.deleteFolder(folderId, deletePages: false, force: true);
         _appSnack(
             context,
             SnackBar(
@@ -84134,6 +85665,109 @@ class _MindMapScreenState extends State<MindMapScreen>
     'gradle', 'cmake',
   };
 
+  /// 中身を覗かずに種類が分かる物 (= 下の枝で開く物)。 ここに載っている間は
+  /// 「文字かどうか」 を見に行かない (無駄にファイルを読まないため)。
+  static const Set<String> _kNonTextExts = {
+    'pdf',
+    'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'ico', 'tif', 'tiff', 'svg',
+    'mp4', 'mov', 'm4v', 'avi', 'mkv', 'webm', 'wmv', 'flv',
+    'mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg',
+    'zip', 'rar', '7z', 'gz', 'tar',
+    'exe', 'dll', 'msi', 'sys', 'bin', 'dat', 'iso', 'ttf', 'otf', 'woff',
+    'woff2', 'lnk', 'db', 'pdb', 'obj', 'lib', 'pyc', 'class',
+  };
+
+  /// 中身は文字でも、 OS の既定のアプリで開くべき種類。
+  /// ここを覗いて「文字だから」 とエディタで開くと、 .url がブラウザを
+  /// 開かずに中身の 2 行を見せる、 といった事になる (= 点検で判明)。
+  static const Set<String> _kOsOwnedTextExts = {
+    'url', 'webloc', 'rtf', 'ics', 'vcf', 'vcs', 'm3u', 'm3u8', 'pls',
+    'eml', 'msg', 'torrent', 'desktop', 'appref-ms', 'reg',
+  };
+
+  /// 押しただけでは動かさない種類 (= プログラム)。 一度たずねてから開く。
+  /// ★ .bat / .cmd / .ps1 / .sh も入れる (= 点検で判明: 「アプリ内で開く」 を
+  ///   切っていると、 これらは確認なしで走ってしまっていた)。
+  static const Set<String> _kRunnableExts = {
+    'exe', 'msi', 'com', 'scr', 'pif', 'vbs', 'vbe', 'wsf', 'wsh', 'msc',
+    'jar', 'apk', 'reg', 'appref-ms', 'hta', 'cpl',
+    'bat', 'cmd', 'ps1', 'psm1', 'sh',
+  };
+
+  /// 中身を少しだけ読んで「文字のファイル」 かどうかを見る
+  /// (= ユーザー要望: .ini や .cfg など、 知らない種類でも開けるように)。
+  /// 見立ては控えめ: NUL バイトが有る / 制御文字が多い物は文字ではないとする。
+  Future<bool> _looksLikeTextFile(String path) async {
+    try {
+      final f = File(path);
+      if (!await f.exists()) return false;
+      final len = await f.length();
+      if (len == 0) return true; // 空のファイルは文字として開ける
+      // 大きすぎる物はエディタが固まるので OS に任せる。
+      if (len > 12 * 1024 * 1024) return false;
+      final raf = await f.open();
+      List<int> head;
+      try {
+        head = await raf.read(len < 8192 ? len : 8192);
+      } finally {
+        await raf.close();
+      }
+      if (head.isEmpty) return true;
+      var ctrl = 0;
+      for (final b in head) {
+        if (b == 0) return false; // NUL = まず間違いなく中身は文字ではない
+        if (b < 0x09 || (b > 0x0D && b < 0x20)) ctrl++;
+      }
+      // 制御文字が 5% を超えたら文字ではないと見なす。
+      return ctrl * 20 <= head.length;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// プログラムを押した時の確認 (= 一覧に本物のフォルダーを出せるように
+  /// なったので、 押しただけで動き出さないように)。
+  Future<bool> _confirmRunProgramFile(String path) async {
+    if (!mounted) return false;
+    final provider = context.read<MindMapProvider>();
+    final name = path.split(Platform.pathSeparator).last.split('/').last;
+    final ok = await _showNearDialogMain<bool>(
+      width: 400,
+      height: 220,
+      inPane: false,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: Row(children: [
+          const Icon(Icons.warning_amber_rounded,
+              color: Color(0xFFFFB347), size: 20),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Text(provider.t('file.runConfirmTitle'),
+                style: const TextStyle(color: Colors.white, fontSize: 15)),
+          ),
+        ]),
+        content: Text(
+            provider.t('file.runConfirmBody').replaceAll('{name}', name),
+            style: const TextStyle(
+                color: Colors.white70, fontSize: 12.5, height: 1.6)),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dctx, false),
+              child: Text(provider.t('btn.cancel'),
+                  style: const TextStyle(color: Colors.white54))),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(dctx, true),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFFFB347),
+                foregroundColor: Colors.black),
+            child: Text(provider.t('file.runConfirmOk')),
+          ),
+        ],
+      ),
+    );
+    return ok == true;
+  }
+
   /// このアプリをもう 1 つ起動して、 そちらで [path] を開く
   /// (= ユーザー要望: 新しくアプリが立ち上がって開かれる方式)。
   /// 起動できたら true。 デスクトップ専用。
@@ -84215,6 +85849,56 @@ class _MindMapScreenState extends State<MindMapScreen>
       // 起動に失敗した時は、 そのまま今の画面で開く (下へ続行)。
     }
 
+    // ── ショートカット (.lnk) は、 指している先で振り分ける (= ユーザー要望:
+    //    .lnk の扱いを考えて)。 ここに置くと、 一覧の行・右クリック・ページに
+    //    貼ったノードのどこから押しても同じ道を通る。
+    //    ★ プログラムは「先の .exe」 ではなくショートカットのまま起動する。
+    //      そうしないと引数・作業フォルダー・管理者実行が失われ、 Chrome の
+    //      プロファイルや Steam のゲーム指定が効かなくなる (= 点検で判明)。
+    if (isLocal && ext == 'lnk' && !kIsWeb && Platform.isWindows) {
+      final target = HomeShortcutService.resolveShortcutTarget(path);
+      var handled = false;
+      if (target != null && target.isNotEmpty) {
+        try {
+          if (Directory(target).existsSync()) {
+            // フォルダーのショートカット → そのフォルダーを開く。
+            if (!mounted) return;
+            await _openDirectoryAsFolder(
+                context, context.read<MindMapProvider>(), target);
+            return;
+          }
+          if (File(target).existsSync()) {
+            final ti = target.lastIndexOf('.');
+            final tExt =
+                ti >= 0 ? target.substring(ti + 1).toLowerCase() : '';
+            // 書類のショートカットは、 その書類をアプリの中で開く。
+            if (tExt.isNotEmpty &&
+                !_kRunnableExts.contains(tExt) &&
+                !_kOsOwnedTextExts.contains(tExt)) {
+              await _openAttachment(target, nodeId: nodeId);
+              return;
+            }
+            // プログラム等は、 中身を確かめてもらってから元のまま起動する。
+            if (_kRunnableExts.contains(tExt)) {
+              if (!await _confirmRunProgramFile(target)) return;
+              handled = true;
+            }
+          }
+        } catch (_) {}
+      }
+      if (!handled && target == null) {
+        // 先が読めない (ストアアプリ等)。 一応たずねてから OS に渡す。
+        if (!await _confirmRunProgramFile(path)) return;
+      }
+      if (!await openPathWithOs(path) && mounted) {
+        showTopToast(
+            context,
+            context.read<MindMapProvider>().t('file.cannotOpen'),
+            const Color(0xFFE53935));
+      }
+      return;
+    }
+
     // ── フォルダーなら「中を読み込んで子ノードにする」 (= ユーザー要望:
     //    必要な分だけ読み込むモード) ──
     //    「必要な分だけ」 で取り込んだフォルダーノードは attachmentPath に
@@ -84229,6 +85913,20 @@ class _MindMapScreenState extends State<MindMapScreen>
         return;
       }
     }
+
+    // ★ 知らない拡張子でも、 中身が文字なら文字として扱う (= ユーザー要望:
+    //   .ini や .cfg、 拡張子の無いファイルも開けるように)。
+    //   ここで一度だけ見て、 下の「分割ペインへの振り分け」 と「テキスト
+    //   エディタで開く」 の両方で同じ答えを使う (= 点検で判明: 別々に見て
+    //   いたため、 .cfg だけ分割を覆う全画面で開いていた)。
+    //   絵・PDF・動画や、 OS に任せる種類 (.url / .rtf など) は覗かない。
+    final bool sniffedText = isLocal &&
+        inAppPref &&
+        !_kTextEditorExts.contains(ext) &&
+        !_kNonTextExts.contains(ext) &&
+        !_kOsOwnedTextExts.contains(ext) &&
+        !_kRunnableExts.contains(ext) &&
+        await _looksLikeTextFile(path);
 
     // ─── 画面分割パネル表示中は分割ペイン内で開く ──────────────────────
     // = ユーザー要望: 「画面分割した状態で pdf や xlsx, csv, txt を開く時は
@@ -84250,6 +85948,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       final isTextLikeExt = (_kTextEditorExts.contains(ext) &&
               ext != 'md' &&
               ext != 'markdown') ||
+          sniffedText ||
           lowerPath.endsWith('/dockerfile') ||
           lowerPath.endsWith('\\dockerfile') ||
           lowerPath.endsWith('/makefile') ||
@@ -84701,7 +86400,11 @@ class _MindMapScreenState extends State<MindMapScreen>
         lowerName.endsWith('\\dockerfile') ||
         lowerName.endsWith('/makefile') ||
         lowerName.endsWith('\\makefile');
-    final isTextLike = _kTextEditorExts.contains(ext) || isSpecialNoExt;
+    // ★ 知らない拡張子でも、 中身が文字ならそのまま文字として開く
+    //   (= ユーザー要望: .ini や .cfg、 拡張子の無いファイルも開けるように)。
+    //   絵・PDF・動画のように下の枝で開く物は覗きに行かない。
+    final isTextLike =
+        _kTextEditorExts.contains(ext) || isSpecialNoExt || sniffedText;
     if (isTextLike && isLocal && inAppPref) {
       final fileName = resolveFileName();
       // ── マップ分割中はフローティング窓で開く (非モーダル) ──
@@ -84942,7 +86645,21 @@ class _MindMapScreenState extends State<MindMapScreen>
       );
       return;
     }
-    await OpenFilex.open(path);
+
+    // ── ここまでで扱えなかった種類 (= .dll など) は OS の既定のアプリへ ──
+    //   ★ プログラムは押しただけで動き出さないよう一度たずねる。
+    if (isLocal && _kRunnableExts.contains(ext)) {
+      if (!await _confirmRunProgramFile(path)) return;
+    }
+    // ★ 開けなかった時は黙って終わらない (= ユーザー報告: 押しても何も
+    //   起きないように見える)。
+    final opened = await openPathWithOs(path);
+    if (!opened && mounted) {
+      showTopToast(
+          context,
+          context.read<MindMapProvider>().t('file.cannotOpen'),
+          const Color(0xFFE53935));
+    }
   }
 
   /// 添付ファイルが内蔵エディタで書き換えられた時に呼ぶ。
@@ -85368,7 +87085,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         final fullPath = '${exportDir.path}/$fileName';
         await File(fullPath).writeAsString(md);
         savedPath = fullPath;
-        await OpenFilex.open(fullPath);
+        await openPathWithOs(fullPath);
       }
       if (!context.mounted) return;
       _appSnack(
@@ -86305,7 +88022,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         }
         savedPath = '${exportDir.path}/$fileName';
         await File(savedPath).writeAsBytes(bytes);
-        await OpenFilex.open(savedPath);
+        await openPathWithOs(savedPath);
       }
       if (!ctx.mounted) return;
       _appSnack(
@@ -86369,7 +88086,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         await File(fullPath).writeAsString(html);
         savedPath = fullPath;
         // OpenFilex で開く（シェアシートが立ち上がる）
-        await OpenFilex.open(fullPath);
+        await openPathWithOs(fullPath);
       }
 
       if (!context.mounted) return;
@@ -87733,7 +89450,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         final fullPath = '${exportDir.path}/$fileName';
         await File(fullPath).writeAsString(jsonStr);
         savedPath = fullPath;
-        await OpenFilex.open(fullPath);
+        await openPathWithOs(fullPath);
       }
 
       if (!context.mounted) return;
@@ -89279,11 +90996,27 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// グルーピングされる。
   Future<void> _importJsonFromDirectory(
       BuildContext context, MindMapProvider provider) async {
+    String? dirPath;
     try {
-      final dirPath = await FilePicker.platform.getDirectoryPath(
+      dirPath = await FilePicker.platform.getDirectoryPath(
         dialogTitle: provider.t('import.dirDialogTitle'),
       );
-      if (dirPath == null) return; // キャンセル
+    } catch (e) {
+      debugPrint('フォルダーの選択に失敗: $e');
+      return;
+    }
+    if (dirPath == null || !context.mounted) return; // キャンセル
+    await _openDirectoryAsFolder(context, provider, dirPath);
+  }
+
+  /// 指定したフォルダーを開く (= 「フォルダーを開く」 の本体)。
+  ///
+  /// 既に開いた事のあるフォルダーならそれを開き直し、 初めてならその場所と
+  /// 連動するフォルダーを作って中の .json を取り込む。 どちらも最後に
+  /// 「開いているフォルダー」 をそこへ切り替える (= 開けるのは 1 つだけ)。
+  Future<void> _openDirectoryAsFolder(
+      BuildContext context, MindMapProvider provider, String dirPath) async {
+    try {
       final dir = Directory(dirPath);
       if (!await dir.exists()) return;
 
@@ -89302,13 +91035,32 @@ class _MindMapScreenState extends State<MindMapScreen>
       // そのディレクトリへ書き出される。
       // ディレクトリ名から新規フォルダー作成 (常に linkedDirPath を設定)
       final folderName = dir.path.split(Platform.pathSeparator).last;
+      // ★ 開けるフォルダーは 1 つだけ (= ユーザー要望: vscode と同じ)。
+      //   一度開いた事のあるフォルダーなら、 同じ物を並べずにそれを開き直す。
+      //   中身はディスクをそのまま出すので、 読み込み直しも要らない。
+      final existingId = provider.folderIdForLinkedDir(dirPath);
+      if (existingId != null) {
+        await _setOpenFolder(existingId);
+        if (!context.mounted) return;
+        _openDrawerToMaps();
+        showTopToast(
+            context,
+            provider
+                .t('drawer.openedFolder')
+                .replaceFirst('{name}', folderName),
+            const Color(0xFF43B97F));
+        return;
+      }
       final folderId =
           provider.addFolder(name: folderName, linkedDirPath: dirPath);
 
       if (jsonFiles.isEmpty) {
         // 空のフォルダーを作っただけで終了。
         // 「新規ページを追加するとこのフォルダーに保存されます」と案内。
+        // ★ 作ったフォルダーをそのまま開く (= ユーザー要望)。
+        await _setOpenFolder(folderId);
         if (!context.mounted) return;
+        _openDrawerToMaps();
         _appSnack(
             context,
             SnackBar(
@@ -89352,7 +91104,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       if (!context.mounted) return;
       // インポート成功 0 件ならフォルダーを掃除 (空フォルダーは残さない)
       if (totalPages == 0) {
-        provider.deleteFolder(folderId, deletePages: false);
+        // 今ここで作ったばかりの入れ物なので、 連動フォルダーの門は通す。
+        provider.deleteFolder(folderId, deletePages: false, force: true);
         _appSnack(
             context,
             SnackBar(
@@ -89362,6 +91115,10 @@ class _MindMapScreenState extends State<MindMapScreen>
             ));
         return;
       }
+      // ★ 読み込んだフォルダーをそのまま開く (= ユーザー要望: vscode と同じ)。
+      await _setOpenFolder(folderId);
+      if (!context.mounted) return;
+      _openDrawerToMaps();
       // 最初のページに切り替え
       if (firstPageId != null) {
         final idx = provider.pages.indexWhere((p) => p.id == firstPageId);
@@ -89409,17 +91166,22 @@ class _MindMapScreenState extends State<MindMapScreen>
     return cleaned.isEmpty ? 'untitled' : cleaned;
   }
 
-  /// 新規ページが連動フォルダーを継承すべきならそのフォルダー id を返す。
+  /// 新しく作るページを入れるフォルダーの id (無ければ null)。
+  ///
+  /// ★ いま開いているフォルダーの中に作る (= ユーザー要望)。 ページ一覧で
+  ///   フォルダーを開いていればそこへ、 開いていなければ今見ているページと
+  ///   同じフォルダーへ入れる。 どちらでもなければ一覧の直下 (null)。
   String? _targetFolderForNewPage(MindMapProvider provider) {
+    // 一覧の右クリックから作る時は、 押した場所のフォルダーをそのまま使う。
+    if (_newPageFolderOverrideSet) return _newPageFolderOverride;
+    final opened = _openedDrawerFolder(provider);
+    if (opened != null) return opened.id;
     if (provider.currentPageIndex >= 0 &&
         provider.currentPageIndex < provider.pages.length) {
       final cur = provider.pages[provider.currentPageIndex];
-      if (cur.folderId != null) {
-        final matches =
-            provider.folders.where((f) => f.id == cur.folderId).toList();
-        if (matches.isNotEmpty && matches.first.linkedDirPath != null) {
-          return cur.folderId;
-        }
+      final fid = cur.folderId;
+      if (fid != null && provider.folders.any((f) => f.id == fid)) {
+        return fid;
       }
     }
     return null;
@@ -89493,8 +91255,17 @@ class _MindMapScreenState extends State<MindMapScreen>
     unawaited(_showNewPageTypeMenu(provider));
   }
 
+  /// 新しく作るページを入れるフォルダーの指定 (一覧の右クリックから作る時)。
+  /// `_targetFolderForNewPage` が今のページの所属へ寄せてしまわないように、
+  /// 作る間だけこの指定を優先する (= 点検で判明: 一覧の何も無い所から作ると、
+  /// 見えていない別のフォルダーの中に入ってしまう事があった)。
+  bool _newPageFolderOverrideSet = false;
+  String? _newPageFolderOverride;
+
   /// 新規ページの種類を選ぶ小さな一覧。
-  Future<void> _showNewPageTypeMenu(MindMapProvider provider) async {
+  /// [folderOverride] を渡すと、 そのフォルダー (null なら一覧の直下) に作る。
+  Future<void> _showNewPageTypeMenu(MindMapProvider provider,
+      {bool useFolderOverride = false, String? folderOverride}) async {
     final items = <({
       String labelKey,
       IconData icon,
@@ -89592,7 +91363,17 @@ class _MindMapScreenState extends State<MindMapScreen>
       ),
     );
     if (picked == null || !mounted) return;
-    items[picked].create();
+    if (useFolderOverride) {
+      _newPageFolderOverrideSet = true;
+      _newPageFolderOverride = folderOverride;
+    }
+    try {
+      // ここで呼ぶ作成処理はどれも同期なので、 抜けた時に指定を戻せる。
+      items[picked].create();
+    } finally {
+      _newPageFolderOverrideSet = false;
+      _newPageFolderOverride = null;
+    }
   }
 
   /// 普通のマインドマップページを作る (種類選択の 1 つ目)。
@@ -89663,6 +91444,10 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// して作り、 そのまま開く。
   Future<void> _addFileOrMarkdownDialog(
       BuildContext context, MindMapProvider provider) async {
+    // ★ 行き先は窓を出す前に決める (= 点検で判明: 一覧の右クリックから作ると、
+    //   窓を出している間に「押した場所」 の指定が外れて、 別のフォルダーに
+    //   入ってしまう)。
+    final targetFolderId = _targetFolderForNewPage(provider);
     final result =
         await _promptCreateFileTypeName(context, provider, markdownAsPage: true);
     if (result == null || !mounted) return;
@@ -89674,7 +91459,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       }
       provider.addMarkdownPage(
           name: (result['name'] ?? '').trim().isEmpty ? null : result['name'],
-          folderId: _targetFolderForNewPage(provider));
+          folderId: targetFolderId);
       return;
     }
     final type = result['type']!;
@@ -92149,9 +93934,14 @@ class _MindMapScreenState extends State<MindMapScreen>
     required bool empty,
   }) {
     if (!mounted || !provider.canUndoDeletedPage) return;
-    final message = provider
+    var message = provider
         .t(empty ? 'page.deletedEmpty' : 'page.deleted')
         .replaceFirst('{name}', removedName);
+    // ★ 最後の 1 枚だった時は白紙を 1 枚作る。 それを黙っていたので
+    //   「消えていない」 と見えていた (= ユーザー報告)。
+    if (provider.lastDeleteCreatedBlankPage) {
+      message = '$message\n${provider.t('page.blankAdded')}';
+    }
     // 5 秒表示 (= ユーザー要望: 現状より 2 秒ぐらい長めに)。
     final controller = _appSnack(
       context,
@@ -92176,11 +93966,8 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   Future<void> _confirmDeletePageAt(
       BuildContext context, MindMapProvider provider, int index) async {
-    if (provider.pages.length <= 1) {
-      _appSnack(
-          context, SnackBar(content: Text(provider.t('page.cantDeleteLast'))));
-      return;
-    }
+    // ★ 最後の 1 枚でも消せる (= ユーザー要望)。
+    //   provider 側が 0 枚になったら白紙を 1 枚置き直す。
     // ── 要素が一切ないページは確認ダイアログを出さずに削除 (= ユーザー要望) ──
     // 「要素」 = ノード / 接続 / 図形 / 背景画像。 これらがページ本体に持たれる
     //   種別 (通常マップ / ギャラリー) でのみ空判定できる。 ペイント/ノート/
@@ -92414,7 +94201,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     // モバイル: 1 枚目を OpenFilex で開く（ユーザーがシェア・移動できる）
     if (isMobileSave && firstSavedPath != null) {
       try {
-        await OpenFilex.open(firstSavedPath);
+        await openPathWithOs(firstSavedPath);
       } catch (_) {
         // 開けなくてもパスは通知する
       }
@@ -93966,10 +95753,27 @@ class _MindMapScreenState extends State<MindMapScreen>
   void _confirmDeleteSelectedDrawerItems(
       BuildContext context, MindMapProvider provider) {
     final pageIds = _drawerSelectedPageIds.toList();
-    final folderIds = _drawerSelectedFolderIds.toList();
+    // ★ 本物のフォルダーを開いた物 (= 連動フォルダー) は、 Del でも消さない
+    //   (= ユーザー要望: 誤ってフォルダーごと削除できないように)。 ここは
+    //   赤いボタンに autofocus が乗っていて Enter でも走るので特に危ない。
+    final linkedPicked =
+        _drawerSelectedFolderIds.where(provider.folderIsDiskLinked).length;
+    final folderIds = _drawerSelectedFolderIds
+        .where((id) => !provider.folderIsDiskLinked(id))
+        .toList();
     final pageCount = pageIds.length;
     final folderCount = folderIds.length;
-    if (pageCount == 0 && folderCount == 0) return;
+    if (pageCount == 0 && folderCount == 0) {
+      if (linkedPicked > 0 && context.mounted) {
+        showTopToast(
+            context,
+            provider
+                .t('drawer.skippedLinkedFolders')
+                .replaceAll('{n}', '$linkedPicked'),
+            const Color(0xFFFFB347));
+      }
+      return;
+    }
 
     // 1 ページしか残らない状態でその全てを削除しようとするとアプリが空になるので、
     // provider.deletePage 側で 1 件は守られる。ここでは UI 側で説明を出すだけ。
@@ -94019,6 +95823,17 @@ class _MindMapScreenState extends State<MindMapScreen>
                         .replaceAll('{folders}', folderCount.toString()),
                     style:
                         const TextStyle(color: Colors.white70, fontSize: 13)),
+                if (linkedPicked > 0) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                      provider
+                          .t('drawer.skippedLinkedFolders')
+                          .replaceAll('{n}', '$linkedPicked'),
+                      style: const TextStyle(
+                          color: Color(0xFFFFB347),
+                          fontSize: 11.5,
+                          height: 1.5)),
+                ],
                 if (folderCount > 0) ...[
                   const SizedBox(height: 12),
                   CheckboxListTile(
@@ -94075,6 +95890,7 @@ class _MindMapScreenState extends State<MindMapScreen>
   }) {
     // 1. フォルダーを先に削除 (オプションで中身ページも一緒に消す)
     for (final fid in folderIds) {
+      if (_drawerOpenFolderId == fid) unawaited(_setOpenFolder(null));
       provider.deleteFolder(fid, deletePages: deletePagesInFolders);
     }
     // 2. 個別選択された残りページを削除
@@ -97573,16 +99389,7 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   void _deleteCurrentPageDialog(
       BuildContext context, MindMapProvider provider) {
-    if (provider.pages.length <= 1) {
-      _appSnack(
-          context,
-          SnackBar(
-            content: Text(provider.t('map.cannotDeleteLast')),
-            backgroundColor: Colors.redAccent,
-            duration: const Duration(seconds: 2),
-          ));
-      return;
-    }
+    // ★ 最後の 1 枚でも消せる (= ユーザー要望)。
     final name = provider.currentPage.name;
     final focusNode = FocusNode();
     showDialog(
@@ -108393,7 +110200,7 @@ class _ActionOverlayState extends State<_ActionOverlay>
     final sel = await showMenu<String>(
       context: btnCtx,
       color: const Color(0xFF2A2A3E),
-      position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx, pos.dy),
+      position: RelativeRect.fromLTRB(pos.dx + 6, pos.dy + 6, pos.dx + 6, pos.dy + 6),
       items: [
         PopupMenuItem<String>(
           value: 'link',
@@ -113771,7 +115578,7 @@ try {
     final current = context.read<MindMapProvider>().browserAiTarget;
     final selected = await showMenu<String>(
       context: context,
-      position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx, pos.dy),
+      position: RelativeRect.fromLTRB(pos.dx + 6, pos.dy + 6, pos.dx + 6, pos.dy + 6),
       color: const Color(0xFF1E1E32),
       items: [
         for (final t in targets)
@@ -116107,7 +117914,7 @@ try {
     final selected = await showMenu<String>(
       context: context,
       color: const Color(0xFF22222E),
-      position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx, pos.dy),
+      position: RelativeRect.fromLTRB(pos.dx + 6, pos.dy + 6, pos.dx + 6, pos.dy + 6),
       items: [
         PopupMenuItem<String>(
           value: 'pin',
@@ -116220,7 +118027,7 @@ try {
     final selected = await showMenu<String>(
       context: context,
       color: const Color(0xFF22222E),
-      position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx, pos.dy),
+      position: RelativeRect.fromLTRB(pos.dx + 6, pos.dy + 6, pos.dx + 6, pos.dy + 6),
       items: _winSites
           .map((s) => PopupMenuItem<String>(
                 value: s.$1,
@@ -136368,7 +138175,7 @@ graph TD
       // ── 埋め込んだマップから添付ファイルを開く (= ユーザー要望) ──
       if (type == 'mapOpen') {
         final path = embeddedMapAttachmentPath(widget.provider, m);
-        if (path != null) unawaited(OpenFilex.open(path));
+        if (path != null) unawaited(openPathWithOs(path));
         return;
       }
       // ── 円グラフを編集できるノードとしてページへ (= ユーザー要望) ──
@@ -158972,7 +160779,7 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
           TextButton(
             onPressed: () {
               Navigator.pop(dctx);
-              OpenFilex.open(path);
+              openPathWithOs(path);
             },
             child: Text(widget.provider.t('btn.open')),
           ),
@@ -167575,7 +169382,7 @@ v.addEventListener('play', function() {
                     style: const TextStyle(fontSize: 12)),
                 onPressed: () async {
                   try {
-                    await OpenFilex.open(currentUrl);
+                    await openPathWithOs(currentUrl);
                   } catch (e) {
                     debugPrint('OpenFilex failed: $e');
                   }
@@ -170310,6 +172117,9 @@ enum _FolderAction {
 
   /// Ctrl+1〜9 の基準フォルダーとして設定 (or 解除)
   toggleShortcut,
+
+  /// 連動先のフォルダーを OS のファイル管理で開く (= ユーザー要望)。
+  openInOs,
 }
 
 /// drawer のページコンテキストメニュー (showMenu) の選択肢
@@ -170714,6 +172524,18 @@ enum _AddMenuAction {
   importJson,
   openFolder,
 
+  /// 開いているフォルダーの中に空のファイルを作る (開かない)
+  newFileHere,
+
+  /// ディスクの読み直し
+  refreshList,
+
+  /// エクスプローラーでこのフォルダーを開く
+  revealInOs,
+
+  /// アプリが書き出した .json を出す / 隠す
+  toggleAppFiles,
+
   /// 共有コードでリアルタイム共同編集に参加する (= ユーザー要望)
   joinLive,
 
@@ -170729,6 +172551,41 @@ enum _AddMenuAction {
 }
 
 /// drawer の表示アイテム種別 (Shift 範囲選択でフラットインデックスを取るため)
+/// ドロワーでフォルダーを掴んで運ぶ時の中身
+/// (= ユーザー要望: 開いているフォルダーの階層を移動できるように)。
+class _DrawerFolderDragData {
+  const _DrawerFolderDragData(this.folderId, this.name);
+  final String folderId;
+  final String name;
+}
+
+/// ディスクの 1 行 (フォルダーかファイル)。
+class _DiskEntry {
+  const _DiskEntry({
+    required this.path,
+    required this.name,
+    required this.isDir,
+    this.isMore = false,
+    this.isAppPage = false,
+  });
+  final String path;
+  final String name;
+  final bool isDir;
+
+  /// アプリがページを書き出した .json (一覧には出さない)。
+  final bool isAppPage;
+
+  /// 「他 N 件」 の行 (多すぎる時の打ち切り)。
+  final bool isMore;
+}
+
+/// ドロワーからファイルを掴んで運ぶ時の中身。
+class _DrawerFileDragData {
+  const _DrawerFileDragData(this.path, this.name);
+  final String path;
+  final String name;
+}
+
 enum _DrawerFlatItemKind { folder, page }
 
 /// drawer のフラット化されたアイテム1件。
@@ -171266,7 +173123,13 @@ class _DrawerTile extends StatelessWidget {
                 ? Border.all(color: Colors.white.withValues(alpha: 0.28))
                 : Border.all(color: baseColor.withValues(alpha: 0.22))),
       ),
-      child: ListTile(
+      child: GestureDetector(
+        // ★ 右クリックはこの行のメニュー (= 点検で判明: 受け口が無いと、
+        //   下敷きの「何も無い所」 のメニューが出てしまう)。
+        behavior: HitTestBehavior.opaque,
+        onSecondaryTapUp:
+            onMore == null ? null : (_) => onMore!(context),
+        child: ListTile(
         dense: true,
         contentPadding: const EdgeInsets.only(left: 4, right: 4),
         // 長押し動作: 複数選択 onLongPress が指定されていればそちら、
@@ -171435,6 +173298,7 @@ class _DrawerTile extends StatelessWidget {
           ],
         ),
         onTap: onTap,
+      ),
       ),
     );
   }
@@ -203383,7 +205247,7 @@ try {
       final path = _resolveLocalPdfPath();
       if (path != null) {
         try {
-          await OpenFilex.open(path);
+          await openPathWithOs(path);
         } catch (_) {}
       }
       return;
@@ -207451,7 +209315,7 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
       final path = _resolveLocalPdfPath();
       if (path != null) {
         try {
-          await OpenFilex.open(path);
+          await openPathWithOs(path);
         } catch (_) {}
       }
       return;
@@ -210777,7 +212641,7 @@ class _PdfMemoPanelState extends State<_PdfMemoPanel> {
     final sel = await showMenu<String>(
       context: ctx,
       color: const Color(0xFF2A2A3E),
-      position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx, pos.dy),
+      position: RelativeRect.fromLTRB(pos.dx + 6, pos.dy + 6, pos.dx + 6, pos.dy + 6),
       items: [
         PopupMenuItem<String>(
           value: 'rename',
@@ -210818,7 +212682,7 @@ class _PdfMemoPanelState extends State<_PdfMemoPanel> {
     final sel = await showMenu<String>(
       context: ctx,
       color: const Color(0xFF2A2A3E),
-      position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx, pos.dy),
+      position: RelativeRect.fromLTRB(pos.dx + 6, pos.dy + 6, pos.dx + 6, pos.dy + 6),
       items: [
         PopupMenuItem<String>(
           value: 'edit',
@@ -215373,7 +217237,7 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
     final cur = (r < _rowCount && c < _colCount) ? _rows[r][c] : '';
     final picked = await showMenu<String>(
       context: context,
-      position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx, pos.dy),
+      position: RelativeRect.fromLTRB(pos.dx + 6, pos.dy + 6, pos.dx + 6, pos.dy + 6),
       color: const Color(0xFF22222E),
       items: [
         for (final o in opts)
@@ -218863,7 +220727,7 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
       if (!await exportDir.exists()) await exportDir.create(recursive: true);
       outPath = '${exportDir.path}/$defaultName';
       await File(outPath).writeAsBytes(bytes, flush: true);
-      await OpenFilex.open(outPath);
+      await openPathWithOs(outPath);
     }
     if (mounted) _showSnack('ダウンロード完了: $outPath');
     return true;
@@ -220955,7 +222819,7 @@ $csvText
     final sel = await showMenu<String>(
       context: context,
       color: const Color(0xFF22222E),
-      position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx, pos.dy),
+      position: RelativeRect.fromLTRB(pos.dx + 6, pos.dy + 6, pos.dx + 6, pos.dy + 6),
       items: [
         // ── 文字 (= ユーザー要望: 右クリックから太字などを出す) ──
         row('bold', Icons.format_bold_rounded, p.t('ss.bold'),
@@ -224865,7 +226729,7 @@ class _SsColumnHeaderCell extends StatelessWidget {
   void _showMenu(BuildContext context, Offset pos) async {
     final sel = await showMenu<String>(
       context: context,
-      position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx, pos.dy),
+      position: RelativeRect.fromLTRB(pos.dx + 6, pos.dy + 6, pos.dx + 6, pos.dy + 6),
       items: [
         PopupMenuItem(
             value: 'insertLeft',
@@ -224987,7 +226851,7 @@ class _SsRowHeaderCell extends StatelessWidget {
   void _showMenu(BuildContext context, Offset pos) async {
     final sel = await showMenu<String>(
       context: context,
-      position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx, pos.dy),
+      position: RelativeRect.fromLTRB(pos.dx + 6, pos.dy + 6, pos.dx + 6, pos.dy + 6),
       items: [
         PopupMenuItem(
             value: 'insertAbove',
@@ -229161,7 +231025,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog>
         }
         outPath = '${exportDir.path}/$defaultName';
         await File(outPath).writeAsBytes(bytes, flush: true);
-        await OpenFilex.open(outPath);
+        await openPathWithOs(outPath);
       }
       _showSnack('ダウンロード完了: $outPath');
     } catch (e, st) {
@@ -229206,7 +231070,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog>
         }
         outPath = '${exportDir.path}/$defaultName';
         await File(outPath).writeAsBytes(bytes, flush: true);
-        await OpenFilex.open(outPath);
+        await openPathWithOs(outPath);
       }
       // フォント未配置時の注意は生成前のローカライズ済み確認ダイアログで
       // 明示済み。保存完了はどちらの場合も必ず同じ成功通知を前面表示する。
@@ -237576,15 +239440,14 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog>
                       return;
                     }
                     try {
-                      final r = await OpenFilex.open(_currentFilePath);
-                      if (r.type != ResultType.done && mounted) {
+                      final ok = await openPathWithOs(_currentFilePath);
+                      if (!ok && mounted) {
                         ScaffoldMessenger.maybeOf(context)?.showSnackBar(
                           SnackBar(
                             backgroundColor: const Color(0xFFE57373),
                             content: Text(context
                                 .read<MindMapProvider>()
-                                .t('pptx.cannotOpenExternal')
-                                .replaceFirst('{err}', '${r.message}')),
+                                .t('file.cannotOpen')),
                           ),
                         );
                       }
@@ -242256,7 +244119,7 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
       if (type == 'mapOpen') {
         final path =
             embeddedMapAttachmentPath(context.read<MindMapProvider>(), m);
-        if (path != null) unawaited(OpenFilex.open(path));
+        if (path != null) unawaited(openPathWithOs(path));
         return;
       }
       // ── 図をマインドマップのページにする (= ユーザー要望) ──
@@ -244210,15 +246073,14 @@ $currentText
                     return;
                   }
                   try {
-                    final r = await OpenFilex.open(_currentFilePath);
-                    if (r.type != ResultType.done && mounted) {
+                    final ok = await openPathWithOs(_currentFilePath);
+                    if (!ok && mounted) {
                       ScaffoldMessenger.maybeOf(context)?.showSnackBar(
                         SnackBar(
                           backgroundColor: const Color(0xFFE57373),
                           content: Text(context
                               .read<MindMapProvider>()
-                              .t('pptx.cannotOpenExternal')
-                              .replaceFirst('{err}', '${r.message}')),
+                              .t('file.cannotOpen')),
                         ),
                       );
                     }
@@ -244742,15 +246604,14 @@ $currentText
                 return;
               }
               try {
-                final r = await OpenFilex.open(_currentFilePath);
-                if (r.type != ResultType.done && mounted) {
+                final ok = await openPathWithOs(_currentFilePath);
+                if (!ok && mounted) {
                   ScaffoldMessenger.maybeOf(context)?.showSnackBar(
                     SnackBar(
                       backgroundColor: const Color(0xFFE57373),
                       content: Text(context
                           .read<MindMapProvider>()
-                          .t('pptx.cannotOpenExternal')
-                          .replaceFirst('{err}', '${r.message}')),
+                          .t('file.cannotOpen')),
                     ),
                   );
                 }
@@ -244883,7 +246744,7 @@ $currentText
         if (!await exportDir.exists()) await exportDir.create(recursive: true);
         outPath = '${exportDir.path}/$defaultName';
         await File(outPath).writeAsString(text, flush: true);
-        await OpenFilex.open(outPath);
+        await openPathWithOs(outPath);
       }
       _showSnackBar('ダウンロード完了: $outPath');
     } catch (e) {
@@ -244927,7 +246788,7 @@ $currentText
         if (!await exportDir.exists()) await exportDir.create(recursive: true);
         outPath = '${exportDir.path}/$defaultName';
         await File(outPath).writeAsBytes(bytes, flush: true);
-        await OpenFilex.open(outPath);
+        await openPathWithOs(outPath);
       }
       _showSnackBar('PDF にしました: $outPath');
     } catch (e) {
@@ -251712,7 +253573,7 @@ class _IpynbViewerDialogState extends State<_IpynbViewerDialog> {
                 tooltip: context.read<MindMapProvider>().t('ipynb.openExternal'),
                 icon: Icon(Icons.open_in_new,
                     color: fg.withValues(alpha: 0.7), size: 20),
-                onPressed: () => OpenFilex.open(widget.filePath),
+                onPressed: () => openPathWithOs(widget.filePath),
               ),
               IconButton(
                 tooltip: context.read<MindMapProvider>().t('btn.close'),
@@ -254230,7 +256091,7 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
         }
         outPath = '${exportDir.path}/$defaultName';
         await File(outPath).writeAsBytes(zipBytes, flush: true);
-        await OpenFilex.open(outPath);
+        await openPathWithOs(outPath);
       }
       _showSnack('ダウンロード完了: $outPath');
     } catch (e, st) {
@@ -254277,7 +256138,7 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
         }
         outPath = '${exportDir.path}/$defaultName';
         await File(outPath).writeAsBytes(bytes, flush: true);
-        await OpenFilex.open(outPath);
+        await openPathWithOs(outPath);
       }
       _showSnack(provider
           .t('export.success')
@@ -254328,15 +256189,14 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
                     return;
                   }
                   try {
-                    final r = await OpenFilex.open(_currentFilePath);
-                    if (r.type != ResultType.done && mounted) {
+                    final ok = await openPathWithOs(_currentFilePath);
+                    if (!ok && mounted) {
                       ScaffoldMessenger.maybeOf(context)?.showSnackBar(
                         SnackBar(
                           backgroundColor: const Color(0xFFE57373),
                           content: Text(context
                               .read<MindMapProvider>()
-                              .t('pptx.cannotOpenExternal')
-                              .replaceFirst('{err}', '${r.message}')),
+                              .t('file.cannotOpen')),
                         ),
                       );
                     }
@@ -254950,15 +256810,14 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
                 return;
               }
               try {
-                final r = await OpenFilex.open(_currentFilePath);
-                if (r.type != ResultType.done && mounted) {
+                final ok = await openPathWithOs(_currentFilePath);
+                if (!ok && mounted) {
                   ScaffoldMessenger.maybeOf(context)?.showSnackBar(
                     SnackBar(
                       backgroundColor: const Color(0xFFE57373),
                       content: Text(context
                           .read<MindMapProvider>()
-                          .t('pptx.cannotOpenExternal')
-                          .replaceFirst('{err}', '${r.message}')),
+                          .t('file.cannotOpen')),
                     ),
                   );
                 }
@@ -266071,6 +267930,737 @@ class _McpChatDialogState extends State<_McpChatDialog> {
     );
   }
 
+  // ── CLI の端末を「この欄の中」に出す (= ユーザー要望: ただでさえ欄が
+  //    狭いので、AI アシスタント欄の上に浮かせるのではなく欄そのものに) ──
+  //
+  //    null でない間は、会話の代わりにこの端末を描く。閉じると会話へ戻る。
+  Widget? _inlineTerminal;
+  String _inlineTerminalTitle = '';
+
+  /// 端末そのものか (= 出力のコピーボタンを出すかの判断に使う)。
+  bool _inlineIsTerminal = false;
+
+  // ── 前に見ていた画面を覚えておく (= ユーザー要望: 開き直すと毎回
+  //    API の会話に戻ってしまって使いにくい) ──
+  //    窓を閉じても残るように、 クラス側に持たせる。
+  static AgentCliSession? _lastCliSession;
+  static bool _lastViewWasCliList = false;
+
+  /// 最後に見ていたのが CLI 側の画面だったか (= 会話へ戻した後に開き直した
+  /// 時、 勝手に端末へ戻らないようにするための目印)。
+  static bool _lastViewWasCli = false;
+
+  void _showInlineTerminal(Widget term, String title,
+      {bool isTerminal = true}) {
+    if (!mounted) return;
+    // 次に開いた時、 この画面から始められるように覚えておく。
+    _lastViewWasCliList = !isTerminal;
+    _lastViewWasCli = true;
+    setState(() {
+      _inlineTerminal = term;
+      _inlineTerminalTitle = title;
+      _inlineIsTerminal = isTerminal;
+      // 説明欄が開いていると端末が隠れるので閉じる。
+      _showCapabilityPanel = false;
+      _showMcpInfo = false;
+    });
+  }
+
+  /// 端末を欄の中に出す時の枠。
+  ///
+  /// ★ 見出しは上の帯に統合したので、 ここでは足さない (= ユーザー要望:
+  ///   「会話へ戻る」 の項目を消して、 見出しを 1 本に)。 一覧の時だけ、
+  ///   探し直しの小さなボタンを右上に重ねる。
+  Widget _buildInlineTerminalPane(MindMapProvider provider) {
+    if (_inlineIsTerminal) return _inlineTerminal!;
+    return Stack(children: [
+      Positioned.fill(child: _inlineTerminal!),
+      Positioned(
+        right: 4,
+        top: 2,
+        child: IconButton(
+          tooltip: provider.t('cli.recheck'),
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+          icon: const Icon(Icons.refresh_rounded,
+              size: 15, color: Colors.white38),
+          onPressed: () {
+            AgentCli.forget();
+            _showInlineTerminal(
+                _buildAgentCliList(provider), provider.t('cli.title'),
+                isTerminal: false);
+          },
+        ),
+      ),
+    ]);
+  }
+
+  /// AI アシスタント (会話) の画面へ戻す。
+  ///
+  /// = ユーザー要望: 会話一覧などを押したら、 端末や説明の画面から会話の
+  ///   画面へ戻って欲しい。 以前は裏で会話が切り替わるだけで、 見えている
+  ///   物は端末のままだった。
+  ///
+  /// ★ 走っている CLI は止めない。 覚えたままにしておいて、 端末のボタンを
+  ///   押せばそのまま覗き直せる。
+  void _backToChatView() {
+    if (!mounted) return;
+    // 次に開いた時は会話から始める。
+    _lastViewWasCliList = false;
+    _lastViewWasCli = false;
+    if (_inlineTerminal == null && !_showCapabilityPanel && !_showMcpInfo) {
+      return;
+    }
+    setState(() {
+      _inlineTerminal = null;
+      _inlineTerminalTitle = '';
+      _inlineIsTerminal = false;
+      _showCapabilityPanel = false;
+      _showMcpInfo = false;
+    });
+  }
+
+  /// CLI 側の画面を出す。 まだ走っている端末があればそれを覗き直し、
+  /// 無ければどの CLI を使うかの一覧を出す (= ユーザー要望: 会話へ戻った
+  /// 後でも、 走らせたままの CLI に戻れるように)。
+  void _openCliView(MindMapProvider provider, BuildContext anchor) {
+    final s = _lastCliSession;
+    if (s != null && AgentCliRunner.active.contains(s)) {
+      _showInlineTerminal(
+        AgentTerminal(
+          session: s,
+          showHeader: false,
+          onPickLanguage: s.supportsSlashCommands
+              ? () => unawaited(_pickAgentCliLanguage(provider, s))
+              : null,
+        ),
+        s.title,
+      );
+      return;
+    }
+    unawaited(_showAgentCliPicker(provider, anchor));
+  }
+
+  /// 開き直した時に、 前に見ていた画面へ戻す (= ユーザー要望)。
+  void _restoreLastInlineView(MindMapProvider provider) {
+    // 自分で会話へ戻した後なら、 会話のまま開く。
+    if (!_lastViewWasCli) return;
+    final s = _lastCliSession;
+    if (s != null && AgentCliRunner.active.contains(s)) {
+      // まだ走っている端末があれば、 そのまま覗き直す。
+      _showInlineTerminal(
+        AgentTerminal(session: s, showHeader: false),
+        s.title,
+      );
+      return;
+    }
+    if (_lastViewWasCliList) {
+      _showInlineTerminal(
+          _buildAgentCliList(provider), provider.t('cli.title'),
+          isTerminal: false);
+    }
+  }
+
+  /// パソコンに入っている AI の CLI を、このアプリの中で使う
+  /// (= ユーザー要望: codex CLI / Gemini CLI / Claude Code をアプリ内に
+  ///  ログインして指示出して使えるように)。
+  ///
+  /// ログインはアプリが肩代わりしない。本物の擬似端末で CLI を起動すれば、
+  /// CLI が自分で既定のブラウザを開き、戻りも自分で受け取る
+  /// (VSCode の統合ターミナルと同じ考え方)。
+  Widget _buildAgentCliSection(MindMapProvider provider) {
+    return FutureBuilder<List<AgentCliFound>>(
+      future: AgentCli.findAll(),
+      builder: (ctx, snap) {
+        final list = snap.data ?? const <AgentCliFound>[];
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              const Icon(Icons.terminal_rounded,
+                  size: 15, color: Color(0xFF9CCC65)),
+              const SizedBox(width: 7),
+              Expanded(
+                child: Text(provider.t('cli.title'),
+                    style: const TextStyle(
+                        color: Color(0xFF9CCC65),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700)),
+              ),
+              IconButton(
+                tooltip: provider.t('cli.recheck'),
+                padding: EdgeInsets.zero,
+                constraints:
+                    const BoxConstraints(minWidth: 28, minHeight: 28),
+                icon: const Icon(Icons.refresh_rounded,
+                    size: 16, color: Colors.white38),
+                onPressed: () {
+                  AgentCli.forget();
+                  setState(() {});
+                },
+              ),
+            ]),
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(provider.t('cli.note'),
+                  style: const TextStyle(
+                      color: Colors.white60, fontSize: 11, height: 1.5)),
+            ),
+            const SizedBox(height: 6),
+            if (snap.connectionState != ConnectionState.done)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 8),
+                child: SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2)),
+              )
+            else
+              for (final f in list)
+                Container(
+                  margin: const EdgeInsets.only(bottom: 6),
+                  padding: const EdgeInsets.fromLTRB(9, 7, 7, 7),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.04),
+                    borderRadius: BorderRadius.circular(7),
+                    border: Border.all(color: Colors.white12),
+                  ),
+                  child: Row(children: [
+                    Icon(
+                        f.installed
+                            ? Icons.check_circle_rounded
+                            : Icons.remove_circle_outline_rounded,
+                        size: 15,
+                        color: f.installed
+                            ? const Color(0xFF9CCC65)
+                            : Colors.white24),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(f.spec.label,
+                              style: const TextStyle(
+                                  color: Colors.white, fontSize: 12)),
+                          Text(
+                              f.installed
+                                  ? (f.loggedInHint == true
+                                      ? provider.t('cli.ready')
+                                      : provider.t('cli.needLogin'))
+                                  : '${provider.t('cli.notFound')}  '
+                                      '${f.spec.installHint}',
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                  color: f.installed
+                                      ? Colors.white38
+                                      : const Color(0xFFFFB347),
+                                  fontSize: 10.5)),
+                        ],
+                      ),
+                    ),
+                    if (f.installed)
+                      TextButton.icon(
+                        style: TextButton.styleFrom(
+                          foregroundColor: const Color(0xFF4FC3F7),
+                          visualDensity: VisualDensity.compact,
+                        ),
+                        icon: const Icon(Icons.play_arrow_rounded, size: 16),
+                        label: Text(provider.t('cli.open'),
+                            style: const TextStyle(fontSize: 11)),
+                        onPressed: () =>
+                            unawaited(_openAgentCliTerminal(provider, f)),
+                      ),
+                  ]),
+                ),
+          ],
+        );
+      },
+    );
+  }
+
+  /// どの CLI を開くか選ぶ (= ユーザー要望: ログインボタンを付けて欲しい)。
+  ///
+  /// 入っている物は「開く」、入っていない物は入れ方を出す。
+  /// どの CLI を使うかを、この欄の中に出す
+  /// (= ユーザー要望: 別の窓を新しく出さないで欲しい)。
+  Future<void> _showAgentCliPicker(
+      MindMapProvider provider, BuildContext anchor) async {
+    if (!mounted) return;
+    _showInlineTerminal(
+      _buildAgentCliList(provider),
+      provider.t('cli.title'),
+      isTerminal: false,
+    );
+  }
+
+  /// CLI の一覧 (欄の中に出す中身)。
+  Widget _buildAgentCliList(MindMapProvider provider) {
+    return FutureBuilder<List<AgentCliFound>>(
+      future: AgentCli.findAll(),
+      builder: (ctx, snap) {
+        if (snap.connectionState != ConnectionState.done) {
+          return const Center(
+            child: SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2)),
+          );
+        }
+        final list = snap.data ?? const <AgentCliFound>[];
+        final termDir = _terminalBaseDirOrNull(provider);
+        return ListView(
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 14),
+          children: [
+            Text(provider.t('cli.note'),
+                style: const TextStyle(
+                    color: Colors.white54, fontSize: 11, height: 1.55)),
+            const SizedBox(height: 10),
+            // ── ただのターミナル (= ユーザー要望: ターミナルを開くボタン) ──
+            //    右クリックで管理者として開く (UAC の確認が出る)。
+            GestureDetector(
+              onSecondaryTap: () => unawaited(_openAdminTerminal(provider)),
+              child: Container(
+                margin: const EdgeInsets.only(bottom: 12),
+                padding: const EdgeInsets.fromLTRB(10, 9, 8, 9),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF9CCC65).withValues(alpha: 0.07),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                      color: const Color(0xFF9CCC65).withValues(alpha: 0.3)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(children: [
+                      const Icon(Icons.terminal_rounded,
+                          size: 16, color: Color(0xFF9CCC65)),
+                      const SizedBox(width: 9),
+                      Expanded(
+                        child: Text(provider.t('cli.terminal'),
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 12.5)),
+                      ),
+                      // 管理者は別窓 (アプリの中には出せない)。
+                      Tooltip(
+                        message: provider.t('cli.openAdmin'),
+                        child: IconButton(
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(
+                              minWidth: 30, minHeight: 30),
+                          icon: const Icon(Icons.shield_outlined,
+                              size: 17, color: Color(0xFFFFB347)),
+                          onPressed: () =>
+                              unawaited(_openAdminTerminal(provider)),
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF37474F),
+                          visualDensity: VisualDensity.compact,
+                        ),
+                        icon: const Icon(Icons.play_arrow_rounded,
+                            size: 15, color: Colors.white),
+                        label: Text(provider.t('cli.open'),
+                            style: const TextStyle(
+                                fontSize: 11, color: Colors.white)),
+                        onPressed: () =>
+                            unawaited(_openPlainTerminal(provider)),
+                      ),
+                    ]),
+                    const SizedBox(height: 5),
+                    SelectableText(
+                        '${termDir ?? provider.t('cli.terminalNoDir')}\n'
+                        '${provider.t('cli.terminalNote')}',
+                        style: const TextStyle(
+                            color: Colors.white38,
+                            fontSize: 10.5,
+                            height: 1.4)),
+                  ],
+                ),
+              ),
+            ),
+            for (final f in list)
+              Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.fromLTRB(10, 9, 8, 9),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.04),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.white12),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(children: [
+                      Icon(
+                          f.installed
+                              ? Icons.check_circle_rounded
+                              : Icons.remove_circle_outline_rounded,
+                          size: 16,
+                          color: f.installed
+                              ? const Color(0xFF9CCC65)
+                              : Colors.white24),
+                      const SizedBox(width: 9),
+                      Expanded(
+                        child: Text(f.spec.label,
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 12.5)),
+                      ),
+                      if (f.installed)
+                        ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: f.loggedInHint == true
+                                ? const Color(0xFF37474F)
+                                : const Color(0xFF4FC3F7),
+                            visualDensity: VisualDensity.compact,
+                          ),
+                          icon: Icon(
+                              f.loggedInHint == true
+                                  ? Icons.play_arrow_rounded
+                                  : Icons.login_rounded,
+                              size: 15,
+                              color: Colors.white),
+                          label: Text(
+                              provider.t(f.loggedInHint == true
+                                  ? 'cli.open'
+                                  : 'cli.login'),
+                              style: const TextStyle(
+                                  fontSize: 11, color: Colors.white)),
+                          onPressed: () =>
+                              unawaited(_openAgentCliTerminal(provider, f)),
+                        )
+                      else
+                        ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF546E7A),
+                            visualDensity: VisualDensity.compact,
+                          ),
+                          icon: const Icon(Icons.download_rounded,
+                              size: 15, color: Colors.white),
+                          label: Text(provider.t('cli.install'),
+                              style: const TextStyle(
+                                  fontSize: 11, color: Colors.white)),
+                          onPressed: () =>
+                              unawaited(_installAgentCli(provider, f)),
+                        ),
+                    ]),
+                    const SizedBox(height: 5),
+                    SelectableText(
+                        f.installed
+                            ? (f.loggedInHint == true
+                                ? provider.t('cli.ready')
+                                : provider.t('cli.needLogin'))
+                            : '${provider.t('cli.notFound')}  '
+                                '${f.spec.installHint}',
+                        style: TextStyle(
+                            color: f.installed
+                                ? Colors.white38
+                                : const Color(0xFFFFB347),
+                            fontSize: 10.5,
+                            height: 1.4)),
+                  ],
+                ),
+              ),
+          ],
+        );
+      },
+    );
+  }
+
+  /// CLI をその場で入れる (= ユーザー要望: インストールボタンが欲しい)。
+  ///
+  /// ★ 隠した PowerShell は撃たない。このアプリの見える端末で npm を動かす。
+  ///   何が起きているか利用者に見えるし、セキュリティソフトに
+  ///   「黙ってシェルを起こした」と見られることもない。
+  Future<void> _installAgentCli(
+      MindMapProvider provider, AgentCliFound found) async {
+    final npm = await AgentCli.findNpm();
+    if (!mounted) return;
+    if (npm == null || npm.isEmpty) {
+      // npm が無ければ Node.js から。外のブラウザで公式ページを開く。
+      await showDialog<void>(
+        context: context,
+        useRootNavigator: !widget.floatingPanel,
+        builder: (dctx) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E32),
+          title: Text(provider.t('cli.noNpmTitle'),
+              style: const TextStyle(color: Colors.white, fontSize: 14.5)),
+          content: Text(provider.t('cli.noNpmBody'),
+              style: const TextStyle(
+                  color: Colors.white70, fontSize: 12, height: 1.6)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dctx),
+              child: Text(provider.t('btn.cancel'),
+                  style: const TextStyle(color: Colors.white54)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF4FC3F7)),
+              onPressed: () {
+                Navigator.pop(dctx);
+                unawaited(launchUrl(Uri.parse('https://nodejs.org/'),
+                    mode: LaunchMode.externalApplication));
+              },
+              child: Text(provider.t('cli.getNode'),
+                  style: const TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+    final pkg = found.spec.npmPackage;
+    if (pkg.isEmpty) return;
+    String workDir;
+    try {
+      final sup = await getApplicationSupportDirectory();
+      workDir = await AgentCli.workingDirectory(sup.path);
+    } catch (_) {
+      return;
+    }
+    if (!mounted) return;
+    // ★ こちらも欄そのものに出す。
+    _runAgentCliSession(
+      provider,
+      AgentCliSession(
+        title: '${found.spec.label} — ${provider.t('cli.install')}',
+        exePath: npm,
+        arguments: ['install', '-g', pkg],
+        workingDirectory: workDir,
+        hint: provider.t('cli.installHint'),
+        isInstall: true,
+      ),
+    );
+  }
+
+  /// CLI が返事をする言葉を選ぶ (= ユーザー要望: 言語設定を変えられるように)。
+  ///
+  /// 選んだ言葉は覚えておき、 作業フォルダーの覚書 (CLAUDE.md など) を書き
+  /// 直す。 いま走っている端末にはその場で 1 行伝えるので、 開き直さなくても
+  /// 次の返事から切り替わる。
+  Future<void> _pickAgentCliLanguage(
+      MindMapProvider provider, AgentCliSession session) async {
+    if (!mounted) return;
+    // アプリと同じ + よく使う言葉。 選んだ物は prefs に覚える。
+    const codes = <String>[
+      'ja', 'en', 'zh', 'ko', 'es', 'fr', 'de', 'pt', 'ru',
+    ];
+    final picked = await showMenu<String>(
+      context: context,
+      position: const RelativeRect.fromLTRB(120, 260, 40, 40),
+      color: const Color(0xFF1E1E32),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(10),
+        side: BorderSide(color: Colors.white.withValues(alpha: 0.12)),
+      ),
+      items: <PopupMenuEntry<String>>[
+        PopupMenuItem<String>(
+          value: '',
+          height: 36,
+          child: Row(children: [
+            const Icon(Icons.settings_suggest_rounded,
+                size: 15, color: Color(0xFF6C63FF)),
+            const SizedBox(width: 9),
+            Text(provider.t('cli.langSameAsApp'),
+                style: const TextStyle(color: Colors.white, fontSize: 12.5)),
+          ]),
+        ),
+        const PopupMenuDivider(),
+        for (final code in codes)
+          PopupMenuItem<String>(
+            value: code,
+            height: 36,
+            child: Row(children: [
+              const Icon(Icons.translate_rounded,
+                  size: 15, color: Colors.white54),
+              const SizedBox(width: 9),
+              Text(MindMapProvider.languageDisplayName(code),
+                  style: const TextStyle(color: Colors.white, fontSize: 12.5)),
+            ]),
+          ),
+      ],
+    );
+    if (picked == null || !mounted) return;
+    final code = picked.isEmpty ? provider.appLanguage : picked;
+    final instruction =
+        MindMapProvider.languageInstructionForCode(code).trim();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('agent_cli_lang', picked);
+    } catch (_) {}
+    // 作業フォルダーの覚書を書き直す (次に開いた時から効く)。
+    await AgentCli.writeGuide(session.workingDirectory,
+        instruction: instruction, appGuide: provider.appAgentsGuide);
+    // いま走っている相手には、 その場で伝える。
+    if (session.running) session.send(instruction);
+    if (!mounted) return;
+    showTopToast(
+        context,
+        provider
+            .t('cli.langSet')
+            .replaceAll('{name}', MindMapProvider.languageDisplayName(code)),
+        const Color(0xFF43B97F));
+  }
+
+  /// 走らせ始めて、 その様子を欄に出す。
+  ///
+  /// ★ 走らせている物は `AgentCliSession` が持つので、 欄を閉じても止まらない
+  ///   (= ユーザー要望)。 終わったら知らせて、 導入だった時は CLI の一覧を
+  ///   作り直す (= 入れた物がそのまま使えるように)。
+  void _runAgentCliSession(MindMapProvider provider, AgentCliSession session) {
+    AgentCliRunner.begin(session);
+    _lastCliSession = session;
+    _showInlineTerminal(
+      AgentTerminal(
+        session: session,
+        showHeader: false,
+        onPickLanguage: session.supportsSlashCommands
+            ? () => unawaited(_pickAgentCliLanguage(provider, session))
+            : null,
+        onRunAgain: () => _runAgentCliSession(
+          provider,
+          AgentCliSession(
+            title: session.title,
+            exePath: session.exePath,
+            arguments: session.arguments,
+            workingDirectory: session.workingDirectory,
+            hint: session.hint,
+            isInstall: session.isInstall,
+            isShell: session.isShell,
+            cliKey: session.cliKey,
+          ),
+        ),
+      ),
+      session.title,
+    );
+    unawaited(session.finished.then((code) {
+      if (!mounted) return;
+      // 入れ直した後は、 探し直さないと「見つかりません」 のままになる。
+      AgentCli.forget();
+      if (session.stoppedByUser) {
+        // ★ 「終了」 を押したら、 どの CLI を使うかの一覧へ戻る
+        //   (= ユーザー要望)。 終わった端末を見せ続けても行き止まり。
+        _lastCliSession = null;
+        _showInlineTerminal(
+            _buildAgentCliList(provider), provider.t('cli.title'),
+            isTerminal: false);
+        return;
+      }
+      showTopToast(
+          context,
+          provider
+              .t(code == 0 ? 'cli.doneOk' : 'cli.doneNg')
+              .replaceAll('{name}', session.title)
+              .replaceAll('{code}', '$code'),
+          code == 0 ? const Color(0xFF43B97F) : const Color(0xFFE53935));
+      // ★ 導入が終わったら、 一覧そのものを作り直して出し直す
+      //   (= ユーザー要望: 終わったら画面を更新して、 入れた CLI を
+      //   すぐ使える状態に)。 一覧は組み立てた時の結果を抱えたままなので、
+      //   setState だけでは探し直してくれない。
+      if (session.isInstall && code == 0) {
+        _showInlineTerminal(
+            _buildAgentCliList(provider), provider.t('cli.title'),
+            isTerminal: false);
+      }
+    }));
+  }
+
+  // ── ただのターミナル (= ユーザー要望: ターミナルを開くボタン) ──────────
+
+  String? _terminalBaseDirOrNull(MindMapProvider provider) =>
+      terminalBaseDirOrNull(provider);
+
+  /// アプリの中の端末でシェルを開く。
+  Future<void> _openPlainTerminal(MindMapProvider provider) async {
+    final dir = await terminalBaseDir(provider);
+    if (!mounted) return;
+    _runAgentCliSession(provider, buildShellSession(provider, dir));
+  }
+
+  /// 管理者として、 OS の窓でターミナルを開く。
+  Future<void> _openAdminTerminal(MindMapProvider provider) async {
+    final dir = await terminalBaseDir(provider);
+    final ok = AgentCli.openAdminTerminal(dir);
+    if (!mounted) return;
+    showTopToast(
+        context,
+        ok ? provider.t('cli.adminOpened') : provider.t('cli.adminFailed'),
+        ok ? const Color(0xFF43B97F) : const Color(0xFFE53935));
+  }
+
+  /// CLI をアプリの中の端末で開く。
+  Future<void> _openAgentCliTerminal(
+      MindMapProvider provider, AgentCliFound found) async {
+    final exe = found.exePath;
+    if (exe == null || exe.isEmpty) return;
+    String workDir;
+    try {
+      final sup = await getApplicationSupportDirectory();
+      workDir = await AgentCli.workingDirectory(sup.path);
+    } catch (e) {
+      if (mounted) {
+        showTopToast(context, '$e', const Color(0xFFE53935));
+      }
+      return;
+    }
+    // ★ CLI からこのアプリを操作できるようにする (= ユーザー報告:
+    //   「開いているマップに〜」 と頼んでも中のページを編集してくれない)。
+    //   待ち受けが立っていないと作業フォルダーに .mcp.json が置かれず、
+    //   CLI 側からはアプリの道具がそもそも見えていなかった。
+    //   127.0.0.1 で合言葉付きなので、 このパソコンの中だけで完結する。
+    if (!provider.mcpExternalAllowed) {
+      await provider.setMcpExternalAllowed(true);
+    } else if (!provider.mcpServerEnabled) {
+      await provider.setMcpServerEnabled(true);
+    }
+    final url = provider.mcpServerUrl ?? '';
+    if (url.isNotEmpty) {
+      await AgentCli.writeMcpConfig(workDir,
+          url: url, token: provider.mcpToken);
+      // ★ 一度「いいえ」 と答えると以後ずっと道具が見えなくなるので、
+      //   起動のたびに許可へ直す (= 実際に「無効化されている」 と
+      //   CLI から言われた)。
+      await AgentCli.allowMcpServer(workDir);
+    }
+    // CLI の返事の言葉をそろえる (= ユーザー要望)。 選んだ物があれば
+    //   それを、 無ければアプリの言語を使う。
+    var langCode = provider.appLanguage;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getString('agent_cli_lang') ?? '';
+      if (saved.isNotEmpty) langCode = saved;
+    } catch (_) {}
+    // ★ 覚書 (CLAUDE.md / AGENTS.md / GEMINI.md) と、 アプリの説明書を
+    //   作業フォルダーへ置く (= ユーザー要望)。 覚書は短く、 詳しい説明書は
+    //   別ファイルにして「要る時だけ読め」 と指す (= トークンの節約)。
+    await AgentCli.writeGuide(
+      workDir,
+      instruction:
+          MindMapProvider.languageInstructionForCode(langCode).trim(),
+      appGuide: url.isEmpty ? '' : await provider.loadAppAgentsGuide(),
+    );
+    if (!mounted) return;
+    // ★ 浮かせずに、 この欄そのものに出す (= ユーザー要望)。
+    _runAgentCliSession(
+      provider,
+      AgentCliSession(
+        title: found.spec.label,
+        exePath: exe,
+        arguments: const <String>[],
+        workingDirectory: workDir,
+        cliKey: found.spec.kind.name,
+        // ★ 使える状態の時は何も出さない (= ユーザー要望: 「そのまま指示を
+        //   打てます」 は要らない)。 ログインが要る時だけ案内を出す。
+        hint: found.loggedInHint == true
+            ? null
+            : provider.t('cli.hintLogin'),
+      ),
+    );
+  }
+
   /// 外部のアプリ (Claude Desktop / Claude Code など) からこのアプリを
   /// 操作できるようにする設定 (= ユーザー要望)。
   ///
@@ -266312,6 +268902,10 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                     const Divider(height: 20, color: Colors.white12),
                     _buildExternalMcpSection(provider),
                   ],
+                  if (AgentCli.supported) ...[
+                    const Divider(height: 20, color: Colors.white12),
+                    _buildAgentCliSection(provider),
+                  ],
                 ]),
           ),
         ),
@@ -266341,6 +268935,11 @@ class _McpChatDialogState extends State<_McpChatDialog> {
     unawaited(provider.loadAppAgentsGuide().then((_) {
       if (mounted) setState(() {});
     }));
+    // ★ 前に見ていた画面 (端末 / CLI の一覧) に戻す (= ユーザー要望:
+    //   開き直すと毎回 API の会話になって使いにくい)。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _restoreLastInlineView(provider);
+    });
     // 使えるモデルと残高を取り直す (= ユーザー要望: モデル切替と残量表示)。
     unawaited(provider.refreshRelayModels());
     unawaited(provider.refreshCreditBalance());
@@ -267475,12 +270074,19 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                   // ★ 1 行に収める (= ユーザー報告: スマホで見出しが
                   //   縦書きになる)。 横幅が足りないと 1 文字ずつ折り返して
                   //   縦に積まれてしまうので、 折り返しを止めて「…」 にする。
-                  child: Text(provider.t('mcp.chatTitle'),
+                  // ★ CLI を開いている間は、 その名前を見出しにする
+                  //   (= ユーザー要望: 見出しが二段になるのをやめて 1 本に)。
+                  child: Text(
+                      _inlineTerminal != null && _inlineTerminalTitle.isNotEmpty
+                          ? _inlineTerminalTitle
+                          : provider.t('mcp.chatTitle'),
                       maxLines: 1,
                       softWrap: false,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                          color: Colors.white,
+                      style: TextStyle(
+                          color: _inlineTerminal != null
+                              ? const Color(0xFF9CCC65)
+                              : Colors.white,
                           fontSize: 14,
                           fontWeight: FontWeight.w700)),
                 ),
@@ -267528,15 +270134,48 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                 // ★ 開く時は**一発で中身まで**出す (= ユーザー要望: 説明欄の
                 //   項目は最初から開かれた状態に)。 以前は ⓘ で短い帯を出して、
                 //   その中の「できること (詳しく)」 をもう一度押させていた。
-                onPressed: () => setState(() {
+                onPressed: () {
                   if (_showCapabilityPanel) {
-                    _showCapabilityPanel = false;
-                    _showMcpInfo = false;
-                  } else {
-                    _showCapabilityPanel = true;
+                    _backToChatView();
+                    return;
                   }
-                }),
+                  // ★ 端末を出したままだと説明が後ろに隠れて、 押しても
+                  //   何も起きないように見えた。 先に会話の画面へ戻す。
+                  if (_inlineTerminal != null) _backToChatView();
+                  setState(() => _showCapabilityPanel = true);
+                },
               ),
+              // ── パソコンの AI コマンド (= ユーザー要望: どうやって
+              //    Claude Code や Codex を呼び出すのか分からない、
+              //    ログインボタンを付けて欲しい) ──
+              //    説明欄の奥に埋めず、 帯に直に出す。
+              if (AgentCli.supported)
+                Builder(
+                  builder: (bctx) => IconButton(
+                    visualDensity: VisualDensity.compact,
+                    constraints: _hdrBtnConstraints(context),
+                    padding: _narrowHeader(context)
+                        ? EdgeInsets.zero
+                        : const EdgeInsets.all(8),
+                    // ★ 見出しを 1 本にまとめたので、 会話へ戻る口はここ
+                    //   (= ユーザー要望: 「会話へ戻る」 の項目は消す)。
+                    //   端末を出している間は、 押すと会話へ戻る。
+                    tooltip: _inlineTerminal != null
+                        ? provider.t('cli.backToChat')
+                        : provider.t('cli.title'),
+                    icon: Icon(
+                        _inlineTerminal != null
+                            ? Icons.chat_bubble_outline_rounded
+                            : Icons.terminal_rounded,
+                        color: _inlineTerminal != null
+                            ? const Color(0xFF9CCC65)
+                            : Colors.white54,
+                        size: 19),
+                    onPressed: () => _inlineTerminal != null
+                        ? _backToChatView()
+                        : _openCliView(provider, bctx),
+                  ),
+                ),
               // 前提条件 (= ユーザー要望: Markdown のように自分で書いて置ける)。
               // ★ Builder で押したボタン自身の context を作る (= ユーザー要望:
               //   画面中央ではなくボタンの近くに出す)。 帯を掴む板は帯の
@@ -267611,7 +270250,13 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                 tooltip: provider.t('mcp.sessions'),
                 icon: const Icon(Icons.forum_outlined,
                     color: Colors.white54, size: 19),
-                onPressed: () => _showSessionPicker(bctx),
+                // ★ 端末や説明を出したままだと、 会話を選んでも見えている物が
+                //   変わらなかった (= ユーザー要望: 会話一覧などを押したら
+                //   AI アシスタントの画面に戻る)。
+                onPressed: () {
+                  _backToChatView();
+                  unawaited(_showSessionPicker(bctx));
+                },
               )),
               // 新しい会話を始める。
               IconButton(
@@ -267624,6 +270269,8 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                 icon: const Icon(Icons.add_comment_outlined,
                     color: Colors.white54, size: 19),
                 onPressed: () async {
+                  // 新しい会話を始めるなら、 まず会話の画面へ戻す。
+                  _backToChatView();
                   await provider.newMcpSession();
                   if (!mounted) return;
                   setState(() {
@@ -267643,6 +270290,7 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                 icon: const Icon(Icons.delete_sweep_rounded,
                     color: Colors.white38, size: 19),
                 onPressed: () async {
+                  _backToChatView();
                   await provider.clearMcpChatHistory();
                   if (!mounted) return;
                   setState(_msgs.clear);
@@ -267756,7 +270404,9 @@ class _McpChatDialogState extends State<_McpChatDialog> {
           // ── 説明の欄 / メッセージ一覧 ──
           //    説明は会話に混ぜず、 専用の欄で出す (= ユーザー要望)。
           Expanded(
-            child: _showCapabilityPanel
+            child: _inlineTerminal != null
+                ? _buildInlineTerminalPane(provider)
+                : _showCapabilityPanel
                 ? _buildCapabilityPanel(provider)
                 : _msgs.isEmpty
                 ? Center(
@@ -268015,7 +270665,9 @@ class _McpChatDialogState extends State<_McpChatDialog> {
           //     説明文だけの画面にして欲しい) ──
           //    「できること」 の欄だけでなく、 ヘッダーの ⓘ で出す説明も
           //    同じ扱いにする。
-          if (!_showCapabilityPanel && !_showMcpInfo) ...[
+          if (_inlineTerminal == null &&
+              !_showCapabilityPanel &&
+              !_showMcpInfo) ...[
           const Divider(height: 1, color: Colors.white12),
           // ── 添付したファイル (= ユーザー要望: 文書もチャットに投げたい) ──
           if (_attachments.isNotEmpty)
@@ -269068,5 +271720,43 @@ class _FlashcardStudyDialogState extends State<_FlashcardStudyDialog> {
 
 
 
+
+// ── ターミナルを開く場所 (= ユーザー要望: 開いているページが基点) ─────────
+//
+//   いま開いているページの置き場 (フォルダーの連動先 → アプリの保存先) を
+//   使い、 どちらも無ければ CLI 用の作業フォルダーへ落とす。
+String? terminalBaseDirOrNull(MindMapProvider provider) {
+  try {
+    final dir = provider.linkedDirectoryForPage(provider.currentPage.id);
+    final p = (dir ?? '').trim();
+    if (p.isEmpty) return null;
+    return Directory(p).existsSync() ? p : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+Future<String> terminalBaseDir(MindMapProvider provider) async {
+  final p = terminalBaseDirOrNull(provider);
+  if (p != null) return p;
+  final sup = await getApplicationSupportDirectory();
+  return AgentCli.workingDirectory(sup.path);
+}
+
+/// ターミナルの 1 回分を組み立てる。
+///
+/// ★ 日本語を含む場所は擬似端末にそのまま渡せないので、 起こし方ごと
+///   `AgentCli.shellLaunch` に決めてもらう (= ユーザー報告: デスクトップの
+///   下でターミナルが開けない)。
+AgentCliSession buildShellSession(MindMapProvider provider, String dir) {
+  final launch = AgentCli.shellLaunch(dir);
+  return AgentCliSession(
+    title: provider.t('cli.terminal'),
+    exePath: launch.exe,
+    arguments: launch.args,
+    workingDirectory: launch.dir,
+    isShell: true,
+  );
+}
 
 
