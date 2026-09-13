@@ -993,13 +993,24 @@ class McpServer {
         'and 2-3 key slides, not on every slide (at most 4 per call are '
         'drawn; the rest of the slides are still made, without a picture). '
         'Because it costs money, say up front that you will add N pictures. '
-        'Pass a pageId of a MIND MAP or GALLERY page so the file can be '
-        'pinned there (free-note / video pages cannot hold file tiles). '
+        'WHERE IT GOES: if the user did NOT say where to put it, LEAVE '
+        '"pageId" OUT (or empty) - the file is then pinned to the page they '
+        'currently have open, which is what they expect. Do NOT create a new '
+        'page just to hold a file, and do not ask which page; only pass a '
+        'pageId when the user named a specific page or you just made one for '
+        'this task. It must be a MIND MAP or GALLERY page (free-note / video '
+        'pages cannot hold file tiles); anything else falls back to the open '
+        'page. '
         'Returns {path, replaced, attachedToPageId}. When "replaced" is '
         'true the file that was already there was updated - say updated, '
         'not created.',
         {
-          'pageId': {'type': 'string'},
+          'pageId': {
+            'type': 'string',
+            'description':
+                'Leave this out to use the page the user has open. Only set '
+                'it when a specific page was named.',
+          },
           'kind': {
             'type': 'string',
             'enum': ['xlsx', 'csv', 'docx', 'pptx', 'pdf', 'txt', 'md']
@@ -1102,7 +1113,9 @@ class McpServer {
             },
           },
         },
-        ['pageId', 'kind']),
+        // pageId は任意 (= ユーザー要望: 場所を明示しない時は
+        //   開いているページに置く)。
+        ['kind']),
     _tool(
         'list_app_commands',
         'List the app features that can be launched (flashcards, silent '

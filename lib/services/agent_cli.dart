@@ -656,11 +656,17 @@ class AgentCli {
         body.writeln('- ファイルを作ったり書き換えたりしない。');
       }
       body.writeln('- 形式 (JSON など) を指定されたら、 それだけを返す。');
-      for (final name in const ['CLAUDE.md', 'AGENTS.md', 'GEMINI.md']) {
-        try {
-          await File('${dir.path}$sep$name')
-              .writeAsString(body.toString(), flush: true);
-        } catch (_) {}
+      // ★ 中身が前と同じなら書かない (= ユーザー要望: API より遅すぎる)。
+      //   1 回聞くたびに 3 つのファイルを毎回書き直していた。
+      final text = body.toString();
+      if (text != _lastOneshotGuide) {
+        _lastOneshotGuide = text;
+        for (final name in const ['CLAUDE.md', 'AGENTS.md', 'GEMINI.md']) {
+          try {
+            await File('${dir.path}$sep$name')
+                .writeAsString(text, flush: true);
+          } catch (_) {}
+        }
       }
       return dir.path;
     } catch (e) {
@@ -672,6 +678,9 @@ class AgentCli {
   /// 1 回聞く相手の名前 (「PC内AI (Claude Code)」 の括弧の中)。
   static Future<String?> preferredLabel() async =>
       (await pickForPrompt())?.spec.label;
+
+  /// 直前に書いた 1 回聞き用の覚書 (同じなら書き直さない)。
+  static String _lastOneshotGuide = '';
 
   /// 直前の失敗の理由 (黙って API に落とさず、 画面に出すため)。
   static String lastPromptError = '';
@@ -719,6 +728,13 @@ class AgentCli {
 
   /// 選んだモデル (prefs の控えを画面から入れてもらう)。
   static String chosenModel = '';
+
+  /// 考える深さ ('low' / 'medium' / 'high'、 空 = CLI の設定のまま)。
+  ///
+  /// ★ = ユーザー要望「API で呼んだ時に比べて CLI だと資料作成が遅すぎる」。
+  ///   1 回聞くだけの問い合わせに深く考えさせても待ち時間が伸びるだけなので、
+  ///   画面で選んだ深さをそのまま渡す。
+  static String chosenReasoning = '';
 
   /// 直前に選ばれた CLI の種類 (モデルの候補を出すのに使う)。
   static AgentCliKind? lastPickKind;
@@ -810,6 +826,11 @@ class AgentCli {
             '-p',
             '--output-format',
             'json',
+            // ★ 1 回聞くだけの問い合わせに、 利用者が登録している
+            //   MCP サーバーをいちいち繋ぎに行かせない
+            //   (= ユーザー要望: API より遅すぎる)。 遠くの
+            //   サーバーが 1 つでもあると、 毎回その分だけ起動が伸びる。
+            '--strict-mcp-config',
             if (m.isNotEmpty) ...['--model', m],
           ],
         AgentCliKind.codex => <String>[
@@ -818,9 +839,34 @@ class AgentCli {
             //   ファイルを 1 つも作れない (= ユーザー報告)。 作業フォルダー
             //   の中だけ書けるようにする。 外は今までどおり書けない。
             if (allowFiles) ...['--sandbox', 'workspace-write'],
+            // 砂箱の手先 (codex-command-runner) を起こさせない
+            //   (= ユーザー報告: しょっちゅうブロックされる。 詳しくは
+            //   [codexWindowsSandbox] の説明)。
+            if (!codexWindowsSandbox && Platform.isWindows) ...[
+              '-c',
+              'windows.sandbox="none"',
+            ],
             // ★ git の管理下でないと動かない既定があるので外す。 アプリが
             //   用意する作業フォルダーは git ではない。
             '--skip-git-repo-check',
+            // ★ 1 回聞くだけの問い合わせでは、 毎回付いて回る重い物を
+            //   外す (= ユーザー要望: API に比べて CLI だと資料作成が
+            //   遅すぎる)。
+            //   ・notify … 1 手ごとに外のプログラムを起こす知らせ。
+            //     利用者の設定に PowerShell が入っていることが多く、
+            //     遅いうえにセキュリティソフトにも咎められる。
+            //   ・mcp_servers … 起動のたびに遠くのサーバーへ繋ぎに行く。
+            //     1 問 1 答に道具は要らない。
+            //   ★ モデルや契約の筋 (service_tier) は**残す**ので、
+            //     `--ignore-user-config` で丸ごと捨てることはしない。
+            '-c',
+            'notify=[]',
+            '-c',
+            'mcp_servers={}',
+            if (chosenReasoning.isNotEmpty) ...[
+              '-c',
+              'model_reasoning_effort="$chosenReasoning"',
+            ],
             // ★ 返事だけを別のファイルへ書かせる (= ユーザー報告: PC 内の
             //   codex に自動操作のフロー作成を頼んでも、 何も作られない
             //   まま終わる)。 `codex exec` は標準出力に **頼んだ文まで
@@ -1159,6 +1205,23 @@ class AgentCli {
   ///   `bearer_token_env_var` で「この環境変数から読め」 と指定できる。
   static const String kMcpTokenEnvVar = 'HISATOR_MCP_TOKEN';
 
+  /// codex の Windows 砂箱 (制限付きトークン) を使うか。
+  ///
+  /// ★ = ユーザー報告「codex-command-0.154.0.exe がどうこうでブロックされ
+  ///   ましたと時々出る」。 codex は Windows で命令を走らせる時、
+  ///   `~/.codex/.sandbox-bin/codex-command-runner-<版>.exe` という**自分で
+  ///   置いた署名の無い実行ファイル**を起こし、 制限付きトークンを作って
+  ///   その下で動かす。 「隠しフォルダーの署名無し exe が、 トークンを
+  ///   細工して別のプロセスを起こす」 という形なので、 セキュリティソフト
+  ///   から見れば最も疑わしい振る舞いの 1 つで、 版が上がるたびに新しい
+  ///   ファイル名で出てくるから毎回咎められる。
+  ///
+  /// ★ 既定は**使わない** (false)。 止められるうえ、 アプリから起こす時は
+  ///   `--ask-for-approval on-request` を必ず付けていて、 **何を走らせるかは
+  ///   1 件ずつ本人に聞いてから**なので、 歯止めが無くなるわけではない。
+  ///   砂箱まで欲しい人は設定で戻せる。
+  static bool codexWindowsSandbox = false;
+
   static List<String> extraLaunchArgs(
     AgentCliKind kind, {
     String mcpUrl = '',
@@ -1174,6 +1237,11 @@ class AgentCli {
           // 何を実行するかは、 今までどおり利用者に聞いてから。
           '--ask-for-approval',
           'on-request',
+          // 砂箱の手先 (codex-command-runner) を起こさせない (上の経緯)。
+          if (!codexWindowsSandbox && Platform.isWindows) ...[
+            '-c',
+            'windows.sandbox="none"',
+          ],
           if (plain.isNotEmpty) ...[
             '-c',
             'mcp_servers.hisator.url="$plain"',

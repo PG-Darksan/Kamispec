@@ -23815,6 +23815,80 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Falha ao excluir',
       'ru': 'Не удалось удалить',
     },
+    // ── 探す範囲 (= ユーザー要望: フォルダー内も探せるように) ──
+    'search.scopePage': {
+      'ja': 'このページ',
+      'en': 'This page',
+      'zh': '本页',
+      'ko': '이 페이지',
+      'es': 'Esta pagina',
+      'fr': 'Cette page',
+      'de': 'Diese Seite',
+      'pt': 'Esta pagina',
+      'ru': 'Eta stranitsa',
+    },
+    'search.scopeFolder': {
+      'ja': 'フォルダー内',
+      'en': 'This folder',
+      'zh': '此文件夹',
+      'ko': '이 폴더',
+      'es': 'Esta carpeta',
+      'fr': 'Ce dossier',
+      'de': 'Dieser Ordner',
+      'pt': 'Esta pasta',
+      'ru': 'Eta papka',
+    },
+    'search.scopeAll': {
+      'ja': 'すべて',
+      'en': 'All pages',
+      'zh': '全部',
+      'ko': '전체',
+      'es': 'Todo',
+      'fr': 'Tout',
+      'de': 'Alle',
+      'pt': 'Tudo',
+      'ru': 'Vse',
+    },
+    'search.scopeFiles': {
+      'ja': 'ファイルの中身',
+      'en': 'Inside files',
+      'zh': '文件内容',
+      'ko': '파일 내용',
+      'es': 'Dentro de archivos',
+      'fr': 'Dans les fichiers',
+      'de': 'In Dateien',
+      'pt': 'Dentro dos arquivos',
+      'ru': 'Vnutri faylov',
+    },
+    'search.scopeFilesHint': {
+      'ja': 'フォルダーの中のファイル (pdf / docx / xlsx など) の本文を探します。'
+          ' 重いので別の窓で。',
+      'en': 'Searches the text inside the folder\'s files (pdf, docx, xlsx…). '
+          'It is heavy, so it opens in its own window.',
+      'zh': '搜索文件夹内文件（pdf / docx / xlsx 等）的正文。较耗时，在单独窗口中进行。',
+      'ko': '폴더 안 파일(pdf / docx / xlsx 등)의 본문을 찾습니다. 무거워서 별도 창에서 엽니다.',
+      'es': 'Busca dentro de los archivos de la carpeta (pdf, docx, xlsx...). '
+          'Es pesado, asi que se abre en otra ventana.',
+      'fr': 'Cherche dans le contenu des fichiers du dossier (pdf, docx, '
+          'xlsx...). C est lourd, donc dans une fenetre a part.',
+      'de': 'Durchsucht den Inhalt der Dateien im Ordner (pdf, docx, xlsx …). '
+          'Das ist aufwandig und offnet ein eigenes Fenster.',
+      'pt': 'Busca no conteudo dos arquivos da pasta (pdf, docx, xlsx...). '
+          'E pesado, entao abre em outra janela.',
+      'ru': 'Ishchet vnutri faylov papki (pdf, docx, xlsx…). Eto tyazhelo, '
+          'poetomu otkryvaetsya v otdelnom okne.',
+    },
+    'search.replaceOnlyThisPage': {
+      'ja': '置き換えたのは開いているページの分だけです ({n} 件は別のページ)',
+      'en': 'Only hits on the open page were replaced ({n} are on other pages)',
+      'zh': '仅替换了当前页面的结果（{n} 个在其他页面）',
+      'ko': '열려 있는 페이지의 결과만 바꿨습니다 ({n} 개는 다른 페이지)',
+      'es': 'Solo se reemplazo en la pagina abierta ({n} en otras paginas)',
+      'fr': 'Seule la page ouverte a ete modifiee ({n} sur d autres pages)',
+      'de': 'Nur Treffer auf der offenen Seite wurden ersetzt ({n} auf anderen Seiten)',
+      'pt': 'Apenas a pagina aberta foi substituida ({n} em outras paginas)',
+      'ru': 'Zameneno tolko na otkrytoy stranitse ({n} na drugih)',
+    },
     'search.replaceHint': {
       'ja': '置換後のテキスト',
       'en': 'Replacement text',
@@ -47172,6 +47246,27 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'N\u00e3o foi poss\u00edvel ler a resposta da IA',
       'ru': '\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043f\u0440\u043e\u0447\u0438\u0442\u0430\u0442\u044c \u043e\u0442\u0432\u0435\u0442 AI',
     },
+    // 操作できるブラウザがそもそも無い (= ユーザー報告: どこのページにも
+    //   切り替わらず終了する)。
+    'agent.errNoTarget': {
+      'ja': '操作できるブラウザがありません。 先にページを開くか、 '
+          '「外のブラウザで開く」 と頼んでください。',
+      'en': 'There is no browser to drive. Open a page first, or ask for it '
+          'to be opened in an external browser.',
+      'zh': '没有可操作的浏览器。请先打开页面，或要求用外部浏览器打开。',
+      'ko': '조작할 브라우저가 없습니다. 먼저 페이지를 열거나 외부 브라우저로 '
+          '열어 달라고 요청하세요.',
+      'es': 'No hay navegador que controlar. Abre una pagina primero o pide '
+          'que se abra en el navegador externo.',
+      'fr': 'Aucun navigateur a piloter. Ouvrez d abord une page, ou demandez '
+          'l ouverture dans le navigateur externe.',
+      'de': 'Kein steuerbarer Browser. Offnen Sie zuerst eine Seite oder '
+          'bitten Sie darum, sie im externen Browser zu offnen.',
+      'pt': 'Nao ha navegador para controlar. Abra uma pagina primeiro ou '
+          'peca para abrir no navegador externo.',
+      'ru': 'Net brauzera dlya upravleniya. Snachala otkroyte stranitsu ili '
+          'poprosite otkryt vo vneshnem brauzere.',
+    },
     'agent.errNoSteps': {
       'ja': 'AI が手順を出しませんでした',
       'en': 'The AI produced no steps',
@@ -50469,6 +50564,115 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Die PC-KI nutzt Ihr Abo (kein Restguthaben)',
       'pt': 'A IA do PC usa sua assinatura (sem saldo restante)',
       'ru': 'ИИ на ПК использует вашу подписку (остаток недоступен)',
+    },
+    // ── 入れ終わらなかった時の案内 (= ユーザー報告: Node.js の動作が
+    //    セキュリティソフトに止められてインストールが完了しない) ──
+    'cli.installBlockedTitle': {
+      'ja': '入れ終わりませんでした',
+      'en': 'The install did not finish',
+      'zh': '安装未完成',
+      'ko': '설치가 끝나지 않았습니다',
+      'es': 'La instalacion no termino',
+      'fr': 'L installation ne s est pas terminee',
+      'de': 'Die Installation wurde nicht abgeschlossen',
+      'pt': 'A instalacao nao terminou',
+      'ru': 'Ustanovka ne zavershilas',
+    },
+    'cli.installBlockedBody': {
+      'ja': 'セキュリティソフトが Node.js の動作を止めている可能性があります。\n\n'
+          'アプリ側では、 途中でシェルを起こさない・取り込んだ包の後片付けの'
+          'JS を走らせない・余計な通信をしない、 という形にしてあります。\n\n'
+          'それでも止められる時は、 お使いのセキュリティソフトで '
+          'node.exe と npm を許可 (除外) してから、 もう一度お試しください。\n'
+          '※ Gemini は、 設定で API キーを入れておけば CLI を入れなくても'
+          '使えます。',
+      'en': 'Your security software may be blocking Node.js.\n\n'
+          'On our side the install no longer goes through a shell, no longer '
+          'runs package clean-up scripts, and makes no extra network calls.\n\n'
+          'If it is still blocked, allow (exclude) node.exe and npm in your '
+          'security software and try again.\n'
+          'Note: Gemini also works without the CLI — just put an API key in '
+          'Settings.',
+      'zh': '安全软件可能拦截了 Node.js。\n\n应用侧已不经由 shell、不运行包的'
+          '收尾脚本、不做多余的网络请求。\n\n若仍被拦截，请在安全软件中允许'
+          '（排除）node.exe 与 npm 后重试。\n另外，Gemini 在设置中填入 API '
+          '密钥即可免安装 CLI 使用。',
+      'ko': '보안 소프트웨어가 Node.js 를 막고 있을 수 있습니다.\n\n앱 쪽에서는 '
+          '셸을 거치지 않고, 패키지 마무리 스크립트를 실행하지 않으며, 불필요한 '
+          '통신도 하지 않습니다.\n\n그래도 막힌다면 보안 소프트웨어에서 '
+          'node.exe 와 npm 을 허용(제외)한 뒤 다시 시도하세요.\n참고: Gemini 는 '
+          '설정에 API 키를 넣으면 CLI 없이도 사용할 수 있습니다.',
+      'es': 'Tu antivirus puede estar bloqueando Node.js.\n\nPor nuestra parte '
+          'la instalacion ya no pasa por un shell, no ejecuta scripts de los '
+          'paquetes y no hace peticiones extra.\n\nSi sigue bloqueado, permite '
+          '(excluye) node.exe y npm en tu antivirus y vuelve a intentarlo.\n'
+          'Gemini tambien funciona sin la CLI: basta una clave API en Ajustes.',
+      'fr': 'Votre antivirus bloque peut-etre Node.js.\n\nDe notre cote, '
+          'l installation ne passe plus par un shell, n execute plus les '
+          'scripts des paquets et ne fait aucun appel reseau superflu.\n\n'
+          'Si cela reste bloque, autorisez (excluez) node.exe et npm dans '
+          'votre antivirus puis reessayez.\nGemini fonctionne aussi sans la '
+          'CLI : il suffit d une cle API dans les reglages.',
+      'de': 'Ihre Sicherheitssoftware blockiert moglicherweise Node.js.\n\n'
+          'Auf unserer Seite lauft die Installation ohne Shell, ohne '
+          'Paket-Skripte und ohne zusatzliche Netzwerkaufrufe.\n\nWird sie '
+          'weiterhin blockiert, erlauben Sie node.exe und npm in Ihrer '
+          'Sicherheitssoftware und versuchen Sie es erneut.\nGemini geht auch '
+          'ohne CLI — ein API-Schlussel in den Einstellungen genugt.',
+      'pt': 'Seu antivirus pode estar bloqueando o Node.js.\n\nDo nosso lado a '
+          'instalacao nao passa mais por um shell, nao executa scripts dos '
+          'pacotes e nao faz chamadas de rede extras.\n\nSe continuar '
+          'bloqueado, permita (exclua) node.exe e npm no antivirus e tente de '
+          'novo.\nO Gemini tambem funciona sem a CLI: basta uma chave de API '
+          'nas configuracoes.',
+      'ru': 'Vozmozhno, antivirus blokiruet Node.js.\n\nS nashey storony '
+          'ustanovka bolshe ne idyot cherez shell, ne zapuskaet skripty paketov '
+          'i ne delaet lishnih setevyh zaprosov.\n\nEsli blokirovka '
+          'sohranyaetsya, razreshite (isklyuchite) node.exe i npm v antiviruse '
+          'i poprobuyte snova.\nGemini rabotaet i bez CLI — dostatochno klyucha '
+          'API v nastroykah.',
+    },
+    // ── codex の砂箱 (= ユーザー報告: ブロックされましたと時々出る) ──
+    'cli.codexSandbox': {
+      'ja': 'Codex の砂箱 (制限付きトークン) を使う',
+      'en': 'Use Codex sandbox (restricted token)',
+      'zh': '使用 Codex 沙箱（受限令牌）',
+      'ko': 'Codex 샌드박스(제한 토큰) 사용',
+      'es': 'Usar el sandbox de Codex (token restringido)',
+      'fr': 'Utiliser le bac a sable de Codex (jeton restreint)',
+      'de': 'Codex-Sandbox (eingeschranktes Token) verwenden',
+      'pt': 'Usar o sandbox do Codex (token restrito)',
+      'ru': 'Ispolzovat pesochnitsu Codex (ogranichennyy token)',
+    },
+    'cli.codexSandboxHint': {
+      'ja': '入れると、 Codex が命令を走らせるたびに自前の実行ファイルで'
+          '制限付きトークンを作ります。 署名が無いためセキュリティソフトに'
+          '止められがちです。 切っていても、 何を走らせるかは 1 件ずつ'
+          'お尋ねします。',
+      'en': 'When on, Codex builds a restricted token with its own unsigned '
+          'helper every time it runs a command — which security software often '
+          'blocks. With it off you are still asked before each command runs.',
+      'zh': '开启后，Codex 每次执行命令都会用自带的未签名程序创建受限令牌，'
+          '常被安全软件拦截。关闭后仍会逐条询问是否执行。',
+      'ko': '켜면 Codex 가 명령을 실행할 때마다 서명 없는 자체 실행 파일로 '
+          '제한 토큰을 만듭니다. 보안 소프트웨어가 자주 차단합니다. '
+          '꺼도 명령마다 실행 여부를 묻습니다.',
+      'es': 'Si esta activo, Codex crea un token restringido con su propio '
+          'ejecutable sin firmar en cada comando, lo que el antivirus suele '
+          'bloquear. Aun desactivado, se te pregunta antes de cada comando.',
+      'fr': 'Active, Codex cree un jeton restreint avec son propre executable '
+          'non signe a chaque commande, ce que les antivirus bloquent souvent. '
+          'Desactive, chaque commande vous est quand meme soumise.',
+      'de': 'Aktiviert erzeugt Codex bei jedem Befehl mit einem eigenen, nicht '
+          'signierten Helfer ein eingeschranktes Token — das blockieren '
+          'Sicherheitsprogramme oft. Auch deaktiviert wird jeder Befehl '
+          'vorher abgefragt.',
+      'pt': 'Ativado, o Codex cria um token restrito com seu proprio '
+          'executavel nao assinado a cada comando, o que antivirus costumam '
+          'bloquear. Mesmo desativado, cada comando e confirmado antes.',
+      'ru': 'Vklyucheno — Codex sozdayot ogranichennyy token svoim '
+          'nepodpisannym faylom pri kazhdoy komande; antivirusy chasto eto '
+          'blokiruyut. Dazhe vyklyucheno kazhdaya komanda podtverzhdaetsya.',
     },
     // ── Pro 以上でないと使えない旨の案内 (= ユーザー要望) ──
     'cli.proRequired': {
@@ -80695,6 +80899,31 @@ class MindMapProvider extends ChangeNotifier {
   bool get useCliAi =>
       _aiAssistantMode == 'cli' && AgentCli.supported && canUseCliAi;
 
+  // ── codex の Windows 砂箱 (= ユーザー報告: codex-command-….exe が
+  //    ブロックされたと時々出る) ──
+  //
+  //    codex は命令を走らせる時、 自分で置いた署名の無い実行ファイルを起こして
+  //    制限付きトークンの下で動かす。 それがセキュリティソフトに咎められる。
+  //    既定では使わない。 何を走らせるかは 1 件ずつ本人に聞く作りなので、
+  //    歯止めが無くなるわけではない。
+  bool get codexWindowsSandbox => AgentCli.codexWindowsSandbox;
+
+  Future<void> setCodexWindowsSandbox(bool on) async {
+    AgentCli.codexWindowsSandbox = on;
+    notifyListeners();
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setBool('codexWindowsSandbox', on);
+    } catch (_) {}
+  }
+
+  Future<void> _loadCodexSandbox() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      AgentCli.codexWindowsSandbox = p.getBool('codexWindowsSandbox') ?? false;
+    } catch (_) {}
+  }
+
   /// PC の CLI に渡す環境変数。
   ///
   /// ★ = ユーザー報告「gemini CLI にログインしようとするとセキュリティソフト
@@ -80857,6 +81086,9 @@ class MindMapProvider extends ChangeNotifier {
     // ★ PC の CLI に頼む設定なら、 まずそちらへ (= ユーザー要望)。
     //   写真つきは渡せないので、 その時だけ今までどおり。
     if (useCliAi && (images == null || images.isEmpty)) {
+      // ★ 考える深さを渡す (= ユーザー要望: API より遅すぎる)。 画面で
+      //   「低い」 を選んでいれば、 CLI 側もそれで動く。
+      AgentCli.chosenReasoning = reasoningFor('cli');
       final out = await AgentCli.runPrompt(prompt,
           timeout: timeoutOverride,
           guide: languageInstructionForAi().trim(),
@@ -81345,6 +81577,7 @@ Art direction:
       // ★ 形 (オブジェクトか配列か) は**指定しない**。 呼び出し側の文面が
       //   既に決めているので、 ここで「オブジェクト 1 つ」 と言い足すと
       //   配列を求めている所 (スライド生成など) と食い違う (= 点検で判明)。
+      AgentCli.chosenReasoning = reasoningFor('cli');
       final out = await AgentCli.runPrompt(
           '$prompt\n\n※ 返事は JSON だけ。 前置きも囲み (```) も付けない。',
           guide: languageInstructionForAi().trim(),
@@ -85230,6 +85463,7 @@ $cleanQ
     unawaited(_planReadyFuture!);
     // どの AI に頼むか (API / PC 内 CLI) の控え。
     unawaited(loadAiAssistantMode());
+    unawaited(_loadCodexSandbox());
     _loadJoinedGroups();
     _loadColorSettings();
     loadDisplayName();

@@ -417,6 +417,82 @@ class WebAutoStep {
           'children': children.map((e) => e.toJson()).toList(),
       };
 
+  /// AI が書いた 1 手を読む。
+  ///
+  /// ★ = ユーザー報告「〜の HP に接続してスクショ撮ってきて、 と頼んでも
+  ///   どこのページにも切り替わらず終了してしまう」。
+  ///   原因はここ。 [fromJson] は**知らない種類を黙って「待つ」 に倒す**
+  ///   作りで、 AI が `navigate` や `screenshot` (どちらも人間には自然な
+  ///   言い方) と書くと、 開くのも撮るのも「待つ」 に化けていた。 その結果
+  ///   何も起きないまま、 「進んでいない」 の見張りに掛かって終わっていた。
+  ///   保存済みのフローを読む時 (= 古い版との行き来) は今までどおり倒す
+  ///   必要があるので、 AI 用の読み取りだけを分ける。
+  ///
+  /// 言い換え (navigate → open など) を吸収し、 それでも分からない種類は
+  /// null を返して [unknown] に控える (黙って捨てない)。
+  static WebAutoStep? fromAiJson(
+      Map<String, dynamic> j, List<String> unknown) {
+    final raw = (j['kind'] as String? ?? '').trim();
+    final key = raw.toLowerCase().replaceAll(RegExp(r'[-_\s]'), '');
+    const alias = <String, WebAutoKind>{
+      // 開く
+      'navigate': WebAutoKind.open,
+      'goto': WebAutoKind.open,
+      'go': WebAutoKind.open,
+      'visit': WebAutoKind.open,
+      'load': WebAutoKind.open,
+      'openurl': WebAutoKind.open,
+      'url': WebAutoKind.open,
+      'openpage': WebAutoKind.open,
+      // 撮る
+      'screenshot': WebAutoKind.shot,
+      'capture': WebAutoKind.shot,
+      'snapshot': WebAutoKind.shot,
+      'shotpage': WebAutoKind.shot,
+      'fullscreenshot': WebAutoKind.fullShot,
+      'fullpagescreenshot': WebAutoKind.fullShot,
+      // 押す・打つ・待つ・送る
+      'press': WebAutoKind.click,
+      'taptext': WebAutoKind.click,
+      'input': WebAutoKind.type,
+      'fill': WebAutoKind.type,
+      'write': WebAutoKind.type,
+      'sleep': WebAutoKind.wait,
+      'delay': WebAutoKind.wait,
+      'scrolltobottom': WebAutoKind.scrollTo,
+      'scrollbottom': WebAutoKind.scrollTo,
+      'openbrowser': WebAutoKind.openBrowser,
+      'externalopen': WebAutoKind.openExternal,
+    };
+    WebAutoKind? kind;
+    for (final e in WebAutoKind.values) {
+      if (e.name.toLowerCase() == key) {
+        kind = e;
+        break;
+      }
+    }
+    kind ??= alias[key];
+    if (kind == null) {
+      if (raw.isNotEmpty) unknown.add(raw);
+      return null;
+    }
+    // ★ 場所の書き方も揺れる (`url` / `href` と書かれる事が多い)。
+    final m = Map<String, dynamic>.from(j);
+    m['kind'] = kind.name;
+    final urlish = (j['url'] ?? j['href'] ?? j['link'] ?? '').toString();
+    if (urlish.isNotEmpty) {
+      if (kind == WebAutoKind.open || kind == WebAutoKind.openExternal) {
+        if ((j['text'] as String? ?? '').trim().isEmpty) m['text'] = urlish;
+      } else if (kind == WebAutoKind.openBrowser ||
+          kind == WebAutoKind.download) {
+        if ((j['selector'] as String? ?? '').trim().isEmpty) {
+          m['selector'] = urlish;
+        }
+      }
+    }
+    return fromJson(m);
+  }
+
   static WebAutoStep fromJson(Map<String, dynamic> j) => WebAutoStep(
         kind: WebAutoKind.values.firstWhere(
           (e) => e.name == (j['kind'] as String? ?? 'tap'),
@@ -2221,11 +2297,24 @@ $snap'''}
       String? lastRanSig;
       String? prevPlan;
       // 手数の上限。 止まらなくなるのを防ぐ。
+      // ★ kind の名前を間違えた時に、 1 度だけ言い直させるための覚書き。
+      var kindHint = '';
+      var retriedKinds = false;
       for (var turn = 0; turn < 12; turn++) {
         if (_agentStop || !mounted) break;
         // ★ ブラウザが閉じられていたら、 そこで終わり (= ユーザー要望)。
         if (_cdpGone) {
           _agentFail(provider, 'agent.errBrowserGone', '');
+          break;
+        }
+        // ★ 操作できる相手が 1 つも無いのに AI へ聞きに行かない
+        //   (= ユーザー報告: どこのページにも切り替わらず終了する)。
+        //   パソコンのブラウザを開く依頼と、 パソコンの操作は別口なので除く。
+        if (turn == 0 &&
+            !_hasJsChannel &&
+            !_wantsPcBrowser(req) &&
+            !_wantsPcApp(req)) {
+          _agentFail(provider, 'agent.errNoTarget', '');
           break;
         }
         final snap = await _pageSnapshot();
@@ -2259,7 +2348,7 @@ $prevPlan
 これ以上やる事が無ければ {"done":true,"steps":[]} を返してください。
 '''}
 ${_pcContext(req)}
-依頼: $req''';
+${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
         String out;
         try {
           out = (await provider.askAi(prompt)).trim();
@@ -2302,6 +2391,13 @@ ${_pcContext(req)}
           break;
         }
         if (m['done'] == true) {
+          // ★ 1 手も動かないうちに「終わりました」 は受け付けない
+          //   (= ユーザー報告: どこのページにも切り替わらず終了する)。
+          //   頼まれた事をやらずに終えたのだから、 成功として畳まない。
+          if (_steps.isEmpty) {
+            _agentFail(provider, 'agent.errNoSteps', out);
+            break;
+          }
           if (mounted) setState(() => _status = provider.t('agent.done'));
           break;
         }
@@ -2311,14 +2407,37 @@ ${_pcContext(req)}
           _agentFail(provider, 'agent.errNoSteps', out);
           break;
         }
-        final steps = _coercePcIntent(req, <WebAutoStep>[
-          for (final j in list)
-            if (j is Map) WebAutoStep.fromJson(Map<String, dynamic>.from(j)),
-        ]);
+        // ★ 知らない種類を黙って「待つ」 に倒さない (= ユーザー報告の本体。
+        //   `navigate` / `screenshot` と書かれると、 開くのも撮るのも
+        //   待機に化けていた)。 言い換えは吸収し、 それでも分からない物は
+        //   控えて AI に言い直させる。
+        final unknown = <String>[];
+        final parsed = <WebAutoStep>[];
+        for (final j in list) {
+          if (j is! Map) continue;
+          final s =
+              WebAutoStep.fromAiJson(Map<String, dynamic>.from(j), unknown);
+          if (s != null) parsed.add(s);
+        }
+        final steps = _coercePcIntent(req, parsed);
+        if (unknown.isNotEmpty) {
+          _log('失敗', '知らない種類の手順: ${unknown.toSet().join(' / ')}');
+        }
         if (steps.isEmpty) {
+          // 読めた手順が 1 つも無い。 種類の書き方が違うだけなら、
+          //   正しい名前を教えてもう一度だけ考えてもらう。
+          if (unknown.isNotEmpty && !retriedKinds) {
+            retriedKinds = true;
+            kindHint = '※ ${unknown.toSet().join(' / ')} という kind は'
+                'ありません。 ページを開くのは "open" (text に URL)、'
+                ' 画面を撮るのは "shot"、 全面を撮るのは "fullShot" です。'
+                ' 上の一覧にある kind だけを使ってください。';
+            continue;
+          }
           _agentFail(provider, 'agent.errNoSteps', out);
           break;
         }
+        kindHint = '';
         // ★ 画面が変わっていないのに、 次の一手も同じ = 進んでいない。
         //   ここで止めないと、 同じ手順が何度も積まれ続ける
         //   (= ユーザー報告: 止まらずに同じフローを作り続ける)。

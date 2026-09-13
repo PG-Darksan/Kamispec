@@ -942,7 +942,15 @@ class AgentTerminalState extends State<AgentTerminal> {
                     controller: _scroll,
                     thumbVisibility: true,
                     interactive: true,
-                    child: TerminalView(
+                    // ★ 棒が 2 本出ていたのを 1 本に (= ユーザー報告)。
+                    //   端末の中身は素の `Scrollable` で、 パソコン版の
+                    //   既定の作法 (MaterialScrollBehavior) が**そこにも
+                    //   勝手に棒を付ける**。 上の掴める棒と二重になるので、
+                    //   中の自動の棒だけ止める。
+                    child: ScrollConfiguration(
+                      behavior: ScrollConfiguration.of(context)
+                          .copyWith(scrollbars: false),
+                      child: TerminalView(
                       _s.terminal,
                       key: _viewKey,
                       controller: _termController,
@@ -957,6 +965,7 @@ class AgentTerminalState extends State<AgentTerminal> {
                       ),
                       theme: TerminalThemes.defaultTheme,
                       backgroundOpacity: 0,
+                    ),
                     ),
                   ),
                 ),

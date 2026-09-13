@@ -2437,6 +2437,14 @@ class _MindMapScreenState extends State<MindMapScreen>
   String _searchQuery = '';
   List<String> _searchResultIds = [];
   int _searchResultIndex = 0;
+
+  /// 探す範囲 (= ユーザー要望: フォルダー内も探せるように)。
+  /// 0 = このページ / 1 = フォルダー内 / 2 = すべてのページ
+  int _searchScope = 0;
+
+  /// 当たった要素が居るページ (`_searchResultIds` と同じ並び・同じ長さ)。
+  /// これが無いと、 別のページの当たりへ寄せられない。
+  List<String> _searchResultPageIds = [];
   final TextEditingController _searchCtrl = TextEditingController();
   final TextEditingController _replaceCtrl = TextEditingController();
   final FocusNode _searchFocusNode = FocusNode();
@@ -28114,8 +28122,10 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 探している最中か (窓を開き直しても続きが見えるように外に持つ)。
   bool _folderSearchRunning = false;
 
-  Future<void> _showFolderFileSearchDialog(MindMapProvider provider) async {
-    final ctrl = TextEditingController();
+  /// [initial] … Ctrl+F の欄に打ってある言葉をそのまま引き継ぐ。
+  Future<void> _showFolderFileSearchDialog(MindMapProvider provider,
+      {String initial = ''}) async {
+    final ctrl = TextEditingController(text: initial);
     final fid = _targetFolderForNewPage(provider);
     final folderName = fid == null
         ? provider.t('download.intoFolderRoot')
@@ -59487,6 +59497,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             setState(() {
               _searchVisible = false;
               _searchResultIds = [];
+              _searchResultPageIds = [];
             });
             _keyboardFocusNode.requestFocus();
             return;
@@ -59601,6 +59612,7 @@ class _MindMapScreenState extends State<MindMapScreen>
               _searchCtrl.clear();
               _replaceCtrl.clear();
               _searchResultIds = [];
+              _searchResultPageIds = [];
               _searchResultIndex = 0;
             });
             WidgetsBinding.instance
@@ -59704,6 +59716,7 @@ class _MindMapScreenState extends State<MindMapScreen>
               _searchCtrl.clear();
               _replaceCtrl.clear();
               _searchResultIds = [];
+              _searchResultPageIds = [];
               _searchResultIndex = 0;
             });
             WidgetsBinding.instance
@@ -99649,19 +99662,39 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (q.isEmpty) {
       setState(() {
         _searchResultIds = [];
+        _searchResultPageIds = [];
         _searchResultIndex = 0;
       });
       return;
     }
-    final hits = provider.nodes.values
-        .where((n) =>
-            n.title.toLowerCase().contains(q) ||
-            (n.memoText ?? '').toLowerCase().contains(q))
-        .map((n) => n.id)
-        .toList();
+    // ★ 探す範囲 (= ユーザー要望: フォルダー内も探せるように)。 題とメモを
+    //   突き合わせるだけなので、 全ページでも十分に速い。
+    final scope = switch (_searchScope) {
+      1 => provider.pagesInFolder(_targetFolderForNewPage(provider)),
+      2 => provider.pages,
+      _ => <MindMapPage>[provider.currentPage],
+    };
+    // いま開いているページの当たりを先に並べる (今までの手触りを保つ)。
+    final curId = provider.currentPage.id;
+    final ordered = [
+      ...scope.where((p) => p.id == curId),
+      ...scope.where((p) => p.id != curId),
+    ];
+    final hits = <String>[];
+    final hitPages = <String>[];
+    for (final page in ordered) {
+      for (final n in page.nodes.values) {
+        if (n.title.toLowerCase().contains(q) ||
+            (n.memoText ?? '').toLowerCase().contains(q)) {
+          hits.add(n.id);
+          hitPages.add(page.id);
+        }
+      }
+    }
     setState(() {
       _searchQuery = query;
       _searchResultIds = hits;
+      _searchResultPageIds = hitPages;
       _searchResultIndex = 0;
     });
     if (hits.isNotEmpty) _navigateToSearchResult(0, provider);
@@ -99669,9 +99702,29 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   void _navigateToSearchResult(int index, MindMapProvider provider) {
     if (_searchResultIds.isEmpty) return;
+    if (index < 0 || index >= _searchResultIds.length) return;
+    setState(() => _searchResultIndex = index);
+    final pid = index < _searchResultPageIds.length
+        ? _searchResultPageIds[index]
+        : provider.currentPage.id;
+    // ★ 別のページの当たりなら、 そのページへ移ってから寄せる
+    //   (= 範囲を広げた時に、 押しても何も起きないのを防ぐ)。
+    if (pid.isNotEmpty && pid != provider.currentPage.id) {
+      final i = provider.pages.indexWhere((p) => p.id == pid);
+      if (i < 0) return;
+      provider.switchPage(i);
+      // 切り替えた直後はまだ組み上がっていないので、 1 枚待ってから寄せる。
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        final n = provider.currentPage.nodes[_searchResultIds[index]];
+        if (n == null) return;
+        _ctrlFor(pid).value =
+            _matrixFor(n.position, _percentToScale(_scalePercent));
+      });
+      return;
+    }
     final node = provider.nodes[_searchResultIds[index]];
     if (node == null) return;
-    setState(() => _searchResultIndex = index);
     _ctrlFor(provider.currentPage.id).value =
         _matrixFor(node.position, _percentToScale(_scalePercent));
   }
@@ -99707,9 +99760,17 @@ class _MindMapScreenState extends State<MindMapScreen>
     final replacement = _replaceCtrl.text;
     if (query.isEmpty) return;
     final pattern = RegExp(RegExp.escape(query), caseSensitive: false);
+    // ★ 置き換えは「いま開いているページ」 の当たりだけ。 範囲を広げた時に
+    //   他のページの分まで黙って書き換えないように、 数えて後で伝える
+    //   (= 置換はページを切り替えながらやると、 どこが変わったのか
+    //   分からなくなる)。
+    var skipped = 0;
     for (final id in List.of(_searchResultIds)) {
       final node = provider.nodes[id];
-      if (node == null) continue;
+      if (node == null) {
+        skipped++;
+        continue;
+      }
       if (node.title.toLowerCase().contains(query.toLowerCase())) {
         provider.updateNodeTitle(
             id, node.title.replaceAll(pattern, replacement));
@@ -99721,6 +99782,15 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
     // 全置換後に再検索（結果は0件になるはず）
     _performSearch(_searchCtrl.text, provider);
+    // 他のページの分は手つかずなので、 その旨を伝える。
+    if (skipped > 0 && mounted) {
+      showTopToast(
+          context,
+          provider
+              .t('search.replaceOnlyThisPage')
+              .replaceAll('{n}', '$skipped'),
+          const Color(0xFFFFB347));
+    }
   }
 
   /// 裁断モードの赤枠と案内バナー。
@@ -99929,11 +99999,91 @@ class _MindMapScreenState extends State<MindMapScreen>
                       _searchVisible = false;
                       _searchReplaceExpanded = false;
                       _searchResultIds = [];
+                      _searchResultPageIds = [];
                     });
                     _keyboardFocusNode.requestFocus();
                   },
                 ),
               ]),
+              // ── 探す範囲 (= ユーザー要望: フォルダー内も探せるように) ──
+              //    「ファイルの中身」 だけは重いので、 別の窓へ渡す。
+              Padding(
+                padding: const EdgeInsets.only(top: 5, left: 22),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  for (final e in const [
+                    (0, 'search.scopePage', Icons.description_outlined),
+                    (1, 'search.scopeFolder', Icons.folder_outlined),
+                    (2, 'search.scopeAll', Icons.grid_view_rounded),
+                  ])
+                    Padding(
+                      padding: const EdgeInsets.only(right: 4),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(6),
+                        onTap: () {
+                          setState(() => _searchScope = e.$1);
+                          _performSearch(_searchCtrl.text, provider);
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 7, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: _searchScope == e.$1
+                                ? const Color(0xFF4DB6AC)
+                                    .withValues(alpha: 0.18)
+                                : Colors.transparent,
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(
+                                color: _searchScope == e.$1
+                                    ? const Color(0xFF4DB6AC)
+                                    : Colors.white24),
+                          ),
+                          child: Row(mainAxisSize: MainAxisSize.min, children: [
+                            Icon(e.$3,
+                                size: 11,
+                                color: _searchScope == e.$1
+                                    ? const Color(0xFF4DB6AC)
+                                    : Colors.white54),
+                            const SizedBox(width: 4),
+                            Text(provider.t(e.$2),
+                                style: TextStyle(
+                                    color: _searchScope == e.$1
+                                        ? const Color(0xFF4DB6AC)
+                                        : Colors.white54,
+                                    fontSize: 10.5)),
+                          ]),
+                        ),
+                      ),
+                    ),
+                  // 中身まで探す (= b388 で入れたファイル検索へ渡す)。
+                  Tooltip(
+                    message: provider.t('search.scopeFilesHint'),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(6),
+                      onTap: () {
+                        final q = _searchCtrl.text;
+                        unawaited(
+                            _showFolderFileSearchDialog(provider, initial: q));
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 7, vertical: 3),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(color: Colors.white24),
+                        ),
+                        child: Row(mainAxisSize: MainAxisSize.min, children: [
+                          const Icon(Icons.travel_explore_rounded,
+                              size: 11, color: Colors.white54),
+                          const SizedBox(width: 4),
+                          Text(provider.t('search.scopeFiles'),
+                              style: const TextStyle(
+                                  color: Colors.white54, fontSize: 10.5)),
+                        ]),
+                      ),
+                    ),
+                  ),
+                ]),
+              ),
               // ── 置換行（展開時のみ）──
               if (_searchReplaceExpanded) ...[
                 const SizedBox(height: 6),
@@ -268254,6 +268404,15 @@ class _McpChatSession extends ChangeNotifier {
         //   置かれるバグ)。 置いた後にアプリがツリーとして並べ直す。
         'ノードの位置 (x, y) は指定しないでください。 アプリが自動で'
         'きれいに並べます。'
+        // ── 置き場所を言われていない時は、 いま開いているページ
+        //    (= ユーザー要望: 資料を作って、 のように場所を明示しない時は
+        //    開かれているページ上に置いてほしい) ──
+        '★ 置き場所を言われていない時は、 **いま開いているページ**に'
+        '作ってください。 そのために pageId は**空のまま**にします '
+        '(空にすると開いているページになります)。 '
+        '資料やファイルを作るだけのために新しいページを作らないでください。 '
+        '「新しいページに」 と頼まれた時と、 この回の仕事が新規ページ作成'
+        'だと書いてある時だけ create_page を使います。'
         '★ 主題 (親) のノードは 1 つだけ作り、 同じ名前のノードを'
         '重ねて作らないでください。 create_page の戻り値の pageId を'
         'そのまま以降の pageId に使ってください。'
@@ -269325,6 +269484,35 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                   ],
                 ),
               ),
+            // ── codex の砂箱 (= ユーザー報告: codex-command-….exe が
+            //    ブロックされましたと時々出る) ──
+            //    codex は命令を走らせるたびに、 自分で置いた署名の無い
+            //    実行ファイルで制限付きトークンを作る。 そこが咎められる。
+            //    既定では使わない。 何を走らせるかは 1 件ずつ聞く作りなので、
+            //    歯止めが無くなるわけではない。
+            if (!kIsWeb && Platform.isWindows) ...[
+              const Divider(height: 18, color: Colors.white12),
+              Row(children: [
+                Expanded(
+                  child: Text(provider.t('cli.codexSandbox'),
+                      style: const TextStyle(
+                          color: Colors.white60,
+                          fontSize: 11,
+                          height: 1.5)),
+                ),
+                Switch(
+                  value: provider.codexWindowsSandbox,
+                  activeThumbColor: const Color(0xFFFFB347),
+                  onChanged: (v) => unawaited(
+                      provider.setCodexWindowsSandbox(v).then((_) {
+                    if (mounted) setState(() {});
+                  })),
+                ),
+              ]),
+              Text(provider.t('cli.codexSandboxHint'),
+                  style: const TextStyle(
+                      color: Colors.white38, fontSize: 10.5, height: 1.5)),
+            ],
           ],
         );
       },
@@ -269388,13 +269576,44 @@ class _McpChatDialogState extends State<_McpChatDialog> {
       return;
     }
     if (!mounted) return;
-    // ★ こちらも欄そのものに出す。
+    // ★ `npm.cmd` はバッチの薄皮で、 擬似端末 (CreateProcessW) では起こせない。
+    //   中身を読んで本体 (`node.exe` + `npm-cli.js`) を割り出す
+    //   (= ユーザー報告: インストールが完了しない)。 割り出せない時だけ
+    //   cmd 経由に落とす。
+    final launch = AgentCli.resolveLauncher(npm);
+    var exe = launch?.exe ?? npm;
+    final head = <String>[...(launch?.args ?? const <String>[])];
+    final lower = exe.toLowerCase();
+    if (launch == null &&
+        (lower.endsWith('.cmd') || lower.endsWith('.bat'))) {
+      final root = Platform.environment['SystemRoot'] ?? r'C:\Windows';
+      head.insert(0, AgentCli.ptySafePath(exe));
+      head.insert(0, '/c');
+      exe = '$root\\System32\\cmd.exe';
+    }
+    // ★ 入れる時に走らせる物を減らす (= ユーザー報告: Node.js の動作が
+    //   セキュリティソフトに「悪意のある動作」 として止められ、 入れ終わら
+    //   ない)。 npm は取り込んだ包に入っている後片付けの JS を勝手に走らせる
+    //   ので、 そこが咎められやすい。
+    //   ★ ただし Claude Code は後片付け (postinstall) で本体を据え付ける
+    //     作りなので、 そこだけは省かない。 codex と Gemini CLI は
+    //     後片付けを持たず、 実体は出来合いの物が入るだけなので省いてよい。
+    final skipScripts = found.spec.kind != AgentCliKind.claude;
     _runAgentCliSession(
       provider,
       AgentCliSession(
         title: '${found.spec.label} — ${provider.t('cli.install')}',
-        exePath: npm,
-        arguments: ['install', '-g', pkg],
+        exePath: exe,
+        arguments: [
+          ...head,
+          'install',
+          '-g',
+          if (skipScripts) '--ignore-scripts',
+          // 余計な通信を減らす (咎められる材料を減らす + 速い)。
+          '--no-audit',
+          '--no-fund',
+          pkg,
+        ],
         workingDirectory: workDir,
         hint: provider.t('cli.installHint'),
         isInstall: true,
@@ -269535,7 +269754,48 @@ class _McpChatDialogState extends State<_McpChatDialog> {
             _buildAgentCliList(provider), provider.t('cli.title'),
             isTerminal: false);
       }
+      // ★ 入れ終わらなかった時は、 理由の心当たりを出す (= ユーザー報告:
+      //   セキュリティソフトに Node.js の動作を止められ、 インストールが
+      //   完了しない)。 端末に赤い行が流れるだけでは何をすればよいか
+      //   分からないので、 何を許可すればよいかまで書く。
+      if (session.isInstall && code != 0) {
+        unawaited(_showInstallBlockedDialog(provider));
+      }
     }));
+  }
+
+  /// 入れ終わらなかった時の案内。
+  ///
+  /// アプリ側で出来ることはやってある (バッチの薄皮を経由しない・後片付けの
+  /// JS を走らせない・余計な通信をしない) が、 セキュリティソフトが node
+  /// そのものを止めている場合は、 許可を出せるのは本人だけ。
+  Future<void> _showInstallBlockedDialog(MindMapProvider provider) async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      useRootNavigator: !widget.floatingPanel,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: Row(children: [
+          const Icon(Icons.shield_outlined, size: 18, color: Color(0xFFFFB347)),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(provider.t('cli.installBlockedTitle'),
+                style: const TextStyle(color: Colors.white, fontSize: 14.5)),
+          ),
+        ]),
+        content: SelectableText(provider.t('cli.installBlockedBody'),
+            style: const TextStyle(
+                color: Colors.white70, fontSize: 12, height: 1.7)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx),
+            child: Text(provider.t('btn.close'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+        ],
+      ),
+    );
   }
 
   // ── ただのターミナル (= ユーザー要望: ターミナルを開くボタン) ──────────
