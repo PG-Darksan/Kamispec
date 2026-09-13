@@ -269562,32 +269562,63 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                   ],
                 ),
               ),
-            // ── codex の砂箱 (= ユーザー報告: codex-command-….exe が
-            //    ブロックされましたと時々出る) ──
-            //    codex は命令を走らせるたびに、 自分で置いた署名の無い
-            //    実行ファイルで制限付きトークンを作る。 そこが咎められる。
-            //    既定では使わない。 何を走らせるかは 1 件ずつ聞く作りなので、
-            //    歯止めが無くなるわけではない。
-            if (!kIsWeb && Platform.isWindows) ...[
+            // ── どこまで任せるか (= ユーザー要望: 1 件ずつ確認されると
+            //    手が止まる。 承認なしで任せられるように) ──
+            if (!kIsWeb) ...[
               const Divider(height: 18, color: Colors.white12),
-              Row(children: [
-                Expanded(
-                  child: Text(provider.t('cli.codexSandbox'),
-                      style: const TextStyle(
-                          color: Colors.white60,
-                          fontSize: 11,
-                          height: 1.5)),
-                ),
-                Switch(
-                  value: provider.codexRestrictedRun,
-                  activeThumbColor: const Color(0xFFFFB347),
-                  onChanged: (v) => unawaited(
-                      provider.setCodexRestrictedRun(v).then((_) {
-                    if (mounted) setState(() {});
-                  })),
-                ),
+              Text(provider.t('cli.autonomy'),
+                  style: const TextStyle(
+                      color: Colors.white60, fontSize: 11, height: 1.5)),
+              const SizedBox(height: 6),
+              Wrap(spacing: 6, runSpacing: 6, children: [
+                for (final e in const [
+                  ('ask', 'cli.autonomyAsk', Icons.help_outline_rounded),
+                  ('auto', 'cli.autonomyAuto', Icons.play_arrow_rounded),
+                  ('full', 'cli.autonomyFull', Icons.all_inclusive_rounded),
+                ])
+                  InkWell(
+                    borderRadius: BorderRadius.circular(7),
+                    onTap: () =>
+                        unawaited(provider.setCliAutonomy(e.$1).then((_) {
+                      if (mounted) setState(() {});
+                    })),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 9, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: provider.cliAutonomy == e.$1
+                            ? const Color(0xFFFFB347).withValues(alpha: 0.16)
+                            : Colors.transparent,
+                        borderRadius: BorderRadius.circular(7),
+                        border: Border.all(
+                            color: provider.cliAutonomy == e.$1
+                                ? const Color(0xFFFFB347)
+                                : Colors.white24),
+                      ),
+                      child: Row(mainAxisSize: MainAxisSize.min, children: [
+                        Icon(e.$3,
+                            size: 12,
+                            color: provider.cliAutonomy == e.$1
+                                ? const Color(0xFFFFB347)
+                                : Colors.white54),
+                        const SizedBox(width: 5),
+                        Text(provider.t(e.$2),
+                            style: TextStyle(
+                                color: provider.cliAutonomy == e.$1
+                                    ? const Color(0xFFFFB347)
+                                    : Colors.white54,
+                                fontSize: 11)),
+                      ]),
+                    ),
+                  ),
               ]),
-              Text(provider.t('cli.codexSandboxHint'),
+              const SizedBox(height: 5),
+              Text(
+                  provider.t(switch (provider.cliAutonomy) {
+                    'ask' => 'cli.autonomyAskHint',
+                    'auto' => 'cli.autonomyAutoHint',
+                    _ => 'cli.autonomyFullHint',
+                  }),
                   style: const TextStyle(
                       color: Colors.white38, fontSize: 10.5, height: 1.5)),
             ],
@@ -269916,8 +269947,11 @@ class _McpChatDialogState extends State<_McpChatDialog> {
     if (exe == null || exe.isEmpty) return;
     String workDir;
     try {
-      final sup = await getApplicationSupportDirectory();
-      workDir = await AgentCli.workingDirectory(sup.path);
+      // ★ 開く場所は「いま開いているページの置き場」 (= ふつうのターミナルと
+      //   同じ)。 = ユーザー報告の裏返し: 今までアプリの奥 (AppData) で
+      //   開いていたので、 作らせたファイルがどこにも見当たらなかった。
+      //   連動フォルダーが無いページでは、 今までどおりアプリの作業場所。
+      workDir = await terminalBaseDir(provider);
     } catch (e) {
       if (mounted) {
         showTopToast(context, '$e', const Color(0xFFE53935));

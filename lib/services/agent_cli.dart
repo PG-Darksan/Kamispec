@@ -1430,31 +1430,36 @@ class AgentCli {
   ///   `bearer_token_env_var` で「この環境変数から読め」 と指定できる。
   static const String kMcpTokenEnvVar = 'HISATOR_MCP_TOKEN';
 
-  /// codex が命令を走らせる時、 権限を落として動かすか。
-  ///
-  /// ★ = ユーザー報告「codex-command-0.154.0.exe がどうこうでブロックされ
-  ///   ましたと時々出る」。 codex は Windows で命令を走らせる時、
-  ///   `~/.codex/.sandbox-bin/codex-command-….exe` という**自分で置いた
-  ///   署名の無い実行ファイル**を起こし、 権限を落とした状態 (制限付き
-  ///   トークン) を作ってその下で動かす。 「隠しフォルダーの署名無し exe
-  ///   が、 権限を細工して別のプロセスを起こす」 という形なので、
-  ///   セキュリティソフトから見れば最も疑わしい振る舞いの 1 つ。 しかも
-  ///   版が上がるたびに新しいファイル名で出てくるので、 毎回咎められる。
-  ///
-  /// ★ 切る = `--sandbox danger-full-access`。 縛らないので、 その手先が
-  ///   そもそも起こされない。 `windows.sandbox` の値で切ることは**できない**
-  ///   (受け付けるのは `elevated` / `unelevated` の 2 つだけで、 知らない値を
-  ///   渡すと codex が設定の読み込みで落ちる = 実測)。
-  ///
-  /// ★ 既定は**切る** (false)。 アプリの端末から起こす時は
-  ///   `--ask-for-approval on-request` を必ず付けていて、 **何を走らせるかは
-  ///   1 件ずつ本人に聞いてから**なので、 歯止めが無くなるわけではない。
-  ///   二重に守りたい人は設定で戻せる。
-  ///
-  /// ★ これが効くのは**端末 (人が見ている所)** だけ。 1 回聞くだけの
-  ///   問い合わせ ([runPrompt]) は誰も尋ねられないので、 この設定に関係なく
-  ///   作業フォルダーの中だけに留める。
-  static bool codexRestrictedRun = false;
+  // ─── どこまで任せるか ───────────────────────────────────────────────
+  //
+  //   = ユーザー要望「何故、 1 件 1 件確認を取らないと動かないのか。
+  //     VSCode の codex のように承認なしに任せられるようにしてほしい。
+  //     確認を取られない + 動作がストップしない仕様に」。
+  //
+  //   以前は必ず `--ask-for-approval on-request` を付けていた。 引数は設定
+  //   ファイルより強いので、 利用者が自分の CLI 側に「たずねずに進めてよい」
+  //   と書いても**効かなかった**。 選べるようにする。
+  //
+  //   'ask'  … 毎回たずねる
+  //   'auto' … たずねない。 書き換えるのは作業フォルダーの中だけ
+  //   'full' … たずねない。 場所の縛りも無し (VSCode の codex の
+  //            「フルアクセス」 と同じ)
+  //
+  //   ★ 'full' の時だけ、 codex は権限を落とすための手先
+  //     (codex-command-….exe) を起こさない。 あの手先は署名が無く、 版ごとに
+  //     名前が変わるのでセキュリティソフトに毎回咎められる (= ユーザー報告)。
+  //     縛りを外す = 手先が要らない、 という関係。
+  //
+  //   ★ この設定が効くのは**端末 (人が画面を見ている所)** だけ。 画面の AI が
+  //     裏で 1 回だけ問い合わせる道 ([runPrompt]) は、 誰も見ていないので
+  //     この設定に関わらず作業フォルダーの中に留める。
+  static const List<String> autonomyLevels = ['ask', 'auto', 'full'];
+
+  /// 既定は 'full' (= ユーザーの明示的な指定)。
+  static String autonomy = 'full';
+
+  static bool get _noAsk => autonomy != 'ask';
+  static bool get _noLimit => autonomy == 'full';
 
   static List<String> extraLaunchArgs(
     AgentCliKind kind, {
@@ -1466,15 +1471,11 @@ class AgentCli {
         final plain =
             mcpUrl.contains('?') ? mcpUrl.split('?').first : mcpUrl;
         return <String>[
-          // ★ 命令を走らせる時の縛り方 (上の [codexRestrictedRun] の説明)。
+          // 任せ方 (上の [autonomy] の説明)。
           '--sandbox',
-          !codexRestrictedRun && Platform.isWindows
-              ? 'danger-full-access'
-              : 'workspace-write',
-          // ★ 縛りを外しても、 何を実行するかは 1 件ずつ利用者に聞く。
-          //   ここが歯止めなので、 どちらの場合も必ず付ける。
+          _noLimit ? 'danger-full-access' : 'workspace-write',
           '--ask-for-approval',
-          'on-request',
+          _noAsk ? 'never' : 'on-request',
           if (plain.isNotEmpty) ...[
             '-c',
             'mcp_servers.hisator.url="$plain"',
@@ -1483,8 +1484,23 @@ class AgentCli {
           ],
         ];
       case AgentCliKind.claude:
+        // Claude Code は許可の出し方を `--permission-mode` で選ぶ。
+        //   acceptEdits … 書き換えは通す (その他は都度たずねる)
+        //   bypassPermissions … たずねない
+        return <String>[
+          if (_noLimit)
+            ...['--permission-mode', 'bypassPermissions']
+          else if (_noAsk)
+            ...['--permission-mode', 'acceptEdits'],
+        ];
       case AgentCliKind.gemini:
-        return const <String>[];
+        // Gemini CLI は `--approval-mode`。
+        return <String>[
+          if (_noLimit)
+            ...['--approval-mode', 'yolo']
+          else if (_noAsk)
+            ...['--approval-mode', 'auto_edit'],
+        ];
     }
   }
 

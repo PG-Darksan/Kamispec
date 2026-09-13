@@ -50668,50 +50668,121 @@ class MindMapProvider extends ChangeNotifier {
           'API v nastroykah.',
     },
     // ── codex の砂箱 (= ユーザー報告: ブロックされましたと時々出る) ──
-    'cli.codexSandbox': {
-      'ja': 'Codex が命令を実行する時、 権限を落として動かす',
-      'en': 'Run Codex commands with reduced privileges',
-      'zh': '以降低的权限运行 Codex 的命令',
-      'ko': 'Codex 의 명령을 낮은 권한으로 실행',
-      'es': 'Ejecutar los comandos de Codex con permisos reducidos',
-      'fr': 'Executer les commandes de Codex avec des droits reduits',
-      'de': 'Codex-Befehle mit verringerten Rechten ausfuhren',
-      'pt': 'Executar os comandos do Codex com permissoes reduzidas',
-      'ru': 'Zapuskat komandy Codex s ponizhennymi pravami',
+    'cli.autonomy': {
+      'ja': 'どこまで任せるか',
+      'en': 'How much to leave to it',
+      'zh': '交给它处理的范围',
+      'ko': '어디까지 맡길지',
+      'es': 'Cuanto dejarle hacer',
+      'fr': 'Jusqu ou le laisser faire',
+      'de': 'Wie viel uberlassen',
+      'pt': 'Quanto deixar por conta dele',
+      'ru': 'Naskolko doveryat',
     },
-    'cli.codexSandboxHint': {
-      'ja': '入れると、 Codex は命令を走らせるたびに自前の小さな実行ファイル'
-          ' (codex-command-….exe) を起こし、 権限を落とした状態を作って'
-          'その下で動かします。 安全側に寄る作りですが、 署名が無く、'
-          '版が上がるたびに名前も変わるため、 セキュリティソフトに'
-          '「悪意のある動作」 として止められがちです。\n'
-          '切っている時は、 その実行ファイルを使いません。 ただし'
-          '**何を走らせるかは今までどおり 1 件ずつお尋ねします**ので、'
-          '勝手に何かが動くことはありません。',
-      'en': 'When on, Codex builds a restricted token with its own unsigned '
-          'helper every time it runs a command — which security software often '
-          'blocks. With it off you are still asked before each command runs.',
-      'zh': '开启后，Codex 每次执行命令都会用自带的未签名程序创建受限令牌，'
-          '常被安全软件拦截。关闭后仍会逐条询问是否执行。',
-      'ko': '켜면 Codex 가 명령을 실행할 때마다 서명 없는 자체 실행 파일로 '
-          '제한 토큰을 만듭니다. 보안 소프트웨어가 자주 차단합니다. '
-          '꺼도 명령마다 실행 여부를 묻습니다.',
-      'es': 'Si esta activo, Codex crea un token restringido con su propio '
-          'ejecutable sin firmar en cada comando, lo que el antivirus suele '
-          'bloquear. Aun desactivado, se te pregunta antes de cada comando.',
-      'fr': 'Active, Codex cree un jeton restreint avec son propre executable '
-          'non signe a chaque commande, ce que les antivirus bloquent souvent. '
-          'Desactive, chaque commande vous est quand meme soumise.',
-      'de': 'Aktiviert erzeugt Codex bei jedem Befehl mit einem eigenen, nicht '
-          'signierten Helfer ein eingeschranktes Token — das blockieren '
-          'Sicherheitsprogramme oft. Auch deaktiviert wird jeder Befehl '
-          'vorher abgefragt.',
-      'pt': 'Ativado, o Codex cria um token restrito com seu proprio '
-          'executavel nao assinado a cada comando, o que antivirus costumam '
-          'bloquear. Mesmo desativado, cada comando e confirmado antes.',
-      'ru': 'Vklyucheno — Codex sozdayot ogranichennyy token svoim '
-          'nepodpisannym faylom pri kazhdoy komande; antivirusy chasto eto '
-          'blokiruyut. Dazhe vyklyucheno kazhdaya komanda podtverzhdaetsya.',
+    'cli.autonomyAsk': {
+      'ja': '毎回たずねる',
+      'en': 'Ask each time',
+      'zh': '每次询问',
+      'ko': '매번 확인',
+      'es': 'Preguntar cada vez',
+      'fr': 'Demander a chaque fois',
+      'de': 'Jedes Mal fragen',
+      'pt': 'Perguntar sempre',
+      'ru': 'Sprashivat kazhdyy raz',
+    },
+    'cli.autonomyAuto': {
+      'ja': '任せる (作業フォルダー内)',
+      'en': 'Hands off (work folder only)',
+      'zh': '交给它（仅工作文件夹）',
+      'ko': '맡김 (작업 폴더 안)',
+      'es': 'Sin preguntar (solo la carpeta de trabajo)',
+      'fr': 'Sans demander (dossier de travail)',
+      'de': 'Ohne Fragen (nur Arbeitsordner)',
+      'pt': 'Sem perguntar (so a pasta de trabalho)',
+      'ru': 'Bez voprosov (tolko rabochaya papka)',
+    },
+    'cli.autonomyFull': {
+      'ja': '全部任せる',
+      'en': 'Fully hands off',
+      'zh': '完全交给它',
+      'ko': '전부 맡김',
+      'es': 'Totalmente sin preguntar',
+      'fr': 'Totalement libre',
+      'de': 'Vollig freie Hand',
+      'pt': 'Totalmente livre',
+      'ru': 'Polnostyu doveryat',
+    },
+    'cli.autonomyAskHint': {
+      'ja': '命令を走らせる前に 1 件ずつお尋ねします。 いちばん安全ですが、'
+          '席を外している間は手が止まります。',
+      'en': 'You are asked before each command runs. Safest, but it stops and '
+          'waits while you are away.',
+      'zh': '每条命令执行前都会询问。最安全，但你离开时会停下等待。',
+      'ko': '명령마다 실행 전에 묻습니다. 가장 안전하지만 자리를 비우면 멈춥니다.',
+      'es': 'Se te pregunta antes de cada comando. Lo mas seguro, pero se '
+          'detiene mientras no estas.',
+      'fr': 'On vous demande avant chaque commande. Le plus sur, mais cela '
+          's arrete en votre absence.',
+      'de': 'Vor jedem Befehl wird gefragt. Am sichersten, halt aber an, wenn '
+          'Sie weg sind.',
+      'pt': 'Pergunta antes de cada comando. Mais seguro, mas para enquanto '
+          'voce nao esta.',
+      'ru': 'Sprosit pered kazhdoy komandoy. Bezopasnee vsego, no ostanovitsya '
+          'bez vas.',
+    },
+    'cli.autonomyAutoHint': {
+      'ja': 'たずねずに進めます。 書き換えるのは作業フォルダーの中だけなので、'
+          'ほかの場所は触りません。',
+      'en': 'Runs without asking. It can only change files inside its work '
+          'folder, so nothing else is touched.',
+      'zh': '不询问直接执行。只能修改工作文件夹内的文件，不会动其他地方。',
+      'ko': '묻지 않고 진행합니다. 작업 폴더 안만 고칠 수 있어 다른 곳은 건드리지 않습니다.',
+      'es': 'Avanza sin preguntar. Solo puede cambiar archivos de su carpeta '
+          'de trabajo.',
+      'fr': 'Avance sans demander. Il ne peut modifier que son dossier de '
+          'travail.',
+      'de': 'Lauft ohne Nachfrage. Es kann nur im Arbeitsordner andern.',
+      'pt': 'Segue sem perguntar. So altera arquivos da pasta de trabalho.',
+      'ru': 'Rabotaet bez voprosov. Menyat mozhet tolko rabochuyu papku.',
+    },
+    'cli.autonomyFullHint': {
+      'ja': 'たずねずに進め、 場所の縛りもありません。 手は止まりませんが、'
+          'このパソコンのファイルを読み書きしたり、 命令を実行したりできます。'
+          ' 心当たりのない指示は渡さないでください。\n'
+          '※ この時だけ、 Codex は権限を落とすための実行ファイル'
+          ' (codex-command-….exe) を使いません。 あれがセキュリティソフトに'
+          '止められていた正体です。',
+      'en': 'Runs without asking and without a location limit. Nothing stops, '
+          'but it can read and write files on this PC and run commands. Only '
+          'give it instructions you understand.\n'
+          'Note: this is the only setting where Codex does not use its '
+          'privilege-dropping helper (codex-command-….exe) — the thing your '
+          'security software was blocking.',
+      'zh': '不询问且不限制位置。不会中断，但可以读写本机文件并执行命令。请只交'
+          '给它你理解的指令。\n注：仅此设置下 Codex 不使用其降权程序'
+          '（codex-command-….exe），那正是被安全软件拦截的东西。',
+      'ko': '묻지 않고 장소 제한도 없습니다. 멈추지 않지만 이 PC 의 파일을 읽고 '
+          '쓰거나 명령을 실행할 수 있습니다. 이해한 지시만 주세요.\n'
+          '참고: 이 설정에서만 Codex 가 권한 낮추기용 실행 파일'
+          '(codex-command-….exe) 을 쓰지 않습니다.',
+      'es': 'Avanza sin preguntar y sin limite de ubicacion. No se detiene, '
+          'pero puede leer y escribir archivos de este PC y ejecutar comandos.\n'
+          'Solo con este ajuste Codex no usa su ayudante de reduccion de '
+          'privilegios (codex-command-….exe).',
+      'fr': 'Avance sans demander et sans limite d emplacement. Rien ne '
+          's arrete, mais il peut lire et ecrire des fichiers et executer des '
+          'commandes.\nSeul ce reglage evite l executable de reduction de '
+          'privileges de Codex (codex-command-….exe).',
+      'de': 'Lauft ohne Nachfrage und ohne Ortsgrenze. Nichts halt an, aber es '
+          'kann Dateien lesen und schreiben und Befehle ausfuhren.\nNur bei '
+          'dieser Einstellung nutzt Codex seinen Rechte-Helfer '
+          '(codex-command-….exe) nicht.',
+      'pt': 'Segue sem perguntar e sem limite de local. Nada para, mas pode '
+          'ler e gravar arquivos e executar comandos.\nSo neste ajuste o Codex '
+          'nao usa seu auxiliar de reducao de privilegios.',
+      'ru': 'Rabotaet bez voprosov i bez ogranicheniy po mestu. Nichego ne '
+          'ostanavlivaetsya, no mozhet chitat i pisat fayly i vypolnyat '
+          'komandy.\nTolko zdes Codex ne ispolzuet svoy vspomogatelnyy fayl.',
     },
     // ── Pro 以上でないと使えない旨の案内 (= ユーザー要望) ──
     'cli.proRequired': {
@@ -80938,28 +81009,29 @@ class MindMapProvider extends ChangeNotifier {
   bool get useCliAi =>
       _aiAssistantMode == 'cli' && AgentCli.supported && canUseCliAi;
 
-  // ── codex の Windows 砂箱 (= ユーザー報告: codex-command-….exe が
-  //    ブロックされたと時々出る) ──
+  // ── CLI にどこまで任せるか (= ユーザー要望: 1 件ずつ確認されると
+  //    手が止まる。 承認なしで任せられるように) ──
   //
-  //    codex は命令を走らせる時、 自分で置いた署名の無い実行ファイルを起こして
-  //    制限付きトークンの下で動かす。 それがセキュリティソフトに咎められる。
-  //    既定では使わない。 何を走らせるかは 1 件ずつ本人に聞く作りなので、
-  //    歯止めが無くなるわけではない。
-  bool get codexRestrictedRun => AgentCli.codexRestrictedRun;
+  //    'ask'  … 毎回たずねる
+  //    'auto' … たずねない。 書き換えるのは作業フォルダーの中だけ
+  //    'full' … たずねない。 場所の縛りも無し (既定)
+  String get cliAutonomy => AgentCli.autonomy;
 
-  Future<void> setCodexRestrictedRun(bool on) async {
-    AgentCli.codexRestrictedRun = on;
+  Future<void> setCliAutonomy(String v) async {
+    if (!AgentCli.autonomyLevels.contains(v)) return;
+    AgentCli.autonomy = v;
     notifyListeners();
     try {
       final p = await SharedPreferences.getInstance();
-      await p.setBool('codexRestrictedRun', on);
+      await p.setString('cliAutonomy', v);
     } catch (_) {}
   }
 
   Future<void> _loadCodexSandbox() async {
     try {
       final p = await SharedPreferences.getInstance();
-      AgentCli.codexRestrictedRun = p.getBool('codexRestrictedRun') ?? false;
+      final v = p.getString('cliAutonomy') ?? '';
+      if (AgentCli.autonomyLevels.contains(v)) AgentCli.autonomy = v;
     } catch (_) {}
   }
 
