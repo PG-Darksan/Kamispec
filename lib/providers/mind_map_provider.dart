@@ -50565,6 +50565,41 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'A IA do PC usa sua assinatura (sem saldo restante)',
       'ru': 'ИИ на ПК использует вашу подписку (остаток недоступен)',
     },
+    // ── npm を使わない入れ方 (= ユーザー報告: npm の途中で node が
+    //    止められ、 コード 3221226528 で終わって入れ終わらない) ──
+    'cli.installNoNpm': {
+      'ja': 'npm を使わずに入れる',
+      'en': 'Install without npm',
+      'zh': '不使用 npm 安装',
+      'ko': 'npm 없이 설치',
+      'es': 'Instalar sin npm',
+      'fr': 'Installer sans npm',
+      'de': 'Ohne npm installieren',
+      'pt': 'Instalar sem o npm',
+      'ru': 'Ustanovit bez npm',
+    },
+    'cli.installNoNpmOk': {
+      'ja': '入りました。 そのまま使えます。',
+      'en': 'Installed. You can use it now.',
+      'zh': '已安装，可以直接使用。',
+      'ko': '설치했습니다. 바로 사용할 수 있습니다.',
+      'es': 'Instalado. Ya puedes usarlo.',
+      'fr': 'Installe. Vous pouvez l utiliser.',
+      'de': 'Installiert. Sie konnen es jetzt nutzen.',
+      'pt': 'Instalado. Ja pode usar.',
+      'ru': 'Ustanovleno. Mozhno polzovatsya.',
+    },
+    'cli.installNoNpmNg': {
+      'ja': '入れられませんでした (通信か Node.js を確かめてください)',
+      'en': 'Could not install (check your connection and Node.js)',
+      'zh': '安装失败（请检查网络与 Node.js）',
+      'ko': '설치하지 못했습니다 (통신과 Node.js 를 확인하세요)',
+      'es': 'No se pudo instalar (revisa la conexion y Node.js)',
+      'fr': 'Installation impossible (verifiez la connexion et Node.js)',
+      'de': 'Installation fehlgeschlagen (Verbindung und Node.js prufen)',
+      'pt': 'Nao foi possivel instalar (verifique a conexao e o Node.js)',
+      'ru': 'Ne udalos ustanovit (proverte svyaz i Node.js)',
+    },
     // ── 入れ終わらなかった時の案内 (= ユーザー報告: Node.js の動作が
     //    セキュリティソフトに止められてインストールが完了しない) ──
     'cli.installBlockedTitle': {
@@ -50634,21 +50669,25 @@ class MindMapProvider extends ChangeNotifier {
     },
     // ── codex の砂箱 (= ユーザー報告: ブロックされましたと時々出る) ──
     'cli.codexSandbox': {
-      'ja': 'Codex の砂箱 (制限付きトークン) を使う',
-      'en': 'Use Codex sandbox (restricted token)',
-      'zh': '使用 Codex 沙箱（受限令牌）',
-      'ko': 'Codex 샌드박스(제한 토큰) 사용',
-      'es': 'Usar el sandbox de Codex (token restringido)',
-      'fr': 'Utiliser le bac a sable de Codex (jeton restreint)',
-      'de': 'Codex-Sandbox (eingeschranktes Token) verwenden',
-      'pt': 'Usar o sandbox do Codex (token restrito)',
-      'ru': 'Ispolzovat pesochnitsu Codex (ogranichennyy token)',
+      'ja': 'Codex が命令を実行する時、 権限を落として動かす',
+      'en': 'Run Codex commands with reduced privileges',
+      'zh': '以降低的权限运行 Codex 的命令',
+      'ko': 'Codex 의 명령을 낮은 권한으로 실행',
+      'es': 'Ejecutar los comandos de Codex con permisos reducidos',
+      'fr': 'Executer les commandes de Codex avec des droits reduits',
+      'de': 'Codex-Befehle mit verringerten Rechten ausfuhren',
+      'pt': 'Executar os comandos do Codex com permissoes reduzidas',
+      'ru': 'Zapuskat komandy Codex s ponizhennymi pravami',
     },
     'cli.codexSandboxHint': {
-      'ja': '入れると、 Codex が命令を走らせるたびに自前の実行ファイルで'
-          '制限付きトークンを作ります。 署名が無いためセキュリティソフトに'
-          '止められがちです。 切っていても、 何を走らせるかは 1 件ずつ'
-          'お尋ねします。',
+      'ja': '入れると、 Codex は命令を走らせるたびに自前の小さな実行ファイル'
+          ' (codex-command-….exe) を起こし、 権限を落とした状態を作って'
+          'その下で動かします。 安全側に寄る作りですが、 署名が無く、'
+          '版が上がるたびに名前も変わるため、 セキュリティソフトに'
+          '「悪意のある動作」 として止められがちです。\n'
+          '切っている時は、 その実行ファイルを使いません。 ただし'
+          '**何を走らせるかは今までどおり 1 件ずつお尋ねします**ので、'
+          '勝手に何かが動くことはありません。',
       'en': 'When on, Codex builds a restricted token with its own unsigned '
           'helper every time it runs a command — which security software often '
           'blocks. With it off you are still asked before each command runs.',
@@ -80906,21 +80945,21 @@ class MindMapProvider extends ChangeNotifier {
   //    制限付きトークンの下で動かす。 それがセキュリティソフトに咎められる。
   //    既定では使わない。 何を走らせるかは 1 件ずつ本人に聞く作りなので、
   //    歯止めが無くなるわけではない。
-  bool get codexWindowsSandbox => AgentCli.codexWindowsSandbox;
+  bool get codexRestrictedRun => AgentCli.codexRestrictedRun;
 
-  Future<void> setCodexWindowsSandbox(bool on) async {
-    AgentCli.codexWindowsSandbox = on;
+  Future<void> setCodexRestrictedRun(bool on) async {
+    AgentCli.codexRestrictedRun = on;
     notifyListeners();
     try {
       final p = await SharedPreferences.getInstance();
-      await p.setBool('codexWindowsSandbox', on);
+      await p.setBool('codexRestrictedRun', on);
     } catch (_) {}
   }
 
   Future<void> _loadCodexSandbox() async {
     try {
       final p = await SharedPreferences.getInstance();
-      AgentCli.codexWindowsSandbox = p.getBool('codexWindowsSandbox') ?? false;
+      AgentCli.codexRestrictedRun = p.getBool('codexRestrictedRun') ?? false;
     } catch (_) {}
   }
 
@@ -85464,6 +85503,8 @@ $cleanQ
     // どの AI に頼むか (API / PC 内 CLI) の控え。
     unawaited(loadAiAssistantMode());
     unawaited(_loadCodexSandbox());
+    // npm を使わずに入れた CLI の置き場を思い出す。
+    unawaited(AgentCli.loadManualInstalls());
     _loadJoinedGroups();
     _loadColorSettings();
     loadDisplayName();

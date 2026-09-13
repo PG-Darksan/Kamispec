@@ -20,12 +20,36 @@ import 'dart:convert';
 import 'dart:ffi' as ffi;
 import 'dart:io';
 
+import 'package:archive/archive.dart';
 import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:win32/win32.dart' as w32;
 
 import '../utils/build_flags.dart';
+
+/// 書庫 (.tgz) の中の 1 ファイル。
+class _UnpackedFile {
+  const _UnpackedFile(this.name, this.bytes);
+  final String name;
+  final List<int> bytes;
+}
+
+/// .tgz を解く (別の isolate で回すので、 画面が固まらない)。
+///
+/// ★ ここは `compute` から呼ぶので、 トップレベルの関数でなければならない。
+List<_UnpackedFile> _unpackTgz(List<int> bytes) {
+  final tar = GZipDecoder().decodeBytes(bytes);
+  final archive = TarDecoder().decodeBytes(tar);
+  final out = <_UnpackedFile>[];
+  for (final f in archive.files) {
+    if (!f.isFile) continue;
+    out.add(_UnpackedFile(f.name, f.content as List<int>));
+  }
+  return out;
+}
 
 /// 相手にする CLI。
 enum AgentCliKind { claude, codex, gemini }
@@ -190,7 +214,14 @@ class AgentCli {
     final spec = AgentCliSpec.of(kind);
     String? found;
     if (supported) {
-      found = await _search(spec);
+      // ★ npm を通さずに入れた物を先に見る (= ユーザー報告: npm の途中で
+      //   node が止められて入れ終わらない)。 こちらは PATH に何も撒かない
+      //   ので、 探し方を知っているのはアプリだけ。
+      final manual = manualInstalls[kind] ?? '';
+      if (manual.isNotEmpty && File(manual).existsSync()) {
+        found = manual;
+      }
+      found ??= await _search(spec);
     }
     final launch = found == null ? null : resolveLauncher(found);
     final res = AgentCliFound(
@@ -273,8 +304,16 @@ class AgentCli {
   /// 同じ場所に本物の `.exe` が同梱されている作りもあるので、 そちらを先に探す。
   /// 割り出せない時は null (呼び出し側は今までどおりシェル経由で起こす)。
   static ({String exe, List<String> args})? resolveLauncher(String exePath) {
-    if (!Platform.isWindows) return null;
     final lower = exePath.toLowerCase();
+    // ★ npm を通さずに入れた物は、 JavaScript のまま置いてある。 node に
+    //   渡して走らせる (薄皮も PATH の登録も無い)。
+    if (lower.endsWith('.js') || lower.endsWith('.mjs') ||
+        lower.endsWith('.cjs')) {
+      final node = _findNodeExe(File(exePath).parent.path);
+      if (node == null) return null;
+      return (exe: ptySafePath(node), args: <String>[ptySafePath(exePath)]);
+    }
+    if (!Platform.isWindows) return null;
     if (!lower.endsWith('.cmd') && !lower.endsWith('.bat')) return null;
     try {
       final file = File(exePath);
@@ -329,15 +368,27 @@ class AgentCli {
   /// node.exe を探す (薄皮の隣 → PATH の順)。
   static String? _findNodeExe(String shimDir) {
     final sep = Platform.pathSeparator;
-    final sibling = File('$shimDir${sep}node.exe');
-    if (sibling.existsSync()) return sibling.path;
-    for (final d in (Platform.environment['PATH'] ?? '').split(';')) {
+    final names = Platform.isWindows
+        ? const ['node.exe']
+        : const ['node'];
+    for (final n in names) {
+      final sibling = File('$shimDir$sep$n');
+      if (sibling.existsSync()) return sibling.path;
+    }
+    final dirs = <String>[
+      ...(Platform.environment['PATH'] ?? '')
+          .split(Platform.isWindows ? ';' : ':'),
+      if (!Platform.isWindows) ...['/usr/local/bin', '/opt/homebrew/bin'],
+    ];
+    for (final d in dirs) {
       final dir = d.trim();
       if (dir.isEmpty) continue;
-      try {
-        final f = File('$dir${sep}node.exe');
-        if (f.existsSync()) return f.path;
-      } catch (_) {}
+      for (final n in names) {
+        try {
+          final f = File('$dir$sep$n');
+          if (f.existsSync()) return f.path;
+        } catch (_) {}
+      }
     }
     return null;
   }
@@ -385,6 +436,183 @@ class AgentCli {
   /// (= ユーザー報告: ログインがセキュリティソフトに止められる)。
   static String geminiApiKeyForCli = '';
 
+  // ─── npm を通さずに入れる ───────────────────────────────────────────
+  //
+  //   = ユーザー報告「Gemini CLI が依然としてインストールできない。
+  //     コード 3221226528 が出て、 『Node.js JavaScript Runtime の
+  //     Lockdown の悪意のある動作はブロックされました』 と出る」。
+  //
+  //   3221226528 は 0xC0000420 で、 「外から強制的に終わらされた」 形。
+  //   つまり npm の途中で node ごと落とされている。 引数を減らしても
+  //   npm を使う限り node は走るので、 **npm を一切使わない道**を用意する。
+  //
+  //   npm の取り込み先 (registry.npmjs.org) は、 ただの HTTPS で置いてある
+  //   書庫 (.tgz)。 アプリが自分で落として、 自分で開いて、 自分の
+  //   フォルダーへ置けばよい。 外のプログラムは 1 つも起こさない。
+  //
+  //   ★ 使う時は node が要る (どの CLI も中身は JavaScript)。 ただし
+  //     「入れる時に止められる」 のと「使う時に止められる」 のは別の話で、
+  //     止められているのは入れる時の振る舞い (書庫を開いて PATH の通った
+  //     場所に起動用の小さなファイルを撒く) の方。
+  //   ★ 後片付けの JS を持つ包 (Claude Code) はこの道では入れられない。
+  //     据え付けを自分でやる作りなので、 npm に任せる。
+
+  /// この道で入れた物の置き場 (種類 → 入口のファイル)。
+  static final Map<AgentCliKind, String> manualInstalls = {};
+
+  static String _manualKey(AgentCliKind k) => 'agent_cli_manual_${k.name}';
+
+  /// 起動時に読み出す。
+  static Future<void> loadManualInstalls() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      for (final k in AgentCliKind.values) {
+        final v = p.getString(_manualKey(k)) ?? '';
+        if (v.isNotEmpty && File(v).existsSync()) manualInstalls[k] = v;
+      }
+    } catch (_) {}
+  }
+
+  /// npm を使わずに入れられる相手か。
+  ///
+  /// Claude Code は取り込んだ後の据え付け (postinstall) で本体を置く作りなので、
+  /// 書庫を開いただけでは動かない。 そこだけ除く。
+  static bool canInstallWithoutNpm(AgentCliKind kind) =>
+      kind != AgentCliKind.claude;
+
+  /// npm を使わずに入れる。 入口のファイルの道を返す (失敗は null)。
+  static Future<String?> installWithoutNpm(
+    AgentCliKind kind, {
+    void Function(String line)? onLog,
+  }) async {
+    if (!supported) return null;
+    final spec = AgentCliSpec.of(kind);
+    final pkg = spec.npmPackage;
+    if (pkg.isEmpty) return null;
+    void log(String s) {
+      debugPrint('installWithoutNpm: $s');
+      onLog?.call(s);
+    }
+
+    try {
+      log('$pkg の置き場を調べています…');
+      final metaRes = await http
+          .get(Uri.parse('https://registry.npmjs.org/$pkg/latest'))
+          .timeout(const Duration(seconds: 40));
+      if (metaRes.statusCode != 200) {
+        log('取り込み先が応答しません (${metaRes.statusCode})');
+        return null;
+      }
+      final meta = jsonDecode(utf8.decode(metaRes.bodyBytes));
+      if (meta is! Map) return null;
+      final version = '${meta['version'] ?? ''}';
+      final tarball = '${(meta['dist'] as Map?)?['tarball'] ?? ''}';
+      if (tarball.isEmpty) {
+        log('書庫の場所が分かりませんでした');
+        return null;
+      }
+      // 入口 (bin) の中の道。 1 つだけの事がほとんど。
+      final bin = meta['bin'];
+      var entryRel = '';
+      if (bin is Map && bin.isNotEmpty) {
+        entryRel = '${bin[spec.exeNames.last] ?? bin.values.first}';
+      }
+      if (entryRel.isEmpty) {
+        log('入口のファイルが分かりませんでした');
+        return null;
+      }
+
+      final sup = await getApplicationSupportDirectory();
+      final sep = Platform.pathSeparator;
+      final dir =
+          Directory('${sup.path}${sep}agent_cli${sep}tools$sep${kind.name}');
+      if (await dir.exists()) {
+        try {
+          await dir.delete(recursive: true);
+        } catch (_) {}
+      }
+      await dir.create(recursive: true);
+
+      log('$pkg $version を取り込んでいます…');
+      await _fetchAndUnpack(tarball, dir.path, log);
+
+      // 土台ごとに分かれている部品 (win32-x64 など) も一緒に。
+      final opt = meta['optionalDependencies'];
+      if (opt is Map) {
+        final want = Platform.isWindows
+            ? 'win32-x64'
+            : Platform.isMacOS
+                ? 'darwin'
+                : 'linux-x64';
+        for (final e in opt.entries) {
+          final name = '${e.key}';
+          if (!name.contains(want)) continue;
+          log('$name を取り込んでいます…');
+          try {
+            final sub = await http
+                .get(Uri.parse('https://registry.npmjs.org/$name/latest'))
+                .timeout(const Duration(seconds: 40));
+            if (sub.statusCode != 200) continue;
+            final sm = jsonDecode(utf8.decode(sub.bodyBytes));
+            final st = '${(sm is Map ? sm['dist'] : null) is Map ? (sm['dist'] as Map)['tarball'] : ''}';
+            if (st.isEmpty) continue;
+            // node は自分の場所から上へ node_modules を辿るので、 ここへ置く。
+            final into =
+                '${dir.path}${sep}package${sep}node_modules$sep${name.replaceAll('/', sep)}';
+            await Directory(into).create(recursive: true);
+            await _fetchAndUnpack(st, into, log, strip: 'package/');
+          } catch (err) {
+            log('$name は取り込めませんでした (使わずに続けます)');
+          }
+        }
+      }
+
+      final entry =
+          '${dir.path}${sep}package$sep${entryRel.replaceAll('/', sep)}';
+      if (!File(entry).existsSync()) {
+        log('入口のファイルが見つかりません: $entry');
+        return null;
+      }
+      manualInstalls[kind] = entry;
+      try {
+        final p = await SharedPreferences.getInstance();
+        await p.setString(_manualKey(kind), entry);
+      } catch (_) {}
+      forget();
+      log('入りました。');
+      return entry;
+    } catch (e) {
+      log('入れられませんでした: $e');
+      return null;
+    }
+  }
+
+  /// .tgz を落として開く。 [strip] を渡すとその前置きを外して展開する。
+  static Future<void> _fetchAndUnpack(
+      String url, String intoDir, void Function(String) log,
+      {String strip = ''}) async {
+    final res =
+        await http.get(Uri.parse(url)).timeout(const Duration(minutes: 5));
+    if (res.statusCode != 200) {
+      throw Exception('書庫を落とせませんでした (${res.statusCode})');
+    }
+    // 解くのは重いので、 別の isolate で。 画面が固まらない。
+    final files = await compute(_unpackTgz, res.bodyBytes);
+    final sep = Platform.pathSeparator;
+    for (final f in files) {
+      var rel = f.name;
+      if (strip.isNotEmpty && rel.startsWith(strip)) {
+        rel = rel.substring(strip.length);
+      }
+      if (rel.isEmpty) continue;
+      // 書庫の中の「..」 で外へ抜けさせない。
+      if (rel.contains('..')) continue;
+      final path = '$intoDir$sep${rel.replaceAll('/', sep)}';
+      final file = File(path);
+      await file.parent.create(recursive: true);
+      await file.writeAsBytes(f.bytes, flush: false);
+    }
+  }
   /// npm を探す (「インストール」 ボタン用)。
   ///
   /// ★ 隠した PowerShell を撃つやり方は取らない。 画面の見える端末で
@@ -835,17 +1063,14 @@ class AgentCli {
           ],
         AgentCliKind.codex => <String>[
             'exec',
-            // ★ codex は既定だと「読むだけ」 の砂箱で動くので、 頼まれても
+            // ★ codex は既定だと「読むだけ」 の状態で動くので、 頼まれても
             //   ファイルを 1 つも作れない (= ユーザー報告)。 作業フォルダー
             //   の中だけ書けるようにする。 外は今までどおり書けない。
+            // ★ ここ (1 回聞くだけの道) では**縛りを外さない**。 端末と違って
+            //   1 件ずつ人に尋ねる作りではないので、 外すと誰も見ていない所で
+            //   何でも走らせられることになる。 [codexRestrictedRun] を切って
+            //   いても、 こちらは作業フォルダーの中だけに留める。
             if (allowFiles) ...['--sandbox', 'workspace-write'],
-            // 砂箱の手先 (codex-command-runner) を起こさせない
-            //   (= ユーザー報告: しょっちゅうブロックされる。 詳しくは
-            //   [codexWindowsSandbox] の説明)。
-            if (!codexWindowsSandbox && Platform.isWindows) ...[
-              '-c',
-              'windows.sandbox="none"',
-            ],
             // ★ git の管理下でないと動かない既定があるので外す。 アプリが
             //   用意する作業フォルダーは git ではない。
             '--skip-git-repo-check',
@@ -1205,22 +1430,31 @@ class AgentCli {
   ///   `bearer_token_env_var` で「この環境変数から読め」 と指定できる。
   static const String kMcpTokenEnvVar = 'HISATOR_MCP_TOKEN';
 
-  /// codex の Windows 砂箱 (制限付きトークン) を使うか。
+  /// codex が命令を走らせる時、 権限を落として動かすか。
   ///
   /// ★ = ユーザー報告「codex-command-0.154.0.exe がどうこうでブロックされ
   ///   ましたと時々出る」。 codex は Windows で命令を走らせる時、
-  ///   `~/.codex/.sandbox-bin/codex-command-runner-<版>.exe` という**自分で
-  ///   置いた署名の無い実行ファイル**を起こし、 制限付きトークンを作って
-  ///   その下で動かす。 「隠しフォルダーの署名無し exe が、 トークンを
-  ///   細工して別のプロセスを起こす」 という形なので、 セキュリティソフト
-  ///   から見れば最も疑わしい振る舞いの 1 つで、 版が上がるたびに新しい
-  ///   ファイル名で出てくるから毎回咎められる。
+  ///   `~/.codex/.sandbox-bin/codex-command-….exe` という**自分で置いた
+  ///   署名の無い実行ファイル**を起こし、 権限を落とした状態 (制限付き
+  ///   トークン) を作ってその下で動かす。 「隠しフォルダーの署名無し exe
+  ///   が、 権限を細工して別のプロセスを起こす」 という形なので、
+  ///   セキュリティソフトから見れば最も疑わしい振る舞いの 1 つ。 しかも
+  ///   版が上がるたびに新しいファイル名で出てくるので、 毎回咎められる。
   ///
-  /// ★ 既定は**使わない** (false)。 止められるうえ、 アプリから起こす時は
+  /// ★ 切る = `--sandbox danger-full-access`。 縛らないので、 その手先が
+  ///   そもそも起こされない。 `windows.sandbox` の値で切ることは**できない**
+  ///   (受け付けるのは `elevated` / `unelevated` の 2 つだけで、 知らない値を
+  ///   渡すと codex が設定の読み込みで落ちる = 実測)。
+  ///
+  /// ★ 既定は**切る** (false)。 アプリの端末から起こす時は
   ///   `--ask-for-approval on-request` を必ず付けていて、 **何を走らせるかは
   ///   1 件ずつ本人に聞いてから**なので、 歯止めが無くなるわけではない。
-  ///   砂箱まで欲しい人は設定で戻せる。
-  static bool codexWindowsSandbox = false;
+  ///   二重に守りたい人は設定で戻せる。
+  ///
+  /// ★ これが効くのは**端末 (人が見ている所)** だけ。 1 回聞くだけの
+  ///   問い合わせ ([runPrompt]) は誰も尋ねられないので、 この設定に関係なく
+  ///   作業フォルダーの中だけに留める。
+  static bool codexRestrictedRun = false;
 
   static List<String> extraLaunchArgs(
     AgentCliKind kind, {
@@ -1232,16 +1466,15 @@ class AgentCli {
         final plain =
             mcpUrl.contains('?') ? mcpUrl.split('?').first : mcpUrl;
         return <String>[
+          // ★ 命令を走らせる時の縛り方 (上の [codexRestrictedRun] の説明)。
           '--sandbox',
-          'workspace-write',
-          // 何を実行するかは、 今までどおり利用者に聞いてから。
+          !codexRestrictedRun && Platform.isWindows
+              ? 'danger-full-access'
+              : 'workspace-write',
+          // ★ 縛りを外しても、 何を実行するかは 1 件ずつ利用者に聞く。
+          //   ここが歯止めなので、 どちらの場合も必ず付ける。
           '--ask-for-approval',
           'on-request',
-          // 砂箱の手先 (codex-command-runner) を起こさせない (上の経緯)。
-          if (!codexWindowsSandbox && Platform.isWindows) ...[
-            '-c',
-            'windows.sandbox="none"',
-          ],
           if (plain.isNotEmpty) ...[
             '-c',
             'mcp_servers.hisator.url="$plain"',

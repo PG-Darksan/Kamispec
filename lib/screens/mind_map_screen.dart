@@ -269240,6 +269240,41 @@ class _McpChatDialogState extends State<_McpChatDialog> {
     );
   }
 
+  // ── npm を使わずに入れる (= ユーザー報告: npm の途中で node が止められ、
+  //    インストールが完了しない) ──
+  bool _cliDirectInstalling = false;
+  String _cliDirectLog = '';
+
+  Future<void> _installAgentCliWithoutNpm(
+      MindMapProvider provider, AgentCliFound found) async {
+    if (!provider.canUseCliAi || _cliDirectInstalling) return;
+    setState(() {
+      _cliDirectInstalling = true;
+      _cliDirectLog = '';
+    });
+    final entry = await AgentCli.installWithoutNpm(
+      found.spec.kind,
+      onLog: (line) {
+        if (mounted) setState(() => _cliDirectLog = line);
+      },
+    );
+    if (!mounted) return;
+    setState(() {
+      _cliDirectInstalling = false;
+      _cliDirectLog = '';
+    });
+    if (entry == null) {
+      showTopToast(context, provider.t('cli.installNoNpmNg'),
+          const Color(0xFFE53935));
+      return;
+    }
+    showTopToast(
+        context, provider.t('cli.installNoNpmOk'), const Color(0xFF43B97F));
+    // 一覧を作り直して、 入れた物をすぐ使える状態にする。
+    _showInlineTerminal(_buildAgentCliList(provider), provider.t('cli.title'),
+        isTerminal: false);
+  }
+
   /// Pro 以上でない時に、 ボタンの代わりに出す案内
   /// (= ユーザー要望: 入れて画面を開いたら、 契約が要る旨を出す)。
   Widget _buildCliProRequired(MindMapProvider provider) {
@@ -269384,6 +269419,49 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                               unawaited(_installAgentCli(provider, f)),
                         ),
                     ]),
+                    // ── npm を使わずに入れる (= ユーザー報告: npm の途中で
+                    //    node がセキュリティソフトに止められ、 コード
+                    //    3221226528 で終わってインストールが完了しない) ──
+                    //    アプリが書庫を落として自分で開くだけなので、
+                    //    外のプログラムは 1 つも走らない。
+                    if (!f.installed && AgentCli.canInstallWithoutNpm(f.spec.kind))
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: TextButton.icon(
+                          style: TextButton.styleFrom(
+                            foregroundColor: const Color(0xFF4DB6AC),
+                            visualDensity: VisualDensity.compact,
+                            padding: const EdgeInsets.symmetric(horizontal: 8),
+                          ),
+                          icon: const Icon(Icons.inventory_2_outlined, size: 15),
+                          label: Text(provider.t('cli.installNoNpm'),
+                              style: const TextStyle(fontSize: 11)),
+                          onPressed: _cliDirectInstalling
+                              ? null
+                              : () => unawaited(
+                                  _installAgentCliWithoutNpm(provider, f)),
+                        ),
+                      ),
+                    if (_cliDirectInstalling && _cliDirectLog.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Row(children: [
+                          const SizedBox(
+                            width: 11,
+                            height: 11,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: Color(0xFF4DB6AC)),
+                          ),
+                          const SizedBox(width: 7),
+                          Expanded(
+                            child: Text(_cliDirectLog,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                    color: Colors.white54, fontSize: 10.5)),
+                          ),
+                        ]),
+                      ),
                     // ── ブラウザを使わないログイン (= ユーザー報告:
                     //    ログインがセキュリティソフトに止められる) ──
                     //    ふつうのログインは CLI が自分で 127.0.0.1 の
@@ -269501,10 +269579,10 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                           height: 1.5)),
                 ),
                 Switch(
-                  value: provider.codexWindowsSandbox,
+                  value: provider.codexRestrictedRun,
                   activeThumbColor: const Color(0xFFFFB347),
                   onChanged: (v) => unawaited(
-                      provider.setCodexWindowsSandbox(v).then((_) {
+                      provider.setCodexRestrictedRun(v).then((_) {
                     if (mounted) setState(() {});
                   })),
                 ),
