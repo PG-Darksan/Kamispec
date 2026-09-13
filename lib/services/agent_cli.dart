@@ -1455,8 +1455,13 @@ class AgentCli {
   //     この設定に関わらず作業フォルダーの中に留める。
   static const List<String> autonomyLevels = ['ask', 'auto', 'full'];
 
-  /// 既定は 'full' (= ユーザーの明示的な指定)。
-  static String autonomy = 'full';
+  /// 既定は 'auto'。
+  ///
+  /// ★ 「1 件ずつ確認されると手が止まる」 という困りごとはこれで解ける
+  ///   (たずねずに進む)。 そのうえで、 書き換えられるのは作業フォルダーの
+  ///   中だけなので、 うっかり他所を壊す事にはならない。
+  ///   場所の縛りまで外したい人は、 自分で 'full' を選ぶ。
+  static String autonomy = 'auto';
 
   static bool get _noAsk => autonomy != 'ask';
   static bool get _noLimit => autonomy == 'full';

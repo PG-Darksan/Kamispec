@@ -81013,8 +81013,8 @@ class MindMapProvider extends ChangeNotifier {
   //    手が止まる。 承認なしで任せられるように) ──
   //
   //    'ask'  … 毎回たずねる
-  //    'auto' … たずねない。 書き換えるのは作業フォルダーの中だけ
-  //    'full' … たずねない。 場所の縛りも無し (既定)
+  //    'auto' … たずねない。 書き換えるのは作業フォルダーの中だけ (既定)
+  //    'full' … たずねない。 場所の縛りも無し
   String get cliAutonomy => AgentCli.autonomy;
 
   Future<void> setCliAutonomy(String v) async {
