@@ -14,6 +14,7 @@ import 'package:uuid/uuid.dart';
 import 'package:video_thumbnail/video_thumbnail.dart' as vt;
 import 'package:device_info_plus/device_info_plus.dart';
 import '../models/mind_map_node.dart';
+import '../services/agent_cli.dart';
 import '../services/billing_service.dart';
 import '../services/cursor_wrap.dart';
 import '../services/mouse_remap.dart';
@@ -49567,9 +49568,11 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'AI-ассистент',
     },
     'hdr.openAiBrowser': {
-      'ja': 'AI', 'en': 'AI',
-      'zh': 'AI', 'ko': 'AI',
-      'es': 'IA', 'fr': 'IA',
+      // ★ アプリの中の AI と紛らわしいので、 ブラウザで開く方だと明記する
+      //   (= ユーザー要望)。
+      'ja': 'ブラウザAI', 'en': 'Browser AI',
+      'zh': '浏览器 AI', 'ko': '브라우저 AI',
+      'es': 'IA del navegador', 'fr': 'IA du navigateur',
       'de': 'Browser-KI', 'pt': 'IA do navegador',
       'ru': 'Браузерный ИИ',
     },
@@ -50225,8 +50228,8 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Открыть Node.js',
     },
     'cli.backToChat': {
-      'ja': '会話へ戻る',
-      'en': 'Back to chat',
+      'ja': 'AI アシスタントへ切り替え',
+      'en': 'Switch to the AI assistant',
       'zh': '返回对话',
       'ko': '대화로 돌아가기',
       'es': 'Volver al chat',
@@ -50237,7 +50240,7 @@ class MindMapProvider extends ChangeNotifier {
     },
     'cli.title': {
       'ja':
-          'パソコンに入れた AI を使う',
+          'PC内AI',
       'en':
           'Use the AI tools installed on this PC',
       'zh':
@@ -50294,6 +50297,105 @@ class MindMapProvider extends ChangeNotifier {
           'Verificar de novo',
       'ru':
           'Проверить снова',
+    },
+    'ai.pickModeTitle': {
+      'ja': 'どちらの AI を使いますか',
+      'en': 'Which AI do you want to use?',
+      'zh': '要使用哪个 AI?',
+      'ko': '어느 AI 를 사용할까요?',
+      'es': 'Que IA quieres usar?',
+      'fr': 'Quelle IA voulez-vous utiliser ?',
+      'de': 'Welche KI moechten Sie nutzen?',
+      'pt': 'Qual IA voce quer usar?',
+      'ru': 'Какой ИИ использовать?',
+    },
+    'ai.modeApi': {
+      'ja': 'このアプリの AI (API)',
+      'en': "This app's AI (API)",
+      'zh': '本应用的 AI (API)',
+      'ko': '이 앱의 AI (API)',
+      'es': 'La IA de esta app (API)',
+      'fr': "L'IA de cette app (API)",
+      'de': 'Die KI dieser App (API)',
+      'pt': 'A IA deste app (API)',
+      'ru': 'ИИ этого приложения (API)',
+    },
+    'ai.modeApiBody': {
+      'ja': 'アプリの中で直接ページや要素を作れます。 AI の残高を使います。',
+      'en': 'Creates pages and items inside the app. Uses your AI credit.',
+      'zh': '直接在应用内创建页面和元素。会消耗 AI 余额。',
+      'ko': '앱 안에서 페이지와 요소를 만듭니다. AI 잔액을 사용합니다.',
+      'es': 'Crea paginas y elementos dentro de la app. Usa tu saldo de IA.',
+      'fr': "Cree des pages et des elements dans l'app. Utilise votre solde IA.",
+      'de': 'Erstellt Seiten und Elemente in der App. Nutzt Ihr KI-Guthaben.',
+      'pt': 'Cria paginas e itens dentro do app. Usa seu saldo de IA.',
+      'ru': 'Создаёт страницы и элементы в приложении. Тратит баланс ИИ.',
+    },
+    'ai.cliUsage': {
+      'ja': 'この起動で使った量',
+      'en': 'Used this session',
+      'zh': '本次启动已用',
+      'ko': '이번 실행에서 사용',
+      'es': 'Usado en esta sesion',
+      'fr': 'Utilise cette session',
+      'de': 'In dieser Sitzung genutzt',
+      'pt': 'Usado nesta sessao',
+      'ru': 'Использовано за сеанс',
+    },
+    'ai.cliUsageNone': {
+      'ja': 'PC内AI は契約しているぶんを使います (残量は出せません)',
+      'en': 'PC AI runs on your own subscription (no remaining balance)',
+      'zh': 'PC 内 AI 使用你的订阅额度 (无法显示余量)',
+      'ko': 'PC 내 AI 는 본인 구독을 사용합니다 (잔량 표시 불가)',
+      'es': 'La IA del PC usa tu suscripcion (sin saldo restante)',
+      'fr': "L'IA du PC utilise votre abonnement (pas de solde)",
+      'de': 'Die PC-KI nutzt Ihr Abo (kein Restguthaben)',
+      'pt': 'A IA do PC usa sua assinatura (sem saldo restante)',
+      'ru': 'ИИ на ПК использует вашу подписку (остаток недоступен)',
+    },
+    'cli.needNode': {
+      'ja': '※ npm は Node.js に付いてくる物です。 先に Node.js を入れてください。',
+      'en': 'npm comes with Node.js. Install Node.js first.',
+      'zh': 'npm 随 Node.js 提供，请先安装 Node.js。',
+      'ko': 'npm 은 Node.js 에 포함됩니다. 먼저 Node.js 를 설치하세요.',
+      'es': 'npm viene con Node.js. Instala Node.js primero.',
+      'fr': 'npm est fourni avec Node.js. Installez Node.js d abord.',
+      'de': 'npm kommt mit Node.js. Bitte zuerst Node.js installieren.',
+      'pt': 'O npm vem com o Node.js. Instale o Node.js primeiro.',
+      'ru': 'npm поставляется с Node.js. Сначала установите Node.js.',
+    },
+    'ai.modeCli': {
+      'ja': 'PC内AI',
+      'en': 'AI on this PC',
+      'zh': '装在这台电脑上的 AI (Claude Code 等)',
+      'ko': '이 PC 에 설치한 AI (Claude Code 등)',
+      'es': 'Una IA instalada en este PC (Claude Code, etc.)',
+      'fr': 'Une IA installee sur ce PC (Claude Code, etc.)',
+      'de': 'Eine auf diesem PC installierte KI (Claude Code usw.)',
+      'pt': 'Uma IA instalada neste PC (Claude Code, etc.)',
+      'ru': 'ИИ, установленный на этом ПК (Claude Code и др.)',
+    },
+    'ai.modeCliBody': {
+      'ja': '契約しているぶんをそこで使うので、 AI の残高は減りません。',
+      'en': 'Runs on your own CLI subscription, so your AI credit is untouched.',
+      'zh': '使用你自己的订阅，不会消耗 AI 余额。',
+      'ko': '본인 구독으로 동작하므로 AI 잔액이 줄지 않습니다.',
+      'es': 'Usa tu propia suscripcion; tu saldo de IA no se toca.',
+      'fr': 'Utilise votre propre abonnement ; votre solde IA reste intact.',
+      'de': 'Laeuft ueber Ihr eigenes Abo, Ihr KI-Guthaben bleibt unberuehrt.',
+      'pt': 'Usa sua propria assinatura; seu saldo de IA nao e usado.',
+      'ru': 'Работает по вашей подписке, баланс ИИ не тратится.',
+    },
+    'ai.modeHint': {
+      'ja': 'あとから変えられます。 ボタンを右クリック (長押し) してください。',
+      'en': 'You can change this later: right-click (or long-press) the button.',
+      'zh': '之后可以更改：右键 (或长按) 该按钮。',
+      'ko': '나중에 바꿀 수 있습니다. 버튼을 오른쪽 클릭 (또는 길게 누르기) 하세요.',
+      'es': 'Puedes cambiarlo luego: clic derecho (o mantener pulsado) en el boton.',
+      'fr': 'Modifiable plus tard : clic droit (ou appui long) sur le bouton.',
+      'de': 'Spaeter aenderbar: Rechtsklick (oder langes Druecken) auf die Schaltflaeche.',
+      'pt': 'Pode mudar depois: clique direito (ou toque longo) no botao.',
+      'ru': 'Можно изменить позже: правый клик (или долгое нажатие) по кнопке.',
     },
     'hdr.openTerminal': {
       'ja': 'ターミナル',
@@ -70471,6 +70573,20 @@ class MindMapProvider extends ChangeNotifier {
     //   廃止した 'auto' が残っている端末は、 そのまま「普通」 になる。
     final rl = prefs.getString('relayReasoning');
     if (rl != null && relayReasoningLevels.contains(rl)) _relayReasoning = rl;
+    // 相手ごとの考える深さ (= ユーザー要望)。
+    try {
+      final raw = prefs.getString('relayReasoningByProvider') ?? '';
+      if (raw.isNotEmpty) {
+        final j = jsonDecode(raw);
+        if (j is Map) {
+          j.forEach((k, v) {
+            if (relayReasoningLevels.contains('$v')) {
+              _reasoningByProvider['$k'] = '$v';
+            }
+          });
+        }
+      }
+    } catch (_) {}
     _openTarget = prefs.getString('openTarget') ?? 'same';
     totalOutputTokens = prefs.getInt('totalOutputTokens') ?? 0;
     totalCostUsd = prefs.getDouble('totalCostUsd') ?? 0.0;
@@ -79779,7 +79895,17 @@ class MindMapProvider extends ChangeNotifier {
   /// ID そのものは別名のまま使う (勝手に世代が上がるのが利点)。 出す時だけ
   /// サーバーが教えてくれた実体 (例: gemini-3.8-flash) に置き換える。
   /// 末尾の日付 (…-20251001) は分かりにくいので落とす。
+  /// いま使う相手の名前 (どの欄の札にも出る)。
+  ///
+  /// ★ PC の CLI に頼む設定の時は、 それと分かる名前を出す
+  ///   (= ユーザー要望: 自動化や pptx でも CLI に切り替えられるように)。
   String relayModelLabel(String id) {
+    if (useCliAi && id == _relayModel) return cliAiLabel;
+    return relayModelRawLabel(id);
+  }
+
+  /// 一覧に並べる時の、 そのモデル自身の名前。
+  String relayModelRawLabel(String id) {
     var shown = id;
     for (final m in _relayModels) {
       if (m is Map && '${m['id']}' == id) {
@@ -79811,16 +79937,106 @@ class MindMapProvider extends ChangeNotifier {
   // ★ 以前あった 'auto' (指定しない) は「何が起きるか分からない」 ため廃止
   //   (= ユーザー要望)。 昔の設定が残っていたら 'medium' として扱う。
   String _relayReasoning = 'medium';
-  String get relayReasoning => _relayReasoning;
   static const List<String> relayReasoningLevels = ['low', 'medium', 'high'];
 
-  Future<void> setRelayReasoning(String v) async {
+  // ── 考える深さは**相手ごと**に覚える (= ユーザー要望: 3 段階の共通設定
+  //    ではなく、 そのプロバイダーごとにセットできるように) ──
+  //
+  //    ChatGPT は深く、 Gemini は速く、 のように使い分けたい所なので、
+  //    モデルを切り替えるたびに設定し直さなくて済むようにする。
+  //    prefs には JSON でまとめて置く (昔の 1 つだけの設定も引き継ぐ)。
+  final Map<String, String> _reasoningByProvider = {};
+
+  /// 一覧に出すモデル (= ユーザー要望: 選択肢が多過ぎる)。
+  ///
+  /// ★ 同じ系統は**いちばん新しい版だけ**残す。 例えば `claude-fable-5-1` と
+  ///   `claude-fable-5` があれば前者だけ。 系統は「数字を除いた部分」 で
+  ///   見るので、 opus / sonnet / haiku や flash / pro は別物として残る。
+  ///   いま選んでいる物は、 古くても必ず残す。
+  List<dynamic> get relayModelsVisible {
+    final avail = [
+      for (final m in _relayModels)
+        if (m is Map && m['available'] == true) m
+    ];
+    final best = <String, Map>{};
+    final bestVer = <String, List<int>>{};
+    for (final m in avail) {
+      final id = '${m['id']}';
+      final fam = <String>[];
+      final ver = <int>[];
+      for (final tok in id.split(RegExp(r'[-_]'))) {
+        final n = num.tryParse(tok);
+        if (n != null) {
+          // 3.8 のような書き方も 3 と 8 に分けて比べる。
+          for (final part in tok.split('.')) {
+            ver.add(int.tryParse(part) ?? 0);
+          }
+        } else {
+          fam.add(tok);
+        }
+      }
+      final key = '${m['provider']}|${fam.join('|')}';
+      final cur = bestVer[key];
+      var newer = cur == null;
+      if (cur != null) {
+        for (var i = 0; i < math.max(cur.length, ver.length); i++) {
+          final a = i < ver.length ? ver[i] : 0;
+          final b = i < cur.length ? cur[i] : 0;
+          if (a != b) {
+            newer = a > b;
+            break;
+          }
+        }
+      }
+      if (newer) {
+        best[key] = m;
+        bestVer[key] = ver;
+      }
+    }
+    final out = best.values.toList();
+    // いま選んでいる物は必ず残す。
+    if (!out.any((m) => '${m['id']}' == _relayModel)) {
+      for (final m in avail) {
+        if ('${m['id']}' == _relayModel) {
+          out.add(m);
+          break;
+        }
+      }
+    }
+    return out;
+  }
+
+  /// いま選んでいるモデルの会社 ('gemini' / 'openai' / 'anthropic')。
+  String get currentAiProvider {
+    if (useCliAi) return 'cli';
+    for (final m in _relayModels) {
+      if (m is Map && '${m['id']}' == _relayModel) {
+        final p = '${m['provider'] ?? ''}'.trim();
+        if (p.isNotEmpty) return p;
+      }
+    }
+    return 'gemini';
+  }
+
+  /// いまの相手の考える深さ。
+  String get relayReasoning =>
+      _reasoningByProvider[currentAiProvider] ?? _relayReasoning;
+
+  String reasoningFor(String providerId) =>
+      _reasoningByProvider[providerId] ?? _relayReasoning;
+
+  Future<void> setRelayReasoning(String v, {String? forProvider}) async {
     if (!relayReasoningLevels.contains(v)) return;
+    final key = forProvider ?? currentAiProvider;
+    _reasoningByProvider[key] = v;
+    // 昔からの 1 つだけの設定も、 いまの相手の値で合わせておく。
     _relayReasoning = v;
     notifyListeners();
     try {
       final p = await _prefsWithRetry();
       await p.setString('relayReasoning', v);
+      await p.setString(
+          'relayReasoningByProvider', jsonEncode(_reasoningByProvider));
     } catch (_) {}
   }
 
@@ -80196,10 +80412,161 @@ class MindMapProvider extends ChangeNotifier {
     throw Exception(t('net.offline'));
   }
 
+  // ── どの AI に頼むか (= ユーザー要望: pptx などのファイル編集や自動化の
+  //    AI にも、 PC に入れた AI を使えるように) ──
+  //
+  //    ヘッダーのアイコンを右クリックして選んだ物をそのまま使う。
+  //    'cli' の時は、 画面のどの AI 機能もまず PC の CLI に聞く
+  //    (契約しているぶんを使うので、 AI の残高は減らない)。
+  String _aiAssistantMode = 'api';
+  String get aiAssistantMode => _aiAssistantMode;
+  bool get useCliAi => _aiAssistantMode == 'cli' && AgentCli.supported;
+
+  /// 1 回聞く相手の名前 (「PC内AI (Claude Code)」 の括弧の中)。
+  String _cliAiName = '';
+  String get cliAiName => _cliAiName;
+
+  /// 札に出す名前。 どの CLI に頼むのかが分かるようにする
+  /// (= ユーザー要望: モデル名が書かれていないと何を指すのか分からない)。
+  /// 実際に答えたモデル (例 `Opus 5`)。 1 回目の返事で分かる。
+  String _cliAiModel = '';
+
+  String get cliAiLabel {
+    if (_cliAiName.isEmpty) return t('ai.modeCli');
+    final m = _cliAiModel.isEmpty ? '' : ' · $_cliAiModel';
+    return '${t('ai.modeCli')} ($_cliAiName$m)';
+  }
+
+  Future<void> refreshCliAiName() async {
+    try {
+      final n = await AgentCli.preferredLabel() ?? '';
+      if (n != _cliAiName) {
+        _cliAiName = n;
+        notifyListeners();
+      }
+      final p = await SharedPreferences.getInstance();
+      final m = p.getString('cliAiModel') ?? '';
+      if (m.isNotEmpty && m != _cliAiModel) {
+        _cliAiModel = m;
+        notifyListeners();
+      }
+      final c = p.getString('cliAiModelChoice') ?? '';
+      if (c != _cliAiModelChoice) {
+        _cliAiModelChoice = c;
+        notifyListeners();
+      }
+      AgentCli.chosenModel = _cliAiModelChoice;
+    } catch (_) {}
+  }
+
+  /// PC 内 AI で使うモデルの指定 (空 = CLI の既定に任せる)。
+  String _cliAiModelChoice = '';
+  String get cliAiModelChoice => _cliAiModelChoice;
+
+  Future<void> setCliAiModelChoice(String id) async {
+    _cliAiModelChoice = id;
+    AgentCli.chosenModel = id;
+    // 指定を変えたら、 札のモデル名も一度忘れる (次の返事で更新される)。
+    _cliAiModel = '';
+    notifyListeners();
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setString('cliAiModelChoice', id);
+      await p.remove('cliAiModel');
+    } catch (_) {}
+  }
+
+  // ── PC 内 AI で使ったトークン (= ユーザー要望: 消費量を出して欲しい) ──
+  //    こちらは契約しているぶんを使うので「残り」 は分からない。 分かるのは
+  //    「この起動で使った量」 だけなので、 それを出す。
+  int _cliInTokens = 0;
+  int _cliOutTokens = 0;
+  int get cliInTokens => _cliInTokens;
+  int get cliOutTokens => _cliOutTokens;
+
+  String get cliUsageText {
+    String n(int v) {
+      if (v >= 1000000) return '${(v / 1000000).toStringAsFixed(1)}M';
+      if (v >= 1000) return '${(v / 1000).toStringAsFixed(0)}k';
+      return '$v';
+    }
+
+    if (_cliInTokens == 0 && _cliOutTokens == 0) {
+      return t('ai.cliUsageNone');
+    }
+    return '${t('ai.cliUsage')} '
+        '入力${n(_cliInTokens)} / 出力${n(_cliOutTokens)}';
+  }
+
+  void _addCliUsage() {
+    final i = AgentCli.lastInputTokens;
+    final o = AgentCli.lastOutputTokens;
+    if (i <= 0 && o <= 0) return;
+    _cliInTokens += i;
+    _cliOutTokens += o;
+    notifyListeners();
+  }
+
+  /// 返事のたびに、 実際に使われたモデルを控える (札に出す)。
+  void _rememberCliModel() {
+    final raw = AgentCli.lastModel;
+    if (raw.isEmpty) return;
+    final pretty = AgentCli.prettyModel(raw);
+    if (pretty.isEmpty || pretty == _cliAiModel) return;
+    _cliAiModel = pretty;
+    notifyListeners();
+    unawaited(SharedPreferences.getInstance()
+        .then((p) => p.setString('cliAiModel', pretty))
+        .catchError((_) => false));
+  }
+
+  Future<void> loadAiAssistantMode() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      final v = p.getString('aiAssistantMode') ?? '';
+      if (v == 'api' || v == 'cli') {
+        _aiAssistantMode = v;
+        notifyListeners();
+      }
+    } catch (_) {}
+    if (AgentCli.supported) unawaited(refreshCliAiName());
+  }
+
+  /// どの AI に頼むかを決めて控える (どの欄からでも呼べるように)。
+  Future<void> setAiEngine(String mode) async {
+    setAiAssistantModeLocal(mode);
+    if (mode == 'cli') unawaited(refreshCliAiName());
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setString('aiAssistantMode', mode);
+    } catch (_) {}
+  }
+
+  void setAiAssistantModeLocal(String v) {
+    if (v != 'api' && v != 'cli') return;
+    if (_aiAssistantMode == v) return;
+    _aiAssistantMode = v;
+    notifyListeners();
+  }
+
   Future<String> askAi(String prompt,
       {int? maxTokensOverride,
       Duration? timeoutOverride,
       List<AiInputImage>? images}) async {
+    // ★ PC の CLI に頼む設定なら、 まずそちらへ (= ユーザー要望)。
+    //   写真つきは渡せないので、 その時だけ今までどおり。
+    if (useCliAi && (images == null || images.isEmpty)) {
+      final out = await AgentCli.runPrompt(prompt,
+          timeout: timeoutOverride, guide: languageInstructionForAi().trim());
+      _rememberCliModel();
+      _addCliUsage();
+      if (out != null && out.trim().isNotEmpty) return out;
+      // ★ 黙って API へ落とさない (= ユーザー報告: 動いていないのか
+      //   分からない)。 何が起きたかをそのまま画面に出す。
+      final why = AgentCli.lastPromptError;
+      throw Exception(
+          '${cliAiLabel}で答えられませんでした${why.isEmpty ? '' : ': $why'}');
+    }
     // ★ まず通信を確かめる (= ユーザー要望: Wi-Fi が切れている時は、
     //   「代行サーバーが応答しない」 ではなく、 その旨を出す)。
     await ensureOnline();
@@ -81218,7 +81585,8 @@ $docGuide$instruction
     // ★ 根の要素の幅も見出しに合わせる (= ユーザー要望: 220 決め打ちだと
     //   「インスタグラムのジャンル」 が 1 文字だけ落ちて読みにくい)。
     final rootW = nodeWidthForTitle(pageTitle).clamp(220.0, 340.0);
-    const rootH = 60.0;
+    // ★ 手で作る要素と同じ高さに (= ユーザー要望: 下の空白を詰める)。
+    const rootH = 42.0;
     // ルートも「実際に描かれる高さ」 で場所を取る (= メモが長い / 文字が
     // 大きいと、 見積もりが小さすぎて次のルートと重なっていた)。
 
@@ -82057,7 +82425,8 @@ $docGuide$instruction
       // ★ 文字数 × 14 の見積もりをやめ、 実際の文字の大きさで測る
       //   (= ユーザー要望: 変な位置で改行が入らないように)。
       final w = nodeWidthForTitle(title).clamp(180.0, 340.0);
-      const double h = 50.0;
+      // ★ 手で作る要素と同じ高さに (= ユーザー要望: 下の空白を詰める)。
+    const double h = 42.0;
       final displayH =
           aiNodeDisplayHeight(title: title, memo: memo, width: w, height: h);
 
@@ -82826,7 +83195,8 @@ $cleanQ
       // ★ 文字数 × 14 の見積もりをやめ、 実際の文字の大きさで測る
       //   (= ユーザー要望: 変な位置で改行が入らないように)。
       final w = nodeWidthForTitle(title).clamp(180.0, 340.0);
-      const double h = 50.0;
+      // ★ 手で作る要素と同じ高さに (= ユーザー要望: 下の空白を詰める)。
+    const double h = 42.0;
       final displayH =
           aiNodeDisplayHeight(title: title, memo: memo, width: w, height: h);
 
@@ -83024,7 +83394,8 @@ $cleanQ
     required String title,
     String? memo,
     required double width,
-    double height = 50.0,
+    // ★ 作る時の高さ (42) と必ず同じに。 ここがずれると置き場所が狂う。
+  double height = 42.0,
   }) {
     final probe = MindMapNode(
       id: '_probe',
@@ -84533,6 +84904,8 @@ $cleanQ
         .catchError((Object e, StackTrace st) =>
             debugPrint('開発者モードの復元に失敗 (起動は続行): $e\n$st'));
     unawaited(_planReadyFuture!);
+    // どの AI に頼むか (API / PC 内 CLI) の控え。
+    unawaited(loadAiAssistantMode());
     _loadJoinedGroups();
     _loadColorSettings();
     loadDisplayName();
@@ -106699,6 +107072,10 @@ $example
 
   void setDefaultTitleFontSize(double size) {
     defaultTitleFontSize = size.clamp(8.0, 28.0);
+    // ★ 高さの見積もりが使う控えも一緒に更新する (= メモ側にはあったのに
+    //   ここだけ抜けていて、 文字を大きくしても次回起動まで箱が広がらず
+    //   文字がはみ出していた)。
+    _syncFontHints();
     _saveToStorage();
     notifyListeners();
   }

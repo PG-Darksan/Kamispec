@@ -32,6 +32,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../main.dart' show automationRequestFromAssistant;
 import '../providers/mind_map_provider.dart';
 // パソコンそのものを操作する (= ユーザー要望: PC 内のアプリを操作)。
+import '../services/agent_cli.dart';
 import '../services/cdp_browser.dart';
 import '../services/desktop_input.dart';
 import '../services/page_extract_js.dart';
@@ -1046,19 +1047,75 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
   /// フロー作成で使うモデルを選ぶ (= ユーザー要望: ここでも設定したい)。
   /// AI アシスタント等と同じ設定 (relayModel) を共有する。
   Widget _buildAiModelPicker(MindMapProvider provider) {
-    String label(String id) => provider.relayModelLabel(id);
-    final models = [
-      for (final m in provider.relayModels)
-        if (m is Map && m['available'] == true) m
-    ];
+    String label(String id) => provider.relayModelRawLabel(id);
+    // ★ 同じ系統はいちばん新しい版だけ (= ユーザー要望)。
+    final models = provider.relayModelsVisible;
     return PopupMenuButton<String>(
       tooltip: provider.t('mcp.model'),
       color: const Color(0xFF1E1E32),
       onSelected: (id) async {
+        // ★ PC に入れた AI を選べるようにする (= ユーザー要望: 自動化の
+        //   AI も CLI に切り替えられるように)。
+        if (id.startsWith('climodel:')) {
+          await provider.setCliAiModelChoice(id.substring(9));
+          if (mounted) setState(() {});
+          return;
+        }
+        if (id == '__cli__' || id == '__api__') {
+          await provider.setAiEngine(id == '__cli__' ? 'cli' : 'api');
+          if (mounted) setState(() {});
+          return;
+        }
+        await provider.setAiEngine('api');
         await provider.setRelayModel(id);
         if (mounted) setState(() {});
       },
       itemBuilder: (_) => [
+        if (AgentCli.supported)
+          PopupMenuItem<String>(
+            value: provider.useCliAi ? '__api__' : '__cli__',
+            child: Row(children: [
+              Icon(
+                  provider.useCliAi
+                      ? Icons.radio_button_checked_rounded
+                      : Icons.radio_button_off_rounded,
+                  size: 13,
+                  color: provider.useCliAi
+                      ? const Color(0xFF9CCC65)
+                      : Colors.white38),
+              const SizedBox(width: 8),
+              const Icon(Icons.terminal_rounded,
+                  size: 13, color: Color(0xFF9CCC65)),
+              const SizedBox(width: 6),
+              Text(provider.cliAiLabel,
+                  style: const TextStyle(color: Colors.white, fontSize: 12)),
+            ]),
+          ),
+        // ★ PC 内 AI の中のモデルもここで選べるように (= ユーザー要望)。
+        if (AgentCli.supported && provider.useCliAi)
+          for (final c in AgentCli.modelChoices(
+              AgentCli.lastPickKind ?? AgentCliKind.claude))
+            PopupMenuItem<String>(
+              value: 'climodel:${c.id}',
+              child: Padding(
+                padding: const EdgeInsets.only(left: 20),
+                child: Row(children: [
+                  Icon(
+                      provider.cliAiModelChoice == c.id
+                          ? Icons.radio_button_checked_rounded
+                          : Icons.radio_button_off_rounded,
+                      size: 12,
+                      color: provider.cliAiModelChoice == c.id
+                          ? const Color(0xFF9CCC65)
+                          : Colors.white38),
+                  const SizedBox(width: 8),
+                  Text(c.label,
+                      style:
+                          const TextStyle(color: Colors.white70, fontSize: 11.5)),
+                ]),
+              ),
+            ),
+        if (AgentCli.supported) const PopupMenuDivider(height: 8),
         for (final m in models)
           PopupMenuItem<String>(
             value: '${m['id']}',
@@ -1094,7 +1151,7 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
         child: Row(mainAxisSize: MainAxisSize.min, children: [
           const Icon(Icons.memory_rounded, size: 13, color: Colors.white54),
           const SizedBox(width: 5),
-          Text(label(provider.relayModel),
+          Text(provider.relayModelLabel(provider.relayModel),
               style: const TextStyle(color: Colors.white70, fontSize: 10.5)),
           const Icon(Icons.expand_more_rounded,
               size: 13, color: Colors.white38),

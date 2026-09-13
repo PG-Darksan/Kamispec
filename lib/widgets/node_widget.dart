@@ -895,12 +895,18 @@ class _NodeWidgetState extends State<NodeWidget> {
     // 明るくても実背景は暗いケースが発生し、 黒地に黒文字で読めない問題が
     // 起きていた (ユーザー報告「黒地の時だけ文字が白じゃない」)。
     // effectiveColor で判定すれば実描画と必ず整合する。
-    final bool _isLightBg = effectiveColor.computeLuminance() > 0.55;
+    // ★ 境目を下げる (= ユーザー要望: 白っぽい背景では黒文字にして読みやすく)。
+    //   0.55 では AI が使う 14 色すべてが「暗い」 扱いになり、 橙や黄緑の上に
+    //   白文字が乗って読めなかった (実測で明暗比 1.8〜2.8)。 0.30 にすると
+    //   その 9 色が黒文字に変わり (比 7.6〜11.8)、 紫や藍はこれまでどおり
+    //   白文字のまま (アプリらしさは変えない)。
+    final bool _isLightBg = effectiveColor.computeLuminance() > 0.30;
     final Color titleTextColor =
-        _isLightBg ? const Color(0xDD000000) : Colors.white;
+        _isLightBg ? const Color(0xEE000000) : Colors.white;
+    // メモは薄くし過ぎない (= 一番読みにくかったのがここ)。
     final Color memoTextColor = _isLightBg
-        ? const Color(0xCC000000)
-        : Colors.white.withValues(alpha: 0.75);
+        ? const Color(0xDD000000)
+        : Colors.white.withValues(alpha: 0.88);
     // ── リンク文字色は実背景の明暗で自動調整 (= ユーザー要望: 黒背景では
     //    白リンク、 白背景では黒リンクになるように。 中間の色付き背景は
     //    従来の水色) ──
@@ -927,7 +933,8 @@ class _NodeWidgetState extends State<NodeWidget> {
       final hasJpMemo = _kJpMemoChars.hasMatch(node.memoText!);
       final avgMemoCharW = hasJpMemo ? memoFontSize * 1.0 : memoFontSize * 0.58;
       final memoCharsPerLine =
-          ((nw - 25.0) / avgMemoCharW).floor().clamp(1, 200);
+          // ★ mind_map_node.dart の memoTextWidth と必ず同じ値に。
+          ((nw - 22.0) / avgMemoCharW).floor().clamp(1, 200);
       final segments = node.memoText!.split('\n');
       int memoLines = 0;
       for (final seg in segments) {
@@ -936,7 +943,8 @@ class _NodeWidgetState extends State<NodeWidget> {
         memoLines += lines < 1 ? 1 : lines;
       }
       memoLines = memoLines.clamp(1, 200);
-      memoExtraH = memoLines * (memoFontSize * 1.3) + 8;
+      // ★ mind_map_node.dart の visualHeight と必ず同じ値に。
+      memoExtraH = memoLines * (memoFontSize * 1.3) + 4;
     }
 
     // ── 高さ固定タイル (ギャラリー) で「隙間」 を作らない ──

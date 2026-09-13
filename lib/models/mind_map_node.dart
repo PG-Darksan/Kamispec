@@ -1177,8 +1177,12 @@ class MindMapNode {
     // タイトルの折り返し分の追加高さ（文字サイズはノード幅に連動しない）
     final effectiveTitleFont =
         (titleFontSize ?? defaultTitleFontSizeHint).clamp(8.0, 28.0);
-    // 利用可能なテキスト幅 = width - padding(20) - border(5)
-    final textWidth = width - 25.0;
+    // 利用可能なテキスト幅。
+    // ★ 実際に描く箱は width - 20 (node_widget.dart の SizedBox)。 ここを
+    //   25 にしていたため 1 行多く見積もり、 その分の空白が下に残っていた
+    //   (= ユーザー報告: AI が作った要素の下に謎の空白)。 見積もりが足りない
+    //   と文字が切れるので、 2px だけ安全を見て 22 にする。
+    final textWidth = width - 22.0;
     final maxLines = titleMaxLines;
     if (title.isNotEmpty && textWidth > 0) {
       final hasJapanese =
@@ -1207,7 +1211,8 @@ class MindMapNode {
     if ((memoText ?? '').isNotEmpty) {
       final effectiveMemoFont =
           (memoFontSize ?? defaultMemoFontSizeHint).clamp(6.0, 22.0);
-      final memoTextWidth = width - 25.0;
+      // ★ 描く箱 (width - 20) に合わせる。 node_widget.dart と必ず同じ値に。
+      final memoTextWidth = width - 22.0;
       final hasJpMemo =
           _kJpChars.hasMatch(memoText!);
       // 日本語は全角想定だが文字幅差のばらつきを考慮してやや大きめに見積もる
@@ -1227,8 +1232,9 @@ class MindMapNode {
         memoLines += lines < 1 ? 1 : lines;
       }
       memoLines = memoLines.clamp(1, 200);
-      // line-height 1.3 + 上下の余白（8px）を加算
-      h += memoLines * (effectiveMemoFont * 1.3) + 8;
+      // line-height 1.3 + メモの上の余白 (実際は Padding(top: 4))。
+      // ★ node_widget.dart の memoExtraH と必ず同じ値に。
+      h += memoLines * (effectiveMemoFont * 1.3) + 4;
     }
     // YouTubeサムネイル / mp4サムネイル高さ
     final hasYtId = (youtubeUrl ?? '').isNotEmpty &&

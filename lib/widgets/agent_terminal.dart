@@ -121,8 +121,20 @@ class AgentTerminalState extends State<AgentTerminal> {
   final _queueFocus = FocusNode(debugLabel: 'agent_cli_queue');
   bool _queueOpen = false;
 
-  /// いま変換中の文字 (カーソルの所に出す)。
+  /// いまの会話で投げた指示の一覧を出しているか (= ユーザー要望)。
+  bool _histOpen = false;
+
+  /// いま変換中の文字。
   String _composing = '';
+
+  /// いま CLI 側へ「先出し」 している文字。
+  ///
+  /// ★ = ユーザー要望「Enter を押さないとチャット欄に出てこないのが使い
+  ///   にくい。 直接打ち込めるように」。 変換中の文字も、 打つそばから
+  ///   CLI の入力欄へ送る。 変換が進んで中身が変わったら、 先に送った分を
+  ///   後退で消してから送り直す。 確定した時には既に出ているので、
+  ///   改めて送らない。
+  String _liveSent = '';
 
   /// 送り出しの最中か (入力欄を空に戻す時の呼び戻しを止める)。
   bool _flushing = false;
@@ -137,6 +149,23 @@ class AgentTerminalState extends State<AgentTerminal> {
   /// 同じボタンをもう一度押したら Esc を送って閉じる (= ユーザー要望)。
   String? _openPanelCmd;
 
+  // ── 「文字の受け口」 が生きているかの見極め ─────────────────────────────
+  //
+  //   ★ ここが全角入力の肝 (= ユーザー報告: 半角英数しか打てない)。
+  //     押鍵をこちらで **handled** にすると、 Windows はその打鍵を OS へ
+  //     投げ返さないので **IME が変換を始められない**。 それで半角だけが
+  //     通り、 かな漢字変換は永久に始まらなかった。
+  //
+  //     そこで打鍵は必ず OS へ通す (ignored) ことにして、 受け口が死んで
+  //     いた時だけ自前で送る。 死活は「受け口から何か届いたか」 で判る
+  //     ので、 最初の数打鍵だけ様子を見て、 届かなければ以後は自前で送る。
+  //   null = まだ判らない / true = 生きている / false = 死んでいる
+  bool? _textPathAlive;
+
+  /// 受け口の返事を待っている間の控え。
+  final StringBuffer _pendingKeys = StringBuffer();
+  Timer? _pendingTimer;
+
   AgentCliSession get _s => widget.session;
 
   @override
@@ -146,7 +175,17 @@ class AgentTerminalState extends State<AgentTerminal> {
     _inputCtrl.addListener(_onInputChanged);
     _scroll.addListener(_onScroll);
     _grabFocusSoon();
+    // ★ 焦点が何かの拍子に他所へ移ると、 そこから先ずっと打てなくなる。
+    //   下の欄を書いている時以外は、 打ち込み口に焦点を戻し続ける。
+    _focusWatch = Timer.periodic(const Duration(milliseconds: 700), (_) {
+      if (!mounted || !_s.running) return;
+      if (_queueFocus.hasFocus) return;
+      if (_inputFocus.hasPrimaryFocus) return;
+      _inputFocus.requestFocus();
+    });
   }
+
+  Timer? _focusWatch;
 
   @override
   void didUpdateWidget(covariant AgentTerminal old) {
@@ -164,6 +203,8 @@ class AgentTerminalState extends State<AgentTerminal> {
     _s.removeListener(_onChanged);
     _scroll.removeListener(_onScroll);
     _scroll.dispose();
+    _pendingTimer?.cancel();
+    _focusWatch?.cancel();
     _inputCtrl.removeListener(_onInputChanged);
     _inputCtrl.dispose();
     _inputFocus.dispose();
@@ -196,7 +237,8 @@ class AgentTerminalState extends State<AgentTerminal> {
   /// 打てる状態にする。
   void _grabInput() {
     if (!mounted) return;
-    if (_queueFocus.hasFocus) return; // 順番待ちを書いている最中は邪魔しない
+    // 下の入力欄を書いている最中は邪魔しない。
+    if (_queueFocus.hasFocus) return;
     if (!_inputFocus.hasFocus) _inputFocus.requestFocus();
   }
 
@@ -222,14 +264,23 @@ class AgentTerminalState extends State<AgentTerminal> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _syncCursorPos());
   }
 
+  DateTime _lastCursorSync = DateTime.fromMillisecondsSinceEpoch(0);
+
   void _syncCursorPos() {
     if (!mounted) return;
+    // ★ 変換中は**絶対に動かさない**。 入力欄が動くと、 OS へ知らせる
+    //   位置が毎回変わり、 変換が途中で流れることがある。
+    if (_composing.isNotEmpty) return;
+    // 出力のたびに動かすと落ち着かないので、 間を空ける。
+    final now = DateTime.now();
+    if (now.difference(_lastCursorSync).inMilliseconds < 300) return;
     final st = _viewKey.currentState;
     final box = _stackKey.currentContext?.findRenderObject();
     if (st == null || box is! RenderBox || !box.hasSize) return;
     try {
       final p = box.globalToLocal(st.globalCursorRect.topLeft);
-      if (_cursorPos == null || (p - _cursorPos!).distance > 0.5) {
+      if (_cursorPos == null || (p - _cursorPos!).distance > 1.0) {
+        _lastCursorSync = now;
         setState(() => _cursorPos = p);
       }
     } catch (_) {
@@ -242,6 +293,12 @@ class AgentTerminalState extends State<AgentTerminal> {
   /// 入力欄が動いた時。 変換が終わった分だけ端末へ流す。
   void _onInputChanged() {
     if (_flushing || !mounted) return;
+    // 受け口から何か届いた = 生きている。 控えていた打鍵は捨てる
+    // (こちらからも送ると二重になる)。
+    if (_textPathAlive != true) _textPathAlive = true;
+    _pendingTimer?.cancel();
+    _pendingTimer = null;
+    _pendingKeys.clear();
     final v = _inputCtrl.value;
     final comp = v.composing.isValid && !v.composing.isCollapsed
         ? v.composing.textInside(v.text)
@@ -250,15 +307,26 @@ class AgentTerminalState extends State<AgentTerminal> {
       setState(() => _composing = comp);
       if (comp.isNotEmpty) _syncCursorPos();
     }
-    // 変換中は確定を待つ。
+    // ★ 打つそばから CLI の入力欄へ流す (= ユーザー要望: 確定を待たずに
+    //   直接打ち込めるように)。 前に送った分との差だけを直す。
+    final target = v.text;
+    if (target != _liveSent) {
+      if (_liveSent.isNotEmpty) {
+        // 送った分を消す (端末の後退は DEL)。
+        _s.sendRaw('\x7f' * _liveSent.runes.length);
+      }
+      if (target.isNotEmpty) _s.sendRaw(target);
+      _liveSent = target;
+      _stickToBottom();
+    }
+    // 変換中は、 ここまで (確定を待つ)。
     if (comp.isNotEmpty) return;
-    final text = v.text;
-    if (text.isEmpty) return;
+    if (target.isEmpty) return;
+    // 確定した。 CLI 側には既に出ているので、 欄だけ空に戻す。
     _flushing = true;
     _inputCtrl.value = TextEditingValue.empty;
     _flushing = false;
-    _s.sendRaw(text);
-    _stickToBottom();
+    _liveSent = '';
   }
 
   /// 押されたキーを端末へ。
@@ -321,15 +389,25 @@ class AgentTerminalState extends State<AgentTerminal> {
       }
     }
 
-    // ── ただの文字 (受け口の状態に関係なく必ず打てる) ──
+    // ── ただの文字 ──
+    //
+    //   ★ ここでは **絶対に handled を返さない**。 返すと Windows は
+    //     その打鍵を OS へ投げ返さず、 IME が変換を始められない
+    //     (= ユーザー報告: 半角英数しか打てない)。
+    //     受け口 (入力欄) に任せ、 それが死んでいた時だけ自前で送る。
     if (!ctrl && !alt && !meta) {
       final ch = event.character;
       if (ch != null && ch.isNotEmpty) {
         final code = ch.codeUnitAt(0);
         if (code >= 0x20 && code != 0x7f) {
-          _s.sendRaw(ch);
-          _stickToBottom();
-          return KeyEventResult.handled;
+          if (_textPathAlive == true) return KeyEventResult.ignored;
+          _pendingKeys.write(ch);
+          _pendingTimer?.cancel();
+          // 判るまでは長めに、 死んでいると判った後は取りこぼさない程度に。
+          _pendingTimer = Timer(
+              Duration(milliseconds: _textPathAlive == null ? 160 : 30),
+              _flushPendingKeys);
+          return KeyEventResult.ignored;
         }
       }
     }
@@ -354,6 +432,18 @@ class AgentTerminalState extends State<AgentTerminal> {
       return KeyEventResult.handled;
     }
     return KeyEventResult.ignored;
+  }
+
+  /// 受け口から返事が来なかった打鍵を、 自前で端末へ送る。
+  void _flushPendingKeys() {
+    _pendingTimer = null;
+    final text = _pendingKeys.toString();
+    _pendingKeys.clear();
+    if (text.isEmpty || !mounted) return;
+    // 待っても届かなかった = 受け口は使えない。 以後は自前で送る。
+    _textPathAlive = false;
+    _s.sendRaw(text);
+    _stickToBottom();
   }
 
   void _copySelection() {
@@ -446,8 +536,19 @@ class AgentTerminalState extends State<AgentTerminal> {
     setState(() {});
   }
 
-  Widget _buildQueueBar() {
-    final q = _s.queued;
+  /// 入力欄 (日本語も必ず打てる) と、 送った指示の一覧。
+  Widget _buildBar({
+    required IconData icon,
+    required Color color,
+    required String note,
+    required TextEditingController ctrl,
+    required FocusNode focus,
+    required String hint,
+    required String buttonLabel,
+    required VoidCallback onSubmit,
+    required VoidCallback onClose,
+    List<Widget> extra = const [],
+  }) {
     return Container(
       padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
       decoration: const BoxDecoration(
@@ -456,12 +557,10 @@ class AgentTerminalState extends State<AgentTerminal> {
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
-          const Icon(Icons.playlist_add_rounded,
-              size: 14, color: Color(0xFFFFB347)),
+          Icon(icon, size: 14, color: color),
           const SizedBox(width: 6),
           Expanded(
-            child: Text(
-                '処理が終わって落ち着いたら、 ここに入れた指示を順番に渡します',
+            child: Text(note,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(color: Colors.white38, fontSize: 10.5)),
@@ -470,38 +569,56 @@ class AgentTerminalState extends State<AgentTerminal> {
             tooltip: '閉じる',
             padding: EdgeInsets.zero,
             constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
-            icon: const Icon(Icons.close_rounded,
-                size: 15, color: Colors.white38),
-            onPressed: () {
-              setState(() => _queueOpen = false);
-              _grabInput();
-            },
+            icon:
+                const Icon(Icons.close_rounded, size: 15, color: Colors.white38),
+            onPressed: onClose,
           ),
         ]),
         const SizedBox(height: 4),
         Row(children: [
           Expanded(
-            child: TextField(
-              controller: _queueCtrl,
-              focusNode: _queueFocus,
-              autofocus: true,
-              minLines: 1,
-              maxLines: 3,
-              style: const TextStyle(color: Colors.white, fontSize: 12),
-              decoration: InputDecoration(
-                hintText: '次に渡す指示 (日本語もそのまま打てます)',
-                hintStyle:
-                    const TextStyle(color: Colors.white24, fontSize: 11.5),
-                filled: true,
-                fillColor: Colors.white.withValues(alpha: 0.06),
-                isDense: true,
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                    borderSide: BorderSide.none),
+            // ★ Enter は改行、 Ctrl+Enter で確定 (= ユーザー要望)。
+            //   TextField の Enter を横取りするには Focus(onKeyEvent) で
+            //   handled を返すしかない。 かな漢字変換の最中は渡す。
+            child: Focus(
+              onKeyEvent: (node, event) {
+                if (event is! KeyDownEvent) return KeyEventResult.ignored;
+                final k = event.logicalKey;
+                if (k != LogicalKeyboardKey.enter &&
+                    k != LogicalKeyboardKey.numpadEnter) {
+                  return KeyEventResult.ignored;
+                }
+                if (!HardwareKeyboard.instance.isControlPressed) {
+                  return KeyEventResult.ignored;
+                }
+                final c = ctrl.value.composing;
+                if (c.isValid && !c.isCollapsed) return KeyEventResult.ignored;
+                onSubmit();
+                return KeyEventResult.handled;
+              },
+              child: TextField(
+                controller: ctrl,
+                focusNode: focus,
+                autofocus: true,
+                minLines: 1,
+                maxLines: 4,
+                keyboardType: TextInputType.multiline,
+                textInputAction: TextInputAction.newline,
+                style: const TextStyle(color: Colors.white, fontSize: 12),
+                decoration: InputDecoration(
+                  hintText: hint,
+                  hintStyle:
+                      const TextStyle(color: Colors.white24, fontSize: 11.5),
+                  filled: true,
+                  fillColor: Colors.white.withValues(alpha: 0.06),
+                  isDense: true,
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide.none),
+                ),
               ),
-              onSubmitted: (_) => _addQueued(),
             ),
           ),
           const SizedBox(width: 6),
@@ -510,11 +627,103 @@ class AgentTerminalState extends State<AgentTerminal> {
               backgroundColor: const Color(0xFF37474F),
               visualDensity: VisualDensity.compact,
             ),
-            onPressed: _addQueued,
-            child: const Text('追加',
-                style: TextStyle(fontSize: 11, color: Colors.white)),
+            onPressed: onSubmit,
+            child: Text(buttonLabel,
+                style: const TextStyle(fontSize: 11, color: Colors.white)),
           ),
         ]),
+        ...extra,
+      ]),
+    );
+  }
+
+  /// いまの会話で投げた指示の一覧 (= ユーザー要望: 現在の会話履歴)。
+  Widget _buildHistoryPanel() {
+    final lines = _s.sentLines.reversed.toList();
+    return Container(
+      constraints: const BoxConstraints(maxHeight: 170),
+      padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
+      decoration: const BoxDecoration(
+        color: Color(0xFF141426),
+        border: Border(top: BorderSide(color: Colors.white12)),
+      ),
+      child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(children: [
+              const Icon(Icons.history_rounded,
+                  size: 14, color: Color(0xFF80CBC4)),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                    lines.isEmpty
+                        ? 'この会話でまだ何も投げていません'
+                        : 'この会話で投げた指示 (押すと入力欄に入ります)',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style:
+                        const TextStyle(color: Colors.white38, fontSize: 10.5)),
+              ),
+              IconButton(
+                tooltip: '閉じる',
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+                icon: const Icon(Icons.close_rounded,
+                    size: 15, color: Colors.white38),
+                onPressed: () => setState(() => _histOpen = false),
+              ),
+            ]),
+            if (lines.isNotEmpty)
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  padding: const EdgeInsets.only(top: 4),
+                  itemCount: lines.length,
+                  itemBuilder: (_, i) => InkWell(
+                    borderRadius: BorderRadius.circular(6),
+                    onTap: () {
+                      // ★ CLI の入力欄へそのまま打ち込む (Enter は押さない
+                      //   ので、 直してから送れる)。
+                      _s.sendRaw(lines[i]);
+                      setState(() => _histOpen = false);
+                      _stickToBottom();
+                      _grabInput();
+                    },
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 4, vertical: 4),
+                      child: Text(lines[i],
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 11,
+                              height: 1.4)),
+                    ),
+                  ),
+                ),
+              ),
+          ]),
+    );
+  }
+
+  Widget _buildQueueBar() {
+    final q = _s.queued;
+    return _buildBar(
+      icon: Icons.playlist_add_rounded,
+      color: const Color(0xFFFFB347),
+      note: '処理が終わって落ち着いたら、 ここに入れた指示を順番に渡します',
+      ctrl: _queueCtrl,
+      focus: _queueFocus,
+      hint: '次に渡す指示 (Ctrl+Enter で確定 / Enter は改行)',
+      buttonLabel: '追加',
+      onSubmit: _addQueued,
+      onClose: () {
+        setState(() => _queueOpen = false);
+        _grabInput();
+      },
+      extra: [
         if (q.isNotEmpty) ...[
           const SizedBox(height: 5),
           for (var i = 0; i < q.length; i++)
@@ -543,7 +752,7 @@ class AgentTerminalState extends State<AgentTerminal> {
               ]),
             ),
         ],
-      ]),
+      ],
     );
   }
 
@@ -650,6 +859,12 @@ class AgentTerminalState extends State<AgentTerminal> {
         child: Focus(
           // ★ 打鍵はまずここで受ける。 焦点は中の入力欄が持っているので、
           //   この Focus はその親として全ての打鍵を先に見られる。
+          // ★ **この Focus 自身は焦点を取らない**。 取れてしまうと、 入力欄が
+          //   焦点を失った時に焦点がここへ落ち着いてしまい、 打鍵は届くのに
+          //   文字の受け口だけ閉じた状態 (= 半角は打てるが日本語が打てない)
+          //   になる。
+          canRequestFocus: false,
+          skipTraversal: true,
           onKeyEvent: _onKey,
           child: Container(
             width: double.infinity,
@@ -692,36 +907,57 @@ class AgentTerminalState extends State<AgentTerminal> {
                   top: cy,
                   child: IgnorePointer(
                     child: Container(
-                      decoration: _composing.isEmpty
-                          ? null
-                          : BoxDecoration(
-                              color: const Color(0xEE10202C),
-                              border: const Border(
-                                  bottom: BorderSide(
-                                      color: Color(0xFF4FC3F7), width: 1.5)),
-                            ),
+                      // ★★ ここが日本語が打てなかった正体 (実機で特定)。
+                      //   枠 (Border) は箱の**寸法そのもの**を変えるので、
+                      //   変換が始まった瞬間に入力欄が 1.5px ずれて組み直され、
+                      //   Windows はそこで変換を打ち切っていた。 実測では
+                      //   「ｎ」 まで出て、 その先が一切来なくなる。
+                      //   太さは常に同じにして、 色だけ変える。
+                      decoration: BoxDecoration(
+                        // ★ 文字は CLI の入力欄に直接出るので、 ここには
+                        //   出さない (二重に見えてしまうため)。
+                        color: Colors.transparent,
+                        border: Border(
+                          bottom: BorderSide(
+                              color: Colors.transparent, width: 1.5),
+                        ),
+                      ),
                       child: SizedBox(
                         width: inputW,
-                        child: EditableText(
+                        // ★ 下の「日本語」 の欄と**まったく同じ作り**にする
+                        //   (= そちらは変換が確実に効いているため)。 違いを
+                        //   残さないよう、 生の EditableText ではなく
+                        //   TextField を、 同じ種類・同じ確定動作で置く。
+                        child: TextField(
                           controller: _inputCtrl,
                           focusNode: _inputFocus,
-                          maxLines: 1,
                           autofocus: true,
-                          style: TextStyle(
-                            color: _composing.isEmpty
-                                ? Colors.transparent
-                                : const Color(0xFFB3E5FC),
-                            fontSize: 12,
-                            fontFamily: 'Consolas',
-                          ),
-                          cursorColor: Colors.transparent,
-                          backgroundCursorColor: Colors.transparent,
-                          selectionColor: const Color(0x554FC3F7),
+                          // ★ ここが日本語が打てなかった正体。 Windows では
+                          //   入力欄の**外**を押すと焦点が外れる決まりに
+                          //   なっていて、 端末を押すたびにこの欄が焦点を
+                          //   失っていた。 焦点が無ければ文字の受け口も閉じ、
+                          //   かな漢字変換は始まりようがない。 半角だけ打てて
+                          //   いたのは、 押鍵から直に送る保険が働いていたため。
+                          onTapOutside: (_) {},
+                          enableInteractiveSelection: false,
+                          minLines: 1,
+                          maxLines: 4,
+                          keyboardType: TextInputType.multiline,
+                          textInputAction: TextInputAction.newline,
                           autocorrect: false,
                           enableSuggestions: false,
                           enableIMEPersonalizedLearning: false,
-                          keyboardType: TextInputType.text,
-                          textInputAction: TextInputAction.none,
+                          cursorColor: Colors.transparent,
+                          style: const TextStyle(
+                            color: Colors.transparent,
+                            fontSize: 12,
+                            fontFamily: 'Consolas',
+                          ),
+                          decoration: const InputDecoration(
+                            isDense: true,
+                            border: InputBorder.none,
+                            contentPadding: EdgeInsets.zero,
+                          ),
                         ),
                       ),
                     ),
@@ -760,6 +996,8 @@ class AgentTerminalState extends State<AgentTerminal> {
           ),
         ),
       ),
+      // ── いまの会話で投げた指示 (= ユーザー要望: 現在の会話履歴) ──
+      if (_histOpen && running) _buildHistoryPanel(),
       // ── 順番待ちの欄 (= ユーザー要望: キュー) ──
       if (_queueOpen && running) _buildQueueBar(),
       // ── 下の帯 ──
@@ -794,40 +1032,31 @@ class AgentTerminalState extends State<AgentTerminal> {
                       tip: 'プランの使用量と残りを出す (/usage)',
                       command: '/usage',
                       enabled: running),
-                  // ★ セッションの切り替え (= ユーザー要望)。
-                  _cmdButton(
-                      label: 'セッション',
-                      icon: Icons.history_rounded,
-                      tip: '前の会話に切り替える (/resume)',
-                      command: '/resume',
-                      enabled: running),
                 ],
-                // ★ 順番待ち (= ユーザー要望)。
-                if (wantQueue)
+                // ★ いまの会話で投げた指示の一覧 (= ユーザー要望:
+                //   別のセッションではなく、 いまの会話履歴)。
+                if (slash)
                   Padding(
                     padding: const EdgeInsets.only(right: 6),
                     child: Tooltip(
-                      message: '処理が終わった後に渡す指示を用意しておく',
+                      message: 'この会話で投げた指示を並べる',
                       child: TextButton.icon(
                         style: TextButton.styleFrom(
-                          foregroundColor: _s.queued.isEmpty
-                              ? Colors.white70
-                              : const Color(0xFFFFB347),
+                          foregroundColor: _histOpen
+                              ? const Color(0xFF80CBC4)
+                              : Colors.white70,
                           visualDensity: VisualDensity.compact,
                           padding: const EdgeInsets.symmetric(horizontal: 8),
                           minimumSize: const Size(0, 28),
                           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                         ),
-                        icon: const Icon(Icons.playlist_add_rounded, size: 14),
-                        label: Text(
-                            _s.queued.isEmpty
-                                ? 'キュー'
-                                : 'キュー ${_s.queued.length}',
-                            style: const TextStyle(fontSize: 11)),
+                        icon: const Icon(Icons.history_rounded, size: 14),
+                        label:
+                            const Text('履歴', style: TextStyle(fontSize: 11)),
                         onPressed: running
                             ? () {
-                                setState(() => _queueOpen = !_queueOpen);
-                                if (!_queueOpen) _grabInput();
+                                setState(() => _histOpen = !_histOpen);
+                                if (!_histOpen) _grabInput();
                               }
                             : null,
                       ),

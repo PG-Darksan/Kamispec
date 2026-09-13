@@ -15,12 +15,14 @@
 // **どこまでやるか**
 //   アプリはターミナルを用意するだけ。ログインの中身にも資格情報にも触らない。
 //   資格情報は CLI 自身が自分の場所 (~/.claude, ~/.codex 等) に保存する。
+import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi' as ffi;
 import 'dart:io';
 
 import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:win32/win32.dart' as w32;
 
 import '../utils/build_flags.dart';
@@ -404,6 +406,281 @@ class AgentCli {
       calloc.free(op);
       calloc.free(file);
       calloc.free(dir);
+    }
+  }
+
+  // ── 画面の AI 機能を PC 内の CLI にやらせる ────────────────────────────
+  //
+  //   (= ユーザー要望: pptx などのファイル編集や自動化の AI にも、
+  //    PC に入れた AI を使えるように)
+  //
+  //   対話用の擬似端末とは別に、 **1 回聞いて 1 回答えてもらう**だけの
+  //   呼び方がどの CLI にもある。 指示は引数ではなく標準入力から渡す
+  //   (引数だと引用符や空白で壊れるため)。
+  static const Duration _kPromptTimeout = Duration(minutes: 5);
+
+  /// 1 回聞く相手 (入っていてログイン済みの物を、 この順で選ぶ)。
+  static Future<AgentCliFound?> pickForPrompt() async {
+    if (!supported) return null;
+    final found = await findAll();
+    for (final k in const [
+      AgentCliKind.claude,
+      AgentCliKind.codex,
+      AgentCliKind.gemini,
+    ]) {
+      for (final f in found) {
+        if (f.spec.kind != k) continue;
+        // ★ .ps1 はそのまま起こせないので選ばない。
+        final exe = (f.exePath ?? '').toLowerCase();
+        if (exe.endsWith('.ps1')) continue;
+        if (f.installed && f.loggedInHint == true) {
+          lastPickKind = f.spec.kind;
+          return f;
+        }
+      }
+    }
+    return null;
+  }
+
+  /// 1 回聞き用の小さな作業フォルダー (毎回きれいな場所で動かすため)。
+  static Future<String?> _promptWorkingDir(String guide) async {
+    try {
+      final sup = await getApplicationSupportDirectory();
+      final sep = Platform.pathSeparator;
+      final dir = Directory('${sup.path}${sep}agent_cli${sep}oneshot');
+      if (!await dir.exists()) await dir.create(recursive: true);
+      final body = StringBuffer()
+        ..writeln('# 1 回だけの問い合わせ')
+        ..writeln();
+      if (guide.trim().isNotEmpty) {
+        body
+          ..writeln(guide.trim())
+          ..writeln();
+      }
+      body
+        ..writeln('- 聞かれた事だけに答える。 前置き・復唱・言い訳は書かない。')
+        ..writeln('- ファイルを作ったり書き換えたりしない。')
+        ..writeln('- 形式 (JSON など) を指定されたら、 それだけを返す。');
+      for (final name in const ['CLAUDE.md', 'AGENTS.md', 'GEMINI.md']) {
+        try {
+          await File('${dir.path}$sep$name')
+              .writeAsString(body.toString(), flush: true);
+        } catch (_) {}
+      }
+      return dir.path;
+    } catch (e) {
+      debugPrint('_promptWorkingDir failed: $e');
+      return null;
+    }
+  }
+
+  /// 1 回聞く相手の名前 (「PC内AI (Claude Code)」 の括弧の中)。
+  static Future<String?> preferredLabel() async =>
+      (await pickForPrompt())?.spec.label;
+
+  /// 直前の失敗の理由 (黙って API に落とさず、 画面に出すため)。
+  static String lastPromptError = '';
+
+  /// 直前に実際に使われたモデル (例 `claude-opus-5[1m]`)。
+  static String lastModel = '';
+
+  /// 直前に使ったトークン (= ユーザー要望: 消費量を出す)。
+  static int lastInputTokens = 0;
+  static int lastOutputTokens = 0;
+
+  /// 選べるモデル (= ユーザー要望: この画面でモデルを切り替えたい)。
+  ///
+  /// ★ 空文字は「CLI の既定に任せる」。 どの CLI も `--model` で指定できる。
+  static List<({String id, String label})> modelChoices(AgentCliKind kind) {
+    switch (kind) {
+      case AgentCliKind.claude:
+        return const [
+          (id: '', label: 'CLI の設定のまま'),
+          (id: 'opus', label: 'Opus'),
+          (id: 'sonnet', label: 'Sonnet'),
+          (id: 'haiku', label: 'Haiku'),
+        ];
+      case AgentCliKind.codex:
+        return const [
+          (id: '', label: 'CLI の設定のまま'),
+          (id: 'gpt-5-codex', label: 'GPT-5 Codex'),
+          (id: 'o4-mini', label: 'o4-mini'),
+        ];
+      case AgentCliKind.gemini:
+        return const [
+          (id: '', label: 'CLI の設定のまま'),
+          (id: 'gemini-2.5-pro', label: '2.5 Pro'),
+          (id: 'gemini-2.5-flash', label: '2.5 Flash'),
+        ];
+    }
+  }
+
+  /// 選んだモデル (prefs の控えを画面から入れてもらう)。
+  static String chosenModel = '';
+
+  /// 直前に選ばれた CLI の種類 (モデルの候補を出すのに使う)。
+  static AgentCliKind? lastPickKind;
+
+  /// npm が使えるか (= Node.js が入っているか) の控え。
+  /// null = まだ調べていない。
+  static bool? npmAvailable;
+
+  static Future<bool> checkNpm() async {
+    final r = await findNpm();
+    npmAvailable = (r ?? '').isNotEmpty;
+    return npmAvailable!;
+  }
+
+  /// 札に出す形に整える (`claude-opus-5[1m]` → `Opus 5`)。
+  static String prettyModel(String raw) {
+    var s = raw.trim();
+    if (s.isEmpty) return '';
+    s = s.replaceAll(RegExp(r'\[[^\]]*\]'), '');
+    s = s.replaceFirst(RegExp(r'^(claude|models/|gemini-|gpt-)'), '');
+    s = s.replaceAll(RegExp(r'-\d{8}$'), '');
+    s = s.replaceAll(RegExp(r'^[-_]+'), '');
+    // 4-5 → 4.5 (版の数字はつなげて読ませる)。
+    s = s.replaceAllMapped(
+        RegExp(r'(\d)-(\d)'), (m) => '${m[1]}.${m[2]}');
+    final parts = s.split(RegExp(r'[-_]')).where((e) => e.isNotEmpty).toList();
+    return parts
+        .map((w) => w.length > 1 && RegExp(r'^[a-z]').hasMatch(w)
+            ? w[0].toUpperCase() + w.substring(1)
+            : w)
+        .join(' ');
+  }
+
+  /// 1 回分の問い合わせ。 使える CLI が無い / 失敗した時は null。
+  static Future<String?> runPrompt(String prompt,
+      {Duration? timeout, String? workingDir, String guide = ''}) async {
+    lastPromptError = '';
+    if (!supported || prompt.trim().isEmpty) return null;
+    // ★ 何も指定が無い時は、 専用の小さなフォルダーで動かす。
+    //   指定しないとアプリの置き場 (実行ファイルの隣) で動いてしまい、
+    //   そこにある設定を読みに行ったり、 余計なファイルを見に行ったりする。
+    workingDir ??= await _promptWorkingDir(guide);
+    final pick = await pickForPrompt();
+    final exe = pick?.exePath;
+    if (exe == null || exe.isEmpty) {
+      lastPromptError = '使える CLI が見つかりません (入れてログインしてください)';
+      return null;
+    }
+    // ★ Claude Code は JSON で受け取る。 答えが `result` に入るので、
+    //   設定の警告などが混ざらないうえ、 使ったモデル名まで分かる
+    //   (= ユーザー要望: 何のモデルか明記して欲しい)。
+    final asJson = pick!.spec.kind == AgentCliKind.claude;
+    // 選んだモデルがあれば指定する (空なら CLI の既定に任せる)。
+    final m = chosenModel.trim();
+    final args = switch (pick.spec.kind) {
+      AgentCliKind.claude => <String>[
+          '-p',
+          '--output-format',
+          'json',
+          if (m.isNotEmpty) ...['--model', m],
+        ],
+      AgentCliKind.codex => <String>[
+          'exec',
+          if (m.isNotEmpty) ...['-m', m],
+          '-',
+        ],
+      AgentCliKind.gemini => <String>[
+          '-p',
+          if (m.isNotEmpty) ...['-m', m],
+        ],
+    };
+    try {
+      final proc = await Process.start(
+        exe,
+        args,
+        workingDirectory: workingDir,
+        // .cmd の薄皮は cmd 経由でないと起こせない。 引数は固定文字だけ
+        // なので、 これで危ない物が混ざることはない。
+        runInShell: exe.toLowerCase().endsWith('.cmd') ||
+            exe.toLowerCase().endsWith('.bat'),
+      );
+      proc.stdin.write(prompt);
+      await proc.stdin.flush();
+      await proc.stdin.close();
+      final out = StringBuffer();
+      final err = StringBuffer();
+      final subs = [
+        proc.stdout.transform(const Utf8Decoder(allowMalformed: true)).listen(out.write),
+        proc.stderr.transform(const Utf8Decoder(allowMalformed: true)).listen(err.write),
+      ];
+      int code;
+      try {
+        code = await proc.exitCode.timeout(timeout ?? _kPromptTimeout);
+      } on TimeoutException {
+        proc.kill();
+        for (final sub in subs) {
+          await sub.cancel();
+        }
+        lastPromptError = '時間切れ';
+        debugPrint('runPrompt timed out');
+        return null;
+      }
+      for (final sub in subs) {
+        await sub.cancel();
+      }
+      var text = out.toString().trim();
+      if (asJson && text.startsWith('{')) {
+        try {
+          final j = jsonDecode(text);
+          if (j is Map) {
+            // 使ったモデルを控える (札に出す)。 小さな下働きの分は除く。
+            final mu = j['modelUsage'];
+            if (mu is Map && mu.isNotEmpty) {
+              // ★ haiku は CLI 自身の下働き用なので、 他があればそちらを
+              //   本命とする (= 札に出すのは実際に答えたモデル)。
+              final keys = mu.keys.map((e) => '$e').toList();
+              final main = keys.where((k) => !k.contains('haiku')).toList();
+              final pool = main.isEmpty ? keys : main;
+              var best = pool.first;
+              num bestOut = -1;
+              for (final k in pool) {
+                final v = mu[k];
+                final o = (v is Map ? (v['outputTokens'] as num?) : null) ?? 0;
+                if (o > bestOut) {
+                  bestOut = o;
+                  best = k;
+                }
+              }
+              lastModel = best;
+            }
+            // 使ったトークン (入力は cache 込みで数える)。
+            lastInputTokens = 0;
+            lastOutputTokens = 0;
+            final u = j['usage'];
+            if (u is Map) {
+              int v(String k) => (u[k] as num?)?.toInt() ?? 0;
+              lastInputTokens = v('input_tokens') +
+                  v('cache_creation_input_tokens') +
+                  v('cache_read_input_tokens');
+              lastOutputTokens = v('output_tokens');
+            }
+            if (j['is_error'] == true) {
+              lastPromptError = '${j['result'] ?? j['subtype'] ?? 'エラー'}';
+              return null;
+            }
+            text = '${j['result'] ?? ''}'.trim();
+          }
+        } catch (_) {
+          // JSON で来なかった時は、 そのままの文字として扱う。
+        }
+      }
+      if (text.isEmpty) {
+        final e = err.toString().trim();
+        lastPromptError = e.isEmpty
+            ? '返事がありませんでした (コード $code)'
+            : e.split('\n').last.trim();
+        debugPrint('runPrompt failed ($code): $e');
+        return null;
+      }
+      return text;
+    } catch (e) {
+      lastPromptError = '$e';
+      debugPrint('runPrompt failed: $e');
+      return null;
     }
   }
 

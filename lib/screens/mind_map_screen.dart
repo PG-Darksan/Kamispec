@@ -1294,6 +1294,9 @@ const String _kWebAudioKeepAliveJs = r'''
 ///   モデル名と入力 / 出力それぞれの残りトークン、 残額を出す。
 /// AI チャットと AI 編集の両方から使う (表示を揃えるため 1 か所にまとめた)。
 String aiRemainText(MindMapProvider provider) {
+  // ★ PC 内 AI は契約しているぶんを使うので、 API の残りは意味が無い
+  //   (= ユーザー指摘: Dev 枠は API の残量)。 代わりに使った量を出す。
+  if (provider.useCliAi) return provider.cliUsageText;
   double inRate = 0, outRate = 0;
   for (final m in provider.relayModels) {
     if (m is Map && '${m['id']}' == provider.relayModel) {
@@ -1443,6 +1446,29 @@ final Set<String> _aiPickerCollapsed = <String>{};
 /// 一度でも自分で開け閉めしたか (= 既定の畳み方を上書きしたか)。
 bool _aiPickerCollapseTouched = false;
 
+/// 会社の呼び名 (考える深さが「どの相手の設定か」 を書くのに使う)。
+String _aiProviderLabel(MindMapProvider provider, String id) {
+  switch (id) {
+    case 'openai':
+      return 'ChatGPT';
+    case 'anthropic':
+      return 'Claude';
+    case 'gemini':
+      return 'Gemini';
+    case 'cli':
+      return provider.t('ai.modeCli');
+  }
+  return id;
+}
+
+/// どの AI に頼むかを決めて控える (API / PC 内の CLI)。
+///
+/// ★ = ユーザー要望「自動化や pptx、 マークダウンなど一式で CLI を呼べる
+///   ように」。 どの欄も同じモデル選択を使っているので、 ここ 1 か所で
+///   切り替われば全部に効く。
+Future<void> _setAiEngineMode(MindMapProvider provider, String mode) =>
+    provider.setAiEngine(mode);
+
 Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
     {VoidCallback? onChanged,
     // ★ 浮遊窓 (root Overlay に挿した窓) の中から呼ぶ時は false。
@@ -1451,11 +1477,10 @@ Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
     //   AI アシスタントの浮遊窓の下に出る)。 false なら一番近い
     //   Navigator = その窓自身になり、 窓の上に重なって出る。
     bool useRootNavigator = true}) async {
-  String label(String id) => provider.relayModelLabel(id);
-  final models = [
-    for (final m in provider.relayModels)
-      if (m is Map && m['available'] == true) m
-  ];
+  // 一覧は各モデル自身の名前で並べる (いま使う相手の札とは別)。
+  String label(String id) => provider.relayModelRawLabel(id);
+  // ★ 同じ系統はいちばん新しい版だけ (= ユーザー要望: 選択肢が多過ぎる)。
+  final models = provider.relayModelsVisible;
   const groups = [
     ('gemini', 'Gemini'),
     ('openai', 'ChatGPT'),
@@ -1564,6 +1589,8 @@ Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
                 InkWell(
                   borderRadius: BorderRadius.circular(6),
                   onTap: () async {
+                    // 会社のモデルを選んだ = このアプリの AI (API) に戻す。
+                    await _setAiEngineMode(provider, 'api');
                     await provider.setRelayModel('${m['id']}');
                     setD(() {});
                     onChanged?.call();
@@ -1637,6 +1664,99 @@ Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
           width: dialogW,
           child: SingleChildScrollView(
           child: Column(mainAxisSize: MainAxisSize.min, children: [
+            // ── PC に入れた AI を使う (= ユーザー要望: 自動化や pptx など
+            //    どの AI 欄からも CLI に切り替えられるように) ──
+            //    ここで選ぶと、 この後の問い合わせはすべて PC の CLI が
+            //    答える (契約しているぶんを使うので AI の残高は減らない)。
+            if (AgentCli.supported) ...[
+              InkWell(
+                borderRadius: BorderRadius.circular(8),
+                onTap: () async {
+                  await _setAiEngineMode(provider, 'cli');
+                  setD(() {});
+                  onChanged?.call();
+                },
+                child: Container(
+                  width: double.infinity,
+                  margin: const EdgeInsets.only(bottom: 8),
+                  padding: const EdgeInsets.fromLTRB(10, 9, 10, 9),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF9CCC65)
+                        .withValues(alpha: provider.useCliAi ? 0.16 : 0.06),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                        color: const Color(0xFF9CCC65).withValues(
+                            alpha: provider.useCliAi ? 0.8 : 0.3)),
+                  ),
+                  child: Row(children: [
+                    Icon(
+                        provider.useCliAi
+                            ? Icons.radio_button_checked_rounded
+                            : Icons.radio_button_unchecked_rounded,
+                        size: 14,
+                        color: provider.useCliAi
+                            ? const Color(0xFF9CCC65)
+                            : Colors.white24),
+                    const SizedBox(width: 8),
+                    const Icon(Icons.terminal_rounded,
+                        size: 15, color: Color(0xFF9CCC65)),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(provider.cliAiLabel,
+                                style: const TextStyle(
+                                    color: Colors.white, fontSize: 12)),
+                            Text(provider.t('ai.modeCliBody'),
+                                style: const TextStyle(
+                                    color: Colors.white38, fontSize: 9.5)),
+                          ]),
+                    ),
+                  ]),
+                ),
+              ),
+              // ★ PC 内 AI の中のモデルもここで選べるように
+              //   (= ユーザー要望: pptx や自動操作からも切り替えたい)。
+              if (provider.useCliAi)
+                Padding(
+                  padding: const EdgeInsets.only(left: 30, bottom: 8),
+                  child: Wrap(spacing: 6, runSpacing: 6, children: [
+                    for (final c in AgentCli.modelChoices(
+                        AgentCli.lastPickKind ?? AgentCliKind.claude))
+                      InkWell(
+                        borderRadius: BorderRadius.circular(6),
+                        onTap: () async {
+                          await provider.setCliAiModelChoice(c.id);
+                          setD(() {});
+                          onChanged?.call();
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 9, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: provider.cliAiModelChoice == c.id
+                                ? const Color(0xFF9CCC65)
+                                    .withValues(alpha: 0.18)
+                                : Colors.transparent,
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(
+                                color: provider.cliAiModelChoice == c.id
+                                    ? const Color(0xFF9CCC65)
+                                    : Colors.white24),
+                          ),
+                          child: Text(c.label,
+                              style: TextStyle(
+                                  color: provider.cliAiModelChoice == c.id
+                                      ? const Color(0xFF9CCC65)
+                                      : Colors.white60,
+                                  fontSize: 11)),
+                        ),
+                      ),
+                  ]),
+                ),
+              const Divider(height: 10, color: Colors.white12),
+            ],
             if (models.isEmpty)
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 12),
@@ -1672,7 +1792,11 @@ Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
             const Divider(color: Colors.white12, height: 20),
             Align(
               alignment: Alignment.centerLeft,
-              child: Text(provider.t('mcp.reasoning'),
+              // ★ どの相手に対する設定かを書く (= ユーザー要望: 3 段階の
+              //   共通設定ではなく、 プロバイダーごとにセットできるように)。
+              child: Text(
+                  '${provider.t('mcp.reasoning')}'
+                  '  (${_aiProviderLabel(provider, provider.currentAiProvider)})',
                   style: const TextStyle(
                       color: Color(0xFF80CBC4),
                       fontSize: 12,
@@ -12125,6 +12249,10 @@ class _MindMapScreenState extends State<MindMapScreen>
       await _commandOpenStylesReady;
     } catch (_) {}
     if (!mounted) return;
+    // ★ どちらの AI で動かすか (= ユーザー要望: API を叩くのと、 パソコンの
+    //   CLI を使うので欄自体を分けて、 右クリックで切り替えられるように)。
+    final aiMode = await _loadAiAssistantMode();
+    if (!mounted) return;
     final box = Overlay.of(context).context.findRenderObject() as RenderBox?;
     if (box == null) return;
     final cur = _openStyleOf('aiAssistant');
@@ -12134,6 +12262,40 @@ class _MindMapScreenState extends State<MindMapScreen>
       position: RelativeRect.fromRect(
           globalPos & const Size(1, 1), Offset.zero & box.size),
       items: [
+        PopupMenuItem<String>(
+          enabled: false,
+          height: 30,
+          child: Text(provider.t('ai.pickModeTitle'),
+              style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.5), fontSize: 11)),
+        ),
+        for (final m in const ['api', 'cli'])
+          PopupMenuItem<String>(
+            value: 'mode:$m',
+            height: 36,
+            child: Row(children: [
+              Icon(
+                  m == 'api'
+                      ? Icons.auto_awesome_rounded
+                      : Icons.terminal_rounded,
+                  size: 16,
+                  color: m == aiMode
+                      ? const Color(0xFF80CBC4)
+                      : Colors.white54),
+              const SizedBox(width: 8),
+              Text(provider.t(m == 'api' ? 'ai.modeApi' : 'ai.modeCli'),
+                  style: TextStyle(
+                      color:
+                          m == aiMode ? const Color(0xFF80CBC4) : Colors.white,
+                      fontSize: 12.5)),
+              if (m == aiMode) ...[
+                const Spacer(),
+                const Icon(Icons.check_rounded,
+                    size: 15, color: Color(0xFF80CBC4)),
+              ],
+            ]),
+          ),
+        const PopupMenuDivider(height: 9),
         PopupMenuItem<String>(
           enabled: false,
           height: 30,
@@ -12175,6 +12337,16 @@ class _MindMapScreenState extends State<MindMapScreen>
       ],
     );
     if (picked == null || !mounted) return;
+    // ── どちらの AI で動かすかを選んだ時 (開き方はそのまま) ──
+    if (picked.startsWith('mode:')) {
+      final m = picked.substring(5);
+      await _saveAiAssistantMode(m);
+      if (!mounted) return;
+      if (m == 'cli') _McpChatDialogState.openCliListOnStart = true;
+      setState(() {});
+      unawaited(_openMcpChat(provider));
+      return;
+    }
     await _setCommandOpenStyle('aiAssistant', picked);
     if (!mounted) return;
     setState(() {});
@@ -46271,6 +46443,132 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// いま実行中の単発コマンド。
   final Set<String> _runningSingleFlight = <String>{};
 
+  // ── AI アシスタントの呼び方 (= ユーザー要望: API から呼ぶのと、
+  //    パソコンに入れた AI を呼ぶので項目を分ける) ──
+  //
+  //    初めて押した時にどちらか選んでもらい、 押した方を覚える。
+  //    ボタンを右クリック (長押し) すれば選び直せる。
+  static const String _kAiAssistantModeKey = 'aiAssistantMode';
+
+  Future<String?> _loadAiAssistantMode() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final v = prefs.getString(_kAiAssistantModeKey) ?? '';
+      return (v == 'api' || v == 'cli') ? v : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _saveAiAssistantMode(String mode) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_kAiAssistantModeKey, mode);
+    } catch (_) {}
+    // ★ 画面の AI 機能 (pptx / 自動化など) も同じ相手に頼む
+    //   (= ユーザー要望)。
+    if (!mounted) return;
+    context.read<MindMapProvider>().setAiAssistantModeLocal(mode);
+  }
+
+  /// どちらで呼ぶか選ぶ画面。 選んだ物を覚えて、 そのまま開く。
+  Future<void> _pickAiAssistantMode(MindMapProvider provider,
+      {bool openAfter = true}) async {
+    if (!mounted) return;
+    final current = await _loadAiAssistantMode();
+    if (!mounted) return;
+    Widget tile(String mode, IconData icon, Color color, String title,
+            String body) =>
+        InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: () => Navigator.pop(context, mode),
+          child: Container(
+            margin: const EdgeInsets.only(bottom: 8),
+            padding: const EdgeInsets.fromLTRB(12, 11, 12, 11),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: current == mode ? 0.16 : 0.06),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                  color: color.withValues(alpha: current == mode ? 0.8 : 0.3)),
+            ),
+            child: Row(children: [
+              Icon(icon, size: 20, color: color),
+              const SizedBox(width: 11),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title,
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700)),
+                    const SizedBox(height: 3),
+                    Text(body,
+                        style: const TextStyle(
+                            color: Colors.white60,
+                            fontSize: 11,
+                            height: 1.5)),
+                  ],
+                ),
+              ),
+              if (current == mode)
+                Icon(Icons.check_rounded, size: 18, color: color),
+            ]),
+          ),
+        );
+    final picked = await showDialog<String>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A2E),
+        title: Text(provider.t('ai.pickModeTitle'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
+        content: SizedBox(
+          width: 420,
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            tile('api', Icons.auto_awesome_rounded, const Color(0xFF80CBC4),
+                provider.t('ai.modeApi'), provider.t('ai.modeApiBody')),
+            tile('cli', Icons.terminal_rounded, const Color(0xFF9CCC65),
+                provider.t('ai.modeCli'), provider.t('ai.modeCliBody')),
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text(provider.t('ai.modeHint'),
+                  style: const TextStyle(
+                      color: Colors.white38, fontSize: 10.5, height: 1.5)),
+            ),
+          ]),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx),
+            child: Text(provider.t('btn.cancel'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+        ],
+      ),
+    );
+    if (picked == null || !mounted) return;
+    await _saveAiAssistantMode(picked);
+    if (!mounted || !openAfter) return;
+    await _openAiAssistantByMode(provider, forced: picked);
+  }
+
+  /// 覚えている呼び方で AI アシスタントを開く。 まだ選んでいなければ聞く。
+  Future<void> _openAiAssistantByMode(MindMapProvider provider,
+      {String? forced}) async {
+    final mode = forced ?? await _loadAiAssistantMode();
+    if (!mounted) return;
+    if (mode == null) {
+      await _pickAiAssistantMode(provider);
+      return;
+    }
+    if (mode == 'cli') {
+      // パソコンに入れた AI を使う画面から始める。
+      _McpChatDialogState.openCliListOnStart = true;
+    }
+    await _openMcpChat(provider, floatingPanel: true);
+  }
+
   // ── ヘッダーの「ターミナル」 (= ユーザー要望: ヘッダーボタンとしても) ──
   //
   //   開く場所は**いま開いているページの置き場**。 盾の印を押すと管理者。
@@ -47121,8 +47419,10 @@ class _MindMapScreenState extends State<MindMapScreen>
       //    「本体のアプリが見つかりませんでした」 と出ていた。 本体を起こして
       //    この id で開かせる形にしたので、 その受け口。
       case 'aiAssistant':
-        // ignore: discarded_futures
-        _openMcpChat(provider, floatingPanel: true);
+        // ★ どちらの AI を呼ぶか (= ユーザー要望: API から呼ぶのと、
+        //   パソコンに入れた AI を呼ぶので項目を分ける)。 初めて押した時に
+        //   選んでもらい、 以後はそれで開く。 右クリックで選び直せる。
+        unawaited(_openAiAssistantByMode(provider));
         break;
       case 'mapMemo':
         // ── 左右分割で開く (= ユーザー要望: メモも分割で開けるように) ──
@@ -244270,7 +244570,7 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
             // ── モデル / 推論レベルの選択 (= ユーザー要望) ──
             const Align(
                 alignment: Alignment.centerLeft,
-                child: _AiModelReasoningRow()),
+                child: _AiModelReasoningRow(dark: true)),
             const SizedBox(height: 10),
             TextField(
             controller: ctrl,
@@ -247578,30 +247878,90 @@ $currentText
   /// AI編集で使うモデルの切替 (= ユーザー要望: AI編集は API 呼び出しなので
   /// LLM の設定項目が要る)。 MCP チャットと同じ relayModel を共有する。
   Widget _buildAiEditModelPicker(MindMapProvider provider) {
-    final models = provider.relayModels;
+    final models = provider.relayModelsVisible;
     return PopupMenuButton<String>(
       tooltip: provider.t('pdf.aiSelectTip'),
       color: const Color(0xFF1E1E32),
       onSelected: (id) async {
+        // ★ PC に入れた AI を選べるようにする (= ユーザー要望: pptx や
+        //   マークダウン・テキストの AI も CLI に切り替えられるように)。
+        if (id.startsWith('climodel:')) {
+          await provider.setCliAiModelChoice(id.substring(9));
+          if (mounted) setState(() {});
+          return;
+        }
+        if (id == '__cli__' || id == '__api__') {
+          await provider.setAiEngine(id == '__cli__' ? 'cli' : 'api');
+          if (mounted) setState(() {});
+          return;
+        }
+        await provider.setAiEngine('api');
         await provider.setRelayModel(id);
         if (mounted) setState(() {});
       },
       itemBuilder: (_) => [
+        if (AgentCli.supported) ...[
+          PopupMenuItem<String>(
+            value: provider.useCliAi ? '__api__' : '__cli__',
+            child: Row(children: [
+              Icon(
+                  provider.useCliAi
+                      ? Icons.radio_button_checked_rounded
+                      : Icons.radio_button_off_rounded,
+                  size: 14,
+                  color: provider.useCliAi
+                      ? const Color(0xFF9CCC65)
+                      : Colors.white38),
+              const SizedBox(width: 8),
+              const Icon(Icons.terminal_rounded,
+                  size: 14, color: Color(0xFF9CCC65)),
+              const SizedBox(width: 6),
+              Text(provider.cliAiLabel,
+                  style: const TextStyle(color: Colors.white, fontSize: 12.5)),
+            ]),
+          ),
+          // ★ PC 内 AI の中のモデルもここで選べるように (= ユーザー要望)。
+          if (provider.useCliAi)
+            for (final c in AgentCli.modelChoices(
+                AgentCli.lastPickKind ?? AgentCliKind.claude))
+              PopupMenuItem<String>(
+                value: 'climodel:${c.id}',
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 20),
+                  child: Row(children: [
+                    Icon(
+                        provider.cliAiModelChoice == c.id
+                            ? Icons.radio_button_checked_rounded
+                            : Icons.radio_button_off_rounded,
+                        size: 12,
+                        color: provider.cliAiModelChoice == c.id
+                            ? const Color(0xFF9CCC65)
+                            : Colors.white38),
+                    const SizedBox(width: 8),
+                    Text(c.label,
+                        style: const TextStyle(
+                            color: Colors.white70, fontSize: 12)),
+                  ]),
+                ),
+              ),
+          const PopupMenuDivider(height: 8),
+        ],
         for (final m in models)
           if (m is Map)
             PopupMenuItem<String>(
               value: '${m['id']}',
               child: Row(children: [
                 Icon(
-                    '${m['id']}' == provider.relayModel
+                    !provider.useCliAi && '${m['id']}' == provider.relayModel
                         ? Icons.radio_button_checked_rounded
                         : Icons.radio_button_off_rounded,
                     size: 14,
-                    color: '${m['id']}' == provider.relayModel
-                        ? const Color(0xFF9CCC65)
-                        : Colors.white38),
+                    color:
+                        !provider.useCliAi && '${m['id']}' == provider.relayModel
+                            ? const Color(0xFF9CCC65)
+                            : Colors.white38),
                 const SizedBox(width: 8),
-                Text(_relayModelLabel('${m['id']}'),
+                Text(provider.relayModelRawLabel('${m['id']}'),
                     style:
                         const TextStyle(color: Colors.white, fontSize: 12.5)),
               ]),
@@ -247746,15 +248106,8 @@ $currentText
             },
           ),
         ),
-        if (_aiChatBusy)
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 4),
-            child: SizedBox(
-              width: 16,
-              height: 16,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            ),
-          ),
+        // ★ 読み込み中の輪は、 押した所 (送信ボタン) だけに出す
+        //   (= ユーザー要望: 2 か所が回るのが気になる)。
         // ── 添付中のファイル (= ユーザー要望: 画像やファイルを渡せるように) ──
         if (_aiPendingFiles.isNotEmpty)
           Padding(
@@ -264493,14 +264846,8 @@ class _AiDocChatPanelState extends State<_AiDocChatPanel> {
                   },
                 ),
         ),
-        if (_busy)
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 4),
-            child: SizedBox(
-                width: 16,
-                height: 16,
-                child: CircularProgressIndicator(strokeWidth: 2)),
-          ),
+        // ★ 読み込み中の輪は、 押した所 (送信ボタン) だけに出す
+        //   (= ユーザー要望: 2 か所が回るのが気になる)。
         if (_files.isNotEmpty)
           Padding(
             padding: const EdgeInsets.fromLTRB(8, 2, 8, 0),
@@ -264550,7 +264897,7 @@ class _AiDocChatPanelState extends State<_AiDocChatPanel> {
         //    以前は見出しの下 (会話の一番上) にあり、 打つ時に目に入らなかった。
         Padding(
           padding: const EdgeInsets.fromLTRB(8, 0, 8, 4),
-          child: const _AiModelReasoningRow(showRemain: true),
+          child: const _AiModelReasoningRow(showRemain: true, dark: true),
         ),
         Padding(
           padding: const EdgeInsets.fromLTRB(6, 0, 6, 8),
@@ -264769,7 +265116,7 @@ Future<void> _showAiDocChatDialog(
               // ── モデル / 推論レベル (他の AI ダイアログと共通) ──
               const Align(
                   alignment: Alignment.centerLeft,
-                  child: _AiModelReasoningRow()),
+                  child: _AiModelReasoningRow(dark: true)),
               const SizedBox(height: 8),
               Expanded(
                 child: chat.isEmpty
@@ -265216,7 +265563,13 @@ class _AiModelReasoningRow extends StatefulWidget {
   /// 出す時は横いっぱいに広がるので、 Align で包まずにそのまま置く。
   final bool showRemain;
 
-  const _AiModelReasoningRow({this.showRemain = false});
+  /// 暗い欄の中に置く時は true (= ユーザー要望: 周りと色合いを合わせる)。
+  ///
+  /// ★ 既定はアプリの配色に従う。 だが AI の欄はアプリが明るい配色でも
+  ///   常に暗いので、 そのままだと**この札だけ白く浮く**。
+  final bool? dark;
+
+  const _AiModelReasoningRow({this.showRemain = false, this.dark});
 
   @override
   State<_AiModelReasoningRow> createState() => _AiModelReasoningRowState();
@@ -265241,7 +265594,7 @@ class _AiModelReasoningRowState extends State<_AiModelReasoningRow> {
   @override
   Widget build(BuildContext context) {
     final provider = context.read<MindMapProvider>();
-    final dark = provider.isDarkMode;
+    final dark = widget.dark ?? provider.isDarkMode;
     final fg = dark ? Colors.white : Colors.black87;
     String label(String id) => provider.relayModelLabel(id);
 
@@ -265908,15 +266261,29 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
   ///
   /// ★ 畳んだ高さは覚えない (_scheduleSaveGeometry を呼ばない)。 覚えると
   ///   次に開いた時に畳まれた細い窓で立ち上がってしまう。
-  void setCollapsed(bool v, {double barHeight = 46}) {
+  double? _collapsedFromW;
+
+  /// 畳む / 戻す。
+  ///
+  /// ★ [barWidth] を渡すと**横も縮める** (= ユーザー要望: 畳んだら横長の
+  ///   窓ではなく、 小さなアイコンのボタンになるように)。
+  void setCollapsed(bool v, {double barHeight = 46, double barWidth = 0}) {
     if (v == isCollapsed) return;
     setState(() {
       if (v) {
         _collapsedFrom = _h;
         _h = _headerH + _topGrab + barHeight;
+        if (barWidth > 0) {
+          _collapsedFromW = _w;
+          _w = barWidth;
+        }
       } else {
         _h = _collapsedFrom ?? widget.initialHeight;
         _collapsedFrom = null;
+        if (_collapsedFromW != null) {
+          _w = _collapsedFromW!;
+          _collapsedFromW = null;
+        }
       }
     });
   }
@@ -267858,75 +268225,55 @@ class _McpChatDialogState extends State<_McpChatDialog> {
     setState(() => _collapsed = v);
     context
         .findAncestorStateOfType<_FloatingPanelWindowState>()
-        ?.setCollapsed(v);
+        // 畳んだら小さなアイコンのボタンにする (= ユーザー要望)。
+        ?.setCollapsed(v, barHeight: 44, barWidth: 60);
   }
 
-  /// 畳んでいる時に出す細い帯。 掴んで窓を動かせる所は残す。
+  /// 畳んでいる時の姿。
+  ///
+  /// ★ 横長の帯ではなく、 小さなアイコンのボタンにする (= ユーザー要望)。
+  ///   押すと戻り、 掴めば窓ごと動かせる。 動いている間は進み具合を輪で出す。
   Widget _buildCollapsedBar(BuildContext context) {
     final provider = widget.provider;
     final busy = _session.busy;
-    return SizedBox(
-      height: 46,
-      child: Row(children: [
-        const SizedBox(width: 12),
-        const IgnorePointer(
-          child: Icon(Icons.auto_awesome_rounded,
-              size: 18, color: Color(0xFF80CBC4)),
-        ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onPanUpdate: (d) => context
-                .findAncestorStateOfType<_FloatingPanelWindowState>()
-                ?.dragWindowBy(d.delta),
-            onPanEnd: (_) => context
-                .findAncestorStateOfType<_FloatingPanelWindowState>()
-                ?.dragWindowEnd(),
-            child: Row(children: [
-              Flexible(
-                child: Text(provider.t('mcp.chatTitle'),
-                    maxLines: 1,
-                    softWrap: false,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700)),
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onPanUpdate: (d) => context
+          .findAncestorStateOfType<_FloatingPanelWindowState>()
+          ?.dragWindowBy(d.delta),
+      onPanEnd: (_) => context
+          .findAncestorStateOfType<_FloatingPanelWindowState>()
+          ?.dragWindowEnd(),
+      child: Tooltip(
+        message: busy
+            ? '${provider.t('mcp.expand')} (${_session.step} / '
+                '${_McpChatSession.maxRounds})'
+            : provider.t('mcp.expand'),
+        child: SizedBox(
+          height: 44,
+          child: Center(
+            child: InkWell(
+              borderRadius: BorderRadius.circular(10),
+              onTap: () => _setCollapsed(false),
+              child: SizedBox(
+                width: 40,
+                height: 40,
+                child: Stack(alignment: Alignment.center, children: [
+                  if (busy)
+                    const SizedBox(
+                      width: 30,
+                      height: 30,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Color(0xFF80CBC4)),
+                    ),
+                  const Icon(Icons.auto_awesome_rounded,
+                      size: 20, color: Color(0xFF80CBC4)),
+                ]),
               ),
-              // 動いている間は、 畳んでいても進み具合が分かるようにする。
-              if (busy) ...[
-                const SizedBox(width: 10),
-                const SizedBox(
-                  width: 12,
-                  height: 12,
-                  child: CircularProgressIndicator(
-                      strokeWidth: 2, color: Color(0xFF80CBC4)),
-                ),
-                const SizedBox(width: 6),
-                Text('${_session.step} / ${_McpChatSession.maxRounds}',
-                    style: const TextStyle(
-                        color: Colors.white38, fontSize: 11)),
-              ],
-            ]),
+            ),
           ),
         ),
-        IconButton(
-          visualDensity: VisualDensity.compact,
-          tooltip: provider.t('mcp.expand'),
-          icon: const Icon(Icons.unfold_more_rounded,
-              color: Colors.white70, size: 19),
-          onPressed: () => _setCollapsed(false),
-        ),
-        IconButton(
-          visualDensity: VisualDensity.compact,
-          tooltip: provider.t('btn.close'),
-          icon: const Icon(Icons.close_rounded, color: Colors.white70),
-          onPressed: () => widget.paneMode
-              ? widget.onClosePane?.call()
-              : Navigator.of(context).pop(),
-        ),
-      ]),
+      ),
     );
   }
 
@@ -267949,6 +268296,10 @@ class _McpChatDialogState extends State<_McpChatDialog> {
   /// 最後に見ていたのが CLI 側の画面だったか (= 会話へ戻した後に開き直した
   /// 時、 勝手に端末へ戻らないようにするための目印)。
   static bool _lastViewWasCli = false;
+
+  /// 開いた直後に「パソコンに入れた AI を使う」 の一覧から始めるか
+  /// (= ユーザー要望: API から呼ぶのと項目を分ける)。
+  static bool openCliListOnStart = false;
 
   void _showInlineTerminal(Widget term, String title,
       {bool isTerminal = true}) {
@@ -268043,6 +268394,14 @@ class _McpChatDialogState extends State<_McpChatDialog> {
 
   /// 開き直した時に、 前に見ていた画面へ戻す (= ユーザー要望)。
   void _restoreLastInlineView(MindMapProvider provider) {
+    // ★ 「パソコンに入れた AI」 を選んで開いた時は、 その一覧から始める。
+    if (openCliListOnStart) {
+      openCliListOnStart = false;
+      _showInlineTerminal(
+          _buildAgentCliList(provider), provider.t('cli.title'),
+          isTerminal: false);
+      return;
+    }
     // 自分で会話へ戻した後なら、 会話のまま開く。
     if (!_lastViewWasCli) return;
     final s = _lastCliSession;
@@ -268196,7 +268555,18 @@ class _McpChatDialogState extends State<_McpChatDialog> {
 
   /// CLI の一覧 (欄の中に出す中身)。
   Widget _buildAgentCliList(MindMapProvider provider) {
-    return FutureBuilder<List<AgentCliFound>>(
+    // npm (= Node.js) が無ければ、 その場で案内できるように調べておく。
+    if (AgentCli.npmAvailable == null) {
+      unawaited(AgentCli.checkNpm().then((_) {
+        if (mounted) setState(() {});
+      }));
+    }
+    // ★ この一覧は「作った時の widget」 をそのまま抱えて描いているので、
+    //   設定を変えても描き直されない (= ユーザー報告: Opus を押しても
+    //   切り替わらない)。 provider を聞いて描き直すように包む。
+    return ListenableBuilder(
+      listenable: provider,
+      builder: (_, __) => FutureBuilder<List<AgentCliFound>>(
       future: AgentCli.findAll(),
       builder: (ctx, snap) {
         if (snap.connectionState != ConnectionState.done) {
@@ -268208,7 +268578,6 @@ class _McpChatDialogState extends State<_McpChatDialog> {
           );
         }
         final list = snap.data ?? const <AgentCliFound>[];
-        final termDir = _terminalBaseDirOrNull(provider);
         return ListView(
           padding: const EdgeInsets.fromLTRB(12, 10, 12, 14),
           children: [
@@ -268216,71 +268585,6 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                 style: const TextStyle(
                     color: Colors.white54, fontSize: 11, height: 1.55)),
             const SizedBox(height: 10),
-            // ── ただのターミナル (= ユーザー要望: ターミナルを開くボタン) ──
-            //    右クリックで管理者として開く (UAC の確認が出る)。
-            GestureDetector(
-              onSecondaryTap: () => unawaited(_openAdminTerminal(provider)),
-              child: Container(
-                margin: const EdgeInsets.only(bottom: 12),
-                padding: const EdgeInsets.fromLTRB(10, 9, 8, 9),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF9CCC65).withValues(alpha: 0.07),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(
-                      color: const Color(0xFF9CCC65).withValues(alpha: 0.3)),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(children: [
-                      const Icon(Icons.terminal_rounded,
-                          size: 16, color: Color(0xFF9CCC65)),
-                      const SizedBox(width: 9),
-                      Expanded(
-                        child: Text(provider.t('cli.terminal'),
-                            style: const TextStyle(
-                                color: Colors.white, fontSize: 12.5)),
-                      ),
-                      // 管理者は別窓 (アプリの中には出せない)。
-                      Tooltip(
-                        message: provider.t('cli.openAdmin'),
-                        child: IconButton(
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(
-                              minWidth: 30, minHeight: 30),
-                          icon: const Icon(Icons.shield_outlined,
-                              size: 17, color: Color(0xFFFFB347)),
-                          onPressed: () =>
-                              unawaited(_openAdminTerminal(provider)),
-                        ),
-                      ),
-                      const SizedBox(width: 4),
-                      ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF37474F),
-                          visualDensity: VisualDensity.compact,
-                        ),
-                        icon: const Icon(Icons.play_arrow_rounded,
-                            size: 15, color: Colors.white),
-                        label: Text(provider.t('cli.open'),
-                            style: const TextStyle(
-                                fontSize: 11, color: Colors.white)),
-                        onPressed: () =>
-                            unawaited(_openPlainTerminal(provider)),
-                      ),
-                    ]),
-                    const SizedBox(height: 5),
-                    SelectableText(
-                        '${termDir ?? provider.t('cli.terminalNoDir')}\n'
-                        '${provider.t('cli.terminalNote')}',
-                        style: const TextStyle(
-                            color: Colors.white38,
-                            fontSize: 10.5,
-                            height: 1.4)),
-                  ],
-                ),
-              ),
-            ),
             for (final f in list)
               Container(
                 margin: const EdgeInsets.only(bottom: 8),
@@ -268334,12 +268638,23 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                       else
                         ElevatedButton.icon(
                           style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF546E7A),
+                            backgroundColor: AgentCli.npmAvailable == false
+                                ? const Color(0xFF8D6E63)
+                                : const Color(0xFF546E7A),
                             visualDensity: VisualDensity.compact,
                           ),
-                          icon: const Icon(Icons.download_rounded,
-                              size: 15, color: Colors.white),
-                          label: Text(provider.t('cli.install'),
+                          icon: Icon(
+                              AgentCli.npmAvailable == false
+                                  ? Icons.open_in_new_rounded
+                                  : Icons.download_rounded,
+                              size: 15,
+                              color: Colors.white),
+                          // ★ npm は Node.js に付いてくる物なので、 入って
+                          //   いなければ先にそちらを案内する (= ユーザー指摘)。
+                          label: Text(
+                              provider.t(AgentCli.npmAvailable == false
+                                  ? 'cli.getNode'
+                                  : 'cli.install'),
                               style: const TextStyle(
                                   fontSize: 11, color: Colors.white)),
                           onPressed: () =>
@@ -268353,19 +268668,66 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                                 ? provider.t('cli.ready')
                                 : provider.t('cli.needLogin'))
                             : '${provider.t('cli.notFound')}  '
-                                '${f.spec.installHint}',
+                                '${f.spec.installHint}'
+                                '${AgentCli.npmAvailable == false ? '\n${provider.t('cli.needNode')}' : ''}',
                         style: TextStyle(
                             color: f.installed
                                 ? Colors.white38
                                 : const Color(0xFFFFB347),
                             fontSize: 10.5,
                             height: 1.4)),
+                    // ── 使うモデル (= ユーザー要望: この画面で切り替えたい) ──
+                    if (f.installed) ...[
+                      const SizedBox(height: 6),
+                      Row(children: [
+                        const Icon(Icons.memory_rounded,
+                            size: 13, color: Colors.white38),
+                        const SizedBox(width: 6),
+                        Text(provider.t('mcp.model'),
+                            style: const TextStyle(
+                                color: Colors.white38, fontSize: 10.5)),
+                        const SizedBox(width: 8),
+                        for (final c in AgentCli.modelChoices(f.spec.kind))
+                          Padding(
+                            padding: const EdgeInsets.only(right: 6),
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(6),
+                              onTap: () async {
+                                await provider.setCliAiModelChoice(c.id);
+                                if (mounted) setState(() {});
+                              },
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 3),
+                                decoration: BoxDecoration(
+                                  color: provider.cliAiModelChoice == c.id
+                                      ? const Color(0xFF9CCC65)
+                                          .withValues(alpha: 0.18)
+                                      : Colors.transparent,
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(
+                                      color: provider.cliAiModelChoice == c.id
+                                          ? const Color(0xFF9CCC65)
+                                          : Colors.white24),
+                                ),
+                                child: Text(c.label,
+                                    style: TextStyle(
+                                        color: provider.cliAiModelChoice == c.id
+                                            ? const Color(0xFF9CCC65)
+                                            : Colors.white60,
+                                        fontSize: 10.5)),
+                              ),
+                            ),
+                          ),
+                      ]),
+                    ],
                   ],
                 ),
               ),
           ],
         );
       },
+    ),
     );
   }
 
@@ -270115,6 +270477,10 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                   onPressed: () => _setCollapsed(true),
                 ),
               // 説明をもう一度見る (= ユーザー要望: ヘッダーに ⓘ で置く)。
+              // ★ CLI の画面では、 会話まわりのボタンは出さない (= ユーザー
+              //   要望: CLI 画面で「新しい会話」 が AI アシスタントの物に
+              //   なっているのは違和感がある。 切り替えボタンだけでよい)。
+              if (_inlineTerminal == null)
               IconButton(
                 visualDensity: VisualDensity.compact,
                 constraints: _hdrBtnConstraints(context),
@@ -270167,9 +270533,8 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                         _inlineTerminal != null
                             ? Icons.chat_bubble_outline_rounded
                             : Icons.terminal_rounded,
-                        color: _inlineTerminal != null
-                            ? const Color(0xFF9CCC65)
-                            : Colors.white54,
+                        // ★ 目立ち過ぎるので白に (= ユーザー要望)。
+                        color: Colors.white,
                         size: 19),
                     onPressed: () => _inlineTerminal != null
                         ? _backToChatView()
@@ -270180,6 +270545,7 @@ class _McpChatDialogState extends State<_McpChatDialog> {
               // ★ Builder で押したボタン自身の context を作る (= ユーザー要望:
               //   画面中央ではなくボタンの近くに出す)。 帯を掴む板は帯の
               //   **後ろ**に敷いてあるので、 Builder を挟んでも押下は奪われない。
+              if (_inlineTerminal == null)
               Builder(builder: (bctx) => IconButton(
                 visualDensity: VisualDensity.compact,
                 constraints: _hdrBtnConstraints(context),
@@ -270196,6 +270562,7 @@ class _McpChatDialogState extends State<_McpChatDialog> {
               )),
               // 設定 (= ユーザー要望: 順番待ち / 割り込みはここで決める。
               //   処理中の帯には出さない)。
+              if (_inlineTerminal == null)
               PopupMenuButton<String>(
                 constraints: const BoxConstraints(minWidth: 200),
                 padding: EdgeInsets.zero,
@@ -270241,6 +270608,7 @@ class _McpChatDialogState extends State<_McpChatDialog> {
               ),
               // 会話の一覧 (= ユーザー要望: セッションを分けて保存)。
               // ★ こちらも押したボタンの近くへ (= ユーザー要望)。
+              if (_inlineTerminal == null)
               Builder(builder: (bctx) => IconButton(
                 visualDensity: VisualDensity.compact,
                 constraints: _hdrBtnConstraints(context),
@@ -270259,6 +270627,7 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                 },
               )),
               // 新しい会話を始める。
+              if (_inlineTerminal == null)
               IconButton(
                 visualDensity: VisualDensity.compact,
                 constraints: _hdrBtnConstraints(context),
@@ -270280,6 +270649,7 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                 },
               ),
               // 今の会話の中身を消す。
+              if (_inlineTerminal == null)
               IconButton(
                 visualDensity: VisualDensity.compact,
                 constraints: _hdrBtnConstraints(context),

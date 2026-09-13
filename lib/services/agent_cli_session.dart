@@ -253,9 +253,41 @@ class AgentCliSession extends ChangeNotifier {
     if (pty == null || !_running) return;
     try {
       pty.write(const Utf8Encoder().convert(seq));
+      _recordTyped(seq);
     } catch (e) {
       terminal.write('\r\n[送れませんでした] $e\r\n');
     }
+  }
+
+  // ── いまの会話で投げた指示の控え (= ユーザー要望: 現在の会話履歴) ──
+  //
+  //   打った物は 1 文字ずつ流れていくので、 改行が来た所で 1 行と数える。
+  //   矢印などの制御が挟まった行は当てにならないので捨てる。
+  final List<String> _sentLines = [];
+  List<String> get sentLines => List<String>.unmodifiable(_sentLines);
+  final StringBuffer _lineBuf = StringBuffer();
+
+  void _recordTyped(String seq) {
+    var changed = false;
+    for (final r in seq.runes) {
+      if (r == 0x0d || r == 0x0a) {
+        final t = _lineBuf.toString().trim();
+        _lineBuf.clear();
+        if (t.isNotEmpty && !t.startsWith('/')) {
+          if (_sentLines.isEmpty || _sentLines.last != t) {
+            _sentLines.add(t);
+            if (_sentLines.length > 100) _sentLines.removeAt(0);
+            changed = true;
+          }
+        }
+      } else if (r >= 0x20 && r != 0x7f) {
+        _lineBuf.write(String.fromCharCode(r));
+      } else {
+        // 制御文字 (矢印の始まりなど) が来たら、 その行は数えない。
+        _lineBuf.clear();
+      }
+    }
+    if (changed) notifyListeners();
   }
 
   /// 「止める」 を押した時だけ呼ぶ。
