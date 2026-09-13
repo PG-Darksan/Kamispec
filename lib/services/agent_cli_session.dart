@@ -36,6 +36,7 @@ class AgentCliSession extends ChangeNotifier {
     this.isInstall = false,
     this.isShell = false,
     this.cliKey = '',
+    this.extraEnvironment = const <String, String>{},
   });
 
   /// 見出し (「Claude Code — インストール」 など)。
@@ -57,6 +58,16 @@ class AgentCliSession extends ChangeNotifier {
   /// どの CLI か ('claude' / 'codex' / 'gemini'、 シェルなら空)。
   /// 出すボタンを決めるのに使う (Codex は自前で順番待ちを持っている)。
   final String cliKey;
+
+  /// この実行にだけ足す環境変数。
+  ///
+  /// ★ = ユーザー報告「gemini CLI にログインしようとするとセキュリティソフト
+  ///   にブロックされてしまう」。 API キーをここで渡せば、 CLI は
+  ///   ブラウザも 127.0.0.1 の待ち受けも使わずに済む (= 止められる手順を
+  ///   そもそも通らない)。
+  /// ★ 合言葉の類は**引数ではなくここへ**。 引数は起動時に端末の画面へ
+  ///   そのまま書き出すので、 覗かれる。
+  final Map<String, String> extraEnvironment;
 
   /// `/model` のようなコマンドを受け付ける相手か (= CLI 本体を動かしている
   /// 時だけ true。 npm の導入中に送っても意味が無い)。
@@ -91,6 +102,33 @@ class AgentCliSession extends ChangeNotifier {
 
   /// 最後に何か出力された時刻。
   DateTime _lastOutputAt = DateTime.now();
+
+  // ── 「いま考えている最中か」 (= ユーザー要望: 処理を止めるボタンを、
+  //    処理が始まったら出す) ──
+  //
+  //    CLI に「考え中です」 と教えてもらう手立ては無い。 ただ、 考えて
+  //    いる間はどの CLI も待ち表示 (くるくる回る印や経過秒) を書き換え
+  //    続けるので**出力が途切れない**。 順番待ちの判定に既に使っている
+  //    この性質を、 そのまま外へ出す。
+  //
+  //    ★ 出力の受け取りは `notifyListeners()` を呼ばない (毎文字ごとに
+  //      画面を組み直すと重いため) ので、 これだけでは画面が変わらない。
+  //      走っている間だけ小さな見張りを回して、 値が変わった時にだけ
+  //      知らせる。
+  bool get busy =>
+      _running && DateTime.now().difference(_lastOutputAt) < _kIdle;
+
+  Timer? _busyTimer;
+  bool _busyShown = false;
+
+  void _startBusyTimer() {
+    _busyTimer ??= Timer.periodic(const Duration(milliseconds: 400), (_) {
+      final now = busy;
+      if (now == _busyShown) return;
+      _busyShown = now;
+      notifyListeners();
+    });
+  }
 
   final List<String> _queued = [];
   List<String> get queued => List<String>.unmodifiable(_queued);
@@ -172,7 +210,9 @@ class AgentCliSession extends ChangeNotifier {
         }
       }
       final pty = Pty.start(
-        exePath,
+        // ★ 空白を含む道筋 (`C:\Program Files\…`) は、 引用符を付けずに
+        //   つなぐ flutter_pty ではそのまま渡せない。 短い名前に直す。
+        AgentCli.ptySafePath(exePath),
         arguments: arguments,
         workingDirectory: cwdArg,
         // 端末の大きさはそのまま伝える (CLI はこれを見て表示を組む)。
@@ -180,10 +220,15 @@ class AgentCliSession extends ChangeNotifier {
         rows: terminal.viewHeight,
         // ★ 日本語を含む値は壊れて渡るので、 英数字だけに整えてから
         //   渡す (= 実測: Path と PSModulePath が壊れていた)。
-        environment: AgentCli.asciiEnvironment(),
+        //   この実行にだけ足す物 (API キーなど) は後ろに重ねる。
+        environment: {
+          ...AgentCli.asciiEnvironment(),
+          ...extraEnvironment,
+        },
       );
       _pty = pty;
       _running = true;
+      _startBusyTimer();
       // ★ 文字の切れ目を跨いでも壊れないように、 流れたまま解く
       //   (1 回分ずつ utf8.decode すると、 途中で切れた文字が □ になる)。
       _sub = pty.output
@@ -231,6 +276,8 @@ class AgentCliSession extends ChangeNotifier {
     _running = false;
     _queueTimer?.cancel();
     _queueTimer = null;
+    _busyTimer?.cancel();
+    _busyTimer = null;
     _queued.clear();
     unawaited(_sub?.cancel());
     _sub = null;

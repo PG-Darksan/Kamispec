@@ -1081,6 +1081,84 @@ class AiQAEntry {
   });
 }
 
+/// フォルダーの中のファイルを横断して探した結果の 1 件
+/// (= ユーザー要望: ページを横断してフォルダー内のファイルを検索)。
+class FolderFileHit {
+  const FolderFileHit({
+    required this.pageId,
+    required this.pageName,
+    required this.nodeId,
+    required this.filePath,
+    required this.fileName,
+    required this.snippet,
+    required this.matchCount,
+  });
+
+  /// どのページに貼ってあるファイルか (空 = ディスクにあるだけ)。
+  final String pageId;
+  final String pageName;
+
+  /// そのページのどの要素か (空 = ディスクにあるだけ)。
+  final String nodeId;
+
+  final String filePath;
+  final String fileName;
+
+  /// 最初に見つかった所の前後。
+  final String snippet;
+
+  /// 何か所見つかったか。
+  final int matchCount;
+}
+
+/// Ctrl+Z で「他のページへの転送」 を丸ごと戻すための退避データ。
+///
+/// = ユーザー報告「他のページに要素を転送した後の動作を Ctrl+Z で取り消せない」。
+///
+/// ★ なぜページ内の履歴 (`_undoStacks`) では足りないのか
+///   履歴はページ 1 枚ぶんしか持てず、 `undo()` も開いているページにしか
+///   書き戻せない。 転送は**2 枚のページを同時に変える**ので、 片方だけ戻すと
+///   「転送元にも転送先にも同じ要素が居る」 「どこにも居なくなる」 という
+///   壊れ方をする。 そこで、 ページ削除の復元 ([_DeletedPageUndoRecord]) と
+///   同じ「履歴の外側にある 1 発枠」 として、 両ページの控えをまとめて持つ。
+///
+/// ★ ノードや接続だけでなく、 付箋の配色表 6 種・ギャラリーの升目・選択中の
+///   要素まで控える。 転送はこれらも書き換えるため、 控えずに戻すと見た目が
+///   ずれたまま残る。
+class _CrossPageMoveUndoRecord {
+  const _CrossPageMoveUndoRecord({
+    required this.sourcePageId,
+    required this.targetPageId,
+    required this.sourceSnap,
+    required this.targetSnap,
+    required this.shelfCells,
+    required this.selectedNodeId,
+    required this.groupColors,
+    required this.groupFontSizes,
+    required this.groupFontFamilies,
+    required this.groupLayoutRows,
+    required this.groupLayoutModes,
+    required this.groupPadding,
+  });
+
+  final String sourcePageId;
+  final String targetPageId;
+  final _PageSnapshot sourceSnap;
+  final _PageSnapshot targetSnap;
+
+  /// ギャラリーの升目はページ別ではなくアプリ全体で 1 つなので、 丸ごと控える。
+  final Map<String, List<int>> shelfCells;
+  final String? selectedNodeId;
+
+  /// 付箋の見た目 (2 ページぶん)。 key = ページ id。
+  final Map<String, Map<String, int>> groupColors;
+  final Map<String, Map<String, double>> groupFontSizes;
+  final Map<String, Map<String, String>> groupFontFamilies;
+  final Map<String, Map<String, int>> groupLayoutRows;
+  final Map<String, Map<String, String>> groupLayoutModes;
+  final Map<String, Map<String, List<double>>> groupPadding;
+}
+
 /// Ctrl+Z で直前のページ削除を復元するための、ページ外状態を含む退避データ。
 ///
 /// [MindMapPage] 本体だけでは名前付きグループやページ単位の Undo 履歴が戻らない
@@ -4801,7 +4879,9 @@ class MindMapProvider extends ChangeNotifier {
   String get _pageId => _pages.isNotEmpty ? _pages[_currentPageIndex].id : '';
 
   bool get canUndo =>
-      canUndoDeletedPage || (_undoStacks[_pageId]?.length ?? 0) > 0;
+      canUndoDeletedPage ||
+      _crossPageMoveTouchesCurrentPage ||
+      (_undoStacks[_pageId]?.length ?? 0) > 0;
   bool get canRedo => (_redoStacks[_pageId]?.length ?? 0) > 0;
 
   /// 現在のページ状態をUndo履歴に積む（変更前に呼ぶ）
@@ -4814,8 +4894,14 @@ class MindMapProvider extends ChangeNotifier {
   /// 必ず [endUndoBatch] と対で呼ぶこと。
   /// 例: 裁断モードで複数リンクを一度に切った時、 戻るで 1 回でまとめて
   ///     元に戻せるようにする (= ユーザー要望)。
-  void beginUndoBatch() {
-    if (_undoBatchDepth == 0) _pushUndo(); // 開始時の状態を 1 枚だけ記録
+  /// [snapshot] を false にすると、 開始時の控えを積まずに「以降の個別
+  /// _pushUndo を抑える」 だけを行う。 ページをまたぐ転送のように、 控えを
+  /// 別枠 ([_captureCrossPageMove]) で自分で取る時に使う (ここで積むと、
+  /// 意味の無い 1 手が Ctrl+Z の履歴に挟まる)。
+  void beginUndoBatch({bool snapshot = true}) {
+    if (_undoBatchDepth == 0 && snapshot) {
+      _pushUndo(); // 開始時の状態を 1 枚だけ記録
+    }
     _undoBatchDepth++;
   }
 
@@ -4885,6 +4971,9 @@ class MindMapProvider extends ChangeNotifier {
       _undoCoalesceAt = null;
     }
     if (_undoBatchDepth > 0) return;
+    // 裏のページを書き換えた時も、 古い「転送を戻す」 枠は捨てる
+    //   (時系列が逆転しないように。 _pushUndo と揃える)。
+    _lastCrossPageMoveUndo = null;
     _undoStacks.putIfAbsent(pageId, () => []);
     _redoStacks.putIfAbsent(pageId, () => []);
     final groups = _namedGroups[pageId] ?? {};
@@ -4917,6 +5006,9 @@ class MindMapProvider extends ChangeNotifier {
     // ページ削除後に別の編集を始めた場合、その編集が最新の Undo 対象になる。
     // 削除復元をいつまでも最優先にすると Ctrl+Z の時系列が逆転するため破棄する。
     _lastDeletedPageUndo = null;
+    // 転送を戻す枠も同じ理由で捨てる (転送の後に別の編集をしたら、 Ctrl+Z は
+    //   その編集から戻すのが正しい)。
+    _lastCrossPageMoveUndo = null;
     final id = _pageId;
     if (id.isEmpty) return;
     _undoStacks.putIfAbsent(id, () => []);
@@ -4934,6 +5026,9 @@ class MindMapProvider extends ChangeNotifier {
     // ページ削除は現在ページのスナップショット履歴には入らないため、
     // 通常の Ctrl+Z API の先頭で直前の削除を復元する。
     if (undoLastDeletedPage()) return;
+    // 他のページへの転送も、 ページ 1 枚ぶんの履歴には収まらないので
+    //   ここで先に戻す (= ユーザー報告: 転送した後に Ctrl+Z が効かない)。
+    if (undoLastCrossPageMove()) return;
     final id = _pageId;
     final stack = _undoStacks[id];
     if (stack == null || stack.isEmpty) return;
@@ -4961,14 +5056,24 @@ class MindMapProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  void _applySnapshot(_PageSnapshot snap, String pageId) {
-    currentPage.nodes
+  void _applySnapshot(_PageSnapshot snap, String pageId) =>
+      _applySnapshotToPage(snap, currentPage, pageId);
+
+  /// 控えを**任意のページ**へ書き戻す。
+  ///
+  /// ★ 以前は `currentPage` 決め打ちだった。 ページをまたぐ転送を戻すには
+  ///   「いま開いていないページ」 にも書き戻せないといけないので、 本体を
+  ///   ここへ切り出した (= ユーザー報告: 他のページへ転送した後に Ctrl+Z が
+  ///   効かない)。
+  void _applySnapshotToPage(
+      _PageSnapshot snap, MindMapPage page, String pageId) {
+    page.nodes
       ..clear()
       ..addAll(snap.nodes);
-    currentPage.connections
+    page.connections
       ..clear()
       ..addAll(snap.connections);
-    currentPage.decorations
+    page.decorations
       ..clear()
       ..addAll(snap.decorations.map((d) => d.copyWith()));
     _namedGroups[pageId] = Map.fromEntries(
@@ -6329,6 +6434,9 @@ class MindMapProvider extends ChangeNotifier {
     _geminiApiKey = key.trim();
     final prefs = await _prefsWithRetry();
     await prefs.setString('gemini_api_key', _geminiApiKey!);
+    // PC の CLI 側にも教える (= Gemini CLI をブラウザ承認なしで使うため)。
+    AgentCli.geminiApiKeyForCli = _geminiApiKey!;
+    AgentCli.forget(); // 「要ログイン」 の札を見直させる
     notifyListeners();
     // キーが入った直後にモデル一覧を更新 (前回キャッシュより新しいキーで
     // 取得し直す)。失敗しても問題ないので fire-and-forget。
@@ -34309,6 +34417,15 @@ class MindMapProvider extends ChangeNotifier {
     // ★ 実態は 3-way マージ (ローカル優先) なので、 「上書き」 は嘘だった
     //   (= ユーザー報告: 消した要素が戻らない)。 上書きは下の
     //   切り替えを入れた時だけ。
+    // 取り込み先の案内 (= ユーザー要望: 落とした物は今開いているフォルダーへ)。
+    'download.intoFolder': {
+      'ja': '取り込み先: {name}',
+      'en': 'Saved into: {name}',
+    },
+    'download.intoFolderRoot': {
+      'ja': '一覧の直下',
+      'en': 'Top of the list',
+    },
     'download.overwriteMode': {
       'ja': 'クラウドの内容で上書きする',
       'en': 'Replace with the cloud version',
@@ -50353,6 +50470,30 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'A IA do PC usa sua assinatura (sem saldo restante)',
       'ru': 'ИИ на ПК использует вашу подписку (остаток недоступен)',
     },
+    // ── Pro 以上でないと使えない旨の案内 (= ユーザー要望) ──
+    'cli.proRequired': {
+      'ja': 'Pro 以上のプランと契約しないと利用できません。',
+      'en': 'This needs a Pro plan or above.',
+      'zh': '需要 Pro 或以上的订阅才能使用。',
+      'ko': 'Pro 이상 요금제가 필요합니다.',
+      'es': 'Requiere el plan Pro o superior.',
+      'fr': 'Necessite le forfait Pro ou superieur.',
+      'de': 'Erfordert den Pro-Plan oder hoher.',
+      'pt': 'Requer o plano Pro ou superior.',
+      'ru': 'Trebuetsya plan Pro ili vyshe.',
+    },
+    'cli.proRequiredBody': {
+      'ja': '加えて、 お使いの ChatGPT / Gemini / Claude の有料プランに'
+          '加入しているアカウントが必要です。',
+      'en': 'You also need an account on a paid ChatGPT, Gemini or Claude plan.',
+      'zh': '此外还需要已订阅 ChatGPT / Gemini / Claude 付费方案的帐号。',
+      'ko': '또한 ChatGPT / Gemini / Claude 유료 요금제에 가입한 계정이 필요합니다.',
+      'es': 'Ademas necesitas una cuenta con un plan de pago de ChatGPT, Gemini o Claude.',
+      'fr': 'Il faut aussi un compte avec un forfait payant ChatGPT, Gemini ou Claude.',
+      'de': 'Zusatzlich ist ein Konto mit einem kostenpflichtigen ChatGPT-, Gemini- oder Claude-Plan notig.',
+      'pt': 'Tambem e necessaria uma conta com plano pago do ChatGPT, Gemini ou Claude.',
+      'ru': 'Takzhe nuzhen akkaunt s platnym planom ChatGPT, Gemini ili Claude.',
+    },
     'cli.needNode': {
       'ja': '※ npm は Node.js に付いてくる物です。 先に Node.js を入れてください。',
       'en': 'npm comes with Node.js. Install Node.js first.',
@@ -50397,6 +50538,62 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Pode mudar depois: clique direito (ou toque longo) no botao.',
       'ru': 'Можно изменить позже: правый клик (или долгое нажатие) по кнопке.',
     },
+    // ── フォルダー内のファイルを横断して探す (= ユーザー要望) ──
+    'hdr.folderFileSearch': {
+      'ja': 'ファイル検索',
+      'en': 'Search files',
+      'zh': '搜索文件',
+      'ko': '파일 검색',
+      'es': 'Buscar archivos',
+      'fr': 'Rechercher des fichiers',
+      'de': 'Dateien suchen',
+      'pt': 'Buscar arquivos',
+      'ru': 'Poisk faylov',
+    },
+    'folderSearch.title': {
+      'ja': 'フォルダー内のファイルを探す',
+      'en': 'Search files in this folder',
+      'zh': '在此文件夹中搜索文件',
+      'ko': '이 폴더의 파일 검색',
+      'es': 'Buscar archivos en esta carpeta',
+      'fr': 'Rechercher dans ce dossier',
+      'de': 'Dateien in diesem Ordner suchen',
+      'pt': 'Buscar arquivos nesta pasta',
+      'ru': 'Poisk faylov v etoy papke',
+    },
+    'folderSearch.hint': {
+      'ja': '探す言葉 (Enter で検索)',
+      'en': 'What to look for (press Enter)',
+      'zh': '要查找的内容（按 Enter）',
+      'ko': '찾을 말 (Enter 로 검색)',
+      'es': 'Que buscar (pulsa Enter)',
+      'fr': 'Que chercher (Entree)',
+      'de': 'Wonach suchen (Enter)',
+      'pt': 'O que procurar (Enter)',
+      'ru': 'Chto iskat (Enter)',
+    },
+    'folderSearch.run': {
+      'ja': '探す',
+      'en': 'Search',
+      'zh': '搜索',
+      'ko': '검색',
+      'es': 'Buscar',
+      'fr': 'Rechercher',
+      'de': 'Suchen',
+      'pt': 'Buscar',
+      'ru': 'Iskat',
+    },
+    'folderSearch.none': {
+      'ja': '見つかりませんでした。',
+      'en': 'Nothing found.',
+      'zh': '未找到。',
+      'ko': '찾지 못했습니다.',
+      'es': 'No se encontro nada.',
+      'fr': 'Aucun resultat.',
+      'de': 'Nichts gefunden.',
+      'pt': 'Nada encontrado.',
+      'ru': 'Nichego ne naydeno.',
+    },
     'hdr.openTerminal': {
       'ja': 'ターミナル',
       'en': 'Terminal',
@@ -50407,6 +50604,14 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Terminal',
       'pt': 'Terminal',
       'ru': 'Терминал',
+    },
+    'cmdDesc.folderFileSearch': {
+      'ja': 'いま開いているフォルダーのページに貼ってあるファイルと、 '
+          '連動しているディスクのフォルダーの中を、 本文まで見て探します '
+          '(txt / md / csv / pdf / docx / pptx / xlsx)。',
+      'en': 'Searches inside the files pinned to the pages of the folder you '
+          'have open, and inside its linked disk folder — the text itself, not '
+          'just names (txt / md / csv / pdf / docx / pptx / xlsx).',
     },
     'cmdDesc.openTerminal': {
       'ja': 'いま開いているページの置き場でターミナルを開きます。 盾の印から管理者としても開けます。',
@@ -50558,6 +50763,45 @@ class MindMapProvider extends ChangeNotifier {
       'ru':
           'Не найдено на этом ПК. Установка:',
     },
+    // ── ブラウザを使わないログイン (= ユーザー報告: ログインがセキュリティ
+    //    ソフトに止められる) ──
+    'cli.loginNoBrowser': {
+      'ja': 'ブラウザを使わずログイン',
+      'en': 'Sign in without a browser',
+      'zh': '不用浏览器登录',
+      'ko': '브라우저 없이 로그인',
+      'es': 'Iniciar sesion sin navegador',
+      'fr': 'Se connecter sans navigateur',
+      'de': 'Ohne Browser anmelden',
+      'pt': 'Entrar sem navegador',
+      'ru': 'Vhod bez brauzera',
+    },
+    'cli.hintDeviceLogin': {
+      'ja': '画面に出る合言葉を、 別の端末かブラウザで入れてください。 '
+          'このやり方は待ち受けを立てないので、 セキュリティソフトに止められません。',
+      'en': 'Enter the code shown here on any other device or browser. '
+          'This way opens no local listener, so security software will not block it.',
+      'zh': '在其他设备或浏览器中输入此处显示的验证码。此方式不会开启本地端口，不会被安全软件拦截。',
+      'ko': '여기에 표시된 코드를 다른 기기나 브라우저에 입력하세요. 로컬 대기 포트를 열지 않아 보안 소프트웨어가 막지 않습니다.',
+      'es': 'Introduce el codigo mostrado aqui en otro dispositivo o navegador. No abre ningun puerto local.',
+      'fr': 'Saisissez le code affiche ici sur un autre appareil ou navigateur. Aucun port local n’est ouvert.',
+      'de': 'Gib den hier gezeigten Code auf einem anderen Gerat oder Browser ein. Es wird kein lokaler Port geoffnet.',
+      'pt': 'Digite o codigo mostrado aqui em outro dispositivo ou navegador. Nenhuma porta local e aberta.',
+      'ru': 'Vvedite kod s ekrana na drugom ustroystve ili v brauzere. Lokalnyy port ne otkryvaetsya.',
+    },
+    'cli.geminiKeyHint': {
+      'ja': '設定で Gemini の API キーを入れておくと、 ログインなしで使えます '
+          '(ブラウザも待ち受けも使わないので、 セキュリティソフトに止められません)。',
+      'en': 'Put a Gemini API key in Settings and it works with no sign-in at all '
+          '(no browser, no local listener, nothing for security software to block).',
+      'zh': '在设置中填入 Gemini API 密钥即可免登录使用（不用浏览器也不开本地端口）。',
+      'ko': '설정에 Gemini API 키를 넣으면 로그인 없이 사용할 수 있습니다 (브라우저도 대기 포트도 쓰지 않습니다).',
+      'es': 'Pon una clave API de Gemini en Ajustes y funciona sin iniciar sesion (sin navegador ni puerto local).',
+      'fr': 'Mettez une cle API Gemini dans les reglages : aucune connexion n’est necessaire (ni navigateur ni port local).',
+      'de': 'Trage einen Gemini-API-Schlussel in den Einstellungen ein, dann ist keine Anmeldung notig (kein Browser, kein lokaler Port).',
+      'pt': 'Coloque uma chave de API do Gemini nas configuracoes e funciona sem login (sem navegador nem porta local).',
+      'ru': 'Ukazhite klyuch Gemini API v nastroykah — vhod ne nuzhen (bez brauzera i lokalnogo porta).',
+    },
     'cli.hintLogin': {
       'ja':
           'ブラウザが開いたら承認してください。 選択肢は下の ↑ ↓ と Enter で。',
@@ -50677,6 +50921,19 @@ class MindMapProvider extends ChangeNotifier {
           'Copiar para o Claude Code',
       'ru':
           'Скопировать для Claude Code',
+    },
+    // Codex は設定の形が違うので別に用意する (= ユーザー報告: codex から
+    //   txt ファイル等を生成できない = 道具が見えていなかった)。
+    'mcp.extCopyCodex': {
+      'ja': 'Codex 用をコピー',
+      'en': 'Copy for Codex',
+      'zh': '复制 Codex 用',
+      'ko': 'Codex 용 복사',
+      'es': 'Copiar para Codex',
+      'fr': 'Copier pour Codex',
+      'de': 'Fur Codex kopieren',
+      'pt': 'Copiar para o Codex',
+      'ru': 'Kopirovat dlya Codex',
     },
     'mcp.extCopyJson': {
       'ja':
@@ -70728,6 +70985,8 @@ class MindMapProvider extends ChangeNotifier {
     // ビルド時に開発者のキーを焼き込まない (逆コンパイルでの抜き取り/不正利用
     // 対策)。 そのため dart-define の GEMINI_API_KEY フォールバックは廃止。
     _geminiApiKey = prefs.getString('gemini_api_key');
+    // PC の CLI 側にも教える (= Gemini CLI をブラウザ承認なしで使うため)。
+    AgentCli.geminiApiKeyForCli = _geminiApiKey ?? '';
     // 他社AI APIキーとプロバイダ・言語設定も読み込む
     _openaiApiKey = prefs.getString('openai_api_key');
     _anthropicApiKey = prefs.getString('anthropic_api_key');
@@ -76519,6 +76778,15 @@ class MindMapProvider extends ChangeNotifier {
   /// Web の自動操作が使えるか (= ユーザー要望: Pro 以上限定)。
   bool get canUseWebAutomation => isProUnlocked;
 
+  /// PC 内 AI (CLI) とアプリの中のターミナルを使えるか
+  /// (= ユーザー要望: CLI を利用する機能は Pro 以上の特権に)。
+  ///
+  /// ★ アプリ側の門はここだけ。 実際に動かすには、 これに加えて
+  ///   ChatGPT / Gemini / Claude いずれかの**有料プランに加入した
+  ///   アカウント**で CLI にログインしている必要がある (CLI 側の話なので
+  ///   アプリからは確かめられない。 画面でその旨を案内する)。
+  bool get canUseCliAi => isProUnlocked;
+
   /// サブモニターの回り込み (ルーティング) を、 **アプリを開いている間**
   /// 使えるか。
   /// = ユーザー要望「アプリ起動時だけサブモニターへルーティングする機能は
@@ -80420,7 +80688,33 @@ class MindMapProvider extends ChangeNotifier {
   //    (契約しているぶんを使うので、 AI の残高は減らない)。
   String _aiAssistantMode = 'api';
   String get aiAssistantMode => _aiAssistantMode;
-  bool get useCliAi => _aiAssistantMode == 'cli' && AgentCli.supported;
+  /// ★ Pro 以上でない時は、 控えに 'cli' が残っていても効かせない
+  ///   (= ユーザー要望: CLI を利用する機能は Pro 以上の特権)。 ここが
+  ///   CLI へ回す唯一の分かれ道なので、 1 か所閉じれば全部の AI 機能が
+  ///   今までどおり代行サーバー経由に戻る。
+  bool get useCliAi =>
+      _aiAssistantMode == 'cli' && AgentCli.supported && canUseCliAi;
+
+  /// PC の CLI に渡す環境変数。
+  ///
+  /// ★ = ユーザー報告「gemini CLI にログインしようとするとセキュリティソフト
+  ///   にブロックされてしまう」。 Gemini CLI の Google ログインは、 CLI が
+  ///   自分で **127.0.0.1 の待ち受けを立ててブラウザからの戻りを受ける**形。
+  ///   画面のあるアプリの子が勝手に待ち受けを立てる形は、 セキュリティソフト
+  ///   が真っ先に止める。 アプリが既に預かっている API キーを環境変数で渡せば、
+  ///   ブラウザも待ち受けも要らない (= ログインの手順そのものを回避する)。
+  ///   キーを入れていない時は何も渡さないので、 今までどおりの動き。
+  Map<String, String> cliAiEnvironment() {
+    final out = <String, String>{};
+    final g = (_geminiApiKey ?? '').trim();
+    if (g.isNotEmpty) {
+      out['GEMINI_API_KEY'] = g;
+      // 認証の種類を聞かれずに済ませる (知らない版では黙って無視される)。
+      out['GEMINI_DEFAULT_AUTH_TYPE'] = 'gemini-api-key';
+      out['GOOGLE_GENAI_USE_VERTEXAI'] = 'false';
+    }
+    return out;
+  }
 
   /// 1 回聞く相手の名前 (「PC内AI (Claude Code)」 の括弧の中)。
   String _cliAiName = '';
@@ -80544,20 +80838,30 @@ class MindMapProvider extends ChangeNotifier {
 
   void setAiAssistantModeLocal(String v) {
     if (v != 'api' && v != 'cli') return;
+    // Pro 以上でない時は CLI へ切り替えさせない (= ユーザー要望)。
+    if (v == 'cli' && !canUseCliAi) return;
     if (_aiAssistantMode == v) return;
     _aiAssistantMode = v;
     notifyListeners();
   }
 
+  /// [allowFiles] … 道具を使わせる会話かどうか。 PC 内の CLI に頼む設定の
+  /// 時、 作業フォルダーの覚書と codex の砂箱をゆるめて、 頼まれたファイル
+  /// (txt など) を作れるようにする (= ユーザー報告: codex から txt ファイル
+  /// 等を生成できない)。 ただの問い合わせ (要約・分類) では false のまま。
   Future<String> askAi(String prompt,
       {int? maxTokensOverride,
       Duration? timeoutOverride,
-      List<AiInputImage>? images}) async {
+      List<AiInputImage>? images,
+      bool allowFiles = false}) async {
     // ★ PC の CLI に頼む設定なら、 まずそちらへ (= ユーザー要望)。
     //   写真つきは渡せないので、 その時だけ今までどおり。
     if (useCliAi && (images == null || images.isEmpty)) {
       final out = await AgentCli.runPrompt(prompt,
-          timeout: timeoutOverride, guide: languageInstructionForAi().trim());
+          timeout: timeoutOverride,
+          guide: languageInstructionForAi().trim(),
+          allowFiles: allowFiles,
+          extraEnvironment: cliAiEnvironment());
       _rememberCliModel();
       _addCliUsage();
       if (out != null && out.trim().isNotEmpty) return out;
@@ -81032,6 +81336,26 @@ Art direction:
   ///
   /// [detailed] が true の時は更に大きいトークンを許可する (詳しい解説向け)。
   Future<String> askAiForJson(String prompt, {bool detailed = false}) async {
+    // ★ PC の CLI に頼む設定なら、 こちらもそちらへ (= 点検で判明:
+    //   ここだけ設定を見ておらず、 「PC内AI」 を選んでいても構造化を使う
+    //   機能 — PDF 要約・用語解説・クイズ・マップ生成 — は黙って代行
+    //   サーバーへ行っていた)。 CLI には「JSON だけで返す形式」 の指定が
+    //   無いので、 その旨を言葉で足す。
+    if (useCliAi) {
+      // ★ 形 (オブジェクトか配列か) は**指定しない**。 呼び出し側の文面が
+      //   既に決めているので、 ここで「オブジェクト 1 つ」 と言い足すと
+      //   配列を求めている所 (スライド生成など) と食い違う (= 点検で判明)。
+      final out = await AgentCli.runPrompt(
+          '$prompt\n\n※ 返事は JSON だけ。 前置きも囲み (```) も付けない。',
+          guide: languageInstructionForAi().trim(),
+          extraEnvironment: cliAiEnvironment());
+      _rememberCliModel();
+      _addCliUsage();
+      if (out != null && out.trim().isNotEmpty) return out;
+      final why = AgentCli.lastPromptError;
+      throw Exception(
+          '$cliAiLabelで答えられませんでした${why.isEmpty ? '' : ': $why'}');
+    }
     // ★ まず通信を確かめる (= ユーザー要望: つながっていない時は、
     //   その旨を出す)。
     await ensureOnline();
@@ -87844,16 +88168,21 @@ $cleanQ
     _syncProgress = _cloudDownloadOverallProgress();
   }
 
-  MindMapPage _upsertDownloadedPage(MindMapPage page) {
+  MindMapPage _upsertDownloadedPage(MindMapPage page, {String? intoFolderId}) {
     final idx = _pages.indexWhere((p) => p.id == page.id);
     if (idx < 0) {
-      // ── ドロワーに必ず表示されるようフォルダー所属を正規化 ──
-      // (= ユーザー報告: ページをダウンロードしたのに開いている一覧に
-      //    表示されない)。 クラウド側の folderId がローカルに存在しない
-      //    フォルダーを指していると、 どのフォルダーにもルートにも列挙
-      //    されない「見えないページ」 になっていた。 未知のフォルダーは
-      //    ルート (= 一覧の見える場所) に置く。
-      if (page.folderId != null &&
+      // ── 新しく増えるページの行き先 ──
+      // ★ 既定は「いま開いているフォルダーの中」 (= ユーザー要望: 雲から
+      //   落とした物は、 今開いているフォルダーに入れて欲しい)。 一覧は
+      //   フォルダーを開いている間その中身しか並べないので、 ルートへ置くと
+      //   落としたページが画面から消えたように見えていた。
+      // ★ 開いていない時は、 クラウド側の folderId がローカルにも在れば
+      //   それを尊重し、 無ければルート (= 一覧の見える場所) に置く
+      //   (= ユーザー報告: ダウンロードしたのに一覧に出てこない)。
+      final into = intoFolderId ?? _validOpenFolderId;
+      if (into != null && _folders.any((f) => f.id == into)) {
+        page.folderId = into;
+      } else if (page.folderId != null &&
           !_folders.any((f) => f.id == page.folderId)) {
         page.folderId = null;
       }
@@ -88569,11 +88898,17 @@ $cleanQ
   bool _isDownloading = false;
   bool get isDownloading => _isDownloading;
 
+  /// [targetFolderId] を渡すと、 新しく増えるページをそのフォルダーへ入れる。
+  /// 省略した時は「いま開いているフォルダー」 (= ユーザー要望)。
   Future<void> downloadFromCloud(
-      List<MindMapPage> cloudPages, List<String> selectedIds) async {
+      List<MindMapPage> cloudPages, List<String> selectedIds,
+      {String? targetFolderId}) async {
     if (!isMaxUnlocked) {
       throw Exception(t('paywall.maxRequiredCloudSync'));
     }
+    // ★ ダイアログを閉じた後にフォルダーが切り替わっても行き先がぶれないよう、
+    //   ここで 1 度だけ決めておく。
+    final intoFolderId = targetFolderId ?? _validOpenFolderId;
     // つながっていない時は、 その旨を出す (= ユーザー要望)。
     await ensureOnline();
     // ── 連打/二重実行ガード (= ユーザー要望: Ctrl+D を連打しても、 最初の
@@ -88693,7 +89028,8 @@ $cleanQ
         final merged = cloudDownloadOverwrite
             ? page
             : _mergeLocalEditsIntoCloudPage(page, baseJson: baseJson);
-        final localPage = _upsertDownloadedPage(merged);
+        final localPage =
+            _upsertDownloadedPage(merged, intoFolderId: intoFolderId);
         if (cloudJsonForBase != null) {
           await _storeSyncedBaseJson(page.id, cloudJsonForBase);
         }
@@ -94457,6 +94793,134 @@ $cleanQ
   String? get lastDeletedPageName => _lastDeletedPageUndo?.page.name;
   bool get canUndoDeletedPage => _lastDeletedPageUndo != null;
 
+  // ── 他のページへの転送を Ctrl+Z で戻す (= ユーザー報告) ────────────────
+  //
+  //   転送は 2 枚のページを同時に変えるので、 ページ 1 枚ぶんしか持てない
+  //   `_undoStacks` では戻せない。 ページ削除の復元と同じ「履歴の外側の
+  //   1 発枠」 として、 両ページの控えを丸ごと持つ。
+
+  _CrossPageMoveUndoRecord? _lastCrossPageMoveUndo;
+
+  bool get canUndoCrossPageMove => _lastCrossPageMoveUndo != null;
+
+  /// 直前の転送が「いま開いているページ」 に関わるか (= Ctrl+Z で戻せるか)。
+  bool get _crossPageMoveTouchesCurrentPage {
+    final rec = _lastCrossPageMoveUndo;
+    if (rec == null) return false;
+    final here = _pageId;
+    return here == rec.sourcePageId || here == rec.targetPageId;
+  }
+
+  /// 転送の**直前**に、 関わる 2 ページの状態をまるごと控える。
+  ///
+  /// ★ `_pushUndo()` の代わりに呼ぶ。 併用すると、 ページ内の履歴が先に
+  ///   効いて「片側だけ戻る」 今までの壊れ方が残る。
+  void _captureCrossPageMove(MindMapPage source, MindMapPage target) {
+    if (source.id == target.id) return;
+    // 新しい操作なので、 古い「削除を戻す」 枠は捨てる (時系列が逆転しないように)。
+    _lastDeletedPageUndo = null;
+    _undoCoalesceKey = null;
+    _undoCoalesceAt = null;
+    Map<String, Map<String, T>> pick<T>(Map<String, Map<String, T>> src) => {
+          for (final id in [source.id, target.id])
+            if (src[id] != null) id: Map<String, T>.from(src[id]!),
+        };
+    _lastCrossPageMoveUndo = _CrossPageMoveUndoRecord(
+      sourcePageId: source.id,
+      targetPageId: target.id,
+      sourceSnap:
+          _PageSnapshot.from(source, _namedGroups[source.id] ?? const {}),
+      targetSnap:
+          _PageSnapshot.from(target, _namedGroups[target.id] ?? const {}),
+      // ★ 升目はページ別ではなくアプリ全体で 1 つの表だが、 **この 2 枚に
+      //   居る要素のぶんだけ**控える (= 点検で判明: 丸ごと控えて丸ごと
+      //   書き戻すと、 転送の後に別のギャラリーで並べ替えた分まで巻き戻る)。
+      shelfCells: {
+        for (final id in [...source.nodes.keys, ...target.nodes.keys])
+          if (_shelfCells[id] != null) id: List<int>.of(_shelfCells[id]!),
+      },
+      selectedNodeId: _selectedNodeId,
+      groupColors: pick<int>(_groupColors),
+      groupFontSizes: pick<double>(_groupFontSizes),
+      groupFontFamilies: pick<String>(_groupFontFamilies),
+      groupLayoutRows: pick<int>(_groupLayoutRows),
+      groupLayoutModes: pick<String>(_groupLayoutModes),
+      groupPadding: {
+        for (final id in [source.id, target.id])
+          if (_groupPadding[id] != null)
+            id: _groupPadding[id]!.map(
+                (name, pad) => MapEntry(name, List<double>.from(pad))),
+      },
+    );
+  }
+
+  /// 直前の「他のページへの転送」 を丸ごと戻す。 戻す物が無ければ false。
+  ///
+  /// ★ 転送に関わった 2 枚のどちらかを開いている時だけ効かせる
+  ///   (= 点検で判明: 関係の無いページで Ctrl+Z を押したら、 手前の編集
+  ///   ではなく裏の 2 ページが書き換わってしまう)。 関係の無いページでは
+  ///   今までどおり、 そのページの履歴から戻す。
+  bool undoLastCrossPageMove() {
+    final rec = _lastCrossPageMoveUndo;
+    if (rec == null) return false;
+    final here = _pageId;
+    if (here != rec.sourcePageId && here != rec.targetPageId) return false;
+    _lastCrossPageMoveUndo = null;
+    final si = _pages.indexWhere((p) => p.id == rec.sourcePageId);
+    final ti = _pages.indexWhere((p) => p.id == rec.targetPageId);
+    // どちらかのページが既に無い (消された / まだ戻していない) 時は、
+    //   半端に書き戻さず諦める。
+    if (si < 0 || ti < 0) return false;
+    _applySnapshotToPage(rec.sourceSnap, _pages[si], rec.sourcePageId);
+    _applySnapshotToPage(rec.targetSnap, _pages[ti], rec.targetPageId);
+    void put<T>(Map<String, Map<String, T>> dst, Map<String, Map<String, T>> src,
+        T Function(T) copy) {
+      for (final id in [rec.sourcePageId, rec.targetPageId]) {
+        final before = src[id];
+        if (before == null) {
+          dst.remove(id);
+        } else {
+          dst[id] = {
+            for (final e in before.entries) e.key: copy(e.value),
+          };
+        }
+      }
+    }
+
+    put<int>(_groupColors, rec.groupColors, (v) => v);
+    put<double>(_groupFontSizes, rec.groupFontSizes, (v) => v);
+    put<String>(_groupFontFamilies, rec.groupFontFamilies, (v) => v);
+    put<int>(_groupLayoutRows, rec.groupLayoutRows, (v) => v);
+    put<String>(_groupLayoutModes, rec.groupLayoutModes, (v) => v);
+    put<List<double>>(
+        _groupPadding, rec.groupPadding, (v) => List<double>.from(v));
+    // ★ 升目は、 この 2 枚に居る要素のぶんだけ書き戻す (= 点検で判明:
+    //   表を丸ごと入れ替えると、 他のギャラリーで並べ替えた分まで戻る)。
+    final touched = <String>{
+      ..._pages[si].nodes.keys,
+      ..._pages[ti].nodes.keys,
+      ...rec.shelfCells.keys,
+    };
+    for (final id in touched) {
+      final before = rec.shelfCells[id];
+      if (before == null) {
+        _shelfCells.remove(id);
+      } else {
+        _shelfCells[id] = List<int>.of(before);
+      }
+    }
+    _selectedNodeId = rec.selectedNodeId;
+    // 戻した後にページ内の履歴で続きを戻せるよう、 両ページの redo は消す
+    //   (転送前の状態に戻ったので、 その先の redo は意味を成さない)。
+    _redoStacks[rec.sourcePageId]?.clear();
+    _redoStacks[rec.targetPageId]?.clear();
+    _saveToStorage();
+    unawaited(_saveNamedGroups());
+    unawaited(_saveShelfCells());
+    notifyListeners();
+    return true;
+  }
+
   void deletePage(int index) {
     _lastDeleteCreatedBlank = false;
     // ★ 最後の 1 枚でも消せる (= ユーザー要望)。
@@ -95277,6 +95741,186 @@ $cleanQ
         }
       }
     }
+  }
+
+  // ─── フォルダーの中のファイルを横断して探す (= ユーザー要望: ページを
+  //     横断してフォルダー内のファイルに対して検索を掛けたい) ───────────
+  //
+  //   今までの検索は「開いているページの要素の題とメモ」 だけが相手で、
+  //   貼ってあるファイルの**中身**は見ていなかった。 ここでは
+  //   ・そのフォルダーに入っている全ページに貼られたファイル
+  //   ・フォルダーに連動ディスクフォルダーがあれば、 その中のファイル
+  //   の本文を取り出して探す。
+  //
+  //   ★ 本文の取り出しは `TalkReference.extractFileText` を使い回す
+  //     (txt/md/csv/json/html/pdf/docx/pptx/xlsx に対応。 pdf は別の
+  //     isolate で解く)。 新しい仕掛けは足さない。
+  //   ★ 1 件ずつ順番に読む。 まとめて走らせると pdf のたびに isolate が
+  //     立って、 重いフォルダーでアプリが固まる。
+
+  /// 一度読んだ本文の控え (道筋 + 更新日時 + 大きさ が同じなら読み直さない)。
+  final Map<String, String> _fileTextCache = {};
+
+  /// フォルダーの中のファイルを横断して本文を探す。
+  ///
+  /// [folderId] null = 一覧の直下 (フォルダーに入っていないページ)。
+  Future<List<FolderFileHit>> searchFilesInFolder(
+    String? folderId,
+    String query, {
+    bool includeLinkedDir = true,
+    int maxFiles = 400,
+    int maxCharsPerFile = 400000,
+    void Function(int done, int total, String fileName)? onProgress,
+    bool Function()? isCancelled,
+  }) async {
+    final q = query.trim().toLowerCase();
+    if (q.isEmpty) return const <FolderFileHit>[];
+
+    // ── 探す相手を集める ──
+    final seen = <String>{};
+    final targets = <({
+      String pageId,
+      String pageName,
+      String nodeId,
+      String path
+    })>[];
+    void add(String pageId, String pageName, String nodeId, String path) {
+      final p = path.trim();
+      if (p.isEmpty) return;
+      final key = p.toLowerCase().replaceAll('/', Platform.pathSeparator);
+      if (!seen.add(key)) return;
+      if (!_searchableFile(p)) return;
+      targets.add(
+          (pageId: pageId, pageName: pageName, nodeId: nodeId, path: p));
+    }
+
+    for (final page in pagesInFolder(folderId)) {
+      for (final n in page.nodes.values) {
+        final ap = (n.attachmentPath ?? '').trim();
+        if (ap.isEmpty) continue;
+        add(page.id, page.name, n.id, ap);
+      }
+    }
+    // 連動しているディスクのフォルダーも見る。
+    if (includeLinkedDir && folderId != null) {
+      final f = _folders.where((e) => e.id == folderId).firstOrNull;
+      final dirPath = (f?.linkedDirPath ?? '').trim();
+      if (dirPath.isNotEmpty) {
+        for (final path in _listFilesForSearch(dirPath, maxFiles)) {
+          add('', f?.name ?? '', '', path);
+        }
+      }
+    }
+    if (targets.length > maxFiles) targets.removeRange(maxFiles, targets.length);
+
+    // ── 1 件ずつ読んで探す ──
+    final hits = <FolderFileHit>[];
+    for (var i = 0; i < targets.length; i++) {
+      if (isCancelled?.call() ?? false) break;
+      final t = targets[i];
+      final name = _baseName(t.path);
+      onProgress?.call(i, targets.length, name);
+      // 画面が固まらないよう、 数件ごとに描き直す隙を作る。
+      if (i % 3 == 0) await Future<void>.delayed(Duration.zero);
+      String text;
+      try {
+        text = await _fileTextForSearch(t.path, maxCharsPerFile);
+      } catch (_) {
+        continue;
+      }
+      if (text.isEmpty) continue;
+      final lower = text.toLowerCase();
+      var idx = lower.indexOf(q);
+      if (idx < 0) continue;
+      final first = idx;
+      var count = 0;
+      while (idx >= 0 && count < 999) {
+        count++;
+        idx = lower.indexOf(q, idx + q.length);
+      }
+      final from = first - 40 < 0 ? 0 : first - 40;
+      final to = first + q.length + 40 > text.length
+          ? text.length
+          : first + q.length + 40;
+      hits.add(FolderFileHit(
+        pageId: t.pageId,
+        pageName: t.pageName,
+        nodeId: t.nodeId,
+        filePath: t.path,
+        fileName: name,
+        matchCount: count,
+        snippet: text
+            .substring(from, to)
+            .replaceAll('\r', ' ')
+            .replaceAll('\n', ' ')
+            .trim(),
+      ));
+    }
+    onProgress?.call(targets.length, targets.length, '');
+    // 今開いているページの物を先に、 その次は当たりの多い順。
+    final curId = _pages.isEmpty ? '' : currentPage.id;
+    hits.sort((a, b) {
+      final ax = a.pageId == curId ? 0 : 1;
+      final bx = b.pageId == curId ? 0 : 1;
+      if (ax != bx) return ax - bx;
+      return b.matchCount - a.matchCount;
+    });
+    return hits;
+  }
+
+  /// 中身を探せる拡張子か (絵や動画は相手にしない)。
+  static bool _searchableFile(String path) {
+    final i = path.lastIndexOf('.');
+    if (i < 0) return false;
+    final ext = path.substring(i + 1).toLowerCase();
+    return const {
+      'txt', 'md', 'markdown', 'csv', 'tsv', 'json', 'log', 'text',
+      'html', 'htm', 'xml', 'yml', 'yaml', 'rtf',
+      'pdf', 'docx', 'pptx', 'xlsx',
+    }.contains(ext);
+  }
+
+  /// 連動フォルダーの中のファイルを並べる (隠しファイル等は飛ばす)。
+  List<String> _listFilesForSearch(String dirPath, int limit) {
+    final out = <String>[];
+    try {
+      final dir = Directory(dirPath);
+      if (!dir.existsSync()) return out;
+      for (final e in dir.listSync(recursive: true, followLinks: false)) {
+        if (out.length >= limit) break;
+        if (e is! File) continue;
+        final name = _baseName(e.path);
+        final l = name.toLowerCase();
+        if (name.startsWith('.') || name.startsWith(r'~$')) continue;
+        if (l.endsWith('.tmp') || l == 'thumbs.db' || l == 'desktop.ini') {
+          continue;
+        }
+        out.add(e.path);
+      }
+    } catch (e) {
+      debugPrint('_listFilesForSearch failed: $e');
+    }
+    return out;
+  }
+
+  /// ファイルの本文 (控えがあれば使い回す)。
+  Future<String> _fileTextForSearch(String path, int maxChars) async {
+    var stamp = path;
+    try {
+      final f = File(path);
+      final st = f.statSync();
+      stamp = '$path|${st.modified.millisecondsSinceEpoch}|${st.size}';
+    } catch (_) {}
+    final hit = _fileTextCache[stamp];
+    if (hit != null) return hit;
+    final text =
+        await TalkReference.extractFileText(path, maxChars: maxChars) ?? '';
+    // 控えが増えすぎないように、 古い物から捨てる。
+    if (_fileTextCache.length > 120) {
+      _fileTextCache.remove(_fileTextCache.keys.first);
+    }
+    _fileTextCache[stamp] = text;
+    return text;
   }
 
   /// 指定フォルダーに所属するページのリスト（ページ並び順を保持）
@@ -108031,7 +108675,10 @@ $example
     }
     final off = Offset(offsetX, 0);
 
-    _pushUndo();
+    // ★ 以前は `_pushUndo()` = **開いているページ**の控えを積んでいた。
+    //   ここは引数で渡された 2 枚を動かすので、 3 枚目の無関係なページの
+    //   控えが積まれることがあった。 両ページをまとめて控える。
+    _captureCrossPageMove(src, tgt);
     int count = 0;
     for (final n in src.nodes.values) {
       tgt.nodes[n.id] = n.copyWith(position: n.position + off);
@@ -108065,6 +108712,10 @@ $example
   void copyNodesToPage(Set<String> ids, int targetPageIndex) {
     if (targetPageIndex < 0 || targetPageIndex >= _pages.length) return;
     final targetPage = _pages[targetPageIndex];
+    // ★ コピーは今まで undo を 1 度も積んでいなかったので、 コピー先で
+    //   Ctrl+Z しても消せなかった (= 転送と同じ報告)。 変わるのは
+    //   コピー先だけなので、 そのページの履歴に 1 枚積めば足りる。
+    _pushUndoForPage(targetPage.id);
     final sourceNodes = currentPage.nodes;
     final sourceConns = currentPage.connections;
 
@@ -108198,7 +108849,11 @@ $example
     if (sourcePageIndex == currentPageIndex) return;
     final source = _pages[sourcePageIndex];
     final target = currentPage;
-    _pushUndo();
+    // 何も動かない時は控えを取らない (= 空打ちで Ctrl+Z を食わないように)。
+    if (!ids.any((id) => source.nodes.containsKey(id))) return;
+    // ★ 以前は転送**先**の控えしか積んでいなかったので、 Ctrl+Z すると
+    //   転送先から要素が消えるだけで元にも戻らず、 要素が消滅していた。
+    _captureCrossPageMove(source, target);
     final toMove = <String>{...ids};
     for (final id in ids) {
       final n = source.nodes[id];
@@ -108239,7 +108894,14 @@ $example
     if (targetPageIndex == currentPageIndex) return; // 同一ページへの転送は無意味
     final source = currentPage;
     final target = _pages[targetPageIndex];
-    _pushUndo();
+    // ★ 何も動かない時は控えを取らない (= 点検で判明: 消えた要素の id を
+    //   渡すと、 中身の変わらない控えが残り、 次の Ctrl+Z がそれに食われて
+    //   「戻らない」 うえ、 両ページの redo まで消えていた)。
+    if (!ids.any((id) => source.nodes.containsKey(id))) return;
+    // ★ 転送は 2 枚のページを同時に変えるので、 ページ 1 枚ぶんの控え
+    //   (`_pushUndo`) では戻せない。 以前は転送元だけ積んでいたため、
+    //   Ctrl+Z すると同じ要素が転送元と転送先の両方に生えていた。
+    _captureCrossPageMove(source, target);
 
     // ── 格納ノード (コンテナ) は中の子ノードも一緒に移動する ──
     // コンテナだけ移すと containedNodeIds が対象ページに存在しないノードを

@@ -23,7 +23,10 @@
 //     対応するには別の実装が要る。
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ffi' as ffi;
 import 'dart:io';
+
+import 'package:ffi/ffi.dart' as pkgffi;
 
 /// 操作できるブラウザの種類。
 enum CdpBrowserKind { chrome, edge, brave, vivaldi, opera }
@@ -280,8 +283,11 @@ class CdpBrowser {
       if (url != null && url.isNotEmpty) url,
     ];
     try {
-      await Process.start(exe, args,
+      // 起こした PID を覚える (= 後で閉じる時に、 プロセスを総なめしないで
+      //   済ませるため。 総なめはセキュリティソフトに止められる)。
+      final p = await Process.start(exe, args,
           mode: ProcessStartMode.detached, runInShell: false);
+      _rememberLaunched(dataDir, p.pid, exe);
     } catch (e) {
       throw Exception('${kind.label} を起動できませんでした: $e');
     }
@@ -557,7 +563,7 @@ class CdpBrowser {
     final exe = findExe(kind);
     if (exe == null) return false;
     try {
-      await Process.start(
+      final p = await Process.start(
           exe,
           <String>[
             '--no-first-run',
@@ -567,10 +573,89 @@ class CdpBrowser {
           ],
           mode: ProcessStartMode.detached,
           runInShell: false);
+      _rememberLaunched(dataDir, p.pid, exe);
       return true;
     } catch (_) {
       return false;
     }
+  }
+
+  /// この置き場で起こしたブラウザの PID (置き場ごと)。
+  ///
+  /// ★ = ユーザー報告「悪意のあるプロセスがブロックされましたとしょっちゅう
+  ///   出る」。 以前ここは、 隠した PowerShell で `Win32_Process` を総なめ
+  ///   して命令行を突き合わせ、 一致した物を `Stop-Process -Force` していた。
+  ///   1 回のログインで 40 回以上そのシェルが立つうえ、 「プロセスを一覧して
+  ///   条件に合う物を強制終了する」 という形そのものが、 セキュリティソフト
+  ///   が最も疑う振る舞い (いわゆる LOLBin の悪用) に一致する。
+  ///   このアプリには「OS の仕事は外のプログラムではなくアプリの中でやる」
+  ///   という決まりがあり (`lib/services/pc_settings.dart` の頭、
+  ///   `display_light.dart:463` ほか)、 ここだけ破っていた。
+  ///
+  ///   自分で起こした物は PID を覚えておけば突き止める必要が無い。 外の
+  ///   プログラムは 1 つも起こさずに閉じられる。
+  static final Map<String, Map<int, String>> _launchedPids = {};
+
+  static void _rememberLaunched(String dataDir, int pid, String exe) {
+    if (pid <= 0) return;
+    _launchedPids.putIfAbsent(dataDir, () => <int, String>{})[pid] = exe;
+  }
+
+  /// その番号のプロセスの実行ファイル名 (居なければ空)。
+  ///
+  /// ★ 番号は使い回される。 覚えておいた番号をそのまま止めると、
+  ///   間に合った別のプログラムを落としかねない (= 点検で判明)。
+  ///   止める前に「本当にそのブラウザーか」を確かめる。
+  ///   一覧しない (= 特定の番号を見るだけ) ので、 外のプログラムは立てない。
+  static String _imageName(int pid) {
+    if (!Platform.isWindows || pid <= 0) return '';
+    const queryLimited = 0x1000;
+    try {
+      final k32 = ffi.DynamicLibrary.open('kernel32.dll');
+      final openProcess = k32.lookupFunction<
+          ffi.IntPtr Function(ffi.Uint32, ffi.Int32, ffi.Uint32),
+          int Function(int, int, int)>('OpenProcess');
+      final queryName = k32.lookupFunction<
+          ffi.Int32 Function(ffi.IntPtr, ffi.Uint32, ffi.Pointer<pkgffi.Utf16>,
+              ffi.Pointer<ffi.Uint32>),
+          int Function(int, int, ffi.Pointer<pkgffi.Utf16>,
+              ffi.Pointer<ffi.Uint32>)>('QueryFullProcessImageNameW');
+      final closeHandle = k32.lookupFunction<ffi.Int32 Function(ffi.IntPtr),
+          int Function(int)>('CloseHandle');
+      final h = openProcess(queryLimited, 0, pid);
+      if (h == 0) return '';
+      final buf = pkgffi.calloc<ffi.Uint16>(1024).cast<pkgffi.Utf16>();
+      final len = pkgffi.calloc<ffi.Uint32>()..value = 1024;
+      try {
+        if (queryName(h, 0, buf, len) == 0) return '';
+        return buf.toDartString();
+      } finally {
+        pkgffi.calloc.free(buf);
+        pkgffi.calloc.free(len);
+        closeHandle(h);
+      }
+    } catch (_) {
+      return '';
+    }
+  }
+
+  /// その置き場がまだ誰かに掴まれているか。
+  ///
+  /// Chromium は置き場の中に鍵のファイルを置き、 動いている間は握ったまま
+  /// にする。 開けるかどうかを見るだけで分かるので、 プロセスを一覧する
+  /// 必要は無い。
+  static bool _profileBusy(String dataDir) {
+    for (final name in const ['lockfile', 'SingletonLock']) {
+      final f = File('$dataDir${Platform.pathSeparator}$name');
+      try {
+        if (!f.existsSync()) continue;
+        final h = f.openSync(mode: FileMode.append);
+        h.closeSync();
+      } on FileSystemException {
+        return true; // 握られている = まだ動いている
+      } catch (_) {}
+    }
+    return false;
   }
 
   /// その置き場を掴んでいるブラウザを閉じる (= 同じ置き場は 1 つしか
@@ -579,37 +664,37 @@ class CdpBrowser {
   /// 戻り値は、 閉じ切れたか。
   static Future<bool> closeProcessesUsingDataDir(String dataDir) async {
     if (!Platform.isWindows) return false;
-    // 置き場の名前で選んで止める (他のブラウザは触らない)。
-    final needle = dataDir.replaceAll("'", "''");
-    const ps = 'powershell';
-    Future<int> alive() async {
-      try {
-        final r = await Process.run(ps, [
-          '-NoProfile',
-          '-Command',
-          "@(Get-CimInstance Win32_Process | Where-Object { "
-              "\$_.CommandLine -and \$_.CommandLine -like '*$needle*' }).Count"
-        ]);
-        return int.tryParse('${r.stdout}'.trim()) ?? 0;
-      } catch (_) {
-        return 0;
+    // ★ 覚えている番号のうち、 **いまもそのブラウザである物だけ**を止める。
+    //   番号は OS が使い回すので、 終わった後の番号をそのまま止めると
+    //   まったく別のプログラムを落としかねない (= 点検で判明)。
+    //   終わっている物・別物になっている物はここで控えから外す。
+    final tracked = _launchedPids[dataDir];
+    final alive = <int, String>{};
+    if (tracked != null) {
+      tracked.forEach((pid, exe) {
+        final now = _imageName(pid);
+        if (now.isEmpty) return; // もう居ない
+        if (now.toLowerCase() != exe.toLowerCase()) return; // 使い回された
+        alive[pid] = exe;
+      });
+      if (alive.isEmpty) {
+        _launchedPids.remove(dataDir);
+      } else {
+        _launchedPids[dataDir] = alive;
       }
     }
-
-    if (await alive() == 0) return true;
-    try {
-      await Process.run(ps, [
-        '-NoProfile',
-        '-Command',
-        "Get-CimInstance Win32_Process | Where-Object { "
-            "\$_.CommandLine -and \$_.CommandLine -like '*$needle*' } | "
-            "ForEach-Object { Stop-Process -Id \$_.ProcessId -Force "
-            "-ErrorAction SilentlyContinue }"
-      ]);
-    } catch (_) {}
+    if (alive.isEmpty && !_profileBusy(dataDir)) return true;
+    for (final pid in alive.keys.toList()) {
+      try {
+        Process.killPid(pid, ProcessSignal.sigterm);
+      } catch (_) {}
+    }
     // 片付くまで少し待つ (置き場の鍵が外れるまで開き直せない)。
     for (var i = 0; i < 20; i++) {
-      if (await alive() == 0) return true;
+      if (!_profileBusy(dataDir)) {
+        _launchedPids.remove(dataDir);
+        return true;
+      }
       await Future<void>.delayed(const Duration(milliseconds: 250));
     }
     return false;

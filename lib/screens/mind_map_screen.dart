@@ -1668,7 +1668,7 @@ Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
             //    どの AI 欄からも CLI に切り替えられるように) ──
             //    ここで選ぶと、 この後の問い合わせはすべて PC の CLI が
             //    答える (契約しているぶんを使うので AI の残高は減らない)。
-            if (AgentCli.supported) ...[
+            if (AgentCli.supported && provider.canUseCliAi) ...[
               InkWell(
                 borderRadius: BorderRadius.circular(8),
                 onTap: () async {
@@ -1698,8 +1698,10 @@ Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
                             ? const Color(0xFF9CCC65)
                             : Colors.white24),
                     const SizedBox(width: 8),
+                    // ★ 他の項目と色をそろえる (= ユーザー要望: PC内AI だけ
+                    //   色が違って目立つ)。
                     const Icon(Icons.terminal_rounded,
-                        size: 15, color: Color(0xFF9CCC65)),
+                        size: 15, color: Color(0xFF80CBC4)),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Column(
@@ -23236,6 +23238,11 @@ class _MindMapScreenState extends State<MindMapScreen>
     final node = provider.nodes[nodeId];
     if (node == null) return;
     _removeOverlay();
+    // ★ F2 や右クリックからの編集は画面を押さずに始まるので、 ここでも
+    //   CLI の端末から打ち込みを返させる (= ユーザー報告: codex に吸われる)。
+    for (final t in AgentTerminalState.live.toList()) {
+      t.releaseKeyboard();
+    }
     final initial = [node.title, node.memoText ?? '']
         .where((s) => s.trim().isNotEmpty)
         .join('\n');
@@ -24707,6 +24714,15 @@ class _MindMapScreenState extends State<MindMapScreen>
     final isPrimary = event.kind != PointerDeviceKind.mouse ||
         event.buttons == kPrimaryMouseButton;
     if (!isPrimary) return;
+    // ★ CLI の端末が打ち込みを抱えたままだと、 ここから先で要素の名前を
+    //   書き換えようとしても文字が CLI へ流れてしまう (= ユーザー報告:
+    //   「codexCLI などが開いている時にページ要素を編集しようとすると
+    //   codex 側に吸われてしまう」)。 キャンバスを押した時点で返させる。
+    if (AgentTerminalState.live.isNotEmpty) {
+      for (final t in AgentTerminalState.live.toList()) {
+        t.releaseKeyboard();
+      }
+    }
     if (_splitPanelHover || _splitLeftPanelHover) {
       setState(() {
         _splitPanelHover = false;
@@ -27975,11 +27991,28 @@ class _MindMapScreenState extends State<MindMapScreen>
       height: 460,
       builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
         final q = ctrl.text.trim().toLowerCase();
+        // ★ 候補は「いま開いているフォルダーの中」 だけ (= ユーザー要望)。
+        //   Ctrl+1〜9 も一覧 (ドロワー) も既にそうなっているので、 ここだけ
+        //   全ページを並べていて基準がちぐはぐだった。
+        //   フォルダーを開いていない時は、 いま見ているページと同じ
+        //   フォルダー → 一覧の直下、 の順 (= 新規ページの行き先と同じ)。
+        // ★ ただし**探している時は全ページから**。 そうしないと、 別の
+        //   フォルダーのページへここから移る手立てが無くなる。
+        final fid = _targetFolderForNewPage(provider);
+        final scope = q.isEmpty
+            ? provider
+                .pagesInFolder(fid)
+                .where((p) => !provider.isPageHidden(p.id))
+            : provider.pages.where((p) =>
+                p.name.toLowerCase().contains(q) &&
+                !provider.isPageHidden(p.id));
         final pages = [
-          for (var i = 0; i < provider.pages.length; i++)
-            if (q.isEmpty ||
-                provider.pages[i].name.toLowerCase().contains(q))
-              (i: i, p: provider.pages[i]),
+          // ★ index は `provider.pages` の中での位置でなければならない
+          //   (switchPage がそれを受け取るため)。 絞った並びの位置を
+          //   渡すと、 まったく別のページへ飛ぶ。
+          for (final p in scope)
+            if (provider.pages.indexWhere((x) => x.id == p.id) >= 0)
+              (i: provider.pages.indexWhere((x) => x.id == p.id), p: p),
         ];
         return AlertDialog(
           backgroundColor: const Color(0xFF1E1E32),
@@ -28002,6 +28035,30 @@ class _MindMapScreenState extends State<MindMapScreen>
                 ),
                 onChanged: (_) => setD(() {}),
               ),
+              // どこの中から選んでいるのかを出す (= 探すと全ページに広がる
+              //   ので、 今どちらなのかが分かるように)。
+              if (q.isEmpty && fid != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Row(children: [
+                    const Icon(Icons.folder_rounded,
+                        size: 13, color: Color(0xFF9CCC65)),
+                    const SizedBox(width: 5),
+                    Expanded(
+                      child: Text(
+                        provider.folders
+                                .where((f) => f.id == fid)
+                                .map((f) => f.name)
+                                .firstOrNull ??
+                            '',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            color: Color(0xFF9CCC65), fontSize: 11),
+                      ),
+                    ),
+                  ]),
+                ),
               const SizedBox(height: 6),
               ConstrainedBox(
                 constraints: const BoxConstraints(maxHeight: 330),
@@ -28041,6 +28098,252 @@ class _MindMapScreenState extends State<MindMapScreen>
       }),
     );
     ctrl.dispose();
+  }
+
+  // ─── フォルダーの中のファイルを横断して探す (= ユーザー要望: ページを
+  //     横断してフォルダー内のファイルに対して検索を掛けたい) ───────────
+  //
+  //   これまでの検索は「開いているページの要素の題とメモ」 だけが相手で、
+  //   貼ってあるファイルの中身は見ていなかった。 ここでは、 いま開いている
+  //   フォルダーに入っている全ページのファイルと、 連動しているディスクの
+  //   フォルダーの中を、 本文まで見て探す。
+  //
+  //   ★ 打つたびには探さない。 pdf や docx の読み取りは重いので、
+  //     Enter (または虫めがね) で始める。
+
+  /// 探している最中か (窓を開き直しても続きが見えるように外に持つ)。
+  bool _folderSearchRunning = false;
+
+  Future<void> _showFolderFileSearchDialog(MindMapProvider provider) async {
+    final ctrl = TextEditingController();
+    final fid = _targetFolderForNewPage(provider);
+    final folderName = fid == null
+        ? provider.t('download.intoFolderRoot')
+        : (provider.folders
+                .where((f) => f.id == fid)
+                .map((f) => f.name)
+                .firstOrNull ??
+            '');
+    var hits = <FolderFileHit>[];
+    var searched = false;
+    var running = false;
+    var cancelled = false;
+    var done = 0;
+    var total = 0;
+    var nowFile = '';
+
+    await _showNearDialogMain<void>(
+      width: 560,
+      height: 560,
+      builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
+        Future<void> run() async {
+          final q = ctrl.text.trim();
+          if (q.isEmpty || running) return;
+          setD(() {
+            running = true;
+            cancelled = false;
+            searched = true;
+            hits = [];
+            done = 0;
+            total = 0;
+            nowFile = '';
+          });
+          final found = await provider.searchFilesInFolder(
+            fid,
+            q,
+            onProgress: (d, t, name) {
+              if (!mounted) return;
+              setD(() {
+                done = d;
+                total = t;
+                nowFile = name;
+              });
+            },
+            isCancelled: () => cancelled,
+          );
+          if (!mounted) return;
+          setD(() {
+            hits = found;
+            running = false;
+          });
+        }
+
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1E1E32),
+          contentPadding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+          title: Row(children: [
+            const Icon(Icons.travel_explore_rounded,
+                size: 18, color: Color(0xFF4DB6AC)),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(provider.t('folderSearch.title'),
+                  style: const TextStyle(color: Colors.white, fontSize: 15)),
+            ),
+          ]),
+          content: SizedBox(
+            width: math.min(520.0, MediaQuery.sizeOf(dctx).width - 48),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              TextField(
+                controller: ctrl,
+                autofocus: true,
+                style: const TextStyle(color: Colors.white, fontSize: 13),
+                decoration: InputDecoration(
+                  isDense: true,
+                  prefixIcon: const Icon(Icons.search_rounded,
+                      size: 18, color: Colors.white38),
+                  suffixIcon: IconButton(
+                    tooltip: provider.t('folderSearch.run'),
+                    icon: const Icon(Icons.arrow_forward_rounded,
+                        size: 18, color: Color(0xFF4DB6AC)),
+                    onPressed: running ? null : () => unawaited(run()),
+                  ),
+                  hintText: provider.t('folderSearch.hint'),
+                  hintStyle: const TextStyle(color: Colors.white24),
+                ),
+                onSubmitted: (_) => unawaited(run()),
+              ),
+              // どこを探しているか。
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Row(children: [
+                  Icon(fid == null ? Icons.list_rounded : Icons.folder_rounded,
+                      size: 13, color: const Color(0xFF9CCC65)),
+                  const SizedBox(width: 5),
+                  Expanded(
+                    child: Text(folderName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            color: Color(0xFF9CCC65), fontSize: 11)),
+                  ),
+                ]),
+              ),
+              if (running) ...[
+                const SizedBox(height: 8),
+                LinearProgressIndicator(
+                  value: total > 0 ? done / total : null,
+                  minHeight: 3,
+                  backgroundColor: Colors.white12,
+                  color: const Color(0xFF4DB6AC),
+                ),
+                const SizedBox(height: 5),
+                Row(children: [
+                  Expanded(
+                    child: Text('$done / $total  $nowFile',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            color: Colors.white38, fontSize: 10.5)),
+                  ),
+                  TextButton(
+                    style: TextButton.styleFrom(
+                      foregroundColor: const Color(0xFFE57373),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    onPressed: () => setD(() => cancelled = true),
+                    child: Text(provider.t('btn.cancel'),
+                        style: const TextStyle(fontSize: 11)),
+                  ),
+                ]),
+              ],
+              const SizedBox(height: 6),
+              if (searched && !running && hits.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 20),
+                  child: Text(provider.t('folderSearch.none'),
+                      style: const TextStyle(
+                          color: Colors.white38, fontSize: 12)),
+                ),
+              if (hits.isNotEmpty)
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 350),
+                  child: ListView(shrinkWrap: true, children: [
+                    for (final h in hits)
+                      ListTile(
+                        dense: true,
+                        contentPadding:
+                            const EdgeInsets.symmetric(horizontal: 4),
+                        leading: Icon(_fileKindIcon(h.fileName),
+                            size: 18, color: Colors.white54),
+                        title: Text(h.fileName,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 12.5)),
+                        subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(h.snippet,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                      color: Colors.white54,
+                                      fontSize: 10.5,
+                                      height: 1.4)),
+                              Text(
+                                  h.pageName.isEmpty
+                                      ? '${h.matchCount} 件'
+                                      : '${h.pageName} · ${h.matchCount} 件',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                      color: Color(0xFF9CCC65),
+                                      fontSize: 10)),
+                            ]),
+                        onTap: () {
+                          Navigator.pop(dctx);
+                          // ページに貼ってある物は、 そのページへ移ってから開く。
+                          if (h.pageId.isNotEmpty) {
+                            final i = provider.pages
+                                .indexWhere((p) => p.id == h.pageId);
+                            if (i >= 0) provider.switchPage(i);
+                          }
+                          unawaited(_openAttachment(h.filePath,
+                              nodeId: h.nodeId.isEmpty ? null : h.nodeId));
+                        },
+                      ),
+                  ]),
+                ),
+            ]),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                cancelled = true;
+                Navigator.pop(dctx);
+              },
+              child: Text(provider.t('btn.close'),
+                  style: const TextStyle(color: Colors.white54)),
+            ),
+          ],
+        );
+      }),
+    );
+    cancelled = true;
+    ctrl.dispose();
+  }
+
+  /// ファイルの種類ごとの目印。
+  IconData _fileKindIcon(String name) {
+    final i = name.lastIndexOf('.');
+    final ext = i < 0 ? '' : name.substring(i + 1).toLowerCase();
+    switch (ext) {
+      case 'pdf':
+        return Icons.picture_as_pdf_outlined;
+      case 'docx':
+        return Icons.description_outlined;
+      case 'xlsx':
+      case 'csv':
+      case 'tsv':
+        return Icons.table_chart_outlined;
+      case 'pptx':
+        return Icons.slideshow_outlined;
+      case 'md':
+      case 'markdown':
+        return Icons.article_outlined;
+      default:
+        return Icons.insert_drive_file_outlined;
+    }
   }
 
   /// ページの種類ごとの目印。
@@ -34535,6 +34838,9 @@ class _MindMapScreenState extends State<MindMapScreen>
   final List<_AlarmEntry> _alarms = [];
 
   Future<void> _loadAlarms() async {
+    // 先に「前回どう登録したか」 を読む。 これが無いと、 起動のたびに
+    //   OS のタスクを作り直してしまう (= セキュリティソフトに疑われる元)。
+    await _loadAlarmTaskStamps();
     try {
       final prefs = await SharedPreferences.getInstance();
       final s = prefs.getString('alarms_v1');
@@ -34772,35 +35078,26 @@ class _MindMapScreenState extends State<MindMapScreen>
   ///   なっていた。 HKCU なら権限は要らない。
   ///
   /// 戻り値: 入れられたか (false なら理由を画面に出す)。
+  /// ★ 書き方も変えた (= ユーザー報告「悪意のあるプロセスがブロックされ
+  ///   ました」)。 以前は `reg.exe` / `schtasks.exe` を起こして書いていたが、
+  ///   「サインイン時に実行」 への書き込みはどのセキュリティソフトも最も
+  ///   重く見る所で、 そこへ外のプログラムを立てて書くのは避ける。
+  ///   `PcSettings.setRunAtLogon` がアプリの中で直に書く。
   Future<bool> _registerCursorWrapTask(bool on) async {
     if (kIsWeb || !Platform.isWindows) return true;
     const name = 'HisatorNotebook_CursorWrap';
-    const runKey =
-        r'HKCU\Software\Microsoft\Windows\CurrentVersion\Run';
     try {
       // 昔の入れ方 (タスク スケジューラ) が残っていたら片付ける。
-      await Process.run('schtasks', ['/delete', '/tn', name, '/f']);
-      if (!on) {
-        await Process.run('reg', ['delete', runKey, '/v', name, '/f']);
-        return true;
+      //   一度やれば済むので、 控えを見て 1 回だけにする (毎回 schtasks を
+      //   起こすと、 それ自体が咎められる元になる)。
+      final prefs = await SharedPreferences.getInstance();
+      if (!(prefs.getBool('cursorWrapLegacyTaskCleaned') ?? false)) {
+        await Process.run('schtasks', ['/delete', '/tn', name, '/f']);
+        await prefs.setBool('cursorWrapLegacyTaskCleaned', true);
       }
       final exe = Platform.resolvedExecutable;
-      final r = await Process.run('reg', [
-        'add',
-        runKey,
-        '/v',
-        name,
-        '/t',
-        'REG_SZ',
-        '/d',
-        '"$exe" --cursor-wrap',
-        '/f',
-      ]);
-      if (r.exitCode != 0) {
-        debugPrint('回り込みの常駐登録に失敗: ${r.stderr}');
-        return false;
-      }
-      return true;
+      return PcSettings.setRunAtLogon(
+          name, on ? '"$exe" --cursor-wrap' : null);
     } catch (e) {
       debugPrint('回り込みの常駐登録に失敗: $e');
       return false;
@@ -34825,15 +35122,44 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
   }
 
+  /// 既に同じ内容で登録してあるアラームの控え。
+  ///
+  /// ★ = ユーザー報告「悪意のあるプロセスがブロックされましたとしょっちゅう
+  ///   出る」。 起動のたびに `_loadAlarms` が有効なアラームを全部登録し直して
+  ///   いたので、 中身が 1 つも変わっていなくても、 アラーム 1 件につき
+  ///   `schtasks.exe` が 2 回立っていた。 「起動直後にタスクを作る」 のは、
+  ///   セキュリティソフトが居座り (persistence) を疑う典型の形。
+  ///   内容が変わった時だけ登録し直す。
+  static const String _kAlarmTaskStampKey = 'alarmTaskStamps_v1';
+  Map<String, String> _alarmTaskStamps = {};
+
+  String _alarmStamp(_AlarmEntry a) => [
+        a.enabled ? '1' : '0',
+        a.hour,
+        a.minute,
+        a.repeat.name,
+        (a.weekdays.toList()..sort()).join(','),
+        // ★ 実行ファイルの置き場も入れる。 登録するタスクの中身は
+        //   「この exe を叩く」 なので、 アプリを別の場所へ移したり
+        //   入れ直したりすると、 同じ印のままでは古い場所を指したまま
+        //   直らない (= 点検で判明)。
+        if (!kIsWeb) Platform.resolvedExecutable,
+      ].join('|');
+
   Future<void> _registerWindowsAlarmTask(_AlarmEntry a) async {
     if (kIsWeb || !Platform.isWindows) return;
     final name = 'HisatorNotebook_Alarm_${a.id}';
     final hhmm = '${a.hour.toString().padLeft(2, '0')}:'
         '${a.minute.toString().padLeft(2, '0')}';
+    final stamp = _alarmStamp(a);
+    if (_alarmTaskStamps[a.id] == stamp) return; // 中身が変わっていない
     try {
       // 先に古い登録を消す (時刻を変えた時に二重にならないように)。
       await Process.run('schtasks', ['/delete', '/tn', name, '/f']);
-      if (!a.enabled) return;
+      if (!a.enabled) {
+        unawaited(_rememberAlarmStamp(a.id, stamp));
+        return;
+      }
       final exe = Platform.resolvedExecutable;
       final args = <String>['/create', '/tn', name, '/tr',
           '"$exe" --alarm=${a.id}', '/st', hhmm, '/f'];
@@ -34877,15 +35203,47 @@ class _MindMapScreenState extends State<MindMapScreen>
       final r = await Process.run('schtasks', args);
       if (r.exitCode != 0) {
         debugPrint('アラームのタスク登録に失敗: ${r.stderr}');
+      } else {
+        unawaited(_rememberAlarmStamp(a.id, stamp));
       }
     } catch (e) {
       debugPrint('アラームのタスク登録に失敗: $e');
     }
   }
 
+  Future<void> _loadAlarmTaskStamps() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final s = prefs.getString(_kAlarmTaskStampKey) ?? '';
+      if (s.isEmpty) return;
+      final m = jsonDecode(s);
+      if (m is Map) {
+        _alarmTaskStamps = {
+          for (final e in m.entries) '${e.key}': '${e.value}',
+        };
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _rememberAlarmStamp(String id, String stamp) async {
+    _alarmTaskStamps[id] = stamp;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+          _kAlarmTaskStampKey, jsonEncode(_alarmTaskStamps));
+    } catch (_) {}
+  }
+
   /// Windows のタスク登録を消す。
   Future<void> _unregisterWindowsAlarmTask(String id) async {
     if (kIsWeb || !Platform.isWindows) return;
+    if (_alarmTaskStamps.remove(id) != null) {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(
+            _kAlarmTaskStampKey, jsonEncode(_alarmTaskStamps));
+      } catch (_) {}
+    }
     try {
       await Process.run(
           'schtasks', ['/delete', '/tn', 'HisatorNotebook_Alarm_$id', '/f']);
@@ -44100,6 +44458,14 @@ class _MindMapScreenState extends State<MindMapScreen>
       'color': Color(0xFF7E57C2),
     },
     {
+      // フォルダーの中のファイルを横断して探す (= ユーザー要望: ページを
+      //   横断してフォルダー内のファイルに対して検索を掛けたい)。
+      'id': 'folderFileSearch',
+      'labelKey': 'hdr.folderFileSearch',
+      'icon': Icons.travel_explore_rounded,
+      'color': Color(0xFF4DB6AC),
+    },
+    {
       // 無音カメラ (= ユーザー要望)。
       'id': 'silentCamera',
       'labelKey': 'hdr.silentCamera',
@@ -47366,8 +47732,18 @@ class _MindMapScreenState extends State<MindMapScreen>
       case 'openTerminal':
         // ターミナルを開く (= ユーザー要望)。 いま開いているページの置き場が
         //   基点。 右クリック (長押し) は管理者として別窓で開く。
+        // ★ CLI の機能は Pro 以上 (= ユーザー要望)。
         _removeOverlay();
+        if (!provider.canUseCliAi) {
+          _showPaywallDialog(provider);
+          break;
+        }
         unawaited(_openTerminalFromHeader(provider));
+        break;
+      case 'folderFileSearch':
+        // フォルダーの中のファイルを横断して探す (= ユーザー要望)。
+        _removeOverlay();
+        unawaited(_showFolderFileSearchDialog(provider));
         break;
       case 'ocrSearch':
         // APIキー必須のAI OCR実装だったため廃止。既存配置が残っていても起動しない。
@@ -77621,8 +77997,12 @@ class _MindMapScreenState extends State<MindMapScreen>
                 style: const TextStyle(color: Colors.white, fontSize: 13)),
           ),
         ] else ...[
-          for (final p in provider.pages)
-            if (_splitEligiblePage(p))
+          // ★ 候補は「いま開いているフォルダーの中」 だけ (= ユーザー要望:
+          //   ページ切り替えの選択候補は開いているフォルダー基準で)。
+          //   一覧や Ctrl+1〜9 と同じ基準に揃える。
+          for (final p in provider.pagesInFolder(
+              _targetFolderForNewPage(provider)))
+            if (_splitEligiblePage(p) && !provider.isPageHidden(p.id))
               PopupMenuItem(
                 value: p.id,
                 enabled: p.id != currentId,
@@ -91471,6 +91851,33 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// ★ いま開いているフォルダーの中に作る (= ユーザー要望)。 ページ一覧で
   ///   フォルダーを開いていればそこへ、 開いていなければ今見ているページと
   ///   同じフォルダーへ入れる。 どちらでもなければ一覧の直下 (null)。
+  /// 雲から落とした物がどこへ入るかを 1 行で出す (= ユーザー要望: 取り込んだ
+  /// ページは、 いま開いているフォルダーの中へ)。 どこへ入ったか分からない、
+  /// を防ぐための案内。
+  Widget _buildDownloadFolderLine(MindMapProvider provider) {
+    final fid = _targetFolderForNewPage(provider);
+    final folder = fid == null
+        ? null
+        : provider.folders.where((f) => f.id == fid).firstOrNull;
+    final name = folder?.name ?? provider.t('download.intoFolderRoot');
+    return Padding(
+      padding: const EdgeInsets.only(top: 4, bottom: 2),
+      child: Row(children: [
+        Icon(folder == null ? Icons.list_rounded : Icons.folder_rounded,
+            size: 14, color: const Color(0xFF9CCC65)),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            provider.t('download.intoFolder').replaceFirst('{name}', name),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(color: Color(0xFF9CCC65), fontSize: 11),
+          ),
+        ),
+      ]),
+    );
+  }
+
   String? _targetFolderForNewPage(MindMapProvider provider) {
     // 一覧の右クリックから作る時は、 押した場所のフォルダーをそのまま使う。
     if (_newPageFolderOverrideSet) return _newPageFolderOverride;
@@ -93435,6 +93842,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                     );
                     }),
                   ),
+                  // 取り込み先 (= ユーザー要望: 今開いているフォルダーの中へ)。
+                  _buildDownloadFolderLine(provider),
                   // ── 取り込み方 (= ユーザー報告: ローカルで消した要素が
                   //    ダウンロードしても戻らない) ──
                   //    既定は今までどおり、 ローカルの編集を残して合流する。
@@ -93588,6 +93997,12 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 //       SnackBar 通知。
                                 final cp = cloudPages!;
                                 final ids = selected.toList();
+                                // ★ 取り込み先は「いま開いているフォルダー」
+                                //   (= ユーザー要望)。 ダイアログを閉じた後に
+                                //   一覧を触られても行き先がぶれないよう、
+                                //   ここで決めてから渡す。
+                                final intoFolder =
+                                    _targetFolderForNewPage(provider);
                                 Navigator.pop(dctx);
                                 if (mounted) {
                                   _appSnack(
@@ -93609,7 +94024,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 // fire-and-forget で実行
                                 () async {
                                   try {
-                                    await provider.downloadFromCloud(cp, ids);
+                                    await provider.downloadFromCloud(cp, ids,
+                                        targetFolderId: intoFolder);
                                     if (mounted) {
                                       // 添付 (PDF/画像/動画) の中身が 1 つでも
                                       //   取得できていなければ「完了」 ではなく
@@ -94918,7 +95334,12 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (_cutNodeIds.isNotEmpty) {
       final cutIds = Set<String>.of(_cutNodeIds);
       final src = _cutSourcePageIndex;
-      if (src != null && src != provider.currentPageIndex) {
+      final crossPage = src != null && src != provider.currentPageIndex;
+      // ★ 別ページからの貼り付けは「転送 + 位置合わせ」 の 2 手になる。
+      //   後の位置合わせが自前の undo を積むと、 転送を戻す控えが捨てられて
+      //   「戻すと要素が消える」 になっていた。 2 手を 1 回の Ctrl+Z に畳む。
+      if (crossPage) {
+        provider.beginUndoBatch(snapshot: false);
         provider.moveNodesFromPageToCurrent(src, cutIds);
       }
       final moved =
@@ -94926,6 +95347,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       if (moved.isNotEmpty) {
         _moveNodesCenterTo(provider, moved, canvasPos);
       }
+      if (crossPage) provider.endUndoBatch();
       setState(() {
         _rangeSelectMode = moved.isNotEmpty;
         _rangeSelectedIds
@@ -100373,6 +100795,9 @@ class _MindMapScreenState extends State<MindMapScreen>
             content: SizedBox(
               width: 340,
               child: Column(mainAxisSize: MainAxisSize.min, children: [
+                // 取り込み先 (= ユーザー要望: 今開いているフォルダーの中へ)。
+                //   消す時は関係が無いので出さない。
+                if (!deleteMode) _buildDownloadFolderLine(provider),
                 // 合計サイズ表示
                 if (selected.isNotEmpty) ...[
                   Container(
@@ -100572,6 +100997,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                             }
                           }
                         } else {
+                          // ★ 取り込み先は「いま開いているフォルダー」
+                          //   (= ユーザー要望)。 閉じる前に決めておく。
+                          final intoFolder = _targetFolderForNewPage(provider);
                           Navigator.pop(dctx);
                           try {
                             if (mounted) {
@@ -100592,7 +101020,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   ));
                             }
                             await provider.downloadFromCloud(
-                                cloudPages, selected.toList());
+                                cloudPages, selected.toList(),
+                                targetFolderId: intoFolder);
                             if (mounted) {
                               if (provider.lastSyncLimitMessage != null) {
                                 _appSnack(
@@ -129867,27 +130296,60 @@ bool? bringExternalWindowToFront(int pid) {
   }
 }
 
+/// その番号のプロセスの実行ファイル名を、 アプリの中から調べる。
+///
+/// ★ = ユーザー報告「悪意のあるプロセスがブロックされましたとしょっちゅう
+///   出る」。 以前はここで `tasklist.exe` を起こしていた。 外の窓を開く
+///   たびに 1〜2 個立つうえ、 「プロセスを一覧する」 という振る舞い自体が
+///   疑われる形。 Win32 をアプリの中から直に呼べば、 外のプログラムは
+///   1 つも立たない (`pc_settings.dart` の頭にある決まりと同じ考え方)。
+/// 生きていなければ空文字。
+String _processImageName(int pid) {
+  if (!Platform.isWindows || pid <= 0) return '';
+  const processQueryLimitedInformation = 0x1000;
+  try {
+    final k32 = ffi.DynamicLibrary.open('kernel32.dll');
+    final openProcess = k32.lookupFunction<
+        ffi.IntPtr Function(ffi.Uint32, ffi.Int32, ffi.Uint32),
+        int Function(int, int, int)>('OpenProcess');
+    final queryName = k32.lookupFunction<
+        ffi.Int32 Function(ffi.IntPtr, ffi.Uint32, ffi.Pointer<pkgffi.Utf16>,
+            ffi.Pointer<ffi.Uint32>),
+        int Function(int, int, ffi.Pointer<pkgffi.Utf16>,
+            ffi.Pointer<ffi.Uint32>)>('QueryFullProcessImageNameW');
+    final closeHandle = k32.lookupFunction<ffi.Int32 Function(ffi.IntPtr),
+        int Function(int)>('CloseHandle');
+    final h = openProcess(processQueryLimitedInformation, 0, pid);
+    if (h == 0) return '';
+    final buf = pkgffi.calloc<ffi.Uint16>(1024).cast<pkgffi.Utf16>();
+    final len = pkgffi.calloc<ffi.Uint32>()..value = 1024;
+    try {
+      if (queryName(h, 0, buf, len) == 0) return '';
+      return buf.toDartString();
+    } finally {
+      pkgffi.calloc.free(buf);
+      pkgffi.calloc.free(len);
+      closeHandle(h);
+    }
+  } catch (e) {
+    debugPrint('_processImageName failed: $e');
+    return '';
+  }
+}
+
 /// その番号のプロセスが、 このアプリ自身の実行ファイルかどうか。
 ///
 /// 番号は使い回されるので、 控え (prefs) から読んだ番号はこれで確かめる。
 Future<bool> _isOwnExeProcess(int pid) async {
   if (!Platform.isWindows) return false;
-  try {
-    final exe = Platform.resolvedExecutable.split(RegExp(r'[\\/]')).last;
-    final r = await Process.run('tasklist', ['/FI', 'PID eq $pid', '/NH']);
-    final out = '${r.stdout}'.toLowerCase();
-    return out.contains('$pid') && out.contains(exe.toLowerCase());
-  } catch (_) {
-    return false;
-  }
+  final exe = Platform.resolvedExecutable.split(RegExp(r'[\\/]')).last;
+  final name = _processImageName(pid).split(RegExp(r'[\\/]')).last;
+  return name.isNotEmpty && name.toLowerCase() == exe.toLowerCase();
 }
 
 Future<bool> _externalWinAlive(int pid) async {
   try {
-    if (Platform.isWindows) {
-      final r = await Process.run('tasklist', ['/FI', 'PID eq $pid', '/NH']);
-      return '${r.stdout}'.contains('$pid');
-    }
+    if (Platform.isWindows) return _processImageName(pid).isNotEmpty;
     // POSIX の「シグナル 0」 = 届くかどうかだけ調べる。
     final r = await Process.run('kill', ['-0', '$pid']);
     return r.exitCode == 0;
@@ -247900,7 +248362,7 @@ $currentText
         if (mounted) setState(() {});
       },
       itemBuilder: (_) => [
-        if (AgentCli.supported) ...[
+        if (AgentCli.supported && provider.canUseCliAi) ...[
           PopupMenuItem<String>(
             value: provider.useCliAi ? '__api__' : '__cli__',
             child: Row(children: [
@@ -247913,8 +248375,10 @@ $currentText
                       ? const Color(0xFF9CCC65)
                       : Colors.white38),
               const SizedBox(width: 8),
+              // ★ 他の項目と色をそろえる (= ユーザー要望: PC内AI だけ
+              //   色が違って目立つ)。
               const Icon(Icons.terminal_rounded,
-                  size: 14, color: Color(0xFF9CCC65)),
+                  size: 14, color: Color(0xFF80CBC4)),
               const SizedBox(width: 6),
               Text(provider.cliAiLabel,
                   style: const TextStyle(color: Colors.white, fontSize: 12.5)),
@@ -266267,16 +266731,23 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
   ///
   /// ★ [barWidth] を渡すと**横も縮める** (= ユーザー要望: 畳んだら横長の
   ///   窓ではなく、 小さなアイコンのボタンになるように)。
-  void setCollapsed(bool v, {double barHeight = 46, double barWidth = 0}) {
+  /// [circular] を渡すと、 畳んだ時の高さを幅に合わせて**真円**にする
+  /// (= ユーザー報告: 折り畳んだ時のアイコンが歪)。 見出しの帯の高さ
+  /// (`_headerH` / `_topGrab`) は作りによって変わるので、 呼び出し側が
+  /// 高さを決め打ちすると縦長の角丸になってしまう。
+  void setCollapsed(bool v,
+      {double barHeight = 46, double barWidth = 0, bool circular = false}) {
     if (v == isCollapsed) return;
     setState(() {
       if (v) {
         _collapsedFrom = _h;
-        _h = _headerH + _topGrab + barHeight;
         if (barWidth > 0) {
           _collapsedFromW = _w;
           _w = barWidth;
         }
+        _h = circular && barWidth > 0
+            ? barWidth
+            : _headerH + _topGrab + barHeight;
       } else {
         _h = _collapsedFrom ?? widget.initialHeight;
         _collapsedFrom = null;
@@ -266286,6 +266757,28 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
         }
       }
     });
+    // ★ 広げた時に端がはみ出さないようにする (= ユーザー要望)。 畳んだ
+    //   小さな丸を画面の端に置いていると、 元の 520x700 に戻った瞬間に
+    //   右や下がはみ出して掴めなくなっていた。
+    if (!v) _fitOnScreen();
+  }
+
+  /// 丸く畳んでいるか (= 幅と高さが同じ時だけ真円として描く)。
+  bool get _isRoundCollapsed => isCollapsed && (_w - _h).abs() < 0.5;
+
+  /// 畳んでいる時に出す説明 (null = 出さない)。
+  ///
+  /// ★ = ユーザー報告「ヘルパーテキストが正しく表示されない」。 窓の中身は
+  ///   自前の `Navigator` / `Overlay` と、 窓の大きさに差し替えた
+  ///   `MediaQuery` の下に居る。 そこに Tooltip を置くと、 60px 幅の中に
+  ///   収めようと 1 文字ずつ折り返され、 さらに丸い切り抜きで消えていた。
+  ///   窓の**外側**に持たせれば、 画面いっぱいを使って普通に出る。
+  String? _collapsedTip;
+
+  void setCollapsedTip(String? tip) {
+    if (_collapsedTip == tip) return;
+    if (!mounted) return;
+    setState(() => _collapsedTip = tip);
   }
 
   void _scheduleSaveGeometry() {
@@ -266657,12 +267150,17 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
       top: _pos.dy.clamp(minTop, maxTop),
       child: Material(
         color: Colors.transparent,
-        child: Container(
+        // 畳んでいる間の説明は、 窓の外 (= 画面いっぱいを使える所) で出す。
+        child: _wrapCollapsedTip(Container(
           width: _w,
           height: _h,
           decoration: BoxDecoration(
             color: const Color(0xFF10101A),
-            borderRadius: BorderRadius.circular(12),
+            // ★ 畳んで正方形になっている時は真円で描く (= ユーザー報告:
+            //   折り畳んだ時のアイコンが歪)。 角丸のままだと、 縦横が
+            //   少しでも違えば「丸くない丸」 に見える。
+            shape: _isRoundCollapsed ? BoxShape.circle : BoxShape.rectangle,
+            borderRadius: _isRoundCollapsed ? null : BorderRadius.circular(12),
             border: Border.all(color: Colors.white24),
             boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 18)],
           ),
@@ -266851,8 +267349,13 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
                 ),
               Expanded(
                 child: ClipRRect(
-                  borderRadius:
-                      const BorderRadius.vertical(bottom: Radius.circular(11)),
+                  // ★ 畳んで丸くしている時は上も丸く切る (= ユーザー報告:
+                  //   折り畳んだ時のアイコンが歪)。 下だけ丸く切ると、
+                  //   中身の板が四角い上端を丸の上に塗ってしまう。
+                  borderRadius: _isRoundCollapsed
+                      ? BorderRadius.circular(_h / 2)
+                      : const BorderRadius.vertical(
+                          bottom: Radius.circular(11)),
                   // ── 中身には「窓の大きさ」 を画面の大きさとして見せる ──
                   //   = ユーザー報告「計算機のフローティングを移動させると
                   //   挙動が不安定」。 中の道具は MediaQuery の大きさを画面と
@@ -266882,7 +267385,10 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
             // ── 上下左右の縁を掴んで大きさを変える (= ユーザー要望) ──
             //    見た目には出さず、 縁から 6px の帯を掴めるようにする。
             //    角のつまみ (下) は、 掴む場所が分かるよう目印として残す。
-            ..._edgeHandles(screen),
+            // ★ 畳んでいる間は置かない。 60px の丸の上に 6px の帯と
+            //   16px の角を敷くと、 押そうとしただけで大きさ変更が始まり、
+            //   最小値 (360x280) まで一気に膨らむ (= 点検で判明)。
+            if (!isCollapsed) ..._edgeHandles(screen),
             // ── 大きさを変えるつまみは上の両角 ──
             //    ★ 右下にあると送信ボタンと隔てなくて押し間違える
             //      (= ユーザー報告)。 上の左右に移す。
@@ -266893,9 +267399,16 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
             //   四辺と四隅は、 上の `_edgeHandles` が見えない帯で覆って
             //   いるので、 窓のふちを掴めばそのまま大きさを変えられる。
           ]),
-        ),
+        )),
       ),
     );
+  }
+
+  /// 畳んでいる時だけ、 窓の外側で説明を出す。
+  Widget _wrapCollapsedTip(Widget child) {
+    final tip = _collapsedTip;
+    if (!isCollapsed || tip == null || tip.isEmpty) return child;
+    return Tooltip(message: tip, child: child);
   }
 }
 
@@ -267531,7 +268044,11 @@ class _McpChatSession extends ChangeNotifier {
             // ★ 要素をまとめて足す呼び出しは長くなる。 代行サーバーの既定
             //   (4096) だと途中で切れるので、 この繰り返しでは広く取る
             //   (= ユーザー報告: 新規マップは出来るのに要素が作られない)。
-            maxTokensOverride: 12288);
+            maxTokensOverride: 12288,
+            // ★ ここは道具を使わせる会話。 PC 内の CLI に頼む設定の時、
+            //   覚書で「ファイルを作るな」 と言われたままだと、 txt などを
+            //   頼んでも作ってくれなかった (= ユーザー報告)。
+            allowFiles: true);
         if (_cancel) break;
         final call = _McpChatDialogState._parseToolCall(reply);
         final lastRound = round == maxRounds - 1;
@@ -268223,10 +268740,24 @@ class _McpChatDialogState extends State<_McpChatDialog> {
   void _setCollapsed(bool v) {
     if (_collapsed == v) return;
     setState(() => _collapsed = v);
-    context
-        .findAncestorStateOfType<_FloatingPanelWindowState>()
-        // 畳んだら小さなアイコンのボタンにする (= ユーザー要望)。
-        ?.setCollapsed(v, barHeight: 44, barWidth: 60);
+    final win = context.findAncestorStateOfType<_FloatingPanelWindowState>();
+    // 畳んだら小さな丸いボタンにする (= ユーザー要望)。 高さは窓側が
+    //   幅に合わせるので、 ここでは決めない (決め打ちすると縦長になる)。
+    win?.setCollapsed(v, barWidth: 60, circular: true);
+    // ★ 折り畳んでいる間の説明は、 窓の**外側**に出す (= ユーザー報告:
+    //   ヘルパーテキストが正しく表示されない)。 窓の中は自前の Overlay と
+    //   MediaQuery を持っていて、 その広さ (60px) に押し込められるため、
+    //   中に置いた Tooltip は 1 文字ずつ折り返されたうえ切り取られていた。
+    win?.setCollapsedTip(v ? _collapsedTipText() : null);
+  }
+
+  /// 折り畳んでいる時に出す説明。
+  String _collapsedTipText() {
+    final provider = widget.provider;
+    return _session.busy
+        ? '${provider.t('mcp.expand')} '
+            '(${_session.step} / ${_McpChatSession.maxRounds})'
+        : provider.t('mcp.expand');
   }
 
   /// 畳んでいる時の姿。
@@ -268244,33 +268775,28 @@ class _McpChatDialogState extends State<_McpChatDialog> {
       onPanEnd: (_) => context
           .findAncestorStateOfType<_FloatingPanelWindowState>()
           ?.dragWindowEnd(),
-      child: Tooltip(
-        message: busy
-            ? '${provider.t('mcp.expand')} (${_session.step} / '
-                '${_McpChatSession.maxRounds})'
-            : provider.t('mcp.expand'),
-        child: SizedBox(
-          height: 44,
-          child: Center(
-            child: InkWell(
-              borderRadius: BorderRadius.circular(10),
-              onTap: () => _setCollapsed(false),
-              child: SizedBox(
-                width: 40,
-                height: 40,
-                child: Stack(alignment: Alignment.center, children: [
-                  if (busy)
-                    const SizedBox(
-                      width: 30,
-                      height: 30,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2, color: Color(0xFF80CBC4)),
-                    ),
-                  const Icon(Icons.auto_awesome_rounded,
-                      size: 20, color: Color(0xFF80CBC4)),
-                ]),
-              ),
-            ),
+      // ★ ここに Tooltip は置かない。 窓の中は自前の Overlay で、 その広さ
+      //   (60px) に押し込められて読めなくなる (= ユーザー報告: ヘルパー
+      //   テキストが正しく表示されない)。 説明は窓の外側 (根っこの Overlay)
+      //   で出す — `_FloatingPanelWindowState.setCollapsedTip`。
+      child: Center(
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: () => _setCollapsed(false),
+          child: SizedBox(
+            width: 44,
+            height: 44,
+            child: Stack(alignment: Alignment.center, children: [
+              if (busy)
+                const SizedBox(
+                  width: 32,
+                  height: 32,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Color(0xFF80CBC4)),
+                ),
+              const Icon(Icons.auto_awesome_rounded,
+                  size: 21, color: Color(0xFF80CBC4)),
+            ]),
           ),
         ),
       ),
@@ -268428,6 +268954,8 @@ class _McpChatDialogState extends State<_McpChatDialog> {
   /// CLI が自分で既定のブラウザを開き、戻りも自分で受け取る
   /// (VSCode の統合ターミナルと同じ考え方)。
   Widget _buildAgentCliSection(MindMapProvider provider) {
+    // ★ CLI の機能は Pro 以上 (= ユーザー要望)。 探しにも行かない。
+    if (!provider.canUseCliAi) return _buildCliProRequired(provider);
     return FutureBuilder<List<AgentCliFound>>(
       future: AgentCli.findAll(),
       builder: (ctx, snap) {
@@ -268553,8 +269081,44 @@ class _McpChatDialogState extends State<_McpChatDialog> {
     );
   }
 
+  /// Pro 以上でない時に、 ボタンの代わりに出す案内
+  /// (= ユーザー要望: 入れて画面を開いたら、 契約が要る旨を出す)。
+  Widget _buildCliProRequired(MindMapProvider provider) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFB347).withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFFFB347).withValues(alpha: 0.5)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          const Icon(Icons.workspace_premium_rounded,
+              size: 16, color: Color(0xFFFFB347)),
+          const SizedBox(width: 7),
+          Expanded(
+            child: Text(provider.t('cli.proRequired'),
+                style: const TextStyle(
+                    color: Color(0xFFFFB347),
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w700)),
+          ),
+        ]),
+        const SizedBox(height: 7),
+        Text(provider.t('cli.proRequiredBody'),
+            style: const TextStyle(
+                color: Colors.white70, fontSize: 11.5, height: 1.6)),
+      ]),
+    );
+  }
+
   /// CLI の一覧 (欄の中に出す中身)。
   Widget _buildAgentCliList(MindMapProvider provider) {
+    // ★ Pro 以上の特権 (= ユーザー要望)。 入れて画面を開いた時点で、
+    //   契約が要る旨と、 CLI 側にも有料の契約が要る旨を出す。
+    if (!provider.canUseCliAi) return _buildCliProRequired(provider);
     // npm (= Node.js) が無ければ、 その場で案内できるように調べておく。
     if (AgentCli.npmAvailable == null) {
       unawaited(AgentCli.checkNpm().then((_) {
@@ -268661,6 +269225,43 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                               unawaited(_installAgentCli(provider, f)),
                         ),
                     ]),
+                    // ── ブラウザを使わないログイン (= ユーザー報告:
+                    //    ログインがセキュリティソフトに止められる) ──
+                    //    ふつうのログインは CLI が自分で 127.0.0.1 の
+                    //    待ち受けを立ててブラウザからの戻りを受ける形なので、
+                    //    そこで止められる。 待ち受けを立てない道を出す。
+                    if (f.installed &&
+                        f.loggedInHint != true &&
+                        AgentCli.supportsDeviceLogin(f.spec.kind)) ...[
+                      const SizedBox(height: 4),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: TextButton.icon(
+                          style: TextButton.styleFrom(
+                            foregroundColor: const Color(0xFF9CCC65),
+                            visualDensity: VisualDensity.compact,
+                            padding: const EdgeInsets.symmetric(horizontal: 8),
+                          ),
+                          icon: const Icon(Icons.pin_rounded, size: 15),
+                          label: Text(provider.t('cli.loginNoBrowser'),
+                              style: const TextStyle(fontSize: 11)),
+                          onPressed: () => unawaited(_openAgentCliTerminal(
+                              provider, f,
+                              deviceLogin: true)),
+                        ),
+                      ),
+                    ],
+                    // Gemini は API キーを渡せばログイン自体が要らない。
+                    if (f.installed &&
+                        f.spec.kind == AgentCliKind.gemini &&
+                        !provider.hasGeminiKey) ...[
+                      const SizedBox(height: 2),
+                      Text(provider.t('cli.geminiKeyHint'),
+                          style: const TextStyle(
+                              color: Color(0xFF9CCC65),
+                              fontSize: 10.5,
+                              height: 1.4)),
+                    ],
                     const SizedBox(height: 5),
                     SelectableText(
                         f.installed
@@ -268738,6 +269339,9 @@ class _McpChatDialogState extends State<_McpChatDialog> {
   ///   「黙ってシェルを起こした」と見られることもない。
   Future<void> _installAgentCli(
       MindMapProvider provider, AgentCliFound found) async {
+    // ★ CLI の機能は Pro 以上 (= ユーザー要望)。 どの入口からでも
+    //   通さないよう、 実行する側でも止める。
+    if (!provider.canUseCliAi) return;
     final npm = await AgentCli.findNpm();
     if (!mounted) return;
     if (npm == null || npm.isEmpty) {
@@ -268893,6 +269497,10 @@ class _McpChatDialogState extends State<_McpChatDialog> {
             isInstall: session.isInstall,
             isShell: session.isShell,
             cliKey: session.cliKey,
+            // ★ 環境変数も引き継ぐ (= 点検で判明: 引き継がないと
+            //   「もう一度」 で Gemini の API キーや MCP の合言葉が
+            //   落ちて、 ブラウザ承認を求められたり道具が見えなくなる)。
+            extraEnvironment: session.extraEnvironment,
           ),
         ),
       ),
@@ -268954,9 +269562,19 @@ class _McpChatDialogState extends State<_McpChatDialog> {
   }
 
   /// CLI をアプリの中の端末で開く。
+  /// [deviceLogin] … ブラウザを使わないログインを始める (= ユーザー報告:
+  /// ログインがセキュリティソフトに止められる)。 合言葉を画面に出すだけの
+  /// 方式なので、 127.0.0.1 の待ち受けが立たない。
   Future<void> _openAgentCliTerminal(
-      MindMapProvider provider, AgentCliFound found) async {
-    final exe = found.exePath;
+      MindMapProvider provider, AgentCliFound found,
+      {bool deviceLogin = false}) async {
+    // ★ CLI の機能は Pro 以上 (= ユーザー要望)。 どの入口からでも
+    //   通さないよう、 実行する側でも止める。
+    if (!provider.canUseCliAi) return;
+    // ★ 起こすのは薄皮 (.cmd) ではなく割り出した本体 (= ユーザー報告:
+    //   「悪意のあるプロセスがブロックされました」)。 薄皮はそもそも
+    //   擬似端末から起こせない (CreateProcessW はバッチを扱えない)。
+    final exe = found.runExe;
     if (exe == null || exe.isEmpty) return;
     String workDir;
     try {
@@ -268977,6 +269595,15 @@ class _McpChatDialogState extends State<_McpChatDialog> {
       await provider.setMcpExternalAllowed(true);
     } else if (!provider.mcpServerEnabled) {
       await provider.setMcpServerEnabled(true);
+    }
+    // ★ ファイルを作る道具 (create_document_file など) は、 外のアプリには
+    //   既定で見せない作りになっている。 だが**ここで起こす CLI は利用者
+    //   自身がこの画面から始めた物**なので、 同じ扱いにすると
+    //   「codex から txt ファイル等を生成することができない」 になる
+    //   (= ユーザー報告。 道具の一覧にすら出ていなかった)。 起動のたびに
+    //   許可へ直す。 嫌なら「できること」 欄の切り替えで戻せる。
+    if (!provider.mcpAllowPowerfulTools) {
+      await provider.setMcpAllowPowerfulTools(true);
     }
     final url = provider.mcpServerUrl ?? '';
     if (url.isNotEmpty) {
@@ -269005,20 +269632,55 @@ class _McpChatDialogState extends State<_McpChatDialog> {
       appGuide: url.isEmpty ? '' : await provider.loadAppAgentsGuide(),
     );
     if (!mounted) return;
+    // ★ 起動時の引数。
+    //   ・ログインを始める時は、 それだけを渡す。
+    //   ・普段は、 codex が作業フォルダーの中でファイルを作れるように
+    //     砂箱を開け、 アプリの道具 (MCP) の在り処も渡す
+    //     (= ユーザー報告: codex から txt ファイル等を生成できない)。
+    var launchExe = exe;
+    final launchArgs = <String>[
+      ...found.launchPrefixArgs,
+      if (deviceLogin)
+        ...AgentCli.deviceLoginArgs(found.spec.kind)
+      else
+        ...AgentCli.extraLaunchArgs(found.spec.kind, mcpUrl: url),
+    ];
+    // 薄皮 (.cmd) の中身を割り出せなかった時だけ、 シェル経由で起こす。
+    //   バッチは `CreateProcessW` では起こせないので、 これが無いと
+    //   「端末を開けませんでした」 で終わってしまう。
+    if (found.needsShell) {
+      launchArgs.insert(0, AgentCli.ptySafePath(launchExe));
+      launchArgs.insert(0, '/c');
+      final root = Platform.environment['SystemRoot'] ?? r'C:\Windows';
+      launchExe = '$root\\System32\\cmd.exe';
+    }
+    // ★ Gemini は API キーを環境変数で渡す (= ユーザー報告: ログインが
+    //   セキュリティソフトに止められる)。 キーが無ければ何も渡らないので、
+    //   今までどおりの動き。
+    // ★ MCP の合言葉もここで渡す。 引数に書くと起動時に端末へそのまま
+    //   書き出されてしまう (= 点検で判明)。
+    final env = <String, String>{
+      ...provider.cliAiEnvironment(),
+      if (url.isNotEmpty && provider.mcpToken.isNotEmpty)
+        AgentCli.kMcpTokenEnvVar: provider.mcpToken,
+    };
     // ★ 浮かせずに、 この欄そのものに出す (= ユーザー要望)。
     _runAgentCliSession(
       provider,
       AgentCliSession(
         title: found.spec.label,
-        exePath: exe,
-        arguments: const <String>[],
+        exePath: launchExe,
+        arguments: launchArgs,
         workingDirectory: workDir,
         cliKey: found.spec.kind.name,
+        extraEnvironment: env,
         // ★ 使える状態の時は何も出さない (= ユーザー要望: 「そのまま指示を
         //   打てます」 は要らない)。 ログインが要る時だけ案内を出す。
-        hint: found.loggedInHint == true
-            ? null
-            : provider.t('cli.hintLogin'),
+        hint: deviceLogin
+            ? provider.t('cli.hintDeviceLogin')
+            : (found.loggedInHint == true
+                ? null
+                : provider.t('cli.hintLogin')),
       ),
     );
   }
@@ -269115,6 +269777,29 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                           text: 'claude mcp add --transport http hisator '
                               '"$plain" --header '
                               '"Authorization: Bearer $token"')));
+                      showTopToast(context, provider.t('md.copied'),
+                          const Color(0xFF43B97F));
+                    },
+            ),
+            // ★ Codex は `.mcp.json` を読まない (`~/.codex/config.toml` の
+            //   `[mcp_servers.*]` を見る)。 これが無いせいで、 codex から
+            //   頼んでもアプリの道具が 1 つも見えていなかった
+            //   (= ユーザー報告: codex から txt ファイル等を生成できない)。
+            //   合言葉は URL の ?token= に入っているのでヘッダーは要らない。
+            OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                foregroundColor: const Color(0xFFFFB347),
+                side: const BorderSide(color: Colors.white24),
+                visualDensity: VisualDensity.compact,
+              ),
+              icon: const Icon(Icons.terminal_rounded, size: 15),
+              label: Text(provider.t('mcp.extCopyCodex'),
+                  style: const TextStyle(fontSize: 11)),
+              onPressed: url.isEmpty
+                  ? null
+                  : () {
+                      unawaited(Clipboard.setData(ClipboardData(
+                          text: 'codex mcp add hisator --url "$url"')));
                       showTopToast(context, provider.t('md.copied'),
                           const Color(0xFF43B97F));
                     },
@@ -269264,7 +269949,7 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                     const Divider(height: 20, color: Colors.white12),
                     _buildExternalMcpSection(provider),
                   ],
-                  if (AgentCli.supported) ...[
+                  if (AgentCli.supported && provider.canUseCliAi) ...[
                     const Divider(height: 20, color: Colors.white12),
                     _buildAgentCliSection(provider),
                   ],
@@ -270388,6 +271073,10 @@ class _McpChatDialogState extends State<_McpChatDialog> {
     if (_collapsed) {
       return Material(
         color: const Color(0xFF1A1A2E),
+        // ★ 板そのものを丸く切る (= ユーザー報告: 折り畳んだ時のアイコンが
+        //   歪)。 四角い板のままだと、 窓の丸い枠の上に四角い角が乗る。
+        shape: const CircleBorder(),
+        clipBehavior: Clip.antiAlias,
         child: _buildCollapsedBar(context),
       );
     }
@@ -270533,8 +271222,10 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                         _inlineTerminal != null
                             ? Icons.chat_bubble_outline_rounded
                             : Icons.terminal_rounded,
-                        // ★ 目立ち過ぎるので白に (= ユーザー要望)。
-                        color: Colors.white,
+                        // ★ 周りのアイコンに色をそろえる (= ユーザー要望:
+                        //   PC内AI だけ色が違って目立つ)。 この帯の他の
+                        //   アイコンは白 54% / 38% なので、 同じ 54% に。
+                        color: Colors.white54,
                         size: 19),
                     onPressed: () => _inlineTerminal != null
                         ? _backToChatView()

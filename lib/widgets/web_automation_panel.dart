@@ -27,6 +27,7 @@ import 'package:flutter/services.dart'
         LogicalKeyboardKey;
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 // アシスタントからの依頼を受ける合図。
 import '../main.dart' show automationRequestFromAssistant;
@@ -518,6 +519,17 @@ class WebAutomationPanel extends StatefulWidget {
 
 class WebAutomationPanelState extends State<WebAutomationPanel> {
   static const _prefsKey = 'webAutomationSteps_v1';
+
+  /// 中身を広げる上限。
+  ///
+  /// ★ = ユーザー要望「自動操作を全画面にすると横に伸びすぎて操作しづらい
+  ///   から、 全画面にしたら横枠を縮めて中央に配置するようにして」。
+  ///   全画面は窓の幅をそのまま渡してくるので、 27 インチだと 1 行が
+  ///   2000px を超えて目が横に泳ぐ。 ここで上限を決め、 余りは左右に
+  ///   振り分けて中央へ置く。 狭い時 (浮かせた窓・分割ペイン・スマホ) は
+  ///   渡された幅の方が小さいので、 今までと 1px も変わらない。
+  static const double _kMaxContentWidth = 1000.0;
+
   final List<WebAutoStep> _steps = [];
 
   // ─── 操作の記録 (= ユーザー要望: フローを組まなくても自動で操作を記憶して
@@ -1071,7 +1083,7 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
         if (mounted) setState(() {});
       },
       itemBuilder: (_) => [
-        if (AgentCli.supported)
+        if (AgentCli.supported && provider.canUseCliAi)
           PopupMenuItem<String>(
             value: provider.useCliAi ? '__api__' : '__cli__',
             child: Row(children: [
@@ -1115,7 +1127,8 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
                 ]),
               ),
             ),
-        if (AgentCli.supported) const PopupMenuDivider(height: 8),
+        if (AgentCli.supported && provider.canUseCliAi)
+          const PopupMenuDivider(height: 8),
         for (final m in models)
           PopupMenuItem<String>(
             value: '${m['id']}',
@@ -1962,10 +1975,9 @@ $snap'''}
       final fence = RegExp(r'```[a-zA-Z]*\s*\n([\s\S]*?)\n?```');
       final fm = fence.firstMatch(body);
       if (fm != null) body = fm.group(1) ?? body;
-      final s = body.indexOf('{');
-      final e = body.lastIndexOf('}');
-      if (s < 0 || e <= s) throw Exception(provider.t('aiflow.failed'));
-      final m = jsonDecode(body.substring(s, e + 1));
+      final only = _extractJsonObject(body);
+      if (only == null) throw Exception(provider.t('aiflow.failed'));
+      final m = jsonDecode(only);
       final list = (m is Map ? m['steps'] : null);
       if (list is! List || list.isEmpty) {
         throw Exception(provider.t('aiflow.failed'));
@@ -2117,13 +2129,22 @@ $snap'''}
   void _agentFail(MindMapProvider provider, String key, String detail) {
     if (!mounted) return;
     final d = detail.trim();
+    // ★ 出すのは**終わりの方**。 頭を出すと、 CLI の飾りの帯や
+    //   「頼んだ文の写し」 しか見えず、 何が悪かったのか分からなかった
+    //   (= ユーザー報告: 何も作られないまま終わる)。
     final tail = d.isEmpty
         ? ''
-        : ' / ${d.length > 160 ? '${d.substring(0, 160)}…' : d}';
+        : ' / ${d.length > 160 ? '…${d.substring(d.length - 160)}' : d}';
     // 失敗は記録にも残す (= ユーザー要望: 開発のテストに使いたい)。
     //   画面の 1 行と違い、 こちらは返事の全文を残す。
     _log('失敗', provider.t(key) + (d.isEmpty ? '' : '\n    $d'));
     setState(() => _status = provider.t(key) + tail);
+    // ★ 小さな 1 行だけでは気付けないので、 記録の窓をそのまま開く
+    //   (= ユーザー報告: 何も起きないまま終わったように見える)。
+    //   `_logPanelOpen` を立てるやり方は取らない — あれは「記録の窓が
+    //   開いている間だけ描き直す」 ための印で、 立てっぱなしにすると
+    //   以後ずっと 1 行ごとに画面を組み直してしまう (= 点検で判明)。
+    _showRunLog();
   }
 
   /// 画面を見ながら、 1 手ずつ考えて実行する。
@@ -2264,15 +2285,14 @@ ${_pcContext(req)}
         final fence = RegExp(r'```[a-zA-Z]*\s*\n([\s\S]*?)\n?```');
         final fm = fence.firstMatch(body);
         if (fm != null) body = fm.group(1) ?? body;
-        final s = body.indexOf('{');
-        final e = body.lastIndexOf('}');
-        if (s < 0 || e <= s) {
+        final only = _extractJsonObject(body);
+        if (only == null) {
           _agentFail(provider, 'agent.errFormat', out);
           break;
         }
         Object? m;
         try {
-          m = jsonDecode(body.substring(s, e + 1));
+          m = jsonDecode(only);
         } catch (_) {
           _agentFail(provider, 'agent.errFormat', out);
           break;
@@ -2996,16 +3016,21 @@ ${_pcContext(req)}
   }
 
   /// 既定のブラウザでページを開く。
+  ///
+  /// ★ 以前は `cmd /c start …` を撃っていた。 画面のあるアプリが黙って
+  ///   `cmd.exe` を起こす形はセキュリティソフトに咎められる
+  ///   (= ユーザー報告「悪意のあるプロセスがブロックされました」)。
+  ///   `url_launcher` は中で `ShellExecute` を呼ぶだけなので、 外の
+  ///   プログラムは 1 つも立たない。
   Future<void> _openInOsBrowser(String url) async {
     if (!_isDesktopHost) return;
     try {
-      if (Platform.isWindows) {
-        await Process.run('cmd', ['/c', 'start', '', url]);
-      } else if (Platform.isMacOS) {
-        await Process.run('open', [url]);
-      } else {
-        await Process.run('xdg-open', [url]);
+      final uri = Uri.tryParse(url);
+      if (uri != null &&
+          await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+        return;
       }
+      if (mounted) setState(() => _status = 'ブラウザを開けませんでした');
     } catch (e) {
       if (mounted) setState(() => _status = 'ブラウザを開けませんでした: $e');
     }
@@ -3996,6 +4021,73 @@ ${_pcContext(req)}
   /// メッセージを表示できるように)。
   ///
   /// JSON だけを返す作りなので、 そのままだと読みにくい。 手順以外に
+  /// 返事の中から、 **本当に読める** JSON の物を 1 つ取り出す。
+  ///
+  /// ★ = ユーザー報告「PC 内の codex から自動操作のフロー作成指示を出しても
+  ///   何もフローが作成されないまま終了する」。
+  ///   以前は「最初の `{` から最後の `}` まで」 を切り出していた。 相手が
+  ///   本文だけを返す時はそれで足りるが、 codex の `exec` は標準出力に
+  ///   **頼んだ文をそのまま書き写す**。 こちらの指示文には手本として
+  ///   `{"steps":[…]}` が入っているので、 最初の `{` が書き写しの中に
+  ///   当たり、 飾りの帯から独り言までを丸ごと囲った文字列になって、
+  ///   毎回 JSON として読めずに 0 手で終わっていた。
+  ///
+  ///   そこで**後ろから**閉じ括弧を探し、 対応する開き括弧まで戻って
+  ///   1 つの物として読めるかを試す。 読めなければ 1 つ前の候補へ。
+  ///   返事の最後にある物が本命なので、 これで確実に当たる。
+  static String? _extractJsonObject(String raw) {
+    final t = raw;
+    String? last;
+    var i = 0;
+    while (i < t.length) {
+      if (t[i] != '{') {
+        i++;
+        continue;
+      }
+      // 文字列の中身は数えないようにしながら、 頭から括弧を勘定する。
+      var depth = 0;
+      var inStr = false;
+      var esc = false;
+      var end = -1;
+      for (var j = i; j < t.length; j++) {
+        final c = t[j];
+        if (inStr) {
+          if (esc) {
+            esc = false;
+          } else if (c == r'\') {
+            esc = true;
+          } else if (c == '"') {
+            inStr = false;
+          }
+          continue;
+        }
+        if (c == '"') {
+          inStr = true;
+        } else if (c == '{') {
+          depth++;
+        } else if (c == '}') {
+          depth--;
+          if (depth == 0) {
+            end = j;
+            break;
+          }
+        }
+      }
+      if (end < 0) break; // 閉じきっていない = これより先に塊は無い
+      final cand = t.substring(i, end + 1);
+      try {
+        jsonDecode(cand);
+        // 読めた。 ただし本命は**最後**なので、 覚えておいて先へ進む
+        //   (書き写された手本が前に来るため)。
+        last = cand;
+      } catch (_) {
+        // 読めない塊 (省略を含む手本など) は捨てる。
+      }
+      i = end + 1; // 入れ子の中は見ない
+    }
+    return last;
+  }
+
   /// 何か書いてあれば、 その部分を「ひとこと」 として拾う。
   void _noteAiMessage(String raw) {
     final t = raw.trim();
@@ -4024,10 +4116,9 @@ ${_pcContext(req)}
   /// 手順だけの返事を「〜を N 手」 の形に要約する。
   String _briefOfStepsJson(String raw) {
     try {
-      final s = raw.indexOf('{');
-      final e = raw.lastIndexOf('}');
-      if (s < 0 || e <= s) return '';
-      final m = jsonDecode(raw.substring(s, e + 1));
+      final only = _extractJsonObject(raw);
+      if (only == null) return '';
+      final m = jsonDecode(only);
       if (m is! Map) return '';
       if (m['done'] == true) return '(完了と判断しました)';
       final list = m['steps'];
@@ -7098,7 +7189,23 @@ ${_pcContext(req)}
         );
         // ★ 高さを決めた時も巻物にする (= 決めた高さが窓より高い時に
         //   はみ出さないように)。
-        return fixedSteps ? SingleChildScrollView(child: body) : body;
+        final inner = fixedSteps ? SingleChildScrollView(child: body) : body;
+        // ★ 広すぎる時は横を詰めて真ん中へ (= ユーザー要望: 全画面だと
+        //   横に伸びすぎて操作しづらい)。 背景は外の Container が端まで
+        //   塗っているので、 左右が白抜けたようには見えない。
+        final maxW = cons.maxWidth.isFinite
+            ? (cons.maxWidth < _kMaxContentWidth
+                ? cons.maxWidth
+                : _kMaxContentWidth)
+            : _kMaxContentWidth;
+        if (maxW >= cons.maxWidth) return inner;
+        return Align(
+          alignment: Alignment.topCenter,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: maxW),
+            child: inner,
+          ),
+        );
       }),
     );
   }

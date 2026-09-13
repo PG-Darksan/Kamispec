@@ -168,21 +168,77 @@ class AgentTerminalState extends State<AgentTerminal> {
 
   AgentCliSession get _s => widget.session;
 
+  // ── 打ち込み先を CLI から返す (= ユーザー報告: 「codexCLI などが開いて
+  //    いる時にページ要素を編集しようとすると codex 側に吸われてしまって
+  //    要素を上手く編集することができない」) ──
+  //
+  //   この端末は、 かな漢字変換のために **見えない入力欄**を端末の上に
+  //   重ねている (xterm 自身の受け口は使っていない)。 その入力欄が
+  //   ・`autofocus: true`
+  //   ・`onTapOutside: (_) {}` (= 外を押しても焦点を離さない)
+  //   ・700ms ごとに焦点を取り戻す見張り
+  //   の 3 段構えで焦点を抱え込んでいたため、 要素の名前を書き換えようと
+  //   すると 0.7 秒以内に焦点を奪われ、 打った文字がそのまま CLI へ
+  //   流れ込んでいた (しかも要素の編集欄は焦点を失うと自分で閉じる)。
+  //
+  //   そこで「利用者が自分で外へ出た」 という掛け金を持つ。 掛かっている
+  //   間は焦点を取り戻さない。 端末をもう一度押せば外れる。
+  bool _userLeft = false;
+
+  /// いま画面に出ている端末たち (= 画面側から焦点を返させるため)。
+  static final Set<AgentTerminalState> live = <AgentTerminalState>{};
+
+  /// キーボードを手放す (画面側がキャンバスを押した時などに呼ぶ)。
+  void releaseKeyboard() {
+    _userLeft = true;
+    if (_inputFocus.hasFocus) _inputFocus.unfocus();
+  }
+
+  /// 端末に戻ってきた (押された) ので、 また打てるようにする。
+  void _returnToTerminal() {
+    _userLeft = false;
+    _grabInput();
+  }
+
   @override
   void initState() {
     super.initState();
+    live.add(this);
     _s.addListener(_onChanged);
     _inputCtrl.addListener(_onInputChanged);
     _scroll.addListener(_onScroll);
     _grabFocusSoon();
     // ★ 焦点が何かの拍子に他所へ移ると、 そこから先ずっと打てなくなる。
     //   下の欄を書いている時以外は、 打ち込み口に焦点を戻し続ける。
+    //   ただし**利用者が自分で外へ出た時は戻さない** (上の経緯)。
     _focusWatch = Timer.periodic(const Duration(milliseconds: 700), (_) {
       if (!mounted || !_s.running) return;
+      if (_userLeft) return;
       if (_queueFocus.hasFocus) return;
       if (_inputFocus.hasPrimaryFocus) return;
+      // 他所の入力欄 (要素の名前など) が使われている間も横取りしない。
+      if (_otherEditorHasFocus()) {
+        _userLeft = true;
+        return;
+      }
       _inputFocus.requestFocus();
     });
+  }
+
+  /// この端末の外にある入力欄が、 いま打ち込みを受けているか。
+  bool _otherEditorHasFocus() {
+    final p = FocusManager.instance.primaryFocus;
+    if (p == null) return false;
+    if (p == _inputFocus || p == _queueFocus || p == _termFocus) return false;
+    // この端末の中の欄なら横取りではない。
+    final ctx = p.context;
+    if (ctx != null &&
+        ctx.findAncestorStateOfType<AgentTerminalState>() == this) {
+      return false;
+    }
+    // 文字を打てる所が持っているかどうかだけ見る (ボタン等は無視)。
+    return p.context?.widget is EditableText ||
+        ctx?.findAncestorWidgetOfExactType<EditableText>() != null;
   }
 
   Timer? _focusWatch;
@@ -199,6 +255,7 @@ class AgentTerminalState extends State<AgentTerminal> {
 
   @override
   void dispose() {
+    live.remove(this);
     // ★ ここで止めない (= ユーザー要望: 欄を閉じても裏で動き続ける)。
     _s.removeListener(_onChanged);
     _scroll.removeListener(_onScroll);
@@ -247,6 +304,8 @@ class AgentTerminalState extends State<AgentTerminal> {
     for (final ms in const [0, 120, 400, 900]) {
       Future<void>.delayed(Duration(milliseconds: ms), () {
         if (!mounted || !_s.running) return;
+        // 利用者が既に他所を触っている時は横取りしない (= 上の経緯)。
+        if (_userLeft || _otherEditorHasFocus()) return;
         _grabInput();
         _syncCursorPos();
       });
@@ -890,7 +949,7 @@ class AgentTerminalState extends State<AgentTerminal> {
                       focusNode: _termFocus,
                       scrollController: _scroll,
                       autofocus: false,
-                      onTapUp: (_, __) => _grabInput(),
+                      onTapUp: (_, __) => _returnToTerminal(),
                       padding: const EdgeInsets.fromLTRB(10, 8, 16, 8),
                       textStyle: const TerminalStyle(
                         fontSize: 12,
@@ -938,7 +997,26 @@ class AgentTerminalState extends State<AgentTerminal> {
                           //   失っていた。 焦点が無ければ文字の受け口も閉じ、
                           //   かな漢字変換は始まりようがない。 半角だけ打てて
                           //   いたのは、 押鍵から直に送る保険が働いていたため。
-                          onTapOutside: (_) {},
+                          // ★ とはいえ「何があっても離さない」 は行き過ぎで、
+                          //   ページの要素を書き換えようとしても打った字が
+                          //   CLI へ吸われてしまっていた (= ユーザー報告)。
+                          //   押された所がこの端末の中かどうかで分ける。
+                          //   中なら抱えたまま (変換を切らさない)、 外なら返す。
+                          onTapOutside: (e) {
+                            final box =
+                                context.findRenderObject() as RenderBox?;
+                            if (box != null && box.hasSize) {
+                              final p = box.globalToLocal(e.position);
+                              if (p.dx >= 0 &&
+                                  p.dy >= 0 &&
+                                  p.dx <= box.size.width &&
+                                  p.dy <= box.size.height) {
+                                _returnToTerminal();
+                                return;
+                              }
+                            }
+                            releaseKeyboard();
+                          },
                           enableInteractiveSelection: false,
                           minLines: 1,
                           maxLines: 4,
@@ -1026,16 +1104,10 @@ class AgentTerminalState extends State<AgentTerminal> {
                           ' すぐ受け付けて、 次のひと押しから効きます',
                       command: '/effort',
                       enabled: running),
-                  _cmdButton(
-                      label: '使用量',
-                      icon: Icons.donut_small_rounded,
-                      tip: 'プランの使用量と残りを出す (/usage)',
-                      command: '/usage',
-                      enabled: running),
-                ],
-                // ★ いまの会話で投げた指示の一覧 (= ユーザー要望:
-                //   別のセッションではなく、 いまの会話履歴)。
-                if (slash)
+                  // ★ 並びは 左から モデル → 推論 → 履歴 → 使用量
+                  //   (= ユーザー要望)。 よく使う物を左に寄せる。
+                  //   いまの会話で投げた指示の一覧 (別のセッションではなく、
+                  //   いまの会話履歴)。
                   Padding(
                     padding: const EdgeInsets.only(right: 6),
                     child: Tooltip(
@@ -1062,9 +1134,42 @@ class AgentTerminalState extends State<AgentTerminal> {
                       ),
                     ),
                   ),
+                  _cmdButton(
+                      label: '使用量',
+                      icon: Icons.donut_small_rounded,
+                      tip: 'プランの使用量と残りを出す (/usage)',
+                      command: '/usage',
+                      enabled: running),
+                ],
               ]),
             ),
           ),
+          // ── 処理を止める (= ユーザー要望: 処理が始まったら出す) ──
+          //    CLI そのものは閉じない。 どの CLI も走っている処理を
+          //    打ち切るのは Esc なので、 それを送るだけ。
+          //    「終了」 (右) は CLI ごと閉じるボタンで、 別物。
+          if (running && _s.busy)
+            Padding(
+              padding: const EdgeInsets.only(right: 4),
+              child: Tooltip(
+                message: 'いま走っている処理を止める (Esc)',
+                child: TextButton.icon(
+                  style: TextButton.styleFrom(
+                    foregroundColor: const Color(0xFFE57373),
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    minimumSize: const Size(0, 28),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  icon: const Icon(Icons.stop_circle_outlined, size: 14),
+                  label: const Text('停止', style: TextStyle(fontSize: 11)),
+                  onPressed: () {
+                    _s.sendRaw('\x1b');
+                    _returnToTerminal();
+                  },
+                ),
+              ),
+            ),
           // ★ 言語はあまり使わないので終了の左へ (= ユーザー要望)。
           if (slash && widget.onPickLanguage != null)
             Padding(
@@ -1083,10 +1188,10 @@ class AgentTerminalState extends State<AgentTerminal> {
             ),
           // ★ 動いている間は「終了」、 終わったら「もう一度」 に変わる。
           //   これは走っている処理を打ち切るボタンではなく、 CLI そのものを
-          //   閉じるボタン。 処理を止めたい時は端末の中で Esc。
+          //   閉じるボタン。 処理を止めたい時は左に出る「停止」。
           if (running)
             Tooltip(
-              message: 'CLI を閉じて一覧へ戻る (処理を止めたい時は Esc)',
+              message: 'CLI を閉じて一覧へ戻る (処理だけ止めるなら「停止」)',
               child: TextButton.icon(
                 style: TextButton.styleFrom(
                   foregroundColor: const Color(0xFFFF8A80),

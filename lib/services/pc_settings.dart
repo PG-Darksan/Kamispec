@@ -324,6 +324,44 @@ class PcSettings {
   static _SpiDart get _spi => _spiFn ??=
       _user32.lookupFunction<_SpiNative, _SpiDart>('SystemParametersInfoW');
 
+  // ── サインイン時に立ち上げる登録 (HKCU の Run) ─────────────────────
+  //
+  // ★ = ユーザー報告「悪意のあるプロセスがブロックされましたとしょっちゅう
+  //   出る」。 以前は `reg.exe add` / `reg.exe delete` を起こして書いて
+  //   いた。 「サインイン時に実行」 への書き込みは、 どのセキュリティ
+  //   ソフトでも最も重く見る所で、 そこへ **わざわざ外のプログラム
+  //   (reg.exe) を立てて**書くと、 見え方が一段と悪くなる。
+  //   このファイルの頭に書いてある決まりのとおり、 アプリの中で書く。
+
+  static const String _kRunKey =
+      r'Software\Microsoft\Windows\CurrentVersion\Run';
+
+  /// サインイン時に立ち上げる登録を入れる / 外す。 戻り値は成否。
+  static bool setRunAtLogon(String name, String? command) {
+    if (!isSupported) return true;
+    RegistryKey? key;
+    try {
+      key = Registry.openPath(RegistryHive.currentUser,
+          path: _kRunKey, desiredAccessRights: AccessRights.allAccess);
+      if (command == null) {
+        try {
+          key.deleteValue(name);
+        } catch (_) {
+          // もともと無いだけ。 消えている事に変わりはない。
+        }
+        return true;
+      }
+      key.createValue(RegistryValue.string(name, command));
+      return true;
+    } catch (_) {
+      return false;
+    } finally {
+      try {
+        key?.close();
+      } catch (_) {}
+    }
+  }
+
   // ── Windows の見た目 (明るい / 暗い) ───────────────────────────────
   //
   // ★ = ユーザー要望「PC 自体のダークモードとの切り替えもアプリの
