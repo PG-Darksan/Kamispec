@@ -52,6 +52,7 @@ import '../services/ic_card_reader.dart';
 // 面接練習・ロールプレイの下調べ (Web + 手元の資料ファイル)。
 import '../services/talk_reference.dart';
 import '../services/pdf_markup.dart';
+import '../services/recycle_bin.dart';
 import '../utils/gantt_time_utils.dart';
 import '../utils/build_flags.dart';
 import '../utils/embedded_oauth_guard.dart';
@@ -2563,6 +2564,11 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// フォルダーを選択した状態で「・・・」メニュー → 一括削除等が可能
   Set<String> _drawerSelectedFolderIds = {};
 
+  /// ディスクに置いてあるファイルの複数選択 (= ユーザー要望: 手動で消したり
+  /// 複数選択できるように)。 中身は絶対の道筋。 ページ / フォルダーとは
+  /// 別管理にする (消し方も出来ることも別物なので)。
+  final Set<String> _drawerSelectedFilePaths = <String>{};
+
   /// Shift + クリックでの範囲選択用に、最後に単独選択したアンカーの
   /// drawer 上のフラットインデックス (0 始まり) を保持。
   /// drawer の表示順 (フォルダー → そのページ群 → ルートページ群) で連番。
@@ -2646,6 +2652,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         //   消せてしまう)。 範囲選択の基準も捨てる。
         _drawerSelectedPageIds.clear();
         _drawerSelectedFolderIds.clear();
+        _drawerSelectedFilePaths.clear();
         _drawerLastAnchorIndex = null;
       });
       // Ctrl+1〜9 や MCP もここを見るので、 provider へ写す。
@@ -2753,7 +2760,9 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// ページとフォルダー、どちらかが選択されていれば複数選択モード扱い
   bool get _drawerMultiSelectActive =>
-      _drawerSelectedPageIds.isNotEmpty || _drawerSelectedFolderIds.isNotEmpty;
+      _drawerSelectedPageIds.isNotEmpty ||
+      _drawerSelectedFolderIds.isNotEmpty ||
+      _drawerSelectedFilePaths.isNotEmpty;
 
   /// drawer のページ一覧用スクロールコントローラー。
   /// マップが大量に増えた時に RawScrollbar を白系で常時表示するために使う。
@@ -60697,6 +60706,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                   setState(() {
                     _drawerSelectedPageIds.clear();
                     _drawerSelectedFolderIds.clear();
+                    _drawerSelectedFilePaths.clear();
                     _drawerLastAnchorIndex = null;
                   });
                 }
@@ -69664,6 +69674,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                 setState(() {
                   _drawerSelectedPageIds.clear();
                   _drawerSelectedFolderIds.clear();
+                  _drawerSelectedFilePaths.clear();
                   _drawerLastAnchorIndex = null;
                 });
                 return KeyEventResult.handled;
@@ -69834,6 +69845,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                     if (_drawerMultiSelectActive) {
                       _drawerSelectedPageIds.clear();
                       _drawerSelectedFolderIds.clear();
+                      _drawerSelectedFilePaths.clear();
                       _drawerLastAnchorIndex = null;
                     } else {
                       _drawerSelectedPageIds.add(provider.currentPage.id);
@@ -70056,36 +70068,121 @@ class _MindMapScreenState extends State<MindMapScreen>
         : Icons.insert_drive_file_rounded;
     switch (ext) {
       case 'pptx':
+      case 'pptm':
       case 'ppt':
+      case 'odp':
         return (icon, const Color(0xFFFF7043));
       case 'xlsx':
+      case 'xlsm':
       case 'xls':
+      case 'ods':
       case 'csv':
       case 'tsv':
         return (icon, const Color(0xFF43B97F));
       case 'docx':
       case 'doc':
+      case 'odt':
       case 'rtf':
         return (icon, const Color(0xFF4FC3F7));
       case 'md':
       case 'markdown':
       case 'txt':
       case 'json':
+      case 'yaml':
+      case 'yml':
+      case 'xml':
+      case 'log':
+      case 'ini':
+      case 'rst':
         return (icon, const Color(0xFF5FD3B2));
       case 'pdf':
         return (icon, const Color(0xFFE57373));
+      // ★ 画像は綴りの違いで見た目が変わらないよう、 まとめて拾う
+      //   (= ユーザー報告: 一部のファイルだけ表示が違う。 .png は絵の印なのに
+      //   .jpe が素っ気ない印になっていた)。
       case 'png':
       case 'jpg':
       case 'jpeg':
+      case 'jpe':
+      case 'jfif':
       case 'gif':
       case 'webp':
       case 'bmp':
+      case 'tif':
+      case 'tiff':
+      case 'ico':
+      case 'heic':
+      case 'heif':
+      case 'avif':
+      case 'svg':
         return (Icons.image_rounded, const Color(0xFFBA68C8));
       case 'mp4':
       case 'mov':
       case 'avi':
       case 'mkv':
+      case 'webm':
+      case 'wmv':
+      case 'flv':
+      case 'm4v':
+      case 'mpg':
+      case 'mpeg':
+      case 'ts':
         return (Icons.movie_rounded, const Color(0xFFFFB347));
+      case 'mp3':
+      case 'wav':
+      case 'm4a':
+      case 'aac':
+      case 'flac':
+      case 'ogg':
+      case 'opus':
+      case 'wma':
+        return (Icons.audiotrack_rounded, const Color(0xFF4DD0E1));
+      case 'zip':
+      case '7z':
+      case 'rar':
+      case 'tar':
+      case 'gz':
+      case 'xz':
+      case 'bz2':
+        return (Icons.folder_zip_rounded, const Color(0xFFA1887F));
+      // ショートカット (= デスクトップに一番多い種類)。 素っ気ない印のまま
+      // 並ぶと「この行だけ違う」 に見えるので、 これも専用の印にする。
+      case 'lnk':
+      case 'url':
+      case 'webloc':
+        return (Icons.link_rounded, const Color(0xFF9FA8DA));
+      case 'exe':
+      case 'msi':
+      case 'bat':
+      case 'cmd':
+      case 'ps1':
+      case 'com':
+      case 'msix':
+        return (Icons.terminal_rounded, const Color(0xFFEF9A9A));
+      case 'html':
+      case 'htm':
+        return (Icons.public_rounded, const Color(0xFF4FC3F7));
+      case 'dart':
+      case 'py':
+      case 'js':
+      case 'java':
+      case 'kt':
+      case 'c':
+      case 'cpp':
+      case 'h':
+      case 'cs':
+      case 'go':
+      case 'rs':
+      case 'rb':
+      case 'php':
+      case 'sh':
+      case 'css':
+        return (Icons.code_rounded, const Color(0xFF80CBC4));
+      case 'ttf':
+      case 'otf':
+      case 'woff':
+      case 'woff2':
+        return (Icons.font_download_rounded, const Color(0xFFCE93D8));
       default:
         return (icon, const Color(0xFF90A4AE));
     }
@@ -70130,12 +70227,21 @@ class _MindMapScreenState extends State<MindMapScreen>
     //    「種類 · 大きさ · 更新日時」 の副題 + 右端の ⋮。
     final baseColor = provider.headerColor;
     final (fileIcon, fileColor) = _diskRowIcon(e.ext);
+    // ★ 複数選択 (= ユーザー要望: 手動で消したり複数選択できるように)。
+    //   ページの選択と同じ見た目 (シアン) にそろえる。
+    final picked = _drawerSelectedFilePaths.contains(e.path);
     final row = Container(
       margin: EdgeInsets.fromLTRB(8 + indent, 2, 8, 2),
       decoration: BoxDecoration(
-        color: baseColor.withValues(alpha: 0.16),
+        color: picked
+            ? const Color(0xFF00E5FF).withValues(alpha: 0.18)
+            : baseColor.withValues(alpha: 0.16),
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: baseColor.withValues(alpha: 0.22)),
+        border: Border.all(
+            color: picked
+                ? const Color(0xFF00E5FF).withValues(alpha: 0.6)
+                : baseColor.withValues(alpha: 0.22),
+            width: picked ? 1.5 : 1.0),
       ),
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
@@ -70197,9 +70303,17 @@ class _MindMapScreenState extends State<MindMapScreen>
               iconSize: 16,
               constraints:
                   const BoxConstraints(minWidth: 24, minHeight: 24),
-              icon: const Icon(Icons.more_vert,
-                  color: Colors.white30, size: 16),
+              icon: Icon(
+                  picked ? Icons.check_circle_rounded : Icons.more_vert,
+                  color: picked
+                      ? const Color(0xFF00E5FF)
+                      : Colors.white30,
+                  size: 16),
               onPressed: () {
+                if (picked) {
+                  setState(() => _drawerSelectedFilePaths.remove(e.path));
+                  return;
+                }
                 final box = btnCtx.findRenderObject();
                 final at = (box is RenderBox && box.attached)
                     ? box.localToGlobal(box.size.center(Offset.zero))
@@ -70208,7 +70322,26 @@ class _MindMapScreenState extends State<MindMapScreen>
               },
             );
           }),
-          onTap: () => unawaited(_openAttachment(e.path)),
+          // 選んでいる最中は、 押すと選び足す / 選び外す。
+          // 何も選んでいなければ、 今までどおり開く。
+          // Ctrl (または Shift) 押しでは、 いつでも選び足せる。
+          onTap: () {
+            final add = HardwareKeyboard.instance.isControlPressed ||
+                HardwareKeyboard.instance.isShiftPressed ||
+                HardwareKeyboard.instance.isMetaPressed;
+            if (_drawerSelectedFilePaths.isNotEmpty || add) {
+              setState(() {
+                if (!_drawerSelectedFilePaths.remove(e.path)) {
+                  _drawerSelectedFilePaths.add(e.path);
+                }
+              });
+              return;
+            }
+            unawaited(_openAttachment(e.path));
+          },
+          // 長押しで選び始める (携帯でも選べるように)。
+          onLongPress: () =>
+              setState(() => _drawerSelectedFilePaths.add(e.path)),
         ),
       ),
     );
@@ -70286,6 +70419,13 @@ class _MindMapScreenState extends State<MindMapScreen>
             icon: Icons.folder_open_rounded,
             iconColor: const Color(0xFF4FC3F7),
             label: provider.t('folder.openInOs')),
+        // ★ 消す (= ユーザー要望: 手動でも消せないのは変)。
+        //   ごみ箱へ送るので、 押し間違えても Windows 側から戻せる。
+        _menuItem<String>(
+            value: 'delete',
+            icon: Icons.delete_outline_rounded,
+            iconColor: const Color(0xFFFF6B6B),
+            label: provider.t('disk.delete')),
       ],
     ).then((v) {
       if (v == null || !mounted) return;
@@ -70311,8 +70451,108 @@ class _MindMapScreenState extends State<MindMapScreen>
             : e.path.substring(
                 0, e.path.lastIndexOf(Platform.pathSeparator).clamp(0, e.path.length));
         unawaited(_revealDirectory(dir));
+      } else if (v == 'delete') {
+        unawaited(_deleteDiskEntries(provider, [e.path]));
       }
     });
+  }
+
+  /// ディスクのファイル / フォルダーを消す (= ユーザー要望)。
+  ///
+  /// ★ まず**ごみ箱へ送る**。 ここに並んでいるのは利用者自身のデスクトップや
+  ///   書類の中身なので、 取り返しが付かない消し方は選ばない。
+  ///   ごみ箱へ送れない環境 (Windows 以外) と、 送るのに失敗した時だけ、
+  ///   「完全に消してよいか」 を改めてたずねる。
+  Future<void> _deleteDiskEntries(
+      MindMapProvider provider, List<String> paths) async {
+    final list = paths.where((e) => e.trim().isNotEmpty).toSet().toList();
+    if (list.isEmpty || !mounted) return;
+    final sep = Platform.pathSeparator;
+    String nameOf(String x) =>
+        x.contains(sep) ? x.substring(x.lastIndexOf(sep) + 1) : x;
+    // 何を消すのかを必ず見せる (多い時は先頭だけ + 残りの件数)。
+    final shown = list.take(6).map(nameOf).join('\n');
+    final more = list.length > 6 ? '\n… +${list.length - 6}' : '';
+    final toBin = RecycleBin.isSupported;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF24243A),
+        title: Text(
+            provider
+                .t(toBin ? 'disk.deleteToBinTitle' : 'disk.deleteForeverTitle')
+                .replaceFirst('{n}', '${list.length}'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
+        content: Text('$shown$more',
+            style: const TextStyle(color: Colors.white70, fontSize: 12.5)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, false),
+            child: Text(provider.t('btn.cancel'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, true),
+            child: Text(provider.t(toBin ? 'disk.toBin' : 'btn.delete'),
+                style: const TextStyle(color: Color(0xFFFF6B6B))),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    var done = false;
+    if (toBin) {
+      final r = RecycleBin.send(list);
+      done = r == RecycleResult.recycled;
+      if (r == RecycleResult.failed && mounted) {
+        // ごみ箱へ入らなかった。 完全に消してよいか、 改めてたずねる。
+        final hard = await showDialog<bool>(
+          context: context,
+          builder: (dctx) => AlertDialog(
+            backgroundColor: const Color(0xFF24243A),
+            title: Text(provider.t('disk.binFailedTitle'),
+                style: const TextStyle(color: Colors.white, fontSize: 15)),
+            content: Text(provider.t('disk.binFailedBody'),
+                style: const TextStyle(color: Colors.white70, fontSize: 13)),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dctx, false),
+                child: Text(provider.t('btn.cancel'),
+                    style: const TextStyle(color: Colors.white54)),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(dctx, true),
+                child: Text(provider.t('disk.deleteForever'),
+                    style: const TextStyle(color: Color(0xFFFF6B6B))),
+              ),
+            ],
+          ),
+        );
+        if (hard == true) done = await RecycleBin.deleteForever(list);
+      }
+    } else {
+      done = await RecycleBin.deleteForever(list);
+    }
+    if (!mounted) return;
+    // 選択を解いて、 消えた分を一覧から落とす。
+    setState(() => _drawerSelectedFilePaths.removeAll(list));
+    final dirs = <String>{};
+    for (final x in list) {
+      final i = x.lastIndexOf(sep);
+      if (i > 0) dirs.add(x.substring(0, i));
+      // 消した物の「中身のさわり」 の控えも捨てる。
+      DocPreview.invalidate(x);
+      FileImage(File(x)).evict();
+    }
+    for (final d in dirs) {
+      _refreshDiskDir(d);
+    }
+    showTopToast(
+        context,
+        provider
+            .t(done ? 'disk.deleted' : 'disk.deleteFailed')
+            .replaceFirst('{n}', '${list.length}'),
+        done ? const Color(0xFF43B97F) : const Color(0xFFE53935));
   }
 
   /// ディスクのファイルを今のページへ埋め込む。
@@ -70576,6 +70816,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         setState(() {
           _drawerSelectedPageIds.clear();
           _drawerSelectedFolderIds.clear();
+          _drawerSelectedFilePaths.clear();
           _drawerLastAnchorIndex = null;
         });
       },
@@ -70637,9 +70878,13 @@ class _MindMapScreenState extends State<MindMapScreen>
             _drawerSelectedPageIds.contains(p.id) &&
             MindMapProvider.isLiveSharablePageType(p.pageType))
         .length;
+    // ディスクのファイルを選んでいる数 (= ユーザー要望)。
+    final fileCount = _drawerSelectedFilePaths.length;
     // 表示テキスト: ページとフォルダーの数をどちらも考慮
     String label;
-    if (pageCount > 0 && folderCount > 0) {
+    if (fileCount > 0 && pageCount == 0 && folderCount == 0) {
+      label = '$fileCount ${provider.t('drawer.filesSelected')}';
+    } else if (pageCount > 0 && folderCount > 0) {
       label =
           '$pageCount ${provider.t('drawer.selectedSuffix')} + $folderCount${provider.t('drawer.foldersSelected')}';
     } else if (folderCount > 0) {
@@ -70679,6 +70924,19 @@ class _MindMapScreenState extends State<MindMapScreen>
             scrollDirection: Axis.horizontal,
             reverse: true,
             child: Row(mainAxisSize: MainAxisSize.min, children: [
+        // ★ 選んだファイルをまとめて消す (= ユーザー要望)。
+        //   ごみ箱へ送るので、 押し間違えても Windows 側から戻せる。
+        if (fileCount > 0)
+          Tooltip(
+            message: provider.t('disk.delete'),
+            child: IconButton(
+              icon: const Icon(Icons.delete_outline_rounded,
+                  color: Color(0xFFFF6B6B), size: 22),
+              tooltip: provider.t('disk.delete'),
+              onPressed: () => unawaited(_deleteDiskEntries(
+                  provider, _drawerSelectedFilePaths.toList())),
+            ),
+          ),
         // 「サブフォルダーへ格納」 (Ctrl+G と同じ動作) — ページのみの場合
         Tooltip(
           message: '${provider.t('drawer.tip.groupIntoFolder')} (Ctrl+G)',
@@ -70761,6 +71019,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             onPressed: () => setState(() {
               _drawerSelectedPageIds.clear();
               _drawerSelectedFolderIds.clear();
+              _drawerSelectedFilePaths.clear();
               _drawerLastAnchorIndex = null;
             }),
           ),
@@ -70936,6 +71195,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       setState(() {
         _drawerSelectedPageIds.clear();
         _drawerSelectedFolderIds.clear();
+        _drawerSelectedFilePaths.clear();
         _drawerLastAnchorIndex = null;
       });
       _scaffoldKey.currentState?.closeDrawer();
@@ -71525,6 +71785,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           setState(() {
             _drawerSelectedPageIds.clear();
             _drawerSelectedFolderIds.clear();
+            _drawerSelectedFilePaths.clear();
             _drawerLastAnchorIndex = null;
           });
         }
@@ -71622,6 +71883,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             setState(() {
               _drawerSelectedPageIds.clear();
               _drawerSelectedFolderIds.clear();
+              _drawerSelectedFilePaths.clear();
               _drawerLastAnchorIndex = null;
             });
           },
@@ -88712,6 +88974,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     setState(() {
       _drawerSelectedPageIds.clear();
       _drawerSelectedFolderIds.clear();
+      _drawerSelectedFilePaths.clear();
     });
 
     // ── 結果: ページごとの共有コード一覧 (まとめてコピー付き) ──
@@ -96970,6 +97233,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     setState(() {
       _drawerSelectedPageIds.clear();
       _drawerSelectedFolderIds.clear();
+      _drawerSelectedFilePaths.clear();
       _drawerLastAnchorIndex = null;
     });
   }

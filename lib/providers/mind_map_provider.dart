@@ -48845,6 +48845,127 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Abrir com outro app',
       'ru': 'Открыть в другом приложении',
     },
+    // ── ディスクのファイルを消す (= ユーザー要望: 手動でも消せないのは変) ──
+    //    Windows では「ごみ箱へ送る」。 送れなかった時だけ、 完全に消して
+    //    よいか改めてたずねる。
+    'disk.delete': {
+      'ja': '消す',
+      'en': 'Delete',
+      'zh': '删除',
+      'ko': '삭제',
+      'es': 'Eliminar',
+      'fr': 'Supprimer',
+      'de': 'Löschen',
+      'pt': 'Excluir',
+      'ru': 'Удалить',
+    },
+    'disk.toBin': {
+      'ja': 'ごみ箱へ送る',
+      'en': 'Move to Recycle Bin',
+      'zh': '移到回收站',
+      'ko': '휴지통으로 보내기',
+      'es': 'Mover a la papelera',
+      'fr': 'Mettre à la corbeille',
+      'de': 'In den Papierkorb',
+      'pt': 'Mover para a lixeira',
+      'ru': 'Переместить в корзину',
+    },
+    'disk.deleteToBinTitle': {
+      'ja': '{n} 件をごみ箱へ送りますか？',
+      'en': 'Move {n} item(s) to the Recycle Bin?',
+      'zh': '要把 {n} 项移到回收站吗？',
+      'ko': '{n} 개를 휴지통으로 보낼까요?',
+      'es': '¿Mover {n} elemento(s) a la papelera?',
+      'fr': 'Mettre {n} élément(s) à la corbeille ?',
+      'de': '{n} Element(e) in den Papierkorb verschieben?',
+      'pt': 'Mover {n} item(ns) para a lixeira?',
+      'ru': 'Переместить {n} объект(ов) в корзину?',
+    },
+    'disk.deleteForeverTitle': {
+      'ja': '{n} 件を完全に消しますか？ (元に戻せません)',
+      'en': 'Delete {n} item(s) permanently? (cannot be undone)',
+      'zh': '要永久删除 {n} 项吗？（无法恢复）',
+      'ko': '{n} 개를 완전히 지울까요? (되돌릴 수 없습니다)',
+      'es': '¿Eliminar {n} elemento(s) para siempre? (no se puede deshacer)',
+      'fr': 'Supprimer définitivement {n} élément(s) ? (irréversible)',
+      'de': '{n} Element(e) endgültig löschen? (nicht umkehrbar)',
+      'pt': 'Excluir {n} item(ns) permanentemente? (sem volta)',
+      'ru': 'Удалить {n} объект(ов) навсегда? (необратимо)',
+    },
+    'disk.deleteForever': {
+      'ja': '完全に消す',
+      'en': 'Delete permanently',
+      'zh': '永久删除',
+      'ko': '완전히 지우기',
+      'es': 'Eliminar para siempre',
+      'fr': 'Supprimer définitivement',
+      'de': 'Endgültig löschen',
+      'pt': 'Excluir permanentemente',
+      'ru': 'Удалить навсегда',
+    },
+    'disk.binFailedTitle': {
+      'ja': 'ごみ箱へ送れませんでした',
+      'en': 'Could not move to the Recycle Bin',
+      'zh': '无法移到回收站',
+      'ko': '휴지통으로 보내지 못했습니다',
+      'es': 'No se pudo mover a la papelera',
+      'fr': 'Impossible de mettre à la corbeille',
+      'de': 'Verschieben in den Papierkorb fehlgeschlagen',
+      'pt': 'Não foi possível mover para a lixeira',
+      'ru': 'Не удалось переместить в корзину',
+    },
+    'disk.binFailedBody': {
+      'ja': '他のアプリが使っているか、 権限が足りないようです。'
+          ' 完全に消しますか？ (元に戻せません)',
+      'en': 'Another app may be using it, or permission is missing. '
+          'Delete permanently instead? (cannot be undone)',
+      'zh': '可能被其他应用占用，或权限不足。要改为永久删除吗？（无法恢复）',
+      'ko': '다른 앱이 쓰고 있거나 권한이 부족한 것 같습니다. '
+          '완전히 지울까요? (되돌릴 수 없습니다)',
+      'es': 'Quizá otra app lo esté usando o falten permisos. '
+          '¿Eliminar para siempre? (no se puede deshacer)',
+      'fr': 'Un autre logiciel l’utilise peut-être, ou les droits manquent. '
+          'Supprimer définitivement ? (irréversible)',
+      'de': 'Eine andere App nutzt es womöglich, oder Rechte fehlen. '
+          'Stattdessen endgültig löschen? (nicht umkehrbar)',
+      'pt': 'Outro app pode estar usando, ou faltam permissões. '
+          'Excluir permanentemente? (sem volta)',
+      'ru': 'Возможно, файл занят другим приложением или не хватает прав. '
+          'Удалить навсегда? (необратимо)',
+    },
+    'disk.deleted': {
+      'ja': '{n} 件を消しました',
+      'en': 'Deleted {n} item(s)',
+      'zh': '已删除 {n} 项',
+      'ko': '{n} 개를 지웠습니다',
+      'es': 'Se eliminaron {n} elemento(s)',
+      'fr': '{n} élément(s) supprimé(s)',
+      'de': '{n} Element(e) gelöscht',
+      'pt': '{n} item(ns) excluído(s)',
+      'ru': 'Удалено объектов: {n}',
+    },
+    'disk.deleteFailed': {
+      'ja': '消せませんでした',
+      'en': 'Could not delete',
+      'zh': '无法删除',
+      'ko': '지우지 못했습니다',
+      'es': 'No se pudo eliminar',
+      'fr': 'Suppression impossible',
+      'de': 'Löschen fehlgeschlagen',
+      'pt': 'Não foi possível excluir',
+      'ru': 'Не удалось удалить',
+    },
+    'drawer.filesSelected': {
+      'ja': '個のファイル',
+      'en': 'files',
+      'zh': '个文件',
+      'ko': '개 파일',
+      'es': 'archivos',
+      'fr': 'fichiers',
+      'de': 'Dateien',
+      'pt': 'arquivos',
+      'ru': 'файлов',
+    },
     'drawer.openedFolder': {
       'ja': '「{name}」 を開きました',
       'en': 'Opened "{name}"',
@@ -98324,6 +98445,13 @@ $cleanQ
       mcpPageById(pageId)?.toJson();
 
   String? mcpCreatePage({required String type, String? name}) {
+    // ★ = ユーザー報告「空白だけのページ名を新規作成できる」。
+    //   名前を変える方 (mcpRenamePage) は空白を断るのに、 作る方は素通り
+    //   していた。 名前は省略できる引数なので、 断るのではなく
+    //   「指定なし」 に倒す (= フォルダー作成 mcpCreateFolder と同じ作法)。
+    //   こうすると自動の名前 (マップ 3 など) が付く。
+    final trimmedName = (name ?? '').trim();
+    name = trimmedName.isEmpty ? null : trimmedName;
     // 作れる種別は画面が描き分けられる物だけ (= 動作確認で判明: 知らない
     //   種別を作らせると、 見た目は普通のマップなのに種別だけ違う、 誰にも
     //   直せないページが残る)。 知らない種別は 'normal' に倒し、 何を作った
@@ -98676,6 +98804,9 @@ $cleanQ
       _mcpContentTick++;
       _bumpPaintBodyTick(page.id);
       markLiveBodyDirty(page.id);
+      // ★ 本文はページ JSON の外にあるので、 時刻は自分で進める
+      //   (= ユーザー報告: 本文を直しても lastModified が変わらない)。
+      _touchPageBody(page.id);
       notifyListeners();
       _requestMcpFocus(page.id);
       return true;
@@ -98721,6 +98852,9 @@ $cleanQ
       _mcpContentTick++;
       _bumpPaintBodyTick(page.id);
       markLiveBodyDirty(page.id);
+      // ★ 本文はページ JSON の外にあるので、 時刻は自分で進める
+      //   (= ユーザー報告: 本文を直しても lastModified が変わらない)。
+      _touchPageBody(page.id);
       notifyListeners();
       _requestMcpFocus(page.id);
       return true;
@@ -98765,6 +98899,9 @@ $cleanQ
       //   届かず、 その後に手で描くまで出てこなかった)。
       _bumpPaintBodyTick(page.id);
       markLiveBodyDirty(page.id);
+      // ★ 本文はページ JSON の外にあるので、 時刻は自分で進める
+      //   (= ユーザー報告: 本文を直しても lastModified が変わらない)。
+      _touchPageBody(page.id);
       notifyListeners();
       _requestMcpFocus(page.id);
       return true;
@@ -98813,6 +98950,9 @@ $cleanQ
     _paintReloadTick++;
     _mcpContentTick++;
     _bumpPaintBodyTick(pageId);
+    // ★ 本文はページ JSON の外にあるので、 時刻は自分で進める
+    //   (= ユーザー報告: 本文を直しても lastModified が変わらない)。
+    _touchPageBody(pageId);
     markLiveBodyDirty(pageId);
     notifyListeners();
     _requestMcpFocus(pageId);
@@ -98901,6 +99041,14 @@ $cleanQ
     final body = await _mcpPaintBody(pageId);
     final binders = _mcpPaintBinders(body);
     if (binders == null || binders.isEmpty) return const [];
+    // ★ = ユーザー報告「不正な binder 番号を拒否せず、 binder 0 に書き込む」。
+    //   呼ぶ側が binder を渡した時は、 範囲外なら黙って 0 番へ落とさず
+    //   断る (= select_paint_tab / rename_paint_item と同じ作法)。
+    //   下の「0 へ倒す」 は、 binder を渡さなかった時に控えの
+    //   noteSel が古い場合の保険なので残す。
+    if (binder != null && (binder < 0 || binder >= binders.length)) {
+      return const [];
+    }
     var bi = binder ?? ((body['noteSel'] as num?)?.toInt() ?? 0);
     if (bi < 0 || bi >= binders.length) bi = 0;
     final note = binders[bi];
@@ -99211,6 +99359,9 @@ $cleanQ
       _mcpContentTick++;
       _bumpPaintBodyTick(pageId);
       markLiveBodyDirty(pageId);
+      // ★ 本文はページ JSON の外にあるので、 時刻は自分で進める
+      //   (= ユーザー報告: 本文を直しても lastModified が変わらない)。
+      _touchPageBody(pageId);
       notifyListeners();
       _requestMcpFocus(pageId);
       return true;
@@ -99327,6 +99478,9 @@ $cleanQ
       // 共同編集中なら相手にも配る (= 点検で判明)。
       _bumpPaintBodyTick(pageId);
       markLiveBodyDirty(pageId);
+      // ★ 本文はページ JSON の外にあるので、 時刻は自分で進める
+      //   (= ユーザー報告: 本文を直しても lastModified が変わらない)。
+      _touchPageBody(pageId);
       notifyListeners();
       _requestMcpFocus(pageId);
       return true;
@@ -99400,6 +99554,9 @@ $cleanQ
       await prefs.setString(key, jsonEncode({'v': 2, 'sel': sel, 'tabs': tabs}));
       _bumpPageTick(id);
       _mcpContentTick++;
+      // ★ 本文はページ JSON の外にあるので、 時刻は自分で進める
+      //   (= ユーザー報告: 本文を直しても lastModified が変わらない)。
+      _touchPageBody(id);
       notifyListeners();
       _requestMcpFocus(id);
       return true;
@@ -99453,6 +99610,9 @@ $cleanQ
       }
       await prefs.setString(key, jsonEncode(out));
       _mcpContentTick++;
+      // ★ 本文はページ JSON の外にあるので、 時刻は自分で進める
+      //   (= ユーザー報告: 本文を直しても lastModified が変わらない)。
+      _touchPageBody(pageId);
       notifyListeners();
       _requestMcpFocus(pageId);
       return true;
@@ -99528,6 +99688,9 @@ $cleanQ
       });
       await prefs.setString(key, jsonEncode({'v': 2, 'items': items}));
       _mcpContentTick++;
+      // ★ 本文はページ JSON の外にあるので、 時刻は自分で進める
+      //   (= ユーザー報告: 本文を直しても lastModified が変わらない)。
+      _touchPageBody(pageId);
       notifyListeners();
       _requestMcpFocus(pageId);
       return id;
@@ -99797,11 +99960,28 @@ $cleanQ
     return true;
   }
 
+  /// ページ JSON の**外** (SharedPreferences) にある本文を書き換えた時に呼ぶ。
+  ///
+  /// ★ = ユーザー報告「ノート系ページの本文編集で lastModified が更新
+  ///   されない」。 フリーノート / マークダウン / 文書 / 動画編集 の本文は
+  ///   `page.toJson()` に載らない別の入れ物にある。 保存の仕組みは
+  ///   「ページ JSON が前と違うか」 で更新の有無を判断しているので、
+  ///   本文だけ書き換えても**差分が出ず、 時刻が進まなかった**
+  ///   (ギャラリーだけ直っていたのは、 中身が要素 = ページ JSON だから)。
+  ///   ここで時刻を進めると、 その時刻そのものが差分になるので保存もされる。
+  void _touchPageBody(String pageId) {
+    final page = mcpPageById(pageId);
+    if (page == null) return;
+    page.lastModifiedAt = DateTime.now();
+    _saveToStorage();
+  }
+
   /// ページの中身を直に触った後で、 保存と画面の更新だけを頼む。
   /// (mcpUpdateNode に口が無い項目 = 説明書き などを書いた時に使う)
   void mcpTouchPage(String pageId) {
-    if (mcpPageById(pageId) == null) return;
-    _saveToStorage();
+    // ★ 本文が prefs 側にあるページでも時刻が進むように、 明示的に進める
+    //   (= 進めないと、 この口を使っても「更新されていない」 ままになる)。
+    _touchPageBody(pageId);
     notifyListeners();
   }
 
@@ -99900,10 +100080,16 @@ $cleanQ
     if (fromId == null || toId == null || fromId == toId) return false;
     // 同じ組み合わせの線を二重に引かない (= AI が言い直して繰り返し呼ぶと
     //   線が重なって太く見えていた)。 既にあればラベルだけ書き換える。
+    // ★ 向きが逆の線も「同じ組み合わせ」 として扱う
+    //   (= ユーザー報告: 逆向きの接続を 2 本作れるのに、 切断 1 回で
+    //   2 本とも消える)。 消す側は元々向きを問わず消すので、
+    //   作る側もそれに合わせる (画面から作る connectNodes も同じ)。
+    //   両向きにしたい時は bidirectional を使う。
     final at = allowParallel
         ? -1
-        : page.connections.indexWhere(
-            (c) => c.fromId == fromId && c.toId == toId);
+        : page.connections.indexWhere((c) =>
+            (c.fromId == fromId && c.toId == toId) ||
+            (c.fromId == toId && c.toId == fromId));
     if (at >= 0) {
       if (label != null && label.trim().isNotEmpty) {
         page.connections[at] = page.connections[at].copyWith(label: label);
@@ -99942,22 +100128,29 @@ $cleanQ
 
   /// 繋いだ線だけを消す (ノードは残す = ユーザー要望)。
   /// 向きは問わない。 消せたら true、 そもそも繋がっていなければ false。
-  bool mcpDisconnectNodes(String pageId, String fromKey, String toKey) {
+  /// 向きは問わない。 **消した本数**を返す (繋がっていなければ 0)。
+  ///
+  /// ★ = ユーザー報告「切断 1 回で 2 本とも消えるのに、 戻り値は 1」。
+  ///   ここは向きを問わず消すので、 数も実際に消えた分を返す。
+  ///   (作る側も逆向きを引けなくしたので、 普段は 0 か 1 になる。
+  ///    直す前に作った 2 本が残っているページでは 2 を返す)。
+  int mcpDisconnectNodes(String pageId, String fromKey, String toKey) {
     final page = mcpPageById(pageId);
-    if (page == null) return false;
+    if (page == null) return 0;
     // 消す操作なので部分一致は使わない (別の線を消さないため)。
     final fromId = _resolveNodeIdIn(page, fromKey, fuzzy: false);
     final toId = _resolveNodeIdIn(page, toKey, fuzzy: false);
-    if (fromId == null || toId == null) return false;
+    if (fromId == null || toId == null) return 0;
     final before = page.connections.length;
     _pushUndoForPage(pageId, coalesceKey: 'mcpDisconnect:$pageId');
     page.connections.removeWhere((c) =>
         (c.fromId == fromId && c.toId == toId) ||
         (c.fromId == toId && c.toId == fromId));
-    if (page.connections.length == before) return false;
+    final removed = before - page.connections.length;
+    if (removed == 0) return 0;
     _saveToStorage();
     notifyListeners();
-    return true;
+    return removed;
   }
 
   /// 図形 (装飾) を足す (= ユーザー要望)。 出来た図形の id を返す。
@@ -105887,7 +106080,7 @@ $cleanQ
     // 自動拡張（タイトル/メモ入力に応じて自動で広がる）の上限。
     // ユーザーが意図せず巨大化しないよう 300px までに制限。
     // それ以上はユーザーが手動スライダーで明示的に広げる必要がある。
-    const double maxAutoWidth = 300.0;
+    const double maxAutoWidth = kAutoNodeMaxWidth;
     const double minHeight = 40.0;
 
     // ── 1) 「最長行」基準でまず必要な最小幅を算出 ─────────────────────
@@ -110419,6 +110612,14 @@ $example
 }
 
 
+/// 見出しから**自動で**決める幅の上限。
+///
+/// ★ 手で広げた分はこれで縮まない (自動で決める時だけの打ち止め)。
+/// 手で打った時 (`_computeAutoSizeForText`) と、 AI / MCP から作る時
+/// (`aiNodeWidthForTitle`) で別々の数字を持っていたので (300 と 320)、
+/// ここに 1 つにまとめる (= ユーザー報告: 長い題名だけ 320 になる)。
+const double kAutoNodeMaxWidth = 300.0;
+
 /// AI が作るノードの幅を、 見出しを実際に流し込んで決める。
 ///
 /// 既定の幅 (160) 決め打ちだと、 「インスタグラムのジャンル」 のような
@@ -110439,7 +110640,10 @@ double aiNodeWidthForTitle(String title, double fontSize) {
   // 枠の左右の余白 (node_widget の描き方に合わせた実測値)。
   const pad = 30.0;
   const minW = 140.0;
-  const maxW = 320.0;
+  // ★ = ユーザー報告「長いタイトルの幅が 320px になり、 300px を超える」。
+  //   手で打った時の自動幅 (_computeAutoSizeForText) は前から 300 止まりで、
+  //   AI / MCP から作る時だけ 320 になっていた。 同じ決まりを見るようにする。
+  const maxW = kAutoNodeMaxWidth;
   final size = fontSize.clamp(8.0, 28.0);
 
   double measure(String line, {double? maxWidth, int? maxLines}) {

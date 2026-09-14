@@ -45,7 +45,7 @@ void main() {
         final info = layoutInfo(t, w, size);
         debugPrint('size=$size w=${w.toStringAsFixed(1)} '
             'lines=${info.lines} last=${info.lastLineChars}  "$t"');
-        expect(w, inInclusiveRange(140.0, 320.0),
+        expect(w, inInclusiveRange(140.0, kAutoNodeMaxWidth),
             reason: '"$t" (size=$size) の幅が範囲外');
         // 2 行以上になる時、最後の行に 1 文字だけ残さない
         // (= 「インスタグラムのジャン / ル」 を防ぐのが目的)。

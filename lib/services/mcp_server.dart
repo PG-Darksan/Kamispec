@@ -2656,9 +2656,9 @@ class McpServer {
             one('${a['pageId'] ?? ''}'.trim(), '${a['name'] ?? ''}');
           }
           if (renamed.isEmpty) {
-            return _err('could not rename ${failed.join(', ')} '
-                '(unknown page id, or a blank name). Pages: '
-                '${jsonEncode(_provider.mcpListPages())}');
+            return _err('could not rename ${failed.join(', ')}: '
+                'no page has that id, or the name was blank '
+                '- call list_pages and use an id from it.');
           }
           return _ok({
             'renamed': renamed,
@@ -2691,8 +2691,8 @@ class McpServer {
           final ok = _provider.mcpRenameFolder(fid, '${a['name'] ?? ''}');
           return ok
               ? _ok({'folderId': fid, 'name': '${a['name']}'.trim()})
-              : _err('no folder "$fid" (or a blank name). Folders: '
-                  '${jsonEncode(_provider.mcpListFolders())}');
+              : _err('could not rename folder "$fid": no folder has that '
+                  'id, or the name was blank - call list_folders.');
         }
       case 'delete_folder':
         {
@@ -2724,10 +2724,9 @@ class McpServer {
             }
           }
           if (moved == 0) {
-            return _err('could not move ${failed.join(', ')} '
-                '(unknown page or folder id). Pages: '
-                '${jsonEncode(_provider.mcpListPages())} Folders: '
-                '${jsonEncode(_provider.mcpListFolders())}');
+            return _err('could not move ${failed.join(', ')}: unknown '
+                'page id, or that folderId does not exist '
+                '- call list_pages / list_folders.');
           }
           return _ok({
             'moved': moved,
@@ -2759,8 +2758,12 @@ class McpServer {
           final missed = <String>[];
           for (final p in pairs) {
             if (p[0].isEmpty || p[1].isEmpty) continue;
-            if (_provider.mcpDisconnectNodes(pageId, p[0], p[1])) {
-              done++;
+            // 実際に消えた本数を数える (= ユーザー報告: 2 本消えたのに
+            // 1 と返っていた)。
+            final removedCount =
+                _provider.mcpDisconnectNodes(pageId, p[0], p[1]);
+            if (removedCount > 0) {
+              done += removedCount;
             } else {
               missed.add('${p[0]} - ${p[1]}');
             }
