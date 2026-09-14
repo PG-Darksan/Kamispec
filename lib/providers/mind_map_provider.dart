@@ -50604,6 +50604,30 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'CLIs ainda em execução',
       'ru': 'Ещё работающие CLI',
     },
+    // ── 一覧からセッションを終わらせる (= ユーザー要望: 新しく立ち上げて
+    //    いくと消せなくなるので) ──
+    'cli.endSession': {
+      'ja': 'このセッションを終わる',
+      'en': 'End this session',
+      'zh': '结束此会话',
+      'ko': '이 세션 끝내기',
+      'es': 'Terminar esta sesión',
+      'fr': 'Terminer cette session',
+      'de': 'Diese Sitzung beenden',
+      'pt': 'Encerrar esta sessão',
+      'ru': 'Завершить эту сессию',
+    },
+    'cli.endSessionBody': {
+      'ja': '「{name}」 を閉じます。 走っている処理も一緒に終わります。',
+      'en': 'This closes "{name}". Anything it is still doing stops too.',
+      'zh': '将关闭「{name}」。正在进行的处理也会一并结束。',
+      'ko': '「{name}」 을(를) 닫습니다. 진행 중인 처리도 함께 끝납니다.',
+      'es': 'Se cerrará «{name}». Lo que esté haciendo también se detiene.',
+      'fr': 'Ferme « {name} ». Ce qu’il est en train de faire s’arrête aussi.',
+      'de': '„{name}“ wird geschlossen. Laufende Arbeiten enden ebenfalls.',
+      'pt': 'Fecha «{name}». O que ele estiver fazendo também para.',
+      'ru': 'Закроет «{name}». Текущая работа тоже прекратится.',
+    },
     'cli.reopen': {
       'ja': '戻る',
       'en': 'Reopen',

@@ -195,21 +195,28 @@ class AgentTerminalState extends State<AgentTerminal> {
   }
 
   /// 端末に戻ってきた (押された) ので、 また打てるようにする。
+  ///
+  /// ★ = ユーザー報告「CLI の画面を動かしたり、 他の画面外の要素を編集すると
+  ///   CLI のプロンプト欄に入れられなくなる」。
+  ///   `releaseKeyboard()` が立てる `_userLeft` は一度立つと下りない掛け金に
+  ///   なっていた。 下ろす道は 2 つあったが、 どちらも死んでいた:
+  ///     ・隠し入力欄の `onTapOutside` は**焦点がある間しか登録されない**
+  ///       ので、 手放した後は押されても届かない。
+  ///     ・`TerminalView.onTapUp` は xterm 4.0.0 側の配線違いで呼ばれない。
+  ///   そこで build の一番外側に `Listener` を敷いて、 焦点に関係なく
+  ///   「この端末が押された」 を拾う (下の build を参照)。
   void _returnToTerminal() {
     _userLeft = false;
     _grabInput();
   }
 
+  /// 画面側から「また打てるようにして」 と頼む口 (窓を動かし終わった時など)。
+  void returnKeyboard() => _returnToTerminal();
+
   @override
   void initState() {
     super.initState();
     live.add(this);
-    // ★ 同じセッションを 2 つの画面が抱えていると、 どちらも打ち込み口を
-    //   押さえようとして、 打った文字が両方に分かれて二重に見える。
-    //   新しい方に譲る。
-    for (final t in live.toList()) {
-      if (!identical(t, this) && identical(t._s, _s)) t.releaseKeyboard();
-    }
     _s.addListener(_onChanged);
     _inputCtrl.addListener(_onInputChanged);
     _scroll.addListener(_onScroll);
@@ -223,10 +230,11 @@ class AgentTerminalState extends State<AgentTerminal> {
       if (_queueFocus.hasFocus) return;
       if (_inputFocus.hasPrimaryFocus) return;
       // 他所の入力欄 (要素の名前など) が使われている間も横取りしない。
-      if (_otherEditorHasFocus()) {
-        _userLeft = true;
-        return;
-      }
+      // ★ ここで掛け金 (_userLeft) は掛けない。 掛けると、 その欄が
+      //   閉じた後も見回りが止まったままになり、 二度と打てなくなる
+      //   (= ユーザー報告: 他の要素を編集すると入れられなくなる)。
+      //   次の見回りで判断し直せばよい。
+      if (_otherEditorHasFocus()) return;
       _inputFocus.requestFocus();
     });
   }
@@ -236,15 +244,18 @@ class AgentTerminalState extends State<AgentTerminal> {
     final p = FocusManager.instance.primaryFocus;
     if (p == null) return false;
     if (p == _inputFocus || p == _queueFocus || p == _termFocus) return false;
-    // この端末の中の欄なら横取りではない。
     final ctx = p.context;
-    if (ctx != null &&
-        ctx.findAncestorStateOfType<AgentTerminalState>() == this) {
+    // ★ 既に消えた欄は「他所が使っている」 ではない。 FocusNode は外れた後も
+    //   context を持ち続けるので、 これを見ないと閉じた欄に居座られたまま
+    //   になり、 端末が二度と焦点を取れなくなる (= ユーザー報告)。
+    if (ctx == null || !ctx.mounted) return false;
+    // この端末の中の欄なら横取りではない。
+    if (ctx.findAncestorStateOfType<AgentTerminalState>() == this) {
       return false;
     }
     // 文字を打てる所が持っているかどうかだけ見る (ボタン等は無視)。
-    return p.context?.widget is EditableText ||
-        ctx?.findAncestorWidgetOfExactType<EditableText>() != null;
+    return ctx.widget is EditableText ||
+        ctx.findAncestorWidgetOfExactType<EditableText>() != null;
   }
 
   Timer? _focusWatch;
@@ -300,9 +311,19 @@ class AgentTerminalState extends State<AgentTerminal> {
   /// 打てる状態にする。
   void _grabInput() {
     if (!mounted) return;
-    // 下の入力欄を書いている最中は邪魔しない。
     if (_queueFocus.hasFocus) return;
-    if (!_inputFocus.hasFocus) _inputFocus.requestFocus();
+    // 呼ばれるのは「利用者がこの端末で何かした」 時だけなので、
+    // 掛け金はここで必ず下ろす。
+    _userLeft = false;
+    if (!_inputFocus.hasFocus) {
+      _inputFocus.requestFocus();
+      // ★ 同じセッションを 2 つの画面が抱えている時は、 いま押された方に
+      //   譲る (立ち上がった時ではなく、 実際に焦点を取った時に行う。
+      //   作った時にやると、 裏の窓が手前の端末を黙らせてしまう)。
+      for (final t in live.toList()) {
+        if (!identical(t, this) && identical(t._s, _s)) t.releaseKeyboard();
+      }
+    }
   }
 
   /// 組み上がってから打てるようにする (1 回だと空振りする事がある)。
@@ -867,7 +888,18 @@ class AgentTerminalState extends State<AgentTerminal> {
     //   **道具の切れ目で今の返事に割り込ませる**ので、 「処理が終わった後に
     //   渡す」 にはならない (= ユーザー要望はこちら)。
     final wantQueue = slash && _s.cliKey == 'claude';
-    return Column(children: [
+    // ★ この端末のどこかが押されたら、 また打てるように戻す
+    //   (= ユーザー報告: 画面を動かしたり他の要素を編集すると
+    //   プロンプト欄に入れられなくなる)。
+    //   隠し入力欄の onTapOutside は「焦点がある間」しか登録されず、
+    //   xterm の onTapUp は向こう側の配線違いで呼ばれないので、
+    //   「戻ってきた」 を拾える口がどこにも無かった。
+    //   Listener は押下の取り合いに参加しないので、 ボタンや
+    //   帯を掴む操作を邪魔しない。
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: (_) => _returnToTerminal(),
+      child: Column(children: [
       // ── 見出し (外側が出している時は出さない) ──
       if (widget.showHeader)
         Container(
@@ -1270,6 +1302,7 @@ class AgentTerminalState extends State<AgentTerminal> {
             ),
         ]),
       ),
-    ]);
+    ]),
+    );
   }
 }

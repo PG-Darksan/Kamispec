@@ -6700,7 +6700,10 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (focused == _inlineShelfEditFocus) return true;
     if (focused == _inlineNodeEditFocus) return true;
     final ctx = focused.context;
-    if (ctx == null) return false;
+    // ★ 消えた欄は「文字を打っている所」 ではない。 FocusNode は
+    //   外れた後も context を持ち続けるので、 これを見ないと
+    //   閉じた欄に居座られたままになる (= ユーザー報告)。
+    if (ctx == null || !ctx.mounted) return false;
     final widget = ctx.widget;
     if (widget is EditableText) return true;
     if (ctx.findAncestorWidgetOfExactType<EditableText>() != null) return true;
@@ -6713,7 +6716,7 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// CLI の端末に焦点があるか (= その間はアプリ側のキー処理を止める)。
   bool _agentTerminalFocused() {
     final ctx = FocusManager.instance.primaryFocus?.context;
-    if (ctx == null) return false;
+    if (ctx == null || !ctx.mounted) return false;
     return ctx.findAncestorStateOfType<AgentTerminalState>() != null;
   }
 
@@ -8321,7 +8324,8 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// バウンディング。 パンのクランプとスクロールバーの可動域の両方で使う
   /// (= ユーザー要望: 移動が制限される位置でスクロールバーが端まで来るように、
   /// 2 つの範囲を一致させる)。 内容が無ければ null。
-  Rect? _bookshelfContentBounds(MindMapProvider provider) {
+  Rect? _bookshelfContentBounds(MindMapProvider provider,
+      {MindMapPage? pageOverride}) {
     double minX = double.infinity,
         minY = double.infinity,
         maxX = -double.infinity,
@@ -8333,15 +8337,89 @@ class _MindMapScreenState extends State<MindMapScreen>
       if (b > maxY) maxY = b;
     }
 
-    for (final n in provider.currentPage.nodes.values) {
+    // 格納ノードの中に畳んだ物は並びに出ていないので数えない
+    // (数えると、 昔の位置に居るぶんだけ範囲が横に広がってしまう)。
+    for (final n in (pageOverride ?? provider.currentPage).nodes.values) {
+      if (n.hiddenInContainer != null) continue;
       acc(n.position.dx, n.position.dy, n.position.dx + n.width,
           n.position.dy + n.visualHeight);
     }
-    for (final r in provider.bookshelfFrontierRects()) {
+    for (final r
+        in provider.bookshelfFrontierRects(pageOverride: pageOverride)) {
       acc(r.left, r.top, r.right, r.bottom);
     }
     if (!minX.isFinite) return null;
     return Rect.fromLTRB(minX, minY, maxX, maxY);
+  }
+
+  /// マップが実際に見えている大きさ (分割パネルのぶんを差し引く)。
+  ///
+  /// ★ 分割ペインを開くと Flex でマップ側が狭くなるので、 画面全体の幅で
+  ///   考えると右端の列がパネルの裏に固定されて手前に引き出せない。
+  ///   上分割だけはオーバーレイ (Flex の外) なので縦は縮めない。
+  Size _mapViewportSize() {
+    // 測れる時はそれが一番正しい (分割パネルも下の帯も既に除かれている)。
+    if (_mapSplitOpen) return _splitCellGlobalRect(_mapSplitEditorSlot).size;
+    final measured =
+        _mapViewportKey.currentContext?.findRenderObject() as RenderBox?;
+    if (measured != null && measured.hasSize && measured.size.width > 1) {
+      return measured.size;
+    }
+    // まだ配置が済んでいない時だけ、 画面全体から引いて見積もる。
+    final size = MediaQuery.sizeOf(context);
+    const double splitterW = 8.0;
+    double viewW = size.width;
+    double viewH = size.height;
+    if (_splitOpen) {
+      final eff = _splitPanelEffectiveSize(context);
+      switch (_splitPosition) {
+        case _SplitPosition.right:
+        case _SplitPosition.left:
+          viewW = (size.width - eff - splitterW).clamp(50.0, size.width);
+          break;
+        case _SplitPosition.bottom:
+          viewH = (size.height - eff - splitterW).clamp(50.0, size.height);
+          break;
+        case _SplitPosition.top:
+          break; // オーバーレイのため縦は縮めない
+      }
+    }
+    if (_splitLeftOpen) {
+      final leftEff = _splitLeftPanelWidth
+          .clamp(size.width * 0.20, size.width * 0.90)
+          .toDouble();
+      viewW = (viewW - leftEff - splitterW).clamp(50.0, size.width);
+    }
+    return Size(viewW, viewH);
+  }
+
+  /// いまギャラリーを出していて、 左右に動かす必要が無い (= 横は固定) か。
+  ///
+  /// = ユーザー要望「ギャラリーは基本縦方向にしか動かせないように。 左右に
+  ///   動かせない時はスクロールバーをそもそも出さない。 ただし列を増やして
+  ///   要素が左右の端から画面外に出たら、 左右にも動かせるように」。
+  ///
+  /// ★ 幅の見方は **クランプが真ん中へ寄せるのと同じ四角** で測る
+  ///   (= 置いた要素 + 「ここに置ける」 の枠)。 別々の四角で測ると、
+  ///   「収まっている」 と判断して横を固定したのに、 寄せる方は広い四角の
+  ///   真ん中へ寄せる、 という食い違いが起き、 要素が画面の外に出たまま
+  ///   手繰り寄せられなくなる。 枠を数に入れるのは、 枠が物を置く場所
+  ///   そのものだから (届かないと置けない)。
+  /// pan / クランプ / 車輪 / スクロールバー の 4 か所で必ずこれを使う。
+  bool _shelfHLocked(MindMapProvider provider, TransformationController ctrl,
+      [MindMapPage? page, double? viewWOverride]) {
+    final pg = page ?? provider.currentPage;
+    if (pg.pageType != 'bookshelf') return false;
+    final raw = ctrl.value.getMaxScaleOnAxis();
+    final scale = raw <= 0 ? 1.0 : raw;
+    // 見えている幅が分かっている所 (スクロールバー) はそれを使う。
+    final viewW = viewWOverride ?? _mapViewportSize().width;
+    if (!viewW.isFinite || viewW <= 1) return false; // 測れない間は縛らない
+    final b = _bookshelfContentBounds(provider,
+        pageOverride: identical(pg, provider.currentPage) ? null : pg);
+    if (b == null) return true; // 何も無い = 横は固定
+    // 収まっている間は固定。 ほんの数 px で出たり消えたりしないよう余裕を見る。
+    return b.width * scale <= viewW + 1.0;
   }
 
   void _clampBookshelfPan(TransformationController ctrl) {
@@ -8370,32 +8448,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     //   しまうので従来どおり全高で扱う。
     // 分割中は編集セルの大きさで判定する (= ユーザー報告: 表示されていない
     // 領域分まで考慮されて端までスクロールできない)。
-    final size = _mapSplitOpen
-        ? _splitCellGlobalRect(_mapSplitEditorSlot).size
-        : MediaQuery.sizeOf(context);
-    const double splitterW = 8.0;
-    double viewW = size.width;
-    double viewH = size.height;
-    if (_splitOpen) {
-      final eff = _splitPanelEffectiveSize(context);
-      switch (_splitPosition) {
-        case _SplitPosition.right:
-        case _SplitPosition.left:
-          viewW = (size.width - eff - splitterW).clamp(50.0, size.width);
-          break;
-        case _SplitPosition.bottom:
-          viewH = (size.height - eff - splitterW).clamp(50.0, size.height);
-          break;
-        case _SplitPosition.top:
-          break; // オーバーレイのため縦は縮めない
-      }
-    }
-    if (_splitLeftOpen) {
-      final leftEff = _splitLeftPanelWidth
-          .clamp(size.width * 0.20, size.width * 0.90)
-          .toDouble();
-      viewW = (viewW - leftEff - splitterW).clamp(50.0, size.width);
-    }
+    final view = _mapViewportSize();
+    final viewW = view.width;
+    final viewH = view.height;
     // 端にわずかな余白は許す。 キャンバス座標 120px ぶん (スクロールバーの
     // 可動域計算 _canvasBoundaryMarginForScrollbars と同じ値にして、 バーが
     // ちょうど端に来る位置でパンも止まるようにする = ユーザー要望)。
@@ -8423,8 +8478,10 @@ class _MindMapScreenState extends State<MindMapScreen>
     //   空でも「ここに置ける」の + ボックスが 5×5 分並ぶので、
     //   中身の幅だけは常にあり、 横へ流れてしまっていた。
     //   横位置は真ん中に固定する。
-    final shelfEmpty = provider.shelfVisibleCount() == 0;
-    final ntx = shelfEmpty
+    // ★ 列を増やして要素が端からはみ出した時だけ、 左右に動かせる
+    //   (= ユーザー要望: 基本は縦だけ)。 それ以外は真ん中に固定する。
+    final hLocked = _shelfHLocked(provider, ctrl, null, viewW);
+    final ntx = hLocked
         ? (viewW - scale * (minX + maxX)) / 2
         : clampAxis(t.x, minX, maxX, viewW);
     final nty = clampAxis(t.y, minY, maxY, viewH);
@@ -73575,11 +73632,11 @@ class _MindMapScreenState extends State<MindMapScreen>
               final translation = matrix.getTranslation();
               // ★ 中身の無いギャラリーは横バーを動かせない
               //   (= ユーザー要望: 左右にスクロールできないように)。
-              final emptyShelf = (pageOverride ?? provider.currentPage)
-                          .pageType ==
-                      'bookshelf' &&
-                  provider.shelfVisibleCount(pageOverride) == 0;
-              final horizontalRange = emptyShelf
+              // ★ ギャラリーで左右に動かせない時は、 横バーをそもそも出さない
+              //   (= ユーザー要望)。 列を増やして要素が端からはみ出したら出る。
+              final shelfHLocked =
+                  _shelfHLocked(provider, ctrl, pageOverride, viewport.width);
+              final horizontalRange = shelfHLocked
                   ? 0.0
                   : math.max(
                       0.0,
@@ -73861,13 +73918,16 @@ class _MindMapScreenState extends State<MindMapScreen>
                   : 0.0;
               return Stack(
                 children: [
-                  Positioned(
-                    left: edgeInset + leftDockInset,
-                    right: oppositeBarSpace + rightDockInset,
-                    bottom: edgeInset + bottomDockInset,
-                    height: hitThickness,
-                    child: horizontalBar(),
-                  ),
+                  // 動かせない時は帯ごと出さない (= ユーザー要望:
+                  // 「左右方向に動かせない時はスクロールバーをそもそも出さない」)。
+                  if (!shelfHLocked)
+                    Positioned(
+                      left: edgeInset + leftDockInset,
+                      right: oppositeBarSpace + rightDockInset,
+                      bottom: edgeInset + bottomDockInset,
+                      height: hitThickness,
+                      child: horizontalBar(),
+                    ),
                   Positioned(
                     top: edgeInset,
                     right: edgeInset + rightDockInset,
@@ -79735,8 +79795,10 @@ class _MindMapScreenState extends State<MindMapScreen>
             !_connectionBendPointerActive,
         // ★ 中身の無いギャラリーは左右に動かさない (= ユーザー要望)。
         //   PanAxis.vertical は「縦にだけ動かす」 の意味 (= 横は動かない)。
-        panAxis: (provider.currentPage.pageType == 'bookshelf' &&
-                provider.shelfVisibleCount() == 0)
+        // ★ ギャラリーは基本縦だけ (= ユーザー要望)。
+        //   列を増やして要素が端からはみ出した時は、 左右も動かせる。
+        //   PanAxis.vertical = 「縦にだけ動かす」 (= 横は動かない)。
+        panAxis: _shelfHLocked(provider, ctrl)
             ? PanAxis.vertical
             : (_lockH && !_lockV
                 ? PanAxis.vertical
@@ -96631,8 +96693,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (rawDx == 0 && rawDy == 0) return;
     // ★ 中身の無いギャラリーは左右に動かさない (= ユーザー要望)。
     final noHScroll = _lockH ||
-        (pt == 'bookshelf' &&
-            context.read<MindMapProvider>().shelfVisibleCount() == 0);
+        _shelfHLocked(context.read<MindMapProvider>(), ctrl);
     double dx;
     double dy;
     if (_activeMapScrollbarAxis == Axis.horizontal) {
@@ -268386,6 +268447,16 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
   /// 掴んでいた手を離した時 (画面の外なら外の窓になる)。
   void dragWindowEnd() {
     if (!mounted) return;
+    // ★ 窓を動かしただけでは「利用者が外へ出た」 ではないので、
+    //   この窓の中に CLI の端末が居れば打てる状態へ戻す
+    //   (= ユーザー報告: 画面を動かすとプロンプト欄に入れられなくなる)。
+    for (final t in AgentTerminalState.live.toList()) {
+      if (!t.mounted) continue;
+      if (t.context.findAncestorStateOfType<_FloatingPanelWindowState>() ==
+          this) {
+        t.returnKeyboard();
+      }
+    }
     unawaited(_handleDragRelease(MediaQuery.of(context).size));
   }
 
@@ -270215,6 +270286,51 @@ class _McpChatDialogState extends State<_McpChatDialog>
     WidgetsBinding.instance.addPostFrameCallback((_) => _refocusPrompt());
   }
 
+  /// 一覧から CLI のセッションを終わらせる (= ユーザー要望)。
+  ///
+  /// 走っている処理ごと閉じるので、 先に一度たずねる。
+  Future<void> _endCliSession(
+      MindMapProvider provider, AgentCliSession session) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF24243A),
+        title: Text(provider.t('cli.endSession'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
+        content: Text(
+            provider.t('cli.endSessionBody').replaceFirst(
+                '{name}', session.title),
+            style: const TextStyle(color: Colors.white70, fontSize: 13)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, false),
+            child: Text(provider.t('btn.cancel'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, true),
+            child: Text(provider.t('cli.endSession'),
+                style: const TextStyle(color: Color(0xFFFF8A80))),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    try {
+      session.kill();
+    } catch (_) {}
+    if (identical(_lastCliSession, session)) _lastCliSession = null;
+    // 一覧は作った時の widget をそのまま抱えているので、 作り直さないと
+    // 終わった分が残って見える。 プロセスが落ちるのを少し待つ。
+    Future.delayed(const Duration(milliseconds: 300), () {
+      if (!mounted) return;
+      if (_inlineTerminal == null || _inlineIsTerminal) return;
+      _showInlineTerminal(
+          _buildAgentCliList(provider), provider.t('cli.title'),
+          isTerminal: false);
+    });
+  }
+
   /// 走らせたままの CLI の端末を出し直す (= 止めない)。
   /// = ユーザー要望: 一覧へ戻るボタンで戻った後、 元の端末へ帰れるように。
   void _showRunningCliTerminal(
@@ -270556,6 +270672,19 @@ class _McpChatDialogState extends State<_McpChatDialog>
                       label: Text(provider.t('cli.reopen'),
                           style: const TextStyle(fontSize: 11)),
                       onPressed: () => _showRunningCliTerminal(provider, s),
+                    ),
+                    // ★ セッションを閉じる (= ユーザー要望: 新しく立ち上げて
+                    //   いくと消せなくなるので、 一覧からも終われるように)。
+                    IconButton(
+                      tooltip: provider.t('cli.endSession'),
+                      padding: EdgeInsets.zero,
+                      iconSize: 17,
+                      constraints:
+                          const BoxConstraints(minWidth: 30, minHeight: 30),
+                      icon: const Icon(Icons.power_settings_new_rounded,
+                          size: 17, color: Color(0xFFFF8A80)),
+                      onPressed: () =>
+                          unawaited(_endCliSession(provider, s)),
                     ),
                   ]),
                 ),

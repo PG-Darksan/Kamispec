@@ -276,6 +276,23 @@ class McpServer {
 
   // ─── ツール定義 ───────────────────────────────────────────────────────
 
+  /// 読むだけの道具 (= ページや設定を一切書き換えない)。
+  ///
+  /// ★ = ユーザー報告「読み取りが承認ポリシーで拒否された」。
+  ///   道具に注記 (annotations) が無いと、 codex などの相手は
+  ///   安全側に倒して「壊す道具」と見なし、 承認を求める。
+  ///   読むだけだと名乗っておけば、 どの相手でもそのまま通る。
+  static const Set<String> _readOnlyTools = {
+    'list_pages',
+    'read_page',
+    'list_folders',
+    'list_app_docs',
+    'read_app_doc',
+    'list_app_commands',
+    'list_paint_tabs',
+    'read_device_file',
+  };
+
   static Map<String, dynamic> _tool(
           String name, String description, Map<String, dynamic> props,
           [List<String> required = const []]) =>
@@ -286,6 +303,16 @@ class McpServer {
           'type': 'object',
           'properties': props,
           if (required.isNotEmpty) 'required': required,
+        },
+        // この道具が何をする物かを名乗る (上の説明)。
+        // どれもこのパソコンの中のアプリを触るだけなので、
+        // 外の世界へは出ない (openWorldHint: false)。
+        'annotations': <String, dynamic>{
+          'title': name,
+          'readOnlyHint': _readOnlyTools.contains(name),
+          'destructiveHint': false,
+          'idempotentHint': _readOnlyTools.contains(name),
+          'openWorldHint': false,
         },
       };
 
