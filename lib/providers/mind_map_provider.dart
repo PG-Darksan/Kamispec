@@ -3713,6 +3713,12 @@ class MindMapProvider extends ChangeNotifier {
   /// fetchCloudPageList 時に一時キャッシュする namedGroups JSON (pageId → JSON文字列)
   final Map<String, String> _cloudPageGroupsCache = {};
 
+  /// ギャラリーのマス目 (= どのタイルがどこに並ぶか) の控え。
+  /// ★ = ユーザー報告「画像要素などをダウンロードすると、 アップロードした
+  ///   場所からずれる」。 ギャラリーのページは並び順を prefs だけに持って
+  ///   いたので、 受け取った側では並べ直しになっていた。
+  final Map<String, String> _cloudPageShelfCache = {};
+
   // ─── フリーノート (paint) のクラウド同期 ────────────────────────────────
   // フリーノートの中身はノード (page.nodes) ではなく prefs `paint_<pageId>`
   // に入っているため、 ページ JSON には一切乗らない。 そのままでは相手に
@@ -16651,6 +16657,41 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Desfazer',
       'ru': 'Отменить',
     },
+    // ── 取り消し / やり直す / 線の太さ (= ユーザー要望: 画像に書き込んだ
+    //    図形を Ctrl+Z で取り消したい、 外枠の太さを設定したい) ──
+    'imgAnno.redo': {
+      'ja': 'やり直す',
+      'en': 'Redo',
+      'zh': '重做',
+      'ko': '다시 실행',
+      'es': 'Rehacer',
+      'fr': 'Rétablir',
+      'de': 'Wiederholen',
+      'pt': 'Refazer',
+      'ru': 'Вернуть',
+    },
+    'imgAnno.strokeWidth': {
+      'ja': '線の太さ',
+      'en': 'Line thickness',
+      'zh': '线条粗细',
+      'ko': '선 굵기',
+      'es': 'Grosor de línea',
+      'fr': 'Épaisseur du trait',
+      'de': 'Linienstärke',
+      'pt': 'Espessura da linha',
+      'ru': 'Толщина линии',
+    },
+    'imgAnno.select': {
+      'ja': '選ぶ (動かす)',
+      'en': 'Select (move)',
+      'zh': '选择（移动）',
+      'ko': '선택 (이동)',
+      'es': 'Seleccionar (mover)',
+      'fr': 'Sélectionner (déplacer)',
+      'de': 'Auswählen (verschieben)',
+      'pt': 'Selecionar (mover)',
+      'ru': 'Выбрать (переместить)',
+    },
     'imgAnno.rotate90': {
       'ja': '90°回転',
       'en': 'Rotate 90°',
@@ -16925,6 +16966,58 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Zurücksetzen',
       'pt': 'Redefinir',
       'ru': 'Сбросить',
+    },
+    // ── 閉じる前の確認 (= ユーザー要望: 編集内容がある時は Esc でいきなり
+    //    落とさず、 保存するか聞いてほしい) ──
+    'img.closeConfirmTitle': {
+      'ja': '編集内容を保存しますか？',
+      'en': 'Save your edits?',
+      'zh': '要保存编辑内容吗？',
+      'ko': '편집 내용을 저장할까요?',
+      'es': '¿Guardar las ediciones?',
+      'fr': 'Enregistrer les modifications ?',
+      'de': 'Bearbeitungen speichern?',
+      'pt': 'Salvar as edições?',
+      'ru': 'Сохранить правки?',
+    },
+    'img.closeConfirmBody': {
+      'ja': '画像に保存していない書き込みがあります。 保存せずに閉じると消えます。',
+      'en': 'There are markings that have not been saved into the image. '
+          'They are lost if you close without saving.',
+      'zh': '图片中有尚未保存的书写内容。 不保存直接关闭会丢失。',
+      'ko': '이미지에 저장하지 않은 표시가 있습니다. 저장하지 않고 닫으면 사라집니다.',
+      'es': 'Hay marcas que aún no se han guardado en la imagen. '
+          'Se perderán si cierras sin guardar.',
+      'fr': 'Des tracés ne sont pas encore enregistrés dans l’image. '
+          'Ils seront perdus si vous fermez sans enregistrer.',
+      'de': 'Es gibt Zeichnungen, die noch nicht im Bild gespeichert sind. '
+          'Sie gehen verloren, wenn Sie ohne Speichern schließen.',
+      'pt': 'Há marcações ainda não salvas na imagem. '
+          'Elas serão perdidas se você fechar sem salvar.',
+      'ru': 'Есть пометки, ещё не сохранённые в изображении. '
+          'Они будут потеряны, если закрыть без сохранения.',
+    },
+    'img.saveAndClose': {
+      'ja': '保存して閉じる',
+      'en': 'Save and close',
+      'zh': '保存并关闭',
+      'ko': '저장하고 닫기',
+      'es': 'Guardar y cerrar',
+      'fr': 'Enregistrer et fermer',
+      'de': 'Speichern und schließen',
+      'pt': 'Salvar e fechar',
+      'ru': 'Сохранить и закрыть',
+    },
+    'img.discardAndClose': {
+      'ja': '保存せずに閉じる',
+      'en': 'Close without saving',
+      'zh': '不保存并关闭',
+      'ko': '저장하지 않고 닫기',
+      'es': 'Cerrar sin guardar',
+      'fr': 'Fermer sans enregistrer',
+      'de': 'Ohne Speichern schließen',
+      'pt': 'Fechar sem salvar',
+      'ru': 'Закрыть без сохранения',
     },
     'img.overlayText': {
       'ja': '画像に重ねる文字',
@@ -22939,6 +23032,43 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Tabelle auf eine andere Seite legen',
       'pt': 'Enviar uma tabela para outra página',
       'ru': 'Отправить таблицу на другую страницу',
+    },
+    // ── md の表をアプリの表として埋め込む (= ユーザー要望: md 形式で
+    //    書かれている表を自分のアプリの形式に変換して埋め込めるように) ──
+    //    本文のその表を ```table で包むだけなので、 文字としては今までどおり
+    //    読めるし、 他の道具でも壊れない。
+    'md.tableEmbed': {
+      'ja': 'アプリの表にして埋め込む',
+      'en': 'Embed as an app table',
+      'zh': '转换为应用表格并嵌入',
+      'ko': '앱의 표로 바꿔 넣기',
+      'es': 'Insertar como tabla de la app',
+      'fr': 'Intégrer comme tableau de l’app',
+      'de': 'Als App-Tabelle einbetten',
+      'pt': 'Inserir como tabela do app',
+      'ru': 'Встроить как таблицу приложения',
+    },
+    'md.tableEmbedded': {
+      'ja': 'アプリの表にしました',
+      'en': 'Converted to an app table',
+      'zh': '已转换为应用表格',
+      'ko': '앱의 표로 바꿨습니다',
+      'es': 'Convertido en tabla de la app',
+      'fr': 'Converti en tableau de l’app',
+      'de': 'In eine App-Tabelle umgewandelt',
+      'pt': 'Convertido em tabela do app',
+      'ru': 'Преобразовано в таблицу приложения',
+    },
+    'md.tableNotFound': {
+      'ja': '本文の中にその表が見つかりませんでした',
+      'en': 'That table was not found in the text',
+      'zh': '在正文中找不到该表格',
+      'ko': '본문에서 그 표를 찾지 못했습니다',
+      'es': 'No se encontró esa tabla en el texto',
+      'fr': 'Ce tableau est introuvable dans le texte',
+      'de': 'Diese Tabelle wurde im Text nicht gefunden',
+      'pt': 'Essa tabela não foi encontrada no texto',
+      'ru': 'Эта таблица не найдена в тексте',
     },
     'md.tablePick': {
       'ja': 'どの表を入れますか',
@@ -50450,6 +50580,41 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Voltar ao chat',
       'ru': 'Назад к чату',
     },
+    // ── 端末から CLI の一覧へ戻る (= ユーザー要望: 「終了」 を押さないと
+    //    選び直せなくて使いづらい)。 走っている CLI は止めない ──
+    'cli.backToList': {
+      'ja': 'CLI の一覧へ戻る',
+      'en': 'Back to the CLI list',
+      'zh': '返回 CLI 列表',
+      'ko': 'CLI 목록으로 돌아가기',
+      'es': 'Volver a la lista de CLI',
+      'fr': 'Retour à la liste des CLI',
+      'de': 'Zurueck zur CLI-Liste',
+      'pt': 'Voltar à lista de CLI',
+      'ru': 'Назад к списку CLI',
+    },
+    'cli.running': {
+      'ja': '動かしたままの CLI',
+      'en': 'CLIs still running',
+      'zh': '仍在运行的 CLI',
+      'ko': '아직 실행 중인 CLI',
+      'es': 'CLI que siguen en ejecución',
+      'fr': 'CLI toujours en cours',
+      'de': 'Noch laufende CLIs',
+      'pt': 'CLIs ainda em execução',
+      'ru': 'Ещё работающие CLI',
+    },
+    'cli.reopen': {
+      'ja': '戻る',
+      'en': 'Reopen',
+      'zh': '返回',
+      'ko': '돌아가기',
+      'es': 'Volver',
+      'fr': 'Revenir',
+      'de': 'Zurueck',
+      'pt': 'Voltar',
+      'ru': 'Вернуться',
+    },
     'cli.title': {
       'ja':
           'PC内AI',
@@ -50668,55 +50833,63 @@ class MindMapProvider extends ChangeNotifier {
           'API v nastroykah.',
     },
     // ── codex の砂箱 (= ユーザー報告: ブロックされましたと時々出る) ──
+    // ★ = ユーザー指摘「『どこまで任せるか』 に対して 『任せる』 っておかしく
+    //   ない？ 『作業フォルダー内』 と 『毎回尋ねる』 が項目として独立して
+    //   いないと思う」。 見出しを「範囲」 にし、 3 つの答えを
+    //   「確認の有無 (書き換えられる範囲)」 の同じ形にそろえた。
+    //   実際の動き: ask も auto も作業フォルダーの中だけ (workspace-write)、
+    //   full だけが縛りを外す (danger-full-access)。
     'cli.autonomy': {
-      'ja': 'どこまで任せるか',
-      'en': 'How much to leave to it',
-      'zh': '交给它处理的范围',
-      'ko': '어디까지 맡길지',
-      'es': 'Cuanto dejarle hacer',
-      'fr': 'Jusqu ou le laisser faire',
-      'de': 'Wie viel uberlassen',
-      'pt': 'Quanto deixar por conta dele',
-      'ru': 'Naskolko doveryat',
+      'ja': 'CLI に任せる範囲',
+      'en': 'How far the CLI may go',
+      'zh': 'CLI 的放行范围',
+      'ko': 'CLI 에 맡기는 범위',
+      'es': 'Hasta donde puede llegar la CLI',
+      'fr': 'Jusqu ou la CLI peut aller',
+      'de': 'Wie weit die CLI gehen darf',
+      'pt': 'Ate onde a CLI pode ir',
+      'ru': 'Naskolko daleko mozhet zayti CLI',
     },
     'cli.autonomyAsk': {
-      'ja': '毎回たずねる',
-      'en': 'Ask each time',
-      'zh': '每次询问',
-      'ko': '매번 확인',
-      'es': 'Preguntar cada vez',
-      'fr': 'Demander a chaque fois',
-      'de': 'Jedes Mal fragen',
-      'pt': 'Perguntar sempre',
-      'ru': 'Sprashivat kazhdyy raz',
+      'ja': '確認しながら (作業フォルダー内)',
+      'en': 'Asks first (work folder only)',
+      'zh': '逐条询问（仅工作文件夹）',
+      'ko': '확인하면서 (작업 폴더 안)',
+      'es': 'Pregunta antes (solo la carpeta de trabajo)',
+      'fr': 'Demande avant (dossier de travail seulement)',
+      'de': 'Fragt vorher (nur Arbeitsordner)',
+      'pt': 'Pergunta antes (so a pasta de trabalho)',
+      'ru': 'Sprashivaet (tolko rabochaya papka)',
     },
     'cli.autonomyAuto': {
-      'ja': '任せる (作業フォルダー内)',
-      'en': 'Hands off (work folder only)',
-      'zh': '交给它（仅工作文件夹）',
-      'ko': '맡김 (작업 폴더 안)',
+      'ja': '確認なし (作業フォルダー内)',
+      'en': 'No asking (work folder only)',
+      'zh': '不询问（仅工作文件夹）',
+      'ko': '확인 없음 (작업 폴더 안)',
       'es': 'Sin preguntar (solo la carpeta de trabajo)',
-      'fr': 'Sans demander (dossier de travail)',
+      'fr': 'Sans demander (dossier de travail seulement)',
       'de': 'Ohne Fragen (nur Arbeitsordner)',
       'pt': 'Sem perguntar (so a pasta de trabalho)',
       'ru': 'Bez voprosov (tolko rabochaya papka)',
     },
     'cli.autonomyFull': {
-      'ja': '全部任せる',
-      'en': 'Fully hands off',
-      'zh': '完全交给它',
-      'ko': '전부 맡김',
-      'es': 'Totalmente sin preguntar',
-      'fr': 'Totalement libre',
-      'de': 'Vollig freie Hand',
-      'pt': 'Totalmente livre',
-      'ru': 'Polnostyu doveryat',
+      'ja': '確認なし (パソコン全体)',
+      'en': 'No asking (whole PC)',
+      'zh': '不询问（整台电脑）',
+      'ko': '확인 없음 (PC 전체)',
+      'es': 'Sin preguntar (todo el PC)',
+      'fr': 'Sans demander (tout le PC)',
+      'de': 'Ohne Fragen (ganzer PC)',
+      'pt': 'Sem perguntar (todo o PC)',
+      'ru': 'Bez voprosov (ves kompyuter)',
     },
     'cli.autonomyAskHint': {
-      'ja': '命令を走らせる前に 1 件ずつお尋ねします。 いちばん安全ですが、'
-          '席を外している間は手が止まります。',
-      'en': 'You are asked before each command runs. Safest, but it stops and '
-          'waits while you are away.',
+      'ja': '命令やファイルの書き換えを 1 件ずつお尋ねします。'
+          ' 書き換えられるのは端末を開いた作業フォルダーの中だけです。'
+          ' いちばん安全ですが、 席を外している間は手が止まります。',
+      'en': 'You are asked before each command or file change. It can still '
+          'only write inside the folder the terminal opened in. Safest, but '
+          'it stops and waits while you are away.',
       'zh': '每条命令执行前都会询问。最安全，但你离开时会停下等待。',
       'ko': '명령마다 실행 전에 묻습니다. 가장 안전하지만 자리를 비우면 멈춥니다.',
       'es': 'Se te pregunta antes de cada comando. Lo mas seguro, pero se '
@@ -50732,9 +50905,13 @@ class MindMapProvider extends ChangeNotifier {
     },
     'cli.autonomyAutoHint': {
       'ja': 'たずねずに進めます。 書き換えるのは作業フォルダーの中だけなので、'
-          'ほかの場所は触りません。',
+          'ほかの場所は触りません。\n'
+          '※ Codex は確認を一切しません。 Claude Code と Gemini CLI は'
+          'ファイルの書き換えだけ自動で、 その他の命令は都度たずねます。',
       'en': 'Runs without asking. It can only change files inside its work '
-          'folder, so nothing else is touched.',
+          'folder, so nothing else is touched.\n'
+          'Note: Codex never asks here. Claude Code and Gemini CLI '
+          'auto-approve file edits only; other commands are still confirmed.',
       'zh': '不询问直接执行。只能修改工作文件夹内的文件，不会动其他地方。',
       'ko': '묻지 않고 진행합니다. 작업 폴더 안만 고칠 수 있어 다른 곳은 건드리지 않습니다.',
       'es': 'Avanza sin preguntar. Solo puede cambiar archivos de su carpeta '
@@ -87314,6 +87491,13 @@ $cleanQ
           if ((live.videoStorageUrl ?? '').isNotEmpty) {
             entry.value.videoStorageUrl = live.videoStorageUrl;
           }
+          // ★ 表紙の置き場の URL も戻す (= 入れ忘れていた)。
+          //   これが無いと、 上げた側の要素がずっと「手元で直した物」
+          //   に見えて、 次の受け取りで位置がずれる。
+          if ((live.attachmentThumbStorageUrl ?? '').isNotEmpty) {
+            entry.value.attachmentThumbStorageUrl =
+                live.attachmentThumbStorageUrl;
+          }
         }
       }
 
@@ -87337,16 +87521,24 @@ $cleanQ
       //  group: pages, Timestamp field: expiresAt)
       // Pro / クーポンユーザーの場合は `expiresAt` を null で書き込んで
       // 既存の期限を解除する (= 永久保存)。
+      // ギャラリーの並び (マス目) も一緒に送る (= ユーザー報告: 受け取ると
+      // 画像の場所がずれる)。 中身は prefs にしか無いので別フィールドで。
+      final shelfCellsJson = _pages[idx].pageType == 'bookshelf'
+          ? _serializeShelfCellsForPage(pageId)
+          : null;
       final fields = <String, dynamic>{
         'json': {'stringValue': pageJson},
         'namedGroupsJson': {'stringValue': namedGroupsJson},
         if (paintJson != null) 'paintJson': {'stringValue': paintJson},
+        if (shelfCellsJson != null)
+          'shelfCellsJson': {'stringValue': shelfCellsJson},
       };
       final updateMaskParts = <String>[
         'json',
         'namedGroupsJson',
         // 値がある時だけマスクに入れる (マスクだけ付けると削除扱いになる)。
         if (paintJson != null) 'paintJson',
+        if (shelfCellsJson != null) 'shelfCellsJson',
         'expiresAt',
         // 再アップロード制限フィールドも更新対象に追加
         'uploadRestricted',
@@ -87486,15 +87678,57 @@ $cleanQ
     }
     final current = _pages[idx];
 
-    String nodeSig(MindMapNode n) => jsonEncode(n.toJson());
+    // ★ = ユーザー報告「画像要素などをダウンロードした時に、 アップロード
+    //   した場所からずれてしまう」。
+    //   原因: 添付ファイルの**置き場所 (パス)** は端末ごとに必ず違う。
+    //   受け取った側は絵を自分の所へ落とし直すので、 その要素の中身は
+    //   いつまでも「基準」 と一致しない = 毎回「手元で直した物」 と見なされ、
+    //   位置や大きさまで手元の古い値で上書きされていた。
+    //   直し方 2 つ:
+    //     (1) 端末ごとに違うだけの項目は、 見比べる時に外す。
+    //     (2) 「手元で直した」 時でも、 位置と大きさは**手元で動かした時だけ**
+    //         手元を採る。 動かしていないなら送られてきた位置をそのまま使う。
+    String nodeSig(MindMapNode n) {
+      final m = Map<String, dynamic>.from(n.toJson());
+      for (final k in const [
+        'attachmentPath',
+        'attachmentThumbPath',
+        'attachmentStorageUrl',
+        'attachmentThumbStorageUrl',
+        'videoStorageUrl',
+      ]) {
+        m.remove(k);
+      }
+      return jsonEncode(m);
+    }
+
     final baseSigs = <String, String>{
       for (final e in base.nodes.entries) e.key: nodeSig(e.value)
     };
     // ローカルで追加/変更されたノード → ローカル優先で上乗せ
     for (final e in current.nodes.entries) {
       final b = baseSigs[e.key];
-      if (b == null || b != nodeSig(e.value)) {
+      if (b != null && b == nodeSig(e.value)) continue; // 手元では触っていない
+      final cloud = cloudPage.nodes[e.key];
+      if (cloud == null) {
+        // 手元で足した物。 そのまま乗せる。
         cloudPage.nodes[e.key] = e.value;
+        continue;
+      }
+      final bn = base.nodes[e.key];
+      // 手元で動かした / 大きさを変えた時だけ、 手元の値を採る。
+      final movedLocally = bn == null ||
+          e.value.position != bn.position ||
+          e.value.width != bn.width ||
+          e.value.height != bn.height;
+      if (movedLocally) {
+        cloudPage.nodes[e.key] = e.value;
+      } else {
+        cloudPage.nodes[e.key] = e.value.copyWith(
+          position: cloud.position,
+          width: cloud.width,
+          height: cloud.height,
+        );
       }
     }
     // ローカルで削除されたノード (基準に有り、 現在に無い) → クラウド版からも削除
@@ -88346,6 +88580,34 @@ $cleanQ
   }
 
   /// シリアライズされた namedGroups JSON をページに適用
+  /// そのページに属するタイルのマス目だけを書き出す。
+  String _serializeShelfCellsForPage(String pageId) {
+    final page = _pages.firstWhere((p) => p.id == pageId,
+        orElse: () => MindMapPage(id: '', name: ''));
+    if (page.id.isEmpty) return '{}';
+    final m = <String, dynamic>{};
+    for (final id in page.nodes.keys) {
+      final c = _shelfCells[id];
+      if (c != null && c.length >= 2) m[id] = [c[0], c[1]];
+    }
+    return jsonEncode(m);
+  }
+
+  /// 受け取ったマス目を取り込む (そのページ以外は触らない)。
+  void _applyShelfCellsJson(String pageId, String jsonStr) {
+    if (jsonStr.isEmpty) return;
+    try {
+      final m = jsonDecode(jsonStr) as Map<String, dynamic>;
+      if (m.isEmpty) return;
+      m.forEach((k, v) {
+        if (v is List && v.length >= 2) {
+          _shelfCells[k] = [(v[0] as num).toInt(), (v[1] as num).toInt()];
+        }
+      });
+      unawaited(_saveShelfCells());
+    } catch (_) {}
+  }
+
   void _applyNamedGroupsJson(String pageId, String jsonStr) {
     try {
       final data = jsonDecode(jsonStr) as Map<String, dynamic>;
@@ -89095,6 +89357,11 @@ $cleanQ
           if (ngJson != null && ngJson.isNotEmpty) {
             _applyNamedGroupsJson(pageId, ngJson);
           }
+          // ギャラリーの並び (= ユーザー報告: 受け取ると場所がずれる)。
+          final shelfJson = _firestoreStr(fields['shelfCellsJson']);
+          if (shelfJson != null && shelfJson.isNotEmpty) {
+            _applyShelfCellsJson(pageId, shelfJson);
+          }
           notifyListeners();
 
           await _downloadPageAttachments(localPage);
@@ -89105,7 +89372,17 @@ $cleanQ
           // 次回マージの基準は「今クラウドにある内容」 (= 取得した素の JSON)。
           // ローカル差分を上乗せした merged ではない点に注意 (上乗せ分は
           // まだクラウドに無い = 次回も「ローカルの変更」 として扱う)。
-          await _storeSyncedBaseJson(pageId, jsonStr);
+          // ★ 添付を落とし終えた**後の姿**で控える
+          //   (= ユーザー報告: 画像要素の位置がずれる)。
+          //   絵の置き場は端末ごとに違うので、 受け取ったままの
+          //   JSON を控えると直後に食い違い、 以後ずっと
+          //   「手元で直した物」扱いになっていた。
+          try {
+            await _storeSyncedBaseJson(
+                pageId, jsonEncode(localPage.toJson()));
+          } catch (_) {
+            await _storeSyncedBaseJson(pageId, jsonStr);
+          }
           notifyListeners();
           return 'downloaded';
         } finally {
@@ -89162,6 +89439,7 @@ $cleanQ
     final docs = data['documents'] as List<dynamic>? ?? [];
     final result = <MindMapPage>[];
     _cloudPageGroupsCache.clear();
+    _cloudPageShelfCache.clear();
     _cloudPagePaintCache.clear();
     _cloudPageUpdatedAt.clear();
     final now = DateTime.now().toUtc();
@@ -89203,6 +89481,11 @@ $cleanQ
         final ngJson = _firestoreStr(fields['namedGroupsJson']);
         if (ngJson != null && ngJson.isNotEmpty) {
           _cloudPageGroupsCache[page.id] = ngJson;
+        }
+        // ギャラリーの並び (= ユーザー報告: 受け取ると画像の場所がずれる)。
+        final shelfJson = _firestoreStr(fields['shelfCellsJson']);
+        if (shelfJson != null && shelfJson.isNotEmpty) {
+          _cloudPageShelfCache[page.id] = shelfJson;
         }
         // フリーノートの中身 (= ユーザー報告への対応)。
         final paintJson = _firestoreStr(fields['paintJson']);
@@ -89377,12 +89660,15 @@ $cleanQ
             : _mergeLocalEditsIntoCloudPage(page, baseJson: baseJson);
         final localPage =
             _upsertDownloadedPage(merged, intoFolderId: intoFolderId);
-        if (cloudJsonForBase != null) {
-          await _storeSyncedBaseJson(page.id, cloudJsonForBase);
-        }
         final cachedNg = _cloudPageGroupsCache[page.id];
         if (cachedNg != null && cachedNg.isNotEmpty) {
           _applyNamedGroupsJson(page.id, cachedNg);
+        }
+        // ★ ギャラリーの並びを、 ページを開いて並べ直される前に入れる
+        //   (= ユーザー報告: 受け取ると画像の場所がずれる)。
+        final cachedShelf = _cloudPageShelfCache[page.id];
+        if (cachedShelf != null && cachedShelf.isNotEmpty) {
+          _applyShelfCellsJson(page.id, cachedShelf);
         }
         // フリーノートの中身と貼り付け画像を復元する (= ユーザー要望)。
         final cachedPaint = _cloudPagePaintCache[page.id];
@@ -89394,6 +89680,20 @@ $cleanQ
         notifyListeners();
         // 添付ファイルをローカルに反映済みのページへ順番に埋めていく。
         await _downloadPageAttachments(localPage);
+        // ★ 次回の基準は「添付を落とし終えた後」の姿で控える
+        //   (= ユーザー報告: 画像要素の位置がずれる)。
+        //   以前は受け取ったままの JSON を控えていたので、
+        //   直後に絵の置き場を自分の所へ書き換えた瞬間に
+        //   基準と食い違い、 以後ずっと「手元で直した物」扱いに
+        //   なっていた。
+        try {
+          await _storeSyncedBaseJson(
+              page.id, jsonEncode(localPage.toJson()));
+        } catch (_) {
+          if (cloudJsonForBase != null) {
+            await _storeSyncedBaseJson(page.id, cloudJsonForBase);
+          }
+        }
       }
       _syncProgress = 1.0;
       _syncStatusText = '';

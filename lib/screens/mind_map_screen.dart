@@ -4162,6 +4162,16 @@ class _MindMapScreenState extends State<MindMapScreen>
         // ── Markdown (= ユーザー報告: 分割した画面に埋め込んで開くと
         //    全画面になる)。 Markdown ページと同じ画面をペインの中に出す。 ──
         return _buildMarkdownFilePane(ctx, path: path, fileName: fileName);
+      case 'image':
+        // ── 画像 (= ユーザー要望: jpg 等の画像編集画面にも左右分割を) ──
+        //    ペインの中なので「戻る」 は横取りしない (embedded)。
+        return _ImageEditorDialog(
+          filePath: path,
+          fileName: fileName,
+          useRootNavigator: false,
+          embedded: true,
+          onSaved: notifySaved,
+        );
       default:
         return _SpreadsheetEditorDialog(
           filePath: path,
@@ -8409,7 +8419,14 @@ class _MindMapScreenState extends State<MindMapScreen>
       return tv.clamp(lo, hi);
     }
 
-    final ntx = clampAxis(t.x, minX, maxX, viewW);
+    // ★ 中身の無いギャラリーは左右に動かさない (= ユーザー要望)。
+    //   空でも「ここに置ける」の + ボックスが 5×5 分並ぶので、
+    //   中身の幅だけは常にあり、 横へ流れてしまっていた。
+    //   横位置は真ん中に固定する。
+    final shelfEmpty = provider.shelfVisibleCount() == 0;
+    final ntx = shelfEmpty
+        ? (viewW - scale * (minX + maxX)) / 2
+        : clampAxis(t.x, minX, maxX, viewW);
     final nty = clampAxis(t.y, minY, maxY, viewH);
     if ((ntx - t.x).abs() > 0.5 || (nty - t.y).abs() > 0.5) {
       _clampingShelf = true;
@@ -26873,6 +26890,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                 filePath: path,
                 fileName: _baseName(path),
                 useRootNavigator: false,
+                // 分割セルの中なので「戻る」 は横取りしない。
+                embedded: true,
               ),
             ));
         return;
@@ -26881,9 +26900,15 @@ class _MindMapScreenState extends State<MindMapScreen>
         context: context,
         useRootNavigator: true,
         barrierColor: Colors.black.withValues(alpha: 0.92),
-        builder: (_) => _ImageEditorDialog(
+        builder: (dctx) => _ImageEditorDialog(
           filePath: path,
           fileName: _baseName(path),
+          // 左 / 右に分けて開く (= ユーザー要望)。
+          onSplitOpen: (pth, nm, {bool isLeftPanel = false}) {
+            Navigator.of(dctx).pop();
+            _openOfficeInSplitPanel(pth, nm,
+                mode: 'image', isLeftPanel: isLeftPanel);
+          },
         ),
       );
       return;
@@ -28567,6 +28592,10 @@ class _MindMapScreenState extends State<MindMapScreen>
     // 4 分割) を差し込むか (= ユーザー要望: 右クリックではなく左クリックで、
     // 元の項目を出したまま 2〜4 分割の設定が出てくるように)。
     bool splitExpanded = false;
+    // ★ ギャラリーのページでは、 使えない項目を出さない
+    //   (= ユーザー要望: 裁断モードや図形 / 端子の挿入はできないのに
+    //   右クリックに並んでいる)。
+    final isGalleryPage = provider.currentPage.pageType == 'bookshelf';
     // 割り方を「右に」 出すため、 項目そのものの位置を測る鍵 (= ユーザー要望)。
     final GlobalKey splitItemKey = GlobalKey();
     List<Widget> buildItems(bool splitExpanded, VoidCallback toggleSplit) => [
@@ -28668,6 +28697,7 @@ class _MindMapScreenState extends State<MindMapScreen>
               }
             : toggleSplit,
       ),
+      if (!isGalleryPage)
       _CtxMenuItem(
         menuId: 'cutMode',
         icon: Icons.content_cut_rounded,
@@ -28689,6 +28719,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       ),
       // ── 図形を挿入 (= 直線/矢印/波線/長方形/円 など) ──
       // ユーザー要望「右クリックの項目に図形の挿入項目を追加して」。
+      if (!isGalleryPage)
       _CtxMenuItem(
         menuId: 'insertShape',
         icon: Icons.draw_rounded,
@@ -28699,6 +28730,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           _showMapShapePicker();
         },
       ),
+      if (!isGalleryPage)
       _CtxMenuItem(
         menuId: 'terminal',
         icon: Icons.account_tree_outlined,
@@ -36573,6 +36605,39 @@ class _MindMapScreenState extends State<MindMapScreen>
     return root.isEmpty ? null : root;
   }
 
+  /// 新しく作るファイルの置き場。
+  ///
+  /// = ユーザー要望「新規作成したファイルが docs フォルダーではなく、
+  ///   開いているフォルダーの中に格納されるようにして欲しい」。
+  /// 一覧で開いているフォルダーの連動先 → アプリの保存先 →
+  /// どちらも無い時だけ、 今までどおりアプリの書類の中 ([fallbackName])。
+  Future<Directory> _newFileDir(MindMapProvider provider,
+      {String fallbackName = 'attachments'}) async {
+    final open = _drawerTargetDiskDir(provider);
+    if (open != null && open.isNotEmpty) {
+      final d = Directory(open);
+      try {
+        if (!await d.exists()) await d.create(recursive: true);
+        return d;
+      } catch (_) {
+        // 権限が無い等。 下の既定の置き場へ落とす。
+      }
+    }
+    final appDir = await getApplicationDocumentsDirectory();
+    final d = Directory('${appDir.path}${Platform.pathSeparator}$fallbackName');
+    if (!await d.exists()) await d.create(recursive: true);
+    return d;
+  }
+
+  /// 一覧に出している中身を読み直す (作った直後に出てくるように)。
+  void _refreshDiskDir(String dirPath) {
+    _diskCache.remove(dirPath);
+    _diskLoading.remove(dirPath);
+    if (!mounted) return;
+    setState(() {});
+    unawaited(_scanDir(dirPath));
+  }
+
   /// 開くフォルダーを選び直す (= ユーザー要望: 「閉じる」 ではなく
   /// 「切り替え」。 いつも何かのフォルダーを開いた状態で使う)。
   void _showFolderSwitchMenu(MindMapProvider provider, BuildContext anchorCtx) {
@@ -37042,11 +37107,9 @@ class _MindMapScreenState extends State<MindMapScreen>
       final safeBase = baseName
           .replaceAll(RegExp(r'[\\/:*?"<>|]'), '_')
           .replaceAll('.', '_');
-      final appDir = await getApplicationDocumentsDirectory();
-      final attachDir = Directory('${appDir.path}/attachments');
-      if (!await attachDir.exists()) {
-        await attachDir.create(recursive: true);
-      }
+      // ★ いま開いているフォルダーの中に作る (= ユーザー要望)。
+      //   開いていない時だけ、 今までどおりアプリの attachments へ。
+      final attachDir = await _newFileDir(provider);
       String fileName = '$safeBase.$type';
       String destPath = '${attachDir.path}/$fileName';
       // 同名ファイルがあれば番号付与
@@ -37059,6 +37122,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       // ── 形式別にテンプレートを書き出し ──
       final bytes = _OfficeFileTemplate.buildEmpty(type);
       await File(destPath).writeAsBytes(bytes, flush: true);
+      // 作った所を一覧に反映する (= 作ったのに出てこない、 を防ぐ)。
+      _refreshDiskDir(attachDir.path);
       // ── HTML は同じ名前の CSS も置く (= ユーザー要望: css は html と
       //    一緒に使うので「HTML & CSS」 として作る)。 html 側から
       //    <link> で読んでいるので、 css を編集すれば見た目が変わる。 ──
@@ -44474,6 +44539,11 @@ class _MindMapScreenState extends State<MindMapScreen>
       'labelKey': 'hdr.folderFileSearch',
       'icon': Icons.travel_explore_rounded,
       'color': Color(0xFF4DB6AC),
+      // ★ = ユーザー要望「ファイル検索はカスタムボタンとしては必要ない」。
+      //   置ける物の候補からは外す。 探すこと自体は Ctrl+F の「中身まで
+      //   探す」 から今までどおり使える。 既に置いている人のぶんは
+      //   そのまま動くよう、 定義は残す ('legacy' はそのための印)。
+      'legacy': true,
     },
     {
       // 無音カメラ (= ユーザー要望)。
@@ -57299,6 +57369,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 _splitLeftMode == 'xlsx' ||
                                 // Markdown も分割パネルで開く (= ユーザー要望)。
                                 _splitLeftMode == 'md' ||
+                                // 画像も分割パネルで開く (= ユーザー要望)。
+                                _splitLeftMode == 'image' ||
                                 _splitLeftMode == 'txt') &&
                             _splitLeftLocalOfficePath != null
                         // ── 右ペインと同じく、 閉じる時の pop がアプリ
@@ -58496,6 +58568,8 @@ class _MindMapScreenState extends State<MindMapScreen>
             _splitMode == 'xlsx' ||
             // Markdown も分割パネルで開く (= ユーザー要望)。
             _splitMode == 'md' ||
+            // 画像も分割パネルで開く (= ユーザー要望)。
+            _splitMode == 'image' ||
             _splitMode == 'txt') &&
         _splitLocalOfficePath != null) {
       // ── ビューアは自分を閉じる時に `Navigator.of(context).pop()` を
@@ -65365,7 +65439,7 @@ class _MindMapScreenState extends State<MindMapScreen>
   ///   そのファイルの中身を入れ替える (= ユーザー報告:「さっき作った
   ///   ファイルの中身を 100 行にして」 で 2 つ目が出来てしまった)。
   /// 追記の相手になる既存ファイルを探す (= 同じ名前で作った物)。
-  Future<File?> _findExistingMcpFile(
+  Future<File?> _findExistingMcpFile(MindMapProvider provider,
       Map<String, dynamic> spec, String kind) async {
     var name = '${spec['fileName'] ?? ''}'.trim();
     if (name.isEmpty) name = '${spec['title'] ?? ''}'.trim();
@@ -65373,8 +65447,10 @@ class _MindMapScreenState extends State<MindMapScreen>
     name = name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
     if (!name.toLowerCase().endsWith('.$kind')) name = '$name.$kind';
     try {
-      final docs = await getApplicationDocumentsDirectory();
-      final f = File('${docs.path}/mcp_files/$name');
+      // ★ 書く所と同じ所を見る (= いま開いているフォルダー)。
+      //   ここがずれると、 同じ名前で頼むたびに 2 つ目が出来てしまう。
+      final dir = await _newFileDir(provider, fallbackName: 'mcp_files');
+      final f = File('${dir.path}${Platform.pathSeparator}$name');
       if (await f.exists()) return f;
     } catch (_) {}
     return null;
@@ -65462,7 +65538,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       final appendOnly = spec['append'] == true;
       Uint8List? bytes;
       if (appendOnly && kind == 'pptx' && slides.isNotEmpty) {
-        final existing = await _findExistingMcpFile(spec, kind);
+        final existing = await _findExistingMcpFile(provider, spec, kind);
         if (existing != null) {
           try {
             bytes = _OfficeFileTemplate.appendSlidesToPptx(
@@ -65493,9 +65569,10 @@ class _MindMapScreenState extends State<MindMapScreen>
       name = name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
       if (!name.toLowerCase().endsWith('.$kind')) name = '$name.$kind';
 
-      final docs = await getApplicationDocumentsDirectory();
-      final dir = Directory('${docs.path}/mcp_files');
-      await dir.create(recursive: true);
+      // ★ いま開いているフォルダーの中に作る (= ユーザー要望: 新規作成した
+      //   ファイルは docs ではなく開いているフォルダーへ)。 開いていない時
+      //   だけ、 今までどおりアプリの mcp_files へ。
+      final dir = await _newFileDir(provider, fallbackName: 'mcp_files');
       // アプリ自身が作った物は、 読み返す時に許可の窓を出さない (= 毎回
       //   聞かれると AI が中身を確かめられず、 新しく作り直してしまう)。
       //   ※ この控えは起動している間だけ。
@@ -65517,6 +65594,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       //   書いた直後に必ず捨てる。
       DocPreview.invalidate(file.path);
       FileImage(File(file.path)).evict();
+      // 作った所を一覧に反映する。
+      _refreshDiskDir(dir.path);
 
       // 作ったファイルはページに貼って、 そのまま開けるようにする
       //   (同じパスのノードが既にあれば mcpAddFileNode が使い回すので、
@@ -69784,8 +69863,23 @@ class _MindMapScreenState extends State<MindMapScreen>
         // Windows が勝手に置く物も出さない。
         final lower = name.toLowerCase();
         if (lower == 'thumbs.db' || lower == 'desktop.ini') continue;
+        final isDir = e is Directory;
+        // 大きさと更新日時も拾っておく (= ページの行と同じ副題を出すため)。
+        var sz = -1;
+        DateTime? mt;
+        if (!isDir) {
+          try {
+            final st = await e.stat();
+            sz = st.size;
+            mt = st.modified;
+          } catch (_) {}
+        }
         out.add(_DiskEntry(
-            path: e.path, name: name, isDir: e is Directory));
+            path: e.path,
+            name: name,
+            isDir: isDir,
+            size: sz,
+            modified: mt));
       }
       // フォルダーを先に、その中で名前順。
       out.sort((a, b) {
@@ -69810,7 +69904,12 @@ class _MindMapScreenState extends State<MindMapScreen>
         if (!e.name.toLowerCase().endsWith('.json')) continue;
         if (await _looksLikeAppPageJson(e.path)) {
           out[i] = _DiskEntry(
-              path: e.path, name: e.name, isDir: false, isAppPage: true);
+              path: e.path,
+              name: e.name,
+              isDir: false,
+              isAppPage: true,
+              size: e.size,
+              modified: e.modified);
         }
       }
     } catch (_) {
@@ -69888,51 +69987,174 @@ class _MindMapScreenState extends State<MindMapScreen>
     return rows;
   }
 
+  /// ディスクのファイルに出すアイコンと色。
+  ///
+  /// = ユーザー要望「pptx や md 等のファイルだけページ一覧での表記が違うから
+  ///   揃えて欲しい」。 ページの行と同じ絵柄・同じ色づかいにそろえる
+  ///   (以前は絵文字 1 文字だけだった)。
+  static (IconData, Color) _diskRowIcon(String ext) {
+    final i = _pageIconIndexForFileType(ext);
+    final icon = (i != null && i >= 0 && i < kPageIconChoices.length)
+        ? kPageIconChoices[i]
+        : Icons.insert_drive_file_rounded;
+    switch (ext) {
+      case 'pptx':
+      case 'ppt':
+        return (icon, const Color(0xFFFF7043));
+      case 'xlsx':
+      case 'xls':
+      case 'csv':
+      case 'tsv':
+        return (icon, const Color(0xFF43B97F));
+      case 'docx':
+      case 'doc':
+      case 'rtf':
+        return (icon, const Color(0xFF4FC3F7));
+      case 'md':
+      case 'markdown':
+      case 'txt':
+      case 'json':
+        return (icon, const Color(0xFF5FD3B2));
+      case 'pdf':
+        return (icon, const Color(0xFFE57373));
+      case 'png':
+      case 'jpg':
+      case 'jpeg':
+      case 'gif':
+      case 'webp':
+      case 'bmp':
+        return (Icons.image_rounded, const Color(0xFFBA68C8));
+      case 'mp4':
+      case 'mov':
+      case 'avi':
+      case 'mkv':
+        return (Icons.movie_rounded, const Color(0xFFFFB347));
+      default:
+        return (icon, const Color(0xFF90A4AE));
+    }
+  }
+
   Widget _buildDiskRow(
       MindMapProvider provider, _DiskEntry e, double indent) {
-    final row = InkWell(
-      onTap: () {
-        if (e.isDir) {
-          setState(() {
-            if (!_diskOpen.remove(e.path)) _diskOpen.add(e.path);
-          });
-        } else {
-          unawaited(_openAttachment(e.path));
-        }
-      },
-      onSecondaryTapUp: (d) => _showDiskRowMenu(provider, e, d.globalPosition),
-      child: Padding(
-        padding: EdgeInsets.fromLTRB(indent + 6, 4, 8, 4),
-        child: Row(children: [
-          if (e.isDir)
+    // ── フォルダーは今までどおりの開閉の行 (ページに相当する物が無い) ──
+    if (e.isDir) {
+      return InkWell(
+        onTap: () => setState(() {
+          if (!_diskOpen.remove(e.path)) _diskOpen.add(e.path);
+        }),
+        onSecondaryTapUp: (d) =>
+            _showDiskRowMenu(provider, e, d.globalPosition),
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(indent + 6, 4, 8, 4),
+          child: Row(children: [
             Icon(
                 _diskOpen.contains(e.path)
                     ? Icons.keyboard_arrow_down_rounded
                     : Icons.chevron_right_rounded,
                 size: 14,
-                color: Colors.white38)
-          else
-            const SizedBox(width: 14),
-          const SizedBox(width: 2),
-          if (e.isDir)
+                color: Colors.white38),
+            const SizedBox(width: 2),
             const Icon(Icons.folder_rounded,
-                size: 13, color: Color(0xFFFFB347))
-          else
-            Text(_folderFileIcon(e.name),
-                style: const TextStyle(fontSize: 11)),
-          const SizedBox(width: 5),
-          Expanded(
-            child: Text(e.name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                    color: e.isDir ? Colors.white70 : Colors.white54,
-                    fontSize: 11)),
+                size: 13, color: Color(0xFFFFB347)),
+            const SizedBox(width: 5),
+            Expanded(
+              child: Text(e.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style:
+                      const TextStyle(color: Colors.white70, fontSize: 11)),
+            ),
+          ]),
+        ),
+      );
+    }
+    // ── ファイルはページの行と同じ見た目にそろえる (= ユーザー要望) ──
+    //    丸い札 + 種類のアイコン + 拡張子を落とした題名 +
+    //    「種類 · 大きさ · 更新日時」 の副題 + 右端の ⋮。
+    final baseColor = provider.headerColor;
+    final (fileIcon, fileColor) = _diskRowIcon(e.ext);
+    final row = Container(
+      margin: EdgeInsets.fromLTRB(8 + indent, 2, 8, 2),
+      decoration: BoxDecoration(
+        color: baseColor.withValues(alpha: 0.16),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: baseColor.withValues(alpha: 0.22)),
+      ),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onSecondaryTapUp: (d) =>
+            _showDiskRowMenu(provider, e, d.globalPosition),
+        child: ListTile(
+          dense: true,
+          contentPadding: const EdgeInsets.only(left: 4, right: 4),
+          leading: SizedBox(
+            width: 28,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+              child: Icon(fileIcon,
+                  size: 16, color: fileColor.withValues(alpha: 0.6)),
+            ),
           ),
-        ]),
+          title: Text(e.displayTitle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: Colors.white60, fontSize: 13)),
+          subtitle: Row(children: [
+            if (e.ext.isNotEmpty)
+              Text(e.ext.toUpperCase(),
+                  style: const TextStyle(
+                      color: Colors.white38,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600)),
+            if (e.size >= 0) ...[
+              const Text(' · ',
+                  style: TextStyle(color: Colors.white24, fontSize: 10)),
+              const Icon(Icons.data_usage_rounded,
+                  size: 9, color: Colors.white38),
+              const SizedBox(width: 2),
+              Text(MindMapProvider.formatBytes(e.size),
+                  style: const TextStyle(
+                      color: Colors.white54,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600)),
+            ],
+            if (e.modified != null) ...[
+              const Text(' · ',
+                  style: TextStyle(color: Colors.white24, fontSize: 10)),
+              const Icon(Icons.schedule_rounded,
+                  size: 9, color: Colors.white38),
+              const SizedBox(width: 3),
+              Flexible(
+                child: Text(
+                    _DrawerTile.formatLastModified(e.modified!, provider),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: Colors.white38, fontSize: 10)),
+              ),
+            ],
+          ]),
+          trailing: Builder(builder: (btnCtx) {
+            return IconButton(
+              padding: EdgeInsets.zero,
+              iconSize: 16,
+              constraints:
+                  const BoxConstraints(minWidth: 24, minHeight: 24),
+              icon: const Icon(Icons.more_vert,
+                  color: Colors.white30, size: 16),
+              onPressed: () {
+                final box = btnCtx.findRenderObject();
+                final at = (box is RenderBox && box.attached)
+                    ? box.localToGlobal(box.size.center(Offset.zero))
+                    : Offset.zero;
+                _showDiskRowMenu(provider, e, at);
+              },
+            );
+          }),
+          onTap: () => unawaited(_openAttachment(e.path)),
+        ),
       ),
     );
-    if (e.isDir) return row;
     // ファイルはページへ投げて埋め込める (= ユーザー要望)。
     return Draggable<_DrawerFileDragData>(
       data: _DrawerFileDragData(e.path, e.name),
@@ -73351,10 +73573,19 @@ class _MindMapScreenState extends State<MindMapScreen>
               final matrix = ctrl.value;
               final scale = matrix.getMaxScaleOnAxis();
               final translation = matrix.getTranslation();
-              final horizontalRange = math.max(
-                0.0,
-                (canvasDim.width + margin.horizontal) * scale - viewport.width,
-              );
+              // ★ 中身の無いギャラリーは横バーを動かせない
+              //   (= ユーザー要望: 左右にスクロールできないように)。
+              final emptyShelf = (pageOverride ?? provider.currentPage)
+                          .pageType ==
+                      'bookshelf' &&
+                  provider.shelfVisibleCount(pageOverride) == 0;
+              final horizontalRange = emptyShelf
+                  ? 0.0
+                  : math.max(
+                      0.0,
+                      (canvasDim.width + margin.horizontal) * scale -
+                          viewport.width,
+                    );
               final verticalRange = math.max(
                 0.0,
                 (canvasDim.height + margin.vertical) * scale - viewport.height,
@@ -79502,9 +79733,14 @@ class _MindMapScreenState extends State<MindMapScreen>
             !_shelfHandleHovering &&
             !_shelfHandleDragging &&
             !_connectionBendPointerActive,
-        panAxis: _lockH && !_lockV
+        // ★ 中身の無いギャラリーは左右に動かさない (= ユーザー要望)。
+        //   PanAxis.vertical は「縦にだけ動かす」 の意味 (= 横は動かない)。
+        panAxis: (provider.currentPage.pageType == 'bookshelf' &&
+                provider.shelfVisibleCount() == 0)
             ? PanAxis.vertical
-            : (_lockV && !_lockH ? PanAxis.horizontal : PanAxis.free),
+            : (_lockH && !_lockV
+                ? PanAxis.vertical
+                : (_lockV && !_lockH ? PanAxis.horizontal : PanAxis.free)),
         scaleEnabled: !_pauseViewer &&
             !isRangeMode &&
             !_effectiveLockScale &&
@@ -85708,6 +85944,20 @@ class _MindMapScreenState extends State<MindMapScreen>
       final clipboard = SystemClipboard.instance;
       if (clipboard == null) return false;
       final reader = await clipboard.read();
+      // ★ まず本物の見分け方で聞く (= ユーザー報告: Windows で絵を貼れない)。
+      //   Windows のクリップボードの名前は "PNG" や "NativeShell_CF_8" なので、
+      //   下の名前当てには引っ掛からない。
+      const imageFormats = <FileFormat>[
+        Formats.png,
+        Formats.jpeg,
+        Formats.gif,
+        Formats.webp,
+        Formats.bmp,
+        Formats.tiff,
+      ];
+      for (final f in imageFormats) {
+        if (reader.canProvide(f)) return true;
+      }
       return reader.platformFormats.any((f) {
         final l = f.toLowerCase();
         return l.contains('image') ||
@@ -87290,7 +87540,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       var curIdx = gallery.indexWhere((e) => e.path == path);
       final canSwipe = curIdx >= 0 && gallery.length > 1;
       Widget buildEditor(void Function(VoidCallback) setD,
-          {bool? rootNavOverride}) {
+          {bool? rootNavOverride, bool embedded = false}) {
         final cur = canSwipe
             ? gallery[curIdx]
             : (path: path, name: fileName, nodeId: nodeId);
@@ -87301,6 +87551,18 @@ class _MindMapScreenState extends State<MindMapScreen>
           filePath: cur.path,
           fileName: cur.name,
           useRootNavigator: rootNavOverride ?? useRootNavigator,
+          embedded: embedded,
+          // ── 左 / 右に分けて開く (= ユーザー要望: 画像編集画面にも
+          //    左右分割のボタンが欲しい)。 ペインの中では出さない。 ──
+          onSplitOpen: embedded
+              ? null
+              : (pth, nm, {bool isLeftPanel = false}) {
+                  Navigator.of(viewerContext,
+                          rootNavigator: rootNavOverride ?? useRootNavigator)
+                      .pop();
+                  _openOfficeInSplitPanel(pth, nm,
+                      mode: 'image', isLeftPanel: isLeftPanel);
+                },
           onSaved: () => _notifyAttachmentEdited(cur.nodeId),
           galleryIndex: canSwipe ? curIdx : null,
           galleryCount: canSwipe ? gallery.length : null,
@@ -87322,7 +87584,10 @@ class _MindMapScreenState extends State<MindMapScreen>
         _embedViewerIntoMapSplitCell((_) => StatefulBuilder(
             builder: (dctx, setD) => ColoredBox(
                 color: const Color(0xFF1A1A24),
-                child: buildEditor(setD, rootNavOverride: false))));
+                child: buildEditor(setD,
+                    // 分割セルの中なので「戻る」 は横取りしない。
+                    rootNavOverride: false,
+                    embedded: true))));
         return;
       }
       await showDialog<void>(
@@ -96364,19 +96629,23 @@ class _MindMapScreenState extends State<MindMapScreen>
     final rawDx = event.scrollDelta.dx;
     final rawDy = event.scrollDelta.dy;
     if (rawDx == 0 && rawDy == 0) return;
+    // ★ 中身の無いギャラリーは左右に動かさない (= ユーザー要望)。
+    final noHScroll = _lockH ||
+        (pt == 'bookshelf' &&
+            context.read<MindMapProvider>().shelfVisibleCount() == 0);
     double dx;
     double dy;
     if (_activeMapScrollbarAxis == Axis.horizontal) {
       // 横バー上では一般的なマウスの上下ホイールを横移動として扱う。
       final horizontalInput = rawDy != 0 ? rawDy : rawDx;
-      dx = _lockH ? 0.0 : -horizontalInput;
+      dx = noHScroll ? 0.0 : -horizontalInput;
       dy = 0.0;
     } else if (_activeMapScrollbarAxis == Axis.vertical) {
       final verticalInput = rawDy != 0 ? rawDy : rawDx;
       dx = 0.0;
       dy = _lockV ? 0.0 : -verticalInput;
     } else {
-      dx = _lockH ? 0.0 : -rawDx;
+      dx = noHScroll ? 0.0 : -rawDx;
       dy = _lockV ? 0.0 : -rawDy;
     }
     if (dx == 0 && dy == 0) return;
@@ -133337,6 +133606,68 @@ class _SplitScrollBarState extends State<_SplitScrollBar> {
 ///
 /// [line] は開きの ``` があった行 (1 始まり。 プレビューが
 /// data-src-line で覚えている値)。 その行がフェンスでなければ null。
+/// 本文の中の「ふつうのマークダウンの表」 を、 アプリの表として埋め込む形
+/// (= ```table のフェンス) に包み直す。
+///
+/// = ユーザー要望「md 形式で書かれている表を自分のアプリの形式に変換して
+///   埋め込めるようにして欲しい」。
+/// [rows] は画面で押された表の中身。 同じ中身の表を本文から探して包む。
+/// 見つからなければ null。
+String? wrapMarkdownTableAsAppTable(String src, List<List<String>> rows) {
+  if (rows.isEmpty) return null;
+  final lines = src.split('\n');
+  final sep = RegExp(r'^\s*\|?[\s:|-]+\|[\s:|-]*$');
+  List<String> cellsOf(String l) {
+    var x = l.trim();
+    if (x.startsWith('|')) x = x.substring(1);
+    if (x.endsWith('|')) x = x.substring(0, x.length - 1);
+    return [for (final c in x.split('|')) c.trim()];
+  }
+
+  bool isRow(String l) {
+    final t = l.trim();
+    return t.startsWith('|') && t.endsWith('|') && t.length > 2;
+  }
+
+  final want = rows.first.map((e) => e.trim()).join('\u0001');
+  var inFence = false;
+  var i = 0;
+  while (i < lines.length) {
+    final t = lines[i].trimLeft();
+    if (t.startsWith('```') || t.startsWith('~~~')) {
+      inFence = !inFence;
+      i++;
+      continue;
+    }
+    if (inFence || !isRow(lines[i])) {
+      i++;
+      continue;
+    }
+    final start = i;
+    final body = <List<String>>[];
+    while (i < lines.length && isRow(lines[i])) {
+      if (!(sep.hasMatch(lines[i].trim()) && lines[i].contains('-'))) {
+        body.add(cellsOf(lines[i]));
+      }
+      i++;
+    }
+    if (body.length < 2) continue;
+    final head = body.first.map((e) => e.trim()).join('\u0001');
+    if (head != want || body.length != rows.length) continue;
+    // 見つかった。 この範囲をフェンスで包む。
+    final block = lines.sublist(start, i);
+    final out = <String>[
+      ...lines.sublist(0, start),
+      '```table',
+      ...block,
+      '```',
+      ...lines.sublist(i),
+    ];
+    return out.join('\n');
+  }
+  return null;
+}
+
 String? replaceFencedBlockAt(String src, int line, String code) {
   if (line <= 0) return null;
   final lines = src.split('\n');
@@ -134352,7 +134683,12 @@ String _markdownPreviewHtml(String md, bool dark,
     String mapsJson = '{}',
     // 車輪を 1 段回した時に動く量の倍率 (= ユーザー要望:
     // マークダウンページのスクロール幅を微調整)。 1.0 = これまでどおり。
-    double scrollStep = 1.0}) {
+    double scrollStep = 1.0,
+    // 本文を「ワープロの紙」 のように真ん中へ寄せるか (= ユーザー要望:
+    // プレビューだけの画面は左端に寄り過ぎていて読みにくい)。
+    // 文字そのものは左寄せのまま、 本文の柱を中央に置くだけ。
+    // 幅が足りない時 (= 並べて出している時や携帯) は何も起きない。
+    bool centered = false}) {
   final fg = dark ? '#E8EAF2' : '#16181D';
   final bg = dark ? '#14141F' : '#FFFFFF';
   final code = dark ? '#1E1E2E' : '#F3F4F8';
@@ -134402,6 +134738,15 @@ String _markdownPreviewHtml(String md, bool dark,
   }, { passive: false });
 })();
 </script>''';
+  // ── 本文の柱を真ん中へ (= ユーザー要望: ワープロのように読みたい) ──
+  //   文字は左寄せのまま。 幅が $kMdPageWidth に届かない画面では
+  //   `margin:auto` が 0 になるので、 狭い所では今までと同じ見た目になる。
+  //   紙の余白に当たる分だけ上下の余白も少し広げる。
+  const mdPageWidth = 900;
+  final centerCss = centered
+      ? 'body{max-width:${mdPageWidth}px;margin-left:auto;margin-right:auto;'
+          'padding:28px 32px 64px;}'
+      : '';
   // 連動する時だけ、 プレビュー側のスクロールバーを消す (= バーは 1 本)。
   final syncCss = syncScroll
       ? 'html{scrollbar-width:none;}'
@@ -134510,6 +134855,16 @@ String _markdownPreviewHtml(String md, bool dark,
   #err{color:#E57373;font-size:12px;white-space:pre-wrap;}
   /* 目次が長い時は中でスクロールさせる (= ユーザー報告: 目次が長すぎる) */
   #mmtoc{max-height:44vh;overflow:auto;}
+  /* ── 埋め込んだ「アプリの表」 (= ユーザー要望: md の表をアプリの形式に
+     変換して埋め込めるように)。 見た目は要素の表と同じ枠線・見出し行。 ── */
+  .mmtbl{margin:14px 0;overflow-x:auto;}
+  .mmtbl-t{border-collapse:collapse;width:auto;
+    border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.18);}
+  .mmtbl-t th,.mmtbl-t td{border:1.5px solid #888888;padding:8px 12px;
+    min-width:56px;outline:none;}
+  .mmtbl-t th{background:$thead;font-weight:700;}
+  .mmtbl-t td:focus,.mmtbl-t th:focus{box-shadow:inset 0 0 0 2px $accent;}
+  .mmtbl-note{font-size:10.5px;opacity:.55;margin:3px 2px 0;}
   /* ── 埋め込んだマップ (= ユーザー要望) ── */
   .mmap{margin:14px 0;}
   .mmap-box{position:relative;height:420px;overflow:hidden;border-radius:10px;
@@ -134649,6 +135004,9 @@ String _markdownPreviewHtml(String md, bool dark,
   .mmch-stage [contenteditable="true"], .mmwrap input, .mmwrap textarea{
     -webkit-user-select:text;user-select:text;}
   @media print{#mmdl{display:none;}}
+  /* 本文を紙のように真ん中へ (= ユーザー要望)。 body の余白を上書きするので
+     一番最後に置く。 空文字の時は何も出ない。 */
+  $centerCss
 </style></head><body>
 $dlBtn
 <script>
@@ -135249,6 +135607,87 @@ $mapsJs
   }
   // ── 本体: マークダウン → HTML + mermaid + 目次 + ハイライト + 数式 ──
   // (window.__mmUpdate で分割プレビューからも再描画できる)
+  // ── 埋め込んだ「アプリの表」 を描く (= ユーザー要望) ──
+  //    ```table のフェンスの中身 (縦棒の表) をアプリの表の見た目で出し、
+  //    その場で直せるようにする。 直した内容は元の文へ書き戻す。
+  function mmDecodeEnt(v) {
+    var d = document.createElement('textarea');
+    d.innerHTML = String(v || '');
+    return d.value;
+  }
+  function mmParsePipe(md) {
+    var rows = [];
+    var lines = String(md).split('\\n');
+    for (var i = 0; i < lines.length; i++) {
+      var t = lines[i].trim();
+      if (!t) continue;
+      if (/^\\|?[\\s:|-]+\\|[\\s:|-]*\$/.test(t) && t.indexOf('-') >= 0) {
+        continue;   // 見出しの下の区切りの行
+      }
+      var x = t;
+      if (x.charAt(0) === '|') x = x.substring(1);
+      if (x.charAt(x.length - 1) === '|') x = x.substring(0, x.length - 1);
+      rows.push(x.split('|').map(function (c) { return c.trim(); }));
+    }
+    return rows;
+  }
+  function mmToPipe(rows) {
+    if (!rows.length) return '';
+    var o = [];
+    o.push('| ' + rows[0].join(' | ') + ' |');
+    var sep = [];
+    for (var i = 0; i < rows[0].length; i++) sep.push(' --- ');
+    o.push('|' + sep.join('|') + '|');
+    for (var r = 1; r < rows.length; r++) {
+      o.push('| ' + rows[r].join(' | ') + ' |');
+    }
+    return o.join('\\n');
+  }
+  function renderAppTables() {
+    var els = out.querySelectorAll('.mmtbl');
+    for (var i = 0; i < els.length; i++) {
+      var box = els[i];
+      if (box.getAttribute('data-done') === '1') continue;
+      box.setAttribute('data-done', '1');
+      var rows = mmParsePipe(mmDecodeEnt(box.getAttribute('data-src')));
+      if (!rows.length) continue;
+      var ln = Number(box.getAttribute('data-src-line')) || 0;
+      var tbl = document.createElement('table');
+      tbl.className = 'mmtbl-t';
+      for (var r = 0; r < rows.length; r++) {
+        var tr = document.createElement('tr');
+        for (var c = 0; c < rows[r].length; c++) {
+          var cell = document.createElement(r === 0 ? 'th' : 'td');
+          cell.textContent = rows[r][c];
+          cell.setAttribute('contenteditable', 'true');
+          tr.appendChild(cell);
+        }
+        tbl.appendChild(tr);
+      }
+      (function (bx, table, line) {
+        table.addEventListener('focusout', function () {
+          var next = [];
+          for (var r = 0; r < table.rows.length; r++) {
+            var one = [];
+            for (var c = 0; c < table.rows[r].cells.length; c++) {
+              one.push(String(table.rows[r].cells[c].textContent || '')
+                  .replace(/\\r?\\n/g, ' ')
+                  .replace(/\\|/g, '\\\\|').trim());
+            }
+            next.push(one);
+          }
+          var code = mmToPipe(next);
+          if (code === mmDecodeEnt(bx.getAttribute('data-src')).trim()) return;
+          bx.setAttribute('data-src', code);
+          if (window.__mmPost) {
+            window.__mmPost({ type: 'tableEdit', line: line, code: code });
+          }
+        });
+      })(box, tbl, ln);
+      box.appendChild(tbl);
+    }
+  }
+
   function renderAll(src) {
     // ── 前回の描画で残った mermaid の残骸を掃除する ──
     //    図が文法エラーだと、 mermaid が body に作った仮の入れ物
@@ -135298,6 +135737,16 @@ $mapsJs
         }
         // ── 自分のマップを埋め込む (= ユーザー要望) ──
         //    中に書いたページ名 / ページ ID を目印にする。
+        // ── アプリの表として埋め込む (= ユーザー要望: md 形式で書かれた
+        //    表を自分のアプリの形式に変換して埋め込めるように) ──
+        //    中身はふつうの縦棒の表のまま。 画面ではアプリの表として描き、
+        //    直すと元の文へ書き戻す。
+        if (l === 'table') {
+          return '\\n\\n<div class="mmtbl" data-src-line="' + ln +
+              '" data-src="' + String(body).replace(/&/g, '&amp;')
+                  .replace(/"/g, '&quot;').replace(/</g, '&lt;') +
+              '"></div>\\n\\n';
+        }
         if (l === 'map') {
           var mk = String(body).trim().split('\\n')[0].trim();
           return '\\n\\n<div class="map-slot" data-src-line="' + ln +
@@ -135401,6 +135850,7 @@ $mapsJs
         if (/^\\s*[-*+]\\s+\\[[ xX]\\]/.test(TL)) tLines.push(ti + 1);
       }
       if (window.__mmRenderMaps) window.__mmRenderMaps();
+      renderAppTables();
       var boxes = out.querySelectorAll('li input[type="checkbox"]');
       var bn = Math.min(boxes.length, tLines.length);
       for (var bi = 0; bi < bn; bi++) {
@@ -137666,6 +138116,10 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
     if (table.length >= 2) {
       entries.add(item('table', Icons.table_view_rounded,
           provider.t('md.tableToPage'), color: const Color(0xFF4FC3F7)));
+      // ★ その場でアプリの表にして埋め込む (= ユーザー要望: md の表を
+      //   自分のアプリの形式に変換して埋め込めるように)。
+      entries.add(item('tableEmbed', Icons.grid_on_rounded,
+          provider.t('md.tableEmbed'), color: const Color(0xFF5FD3B2)));
     }
     if (sel.isNotEmpty) {
       entries.add(item('copy', Icons.copy_rounded, provider.t('md.copy')));
@@ -137708,6 +138162,9 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
         case 'table':
           unawaited(_putTableIntoPage(table));
           break;
+        case 'tableEmbed':
+          _embedTableAsAppTable(table);
+          break;
         case 'copy':
           unawaited(Clipboard.setData(ClipboardData(text: sel)));
           _appSnackTop(
@@ -137730,6 +138187,26 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
           break;
       }
     }));
+  }
+
+  /// 押した表を「アプリの表」として埋め込む
+  /// (= ユーザー要望: md 形式の表を自分のアプリの形式に変換して
+  /// 埋め込めるように)。 本文のその表を ```table で包むだけなので、
+  /// 文字としては今までどおり読めるし、 他の道具でも壊れない。
+  void _embedTableAsAppTable(List<List<String>> rows) {
+    final p = widget.provider;
+    if (rows.length < 2) return;
+    final next = wrapMarkdownTableAsAppTable(_ctrl.text, rows);
+    if (next == null) {
+      _appSnackTop(context, p.t('md.tableNotFound'), const Color(0xFF37474F));
+      return;
+    }
+    _ctrl.text = next;
+    _syncCurrentTab();
+    _saveDebounce?.cancel();
+    _saveDebounce = Timer(const Duration(milliseconds: 400), _saveNow);
+    unawaited(_render());
+    _appSnackTop(context, p.t('md.tableEmbedded'), const Color(0xFF43B97F));
   }
 
   /// 選んでいる文字 (無ければ本文ぜんぶ) を AI へ渡す。
@@ -138343,7 +138820,9 @@ graph TD
     final html = _markdownPreviewHtml(_ctrl.text, widget.provider.isDarkMode,
         linkBridge: true,
         syncScroll: _scrollSyncOn,
-        scrollStep: widget.provider.mdScrollStep);
+        scrollStep: widget.provider.mdScrollStep,
+        // プレビューだけの時は本文を真ん中へ (= ユーザー要望)。
+        centered: _viewMode == 'preview');
     try {
       if (_isDesktopPlatform) {
         // ── file:// で開く (= Mermaid 描画対応。 about:blank だと CDN の
@@ -138362,6 +138841,8 @@ graph TD
             tocLabel: widget.provider.t('md.toc'),
             syncScroll: _scrollSyncOn,
             scrollStep: widget.provider.mdScrollStep,
+            // プレビューだけの時は本文を真ん中へ (= ユーザー要望)。
+            centered: _viewMode == 'preview',
             mapsJson: buildEmbeddedMapsJson(widget.provider, _ctrl.text));
         final fileUrl = await _prepareMarkdownPreviewFile(localHtml);
         if (!mounted || !_preview) return;
@@ -138422,6 +138903,9 @@ graph TD
         // ★ 見る側にダウンロードボタンは出さない (= ユーザー要望: 邪魔だし、
         //   受け取っても普通は開く用意が無い)。
         showDownload: false,
+        // 公開ページも本文だけの画面なので、 真ん中に寄せて読みやすくする
+        // (= アプリ内のプレビューだけの画面と同じ見た目)。
+        centered: true,
         // ```map で埋め込んだマップは公開ページでも見られるようにする。
         // 見る人は触って直せるが、 それはその画面の中だけの話で、
         // こちらのファイルには一切書き戻らない (= ユーザー要望)。
@@ -139080,6 +139564,14 @@ graph TD
       // ── 図をダブルクリックして、 元のマーメイド記法を直した
       //    (= ユーザー要望) ──
       if (type == 'mermaidEdit') {
+        _applyPreviewMermaid(
+            (m['line'] as num?)?.toInt() ?? 0, '${m['code'] ?? ''}');
+        return;
+      }
+      // ── 埋め込んだアプリの表を直した (= ユーザー要望: md の表を
+      //    アプリの形式で埋め込んで、 その場で直せるように) ──
+      //    書き戻す形はマーメイドと同じ (フェンスの中身を差し替える)。
+      if (type == 'tableEdit') {
         _applyPreviewMermaid(
             (m['line'] as num?)?.toInt() ?? 0, '${m['code'] ?? ''}');
         return;
@@ -144730,19 +145222,39 @@ class _PaintPageViewState extends State<_PaintPageView> {
     try {
       final at = _paintPasteAnchor();
       // ── 絵 ──
+      //  ★ = ユーザー報告「Ctrl+V でフリーノートに画像を貼り付けられない」。
+      //    以前は先に「絵が入っているか」 を名前で見分けていたが、 Windows の
+      //    クリップボードは "PNG" / "NativeShell_CF_8" のような名前なので
+      //    見分けに引っ掛からず、 いつも「絵は無い」 と判断されていた。
+      //    見分けはやめて、 そのまま読みに行く (無ければ null が返る)。
       final host = _paintHost;
       if (host != null) {
         try {
-          if (await host._osClipboardHasImage()) {
-            final path = await host._grabClipboardImageToFile();
-            if (!mounted) return;
-            if (path != null && path.isNotEmpty) {
-              await _addImageFileToSheet(path, centerCanvas: at);
-              return;
-            }
+          final path = await host._grabClipboardImageToFile();
+          if (!mounted) return;
+          if (path != null && path.isNotEmpty) {
+            await _addImageFileToSheet(path, centerCanvas: at);
+            return;
           }
         } catch (_) {
           // 絵が読めなくても文字で続ける。
+        }
+        // ★ Android のスクリーンショットは、 貼る頃には受け渡しの入れ物が
+        //   閉じていて読めない事がある (= マップ側と同じ事情)。 その時は
+        //   端末に保存されている一番新しい絵を使う。
+        if (!kIsWeb && Platform.isAndroid) {
+          try {
+            final latest = await host._readAndroidLatestScreenshot();
+            final b = latest.bytes;
+            if (b != null && b.isNotEmpty) {
+              final saved = await host._saveTodoImageBytes(b, latest.ext);
+              if (!mounted) return;
+              if (saved != null && saved.isNotEmpty) {
+                await _addImageFileToSheet(saved, centerCanvas: at);
+                return;
+              }
+            }
+          } catch (_) {}
         }
       }
       // ── 文字 ──
@@ -173479,10 +173991,32 @@ class _DiskEntry {
     required this.isDir,
     this.isMore = false,
     this.isAppPage = false,
+    this.size = -1,
+    this.modified,
   });
   final String path;
   final String name;
   final bool isDir;
+
+  /// ファイルの大きさ (分からない時は -1)。
+  final int size;
+
+  /// 最後に書き換えた時刻 (分からない時は null)。
+  final DateTime? modified;
+
+  /// 一覧に出す見出し。 ページの行と同じく、 拡張子は落とす
+  /// (= ユーザー要望: pptx や md だけ表記が違うのをそろえる)。
+  String get displayTitle {
+    if (isDir || isMore) return name;
+    final dot = name.lastIndexOf('.');
+    return dot > 0 ? name.substring(0, dot) : name;
+  }
+
+  /// 拡張子 (小文字・ドット無し)。
+  String get ext {
+    final dot = name.lastIndexOf('.');
+    return dot > 0 ? name.substring(dot + 1).toLowerCase() : '';
+  }
 
   /// アプリがページを書き出した .json (一覧には出さない)。
   final bool isAppPage;
@@ -173972,7 +174506,7 @@ class _DrawerTile extends StatelessWidget {
 
   /// 最終更新日時を相対的にフォーマット
   /// 今日 → HH:mm / 昨日 → 昨日 HH:mm / 今年 → M/d HH:mm / それ以前 → yy/M/d
-  static String _formatLastModified(DateTime raw, MindMapProvider provider) {
+  static String formatLastModified(DateTime raw, MindMapProvider provider) {
     // UTC で作られた値が混ざっても時刻がずれないように、 必ず地方時に直す。
     final dt = raw.isUtc ? raw.toLocal() : raw;
     final now = DateTime.now();
@@ -174112,7 +174646,7 @@ class _DrawerTile extends StatelessWidget {
               const Icon(Icons.schedule_rounded,
                   size: 9, color: Colors.white38),
               const SizedBox(width: 3),
-              Text(_formatLastModified(page.lastModifiedAt, provider),
+              Text(formatLastModified(page.lastModifiedAt, provider),
                   style: const TextStyle(color: Colors.white38, fontSize: 10)),
             ]),
           ],
@@ -244935,6 +245469,9 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
     if (table.length >= 2) {
       entries.add(item(
           'table', Icons.table_view_rounded, provider.t('md.tableToPage')));
+      // その場でアプリの表にして埋め込む (= ユーザー要望)。
+      entries.add(item(
+          'tableEmbed', Icons.grid_on_rounded, provider.t('md.tableEmbed')));
     }
     if (sel.isNotEmpty) {
       entries.add(item('copy', Icons.copy_rounded, provider.t('md.copy')));
@@ -244962,6 +245499,22 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
       } else if (v == 'table') {
         unawaited(askAndPutTableIntoPage(
             context, provider, tableTitle, table));
+      } else if (v == 'tableEmbed') {
+        // 本文のその表を ```table で包むだけ (= ユーザー要望)。
+        final next = wrapMarkdownTableAsAppTable(_fullText, table);
+        if (next == null) {
+          _showSnackBar(provider.t('md.tableNotFound'));
+        } else {
+          _pushUndo();
+          _lines
+            ..clear()
+            ..addAll(next.split('\n'));
+          if (_lines.isEmpty) _lines.add('');
+          setState(() {});
+          _markDirty();
+          unawaited(_renderMdPreview());
+          _showSnackBar(provider.t('md.tableEmbedded'));
+        }
       } else if (v == 'edit') {
         setState(() {
           _mdPreview = false;
@@ -245023,6 +245576,12 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
       // ── 図をダブルクリックして、 元のマーメイド記法を直した
       //    (= ユーザー要望) ──
       if (type == 'mermaidEdit') {
+        _applyMdPreviewMermaid(
+            (m['line'] as num?)?.toInt() ?? 0, '${m['code'] ?? ''}');
+        return;
+      }
+      // 埋め込んだアプリの表を直した (= ユーザー要望)。
+      if (type == 'tableEdit') {
         _applyMdPreviewMermaid(
             (m['line'] as num?)?.toInt() ?? 0, '${m['code'] ?? ''}');
         return;
@@ -245473,7 +246032,10 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
       }
       return;
     }
-    final html = _markdownPreviewHtml(_lines.join('\n'), widget.isDarkMode);
+    // プレビューだけの時は本文を真ん中へ (= ユーザー要望)。
+    final mdCentered = _mdPreview && !_mdSplitView;
+    final html = _markdownPreviewHtml(_lines.join('\n'), widget.isDarkMode,
+        centered: mdCentered);
     try {
       if (!kIsWeb &&
           (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
@@ -245498,6 +246060,7 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
             aiBridge: true,
             // 編集欄と同じ所を出す (= ユーザー要望: スクロールバーを 1 つに)。
             syncScroll: true,
+            centered: mdCentered,
             mapsJson: buildEmbeddedMapsJson(
                 context.read<MindMapProvider>(), _lines.join('\n')));
         final fileUrl = await _prepareMarkdownPreviewFile(localHtml);
@@ -245509,7 +246072,7 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
         if (_mdWinReady) {
           await _mdWin?.loadStringContent(_markdownPreviewHtml(
               _lines.join('\n'), widget.isDarkMode,
-              aiBridge: true));
+              aiBridge: true, centered: mdCentered));
         }
       } else {
         final uri =
@@ -245548,7 +246111,9 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
     // プレビューが出ない。 markdown として組み直していたのが原因)。
     final src = _isHtmlFile
         ? _htmlPreviewWithLightScheme(_lines.join('\n'))
-        : _markdownPreviewHtml(_lines.join('\n'), widget.isDarkMode);
+        : _markdownPreviewHtml(_lines.join('\n'), widget.isDarkMode,
+            // プレビューだけの時は本文を真ん中へ (= ユーザー要望)。
+            centered: _mdPreview && !_mdSplitView);
     final uri =
         Uri.dataFromString(src, mimeType: 'text/html', encoding: utf8)
             .toString();
@@ -259286,6 +259851,17 @@ class _ImageEditorDialog extends StatefulWidget {
   /// 開いた直後のモード ('view' / 'crop' / 'annotate')。
   /// = ユーザー要望: フリーノートの画像は、 押したらすぐトリミングに入る。
   final String initialMode;
+
+  /// 自分の画面を持たず、 分割ペインなどの中に埋め込まれて出ているか。
+  /// 埋め込みの時は「戻る」 を横取りしない (= アプリ本体の戻るまで
+  /// 奪ってしまうため)。
+  final bool embedded;
+
+  /// 「左 / 右に分けて開く」 を押した時に呼ばれる
+  /// (= ユーザー要望: jpg 等の画像編集画面にも左右分割のボタンが欲しい)。
+  /// 分割ペインの中で出ている時は null にしてボタンを出さない。
+  final void Function(String path, String name, {bool isLeftPanel})?
+      onSplitOpen;
   const _ImageEditorDialog({
     super.key,
     required this.filePath,
@@ -259298,6 +259874,8 @@ class _ImageEditorDialog extends StatefulWidget {
     this.galleryIndex,
     this.galleryCount,
     this.initialMode = 'view',
+    this.embedded = false,
+    this.onSplitOpen,
   });
   @override
   State<_ImageEditorDialog> createState() => _ImageEditorDialogState();
@@ -259365,10 +259943,59 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
     });
     _checkBackupExists();
     _loadIntrinsicSize();
+    // ★ Ctrl+Z / Ctrl+Y (= ユーザー要望: 画像に書き込んだ図形を取り消したい)。
+    //   焦点の場所に関係なく受け取りたいので、 こちらで直に受ける。
+    HardwareKeyboard.instance.addHandler(_imgEditorKey);
+  }
+
+  /// 画像編集中のキー操作。
+  ///
+  /// true を返すと、 この打鍵はここで止まり、 マップ本体の取り消しへは
+  /// 流れない (= 裏のマップを巻き添えで戻してしまわないため)。
+  bool _imgEditorKey(KeyEvent e) {
+    if (!mounted) return false;
+    if (e is! KeyDownEvent) return false;
+    // 自分の画面を持っている時は、 一番手前に居る時だけ受ける。
+    if (_ownsRoute) {
+      final route = ModalRoute.of(context);
+      if (route == null || !route.isCurrent) return false;
+    }
+    // 文字を打っている欄があれば、 その欄の取り消しに任せる。
+    final fc = FocusManager.instance.primaryFocus?.context;
+    if (fc != null &&
+        (fc.widget is EditableText ||
+            fc.findAncestorWidgetOfExactType<EditableText>() != null)) {
+      return false;
+    }
+    final k = e.logicalKey;
+    // 選んでいる図形を消す。
+    if (_annotSel.isNotEmpty &&
+        (k == LogicalKeyboardKey.delete ||
+            k == LogicalKeyboardKey.backspace)) {
+      _deleteSelectedShapes();
+      return true;
+    }
+    final ctrl = HardwareKeyboard.instance.isControlPressed ||
+        HardwareKeyboard.instance.isMetaPressed;
+    if (!ctrl) return false;
+    if (k == LogicalKeyboardKey.keyZ) {
+      if (HardwareKeyboard.instance.isShiftPressed) {
+        _redoOnce();
+      } else {
+        _undoOnce();
+      }
+      return true;
+    }
+    if (k == LogicalKeyboardKey.keyY) {
+      _redoOnce();
+      return true;
+    }
+    return false;
   }
 
   @override
   void dispose() {
+    HardwareKeyboard.instance.removeHandler(_imgEditorKey);
     _viewCtrl.dispose();
     super.dispose();
   }
@@ -259397,7 +260024,107 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
       onClose();
       return;
     }
-    Navigator.of(context).maybePop();
+    // PopScope で「戻る」 を止めているので、 maybePop では閉じられない
+    // (もう一度こちらへ戻ってくるだけ)。 閉じると決めた時は札を立てて、
+    // そのまま pop する。
+    _allowPop = true;
+    final nav = Navigator.of(context);
+    if (nav.canPop()) nav.pop();
+  }
+
+  /// まだ画像へ焼き込んでいない編集内容 (ペン / 図形 / 文字) があるか。
+  ///
+  /// トリミングの枠や回転は「見る向きを変えているだけ」 なので数えない。
+  /// 数えるのは、 閉じると本当に消えてしまう描き込みだけ。
+  bool get _hasUnsavedEdits =>
+      _annotStrokes.isNotEmpty ||
+      _annotShapes.isNotEmpty ||
+      _curStroke.isNotEmpty ||
+      _shapeDraft != null ||
+      _texts.isNotEmpty;
+
+  /// 左 / 右に分けて開く。
+  ///
+  /// ★ 書き込みが残ったまま渡すと、 この画面が閉じる時に消えてしまうので、
+  ///   先に保存するか聞く (= 閉じる時と同じ聞き方)。
+  Future<void> _handleSplitOpen({required bool isLeftPanel}) async {
+    final open = widget.onSplitOpen;
+    if (open == null) return;
+    if (!await _resolveUnsavedEdits()) return;
+    if (!mounted) return;
+    open(widget.filePath, widget.fileName, isLeftPanel: isLeftPanel);
+  }
+
+  /// 閉じる前の確認 (= ユーザー要望: 編集内容がある時は Esc でいきなり
+  /// 落とさず、 保存するか聞いてほしい)。
+  ///
+  /// Esc とヘッダーの ✕ の両方がここを通る。 描き込みが無い時は今までどおり
+  /// そのまま閉じる。
+  Future<void> _closeEditorGuarded() async {
+    if (!await _resolveUnsavedEdits()) return;
+    _closeEditor();
+  }
+
+  /// 書き込みが残っている時に「保存しますか」 と聞く。
+  ///
+  /// 戻り値 true = 先へ進んでよい (保存したか、 捨てたか、 元から無い)。
+  /// false = 利用者が取り消したので、 この画面に留まる。
+  Future<bool> _resolveUnsavedEdits() async {
+    if (!_hasUnsavedEdits) return true;
+    final provider = context.read<MindMapProvider>();
+    final choice = await showDialog<String>(
+      context: context,
+      useRootNavigator: widget.useRootNavigator,
+      barrierDismissible: false,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF24243A),
+        title: Text(provider.t('img.closeConfirmTitle'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
+        content: Text(provider.t('img.closeConfirmBody'),
+            style: const TextStyle(color: Colors.white70, fontSize: 13)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, 'cancel'),
+            child: Text(provider.t('btn.cancel'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, 'discard'),
+            child: Text(provider.t('img.discardAndClose'),
+                style: const TextStyle(color: Color(0xFFFF6B6B))),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, 'save'),
+            child: Text(provider.t('img.saveAndClose'),
+                style: const TextStyle(color: Color(0xFF43B97F))),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || choice == null || choice == 'cancel') return false;
+    if (choice == 'save') {
+      // 焼き込みは注釈モードの画面で行う。 通常表示は画像を縮めて読み込んで
+      // いるので (decodeWidth)、 そのまま写すと画質が落ちるため。
+      if (_mode != 'annotate') {
+        setState(() => _mode = 'annotate');
+        await WidgetsBinding.instance.endOfFrame;
+        if (!mounted) return false;
+      }
+      await _applyAnnotation();
+      if (!mounted) return false;
+      // 保存に失敗した時は進まない (中身が残っていれば失敗)。
+      if (_hasUnsavedEdits) return false;
+    } else {
+      setState(() {
+        _annotStrokes.clear();
+        _annotShapes.clear();
+        _curStroke = [];
+        _shapeDraft = null;
+        _texts.clear();
+        _annotSel.clear();
+      });
+    }
+    return true;
   }
 
   /// 起動時に既存バックアップの有無を調べてリセットボタンの活性を決める。
@@ -259971,6 +260698,12 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
         _showSnack('注釈保存失敗 (boundary なし)');
         return;
       }
+      // ★ 選んでいる印 (青い枠) は画像に焼かない。 文字の操作ボタンと同じく、
+      //   写す前に消しておく。
+      if (_annotSel.isNotEmpty) {
+        setState(() => _annotSel.clear());
+        await WidgetsBinding.instance.endOfFrame;
+      }
       if (_texts.isNotEmpty && !_hideTextEditHandlesForCapture) {
         hidTextHandles = true;
         setState(() => _hideTextEditHandlesForCapture = true);
@@ -259994,6 +260727,10 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
         _shapeDraft = null;
         _curStroke = [];
         _texts.clear();
+        _annotSel.clear();
+        // 画像に焼いたので、 ここまでの取り消しは意味を持たなくなる。
+        _imgUndo.clear();
+        _imgRedo.clear();
       });
       _showSnack('✏️ 注釈を保存しました');
     } catch (e) {
@@ -260016,27 +260753,159 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
     PaintingBinding.instance.imageCache.clearLiveImages();
   }
 
-  /// 注釈の最後のストロークを取り消す
-  void _undoStroke() {
+  // ── 取り消す / やり直す (= ユーザー要望: Ctrl+Z で図形を取り消したい) ──
+  //    ペンの線・図形・文字をまとめて 1 枚の控えにして積む。
+  final List<_ImgEditSnap> _imgUndo = [];
+  final List<_ImgEditSnap> _imgRedo = [];
+  static const int _kImgUndoMax = 60;
+
+  _ImgEditSnap _snapNow() => _ImgEditSnap(
+        strokes: [for (final s in _annotStrokes) List<Offset>.from(s)],
+        shapes: [for (final sh in _annotShapes) sh.copy()],
+        texts: [for (final t in _texts) t.copy()],
+      );
+
+  /// 変える**前**に呼ぶ。
+  void _pushImgUndo() {
+    _imgUndo.add(_snapNow());
+    if (_imgUndo.length > _kImgUndoMax) _imgUndo.removeAt(0);
+    // 新しい操作をしたら「やり直す」 先は無くなる。
+    _imgRedo.clear();
+  }
+
+  void _restoreImgSnap(_ImgEditSnap s) {
+    _annotStrokes
+      ..clear()
+      ..addAll(s.strokes);
+    _annotShapes
+      ..clear()
+      ..addAll(s.shapes);
+    _texts
+      ..clear()
+      ..addAll(s.texts);
+    _curStroke = [];
+    _shapeDraft = null;
+    _annotSel.clear();
+  }
+
+  void _undoOnce() {
+    if (_imgUndo.isEmpty) return;
+    final prev = _imgUndo.removeLast();
     setState(() {
-      if (_curStroke.isNotEmpty) {
-        _curStroke = [];
-      } else if (_annotShapes.isNotEmpty) {
-        // 図形も 1 つずつ戻せる (= ユーザー要望で図形を足したので)。
-        _annotShapes.removeLast();
-      } else if (_annotStrokes.isNotEmpty) {
-        _annotStrokes.removeLast();
+      _imgRedo.add(_snapNow());
+      if (_imgRedo.length > _kImgUndoMax) _imgRedo.removeAt(0);
+      _restoreImgSnap(prev);
+    });
+  }
+
+  void _redoOnce() {
+    if (_imgRedo.isEmpty) return;
+    final next = _imgRedo.removeLast();
+    setState(() {
+      _imgUndo.add(_snapNow());
+      if (_imgUndo.length > _kImgUndoMax) _imgUndo.removeAt(0);
+      _restoreImgSnap(next);
+    });
+  }
+
+  /// 注釈の最後の書き込みを取り消す (道具のボタン用)。
+  void _undoStroke() {
+    if (_curStroke.isNotEmpty) {
+      setState(() => _curStroke = []);
+      return;
+    }
+    _undoOnce();
+  }
+
+  // ── 置いた図形を選んで動かす (= ユーザー要望: PDF の描き込みと同じように) ──
+  /// 選んでいる図形の番号。
+  final Set<int> _annotSel = <int>{};
+
+  /// 引きずっている間の 1 つ前の位置。
+  Offset? _annotDragPrev;
+
+  /// 点と線分の距離 (当たり判定用)。
+  static double _distToSeg(Offset p, Offset a, Offset b) {
+    final vx = b.dx - a.dx, vy = b.dy - a.dy;
+    final wx = p.dx - a.dx, wy = p.dy - a.dy;
+    final len2 = vx * vx + vy * vy;
+    if (len2 <= 0.0001) return (p - a).distance;
+    var t = (wx * vx + wy * vy) / len2;
+    t = t.clamp(0.0, 1.0);
+    return (p - Offset(a.dx + vx * t, a.dy + vy * t)).distance;
+  }
+
+  /// その場所にある図形 (手前から探す)。 無ければ null。
+  int? _annotHitAt(Offset pt) {
+    for (var i = _annotShapes.length - 1; i >= 0; i--) {
+      final sh = _annotShapes[i];
+      final tol = (sh.width * 1.5).clamp(6.0, 24.0).toDouble();
+      if (sh.kind == 'rect' || sh.kind == 'ellipse' || sh.kind == 'check') {
+        if (Rect.fromPoints(sh.start, sh.end).inflate(tol).contains(pt)) {
+          return i;
+        }
+        continue;
+      }
+      if (_distToSeg(pt, sh.start, sh.end) <= tol) return i;
+    }
+    return null;
+  }
+
+  /// 選んでいる図形を消す。
+  void _deleteSelectedShapes() {
+    if (_annotSel.isEmpty) return;
+    _pushImgUndo();
+    final idx = _annotSel.toList()..sort();
+    setState(() {
+      for (var i = idx.length - 1; i >= 0; i--) {
+        if (idx[i] >= 0 && idx[i] < _annotShapes.length) {
+          _annotShapes.removeAt(idx[i]);
+        }
+      }
+      _annotSel.clear();
+    });
+  }
+
+  // ── 道具ごとの太さ (= ユーザー要望: PDF の描き込みのように、 図形の外枠の
+  //    太さを設定したい)。 ペンと図形とチェックで別々に覚える。
+  /// 図形 (線 / 矢印 / 四角 / 楕円) の外枠の太さ。
+  double _annotShapeWidth = 3.0;
+
+  /// チェックの太さ。
+  double _annotCheckWidth = 3.0;
+
+  double get _annotActiveWidth => _annotTool == 'pen'
+      ? _annotWidth
+      : (_annotTool == 'check' ? _annotCheckWidth : _annotShapeWidth);
+
+  void _setAnnotActiveWidth(double v) {
+    final w = v.clamp(0.5, 24.0).toDouble();
+    setState(() {
+      if (_annotTool == 'pen') {
+        _annotWidth = w;
+      } else if (_annotTool == 'check') {
+        _annotCheckWidth = w;
+      } else {
+        _annotShapeWidth = w;
+      }
+      // 選んでいる図形があれば、 その場で太さを変える (= 直せるように)。
+      if (_annotSel.isNotEmpty) {
+        for (final i in _annotSel) {
+          if (i >= 0 && i < _annotShapes.length) _annotShapes[i].width = w;
+        }
       }
     });
   }
 
   /// 注釈をすべてクリアする
   void _clearAnnotations() {
+    _pushImgUndo();
     setState(() {
       _annotStrokes.clear();
       _annotShapes.clear();
       _shapeDraft = null;
       _curStroke = [];
+      _annotSel.clear();
     });
   }
 
@@ -260046,6 +260915,7 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
     if (r == null) return;
     final box = _captureKey.currentContext?.findRenderObject() as RenderBox?;
     final sz = box?.size ?? const Size(300, 300);
+    _pushImgUndo();
     setState(() {
       _texts.add(_ImgTextItem(
         text: r.$1,
@@ -260062,6 +260932,7 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
     final r = await _showTextInputDialog(
         initialText: item.text, initialSize: item.fontSize, allowDelete: true);
     if (r == null) return;
+    _pushImgUndo();
     setState(() {
       if (r.$1.isEmpty) {
         _texts.remove(item); // 空 = 削除
@@ -260325,14 +261196,85 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
       start: at - Offset(half, half),
       end: at + Offset(half, half),
       color: _annotColor,
-      width: _annotWidth,
+      width: _annotActiveWidth,
       filled: _annotFilled && _annotCanFill,
     );
   }
 
   /// 注釈レイヤー (= GestureDetector で描画)
   Widget _buildAnnotationOverlay() {
-    final bool shapeMode = _annotTool != 'pen';
+    // 「選ぶ」 の時は何も描かず、 置いた図形を掴んで動かすだけ
+    // (= ユーザー要望: 一度挿入した図形を選んで移動できるように)。
+    final bool selectMode = _annotTool == 'select';
+    final bool shapeMode = !selectMode && _annotTool != 'pen';
+    if (selectMode) {
+      return Positioned.fill(
+        child: GestureDetector(
+          onTapUp: (d) {
+            final hit = _annotHitAt(d.localPosition);
+            setState(() {
+              final add = HardwareKeyboard.instance.isControlPressed ||
+                  HardwareKeyboard.instance.isShiftPressed;
+              if (hit == null) {
+                if (!add) _annotSel.clear();
+                return;
+              }
+              if (add) {
+                if (!_annotSel.remove(hit)) _annotSel.add(hit);
+              } else {
+                _annotSel
+                  ..clear()
+                  ..add(hit);
+              }
+            });
+          },
+          onPanStart: (d) {
+            final hit = _annotHitAt(d.localPosition);
+            if (hit == null) {
+              _annotDragPrev = null;
+              return;
+            }
+            // 動かす前に控えを取る (= Ctrl+Z で戻せるように)。
+            _pushImgUndo();
+            setState(() {
+              if (!_annotSel.contains(hit)) {
+                _annotSel
+                  ..clear()
+                  ..add(hit);
+              }
+              _annotDragPrev = d.localPosition;
+            });
+          },
+          onPanUpdate: (d) {
+            final prev = _annotDragPrev;
+            if (prev == null) return;
+            final delta = d.localPosition - prev;
+            setState(() {
+              for (final i in _annotSel) {
+                if (i < 0 || i >= _annotShapes.length) continue;
+                final sh = _annotShapes[i];
+                sh
+                  ..start = sh.start + delta
+                  ..end = sh.end + delta;
+              }
+              _annotDragPrev = d.localPosition;
+            });
+          },
+          onPanEnd: (_) => _annotDragPrev = null,
+          child: CustomPaint(
+            painter: _AnnotationPainter(
+              strokes: _annotStrokes,
+              current: const [],
+              color: _annotColor,
+              width: _annotWidth,
+              shapes: _annotShapes,
+              selected: _annotSel,
+            ),
+            size: Size.infinite,
+          ),
+        ),
+      );
+    }
     return Positioned.fill(
       child: GestureDetector(
         // ★ 押しただけ (ドラッグしていない) でも図形を置く
@@ -260340,9 +261282,12 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
         //   以前は 4px 未満の動きを黙って捨てていた。
         onTapUp: (d) {
           if (!shapeMode) return;
+          _pushImgUndo();
           setState(() => _annotShapes.add(_makeAnnotShapeAt(d.localPosition)));
         },
         onPanStart: (d) {
+          // 引き終わった時に 1 件積むので、 ここで控えを取る。
+          _pushImgUndo();
           setState(() {
             if (shapeMode) {
               // 大きさを固定している時は、 引かずに決まった大きさで出す
@@ -260354,7 +261299,7 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
                       start: d.localPosition,
                       end: d.localPosition,
                       color: _annotColor,
-                      width: _annotWidth,
+                      width: _annotActiveWidth,
                       filled: _annotFilled && _annotCanFill,
                     );
             } else {
@@ -260412,6 +261357,7 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
             width: _annotWidth,
             shapes: _annotShapes,
             draft: _shapeDraft,
+            selected: _annotSel,
           ),
           size: Size.infinite,
         ),
@@ -260530,25 +261476,22 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
     //    「トリミング / 切り抜き / 注釈」 を解除する。 通常表示の時だけ
     //    今までどおり画面を閉じる。
     final inMode = isCropMode || isAnnotMode || isCutoutMode;
-    return Shortcuts(
+    // ★ 通常表示でも、 まだ焼き込んでいない描き込みが残っている時は Esc を
+    //   横取りして「保存しますか」 と聞く (= ユーザー要望: 編集内容がある
+    //   のにいきなり閉じてしまうと描いた物が消える)。
+    final catchEsc = inMode || _hasUnsavedEdits;
+    Widget content = Shortcuts(
       shortcuts: <ShortcutActivator, Intent>{
-        if (inMode)
+        if (catchEsc)
           const SingleActivator(LogicalKeyboardKey.escape):
               const DismissIntent(),
       },
       child: Actions(
         actions: <Type, Action<Intent>>{
-          if (inMode)
+          if (catchEsc)
             DismissIntent: CallbackAction<DismissIntent>(
               onInvoke: (_) {
-                setState(() {
-                  _mode = 'view';
-                  // 選択枠は初期状態に戻す (中途半端な枠を残さない)。
-                  _cropLeft = 0.0;
-                  _cropTop = 0.0;
-                  _cropRight = 1.0;
-                  _cropBottom = 1.0;
-                });
+                _handleEscape();
                 return null;
               },
             ),
@@ -260556,6 +261499,51 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
         child: _buildEditorBody(isCropMode, isAnnotMode, isCutoutMode),
       ),
     );
+    // ── Esc が効かない時があった (= ユーザー報告: トリミングや切り抜きに
+    //    してから Esc を押すと、 モードだけでなく画像編集ごと閉じてしまう) ──
+    //    上の Shortcuts は「この画面の中に入力の的 (focus) がある時」 しか
+    //    通らない。 画像を触っただけで何も選んでいない時は、 的が画面の
+    //    外側 (ルート) に居るので、 Flutter の既定の Esc = 画面を閉じる、
+    //    が先に働いてしまう。 そこで閉じる所でも受け止める。
+    //    ★ 埋め込みで使っている時 (= 自分の画面を持たない時) は掛けない。
+    //      掛けるとアプリ本体の「戻る」 を横取りしてしまう。
+    if (_ownsRoute) {
+      content = PopScope(
+        canPop: _allowPop,
+        onPopInvokedWithResult: (didPop, _) {
+          if (didPop) return;
+          _handleEscape();
+        },
+        child: content,
+      );
+    }
+    return content;
+  }
+
+  /// この画面が自分のルート (= 独立した画面) を持っているか。
+  /// 閉じ方を呼ぶ側が握っている時 (分割ペインなどの埋め込み) は持たない。
+  bool get _ownsRoute => widget.onClose == null && !widget.embedded;
+
+  /// PopScope を一時的に通すための札。 こちらから閉じると決めた時だけ立てる。
+  bool _allowPop = false;
+
+  /// Esc (と「戻る」) を受けた時の動き。
+  ///
+  /// ・トリミング / 切り抜き / 注釈の最中 → そのモードを抜けるだけ。
+  /// ・通常表示 → 描き込みが残っていれば聞いてから閉じる。
+  void _handleEscape() {
+    if (_mode != 'view') {
+      setState(() {
+        _mode = 'view';
+        // 選択枠は初期状態に戻す (中途半端な枠を残さない)。
+        _cropLeft = 0.0;
+        _cropTop = 0.0;
+        _cropRight = 1.0;
+        _cropBottom = 1.0;
+      });
+      return;
+    }
+    unawaited(_closeEditorGuarded());
   }
 
   Widget _buildEditorBody(
@@ -260784,6 +261772,8 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
                     // ── 道具えらび (= ユーザー要望: PDF と同じように図形・
                     //    線も入れられるように) ──
                     ...[
+                      // ★ 置いた図形を選んで動かす (= ユーザー要望)。
+                      ('select', Icons.near_me_outlined),
                       ('pen', Icons.edit_rounded),
                       ('line', Icons.remove_rounded),
                       ('arrow', Icons.arrow_forward_rounded),
@@ -260794,7 +261784,10 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
                           padding: const EdgeInsets.symmetric(horizontal: 1),
                           child: InkWell(
                             borderRadius: BorderRadius.circular(6),
-                            onTap: () => setState(() => _annotTool = t.$1),
+                            onTap: () => setState(() {
+                              _annotTool = t.$1;
+                              if (t.$1 != 'select') _annotSel.clear();
+                            }),
                             child: Container(
                               width: 30,
                               height: 30,
@@ -260819,7 +261812,7 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
                     const SizedBox(width: 4),
                     // ── 大きさ・形を固定して置く (= ユーザー要望: PDF と
                     //    同じく、 チェックなどを毎回同じ大きさで出したい) ──
-                    if (_annotTool != 'pen')
+                    if (_annotTool != 'pen' && _annotTool != 'select')
                       Tooltip(
                         message:
                             '${context.read<MindMapProvider>().t('imgAnno.fixedSize')}'
@@ -260850,7 +261843,9 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
                         ),
                       ),
                     // 固定している時だけ、 大きさを選べるバーを出す。
-                    if (_annotTool != 'pen' && _annotFixed)
+                    if (_annotTool != 'pen' &&
+                        _annotTool != 'select' &&
+                        _annotFixed)
                       SizedBox(
                         width: 90,
                         child: Slider(
@@ -260862,8 +261857,28 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
                               setState(() => _annotFixedSize = v),
                         ),
                       ),
+                    // ── 線の太さ (= ユーザー要望: PDF の描き込みのように、
+                    //    書き込む図形の外枠の太さを設定したい)。
+                    //    道具ごとに別の太さを覚える (ペン / 図形 / チェック)。
+                    //    「選ぶ」 で図形を選んでいる時は、 その図形の太さが
+                    //    その場で変わる。 ──
+                    Tooltip(
+                      message:
+                          '${context.read<MindMapProvider>().t('imgAnno.strokeWidth')}'
+                          ' (${_annotActiveWidth.toStringAsFixed(1)})',
+                      child: SizedBox(
+                        width: 92,
+                        child: Slider(
+                          value: _annotActiveWidth.clamp(0.5, 24.0),
+                          min: 0.5,
+                          max: 24,
+                          activeColor: const Color(0xFF4FC3F7),
+                          onChanged: _setAnnotActiveWidth,
+                        ),
+                      ),
+                    ),
                     // ── 中を塗る / 中空 (= ユーザー要望) ──
-                    if (_annotCanFill)
+                    if (_annotCanFill && _annotTool != 'select')
                       Tooltip(
                         message: context.read<MindMapProvider>().t(
                             _annotFilled
@@ -260909,6 +261924,30 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
                           color: Colors.white60, size: 18),
                       onPressed: _undoStroke,
                     ),
+                    // ★ やり直す (= 取り消しを付けたので対になる物も置く)。
+                    IconButton(
+                      tooltip:
+                          context.read<MindMapProvider>().t('imgAnno.redo'),
+                      icon: Icon(Icons.redo_rounded,
+                          color: _imgRedo.isEmpty
+                              ? Colors.white24
+                              : Colors.white60,
+                          size: 18),
+                      onPressed: _imgRedo.isEmpty ? null : _redoOnce,
+                    ),
+                    // 選んでいる図形を消す (「選ぶ」 の時だけ出す)。
+                    if (_annotTool == 'select')
+                      IconButton(
+                        tooltip:
+                            context.read<MindMapProvider>().t('btn.delete'),
+                        icon: Icon(Icons.delete_outline_rounded,
+                            color: _annotSel.isEmpty
+                                ? Colors.white24
+                                : const Color(0xFFFF6B6B),
+                            size: 20),
+                        onPressed:
+                            _annotSel.isEmpty ? null : _deleteSelectedShapes,
+                      ),
                     IconButton(
                       // ★ = ユーザー要望「クリアのアイコンが分かりにくい」。
                       //   三本線 (clear_all) は「並び」 に見えるので、
@@ -260957,7 +261996,7 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
                 tooltip: context.read<MindMapProvider>().t('btn.close'),
                 icon: const Icon(Icons.close_rounded,
                     color: Colors.white60, size: 20),
-                onPressed: _closeEditor,
+                onPressed: () => unawaited(_closeEditorGuarded()),
               ),
           ]),
         ),
@@ -261051,11 +262090,36 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
                         onPressed: _hasBackup ? _resetToOriginal : null,
                       ),
                       const SizedBox(width: 8),
+                      // ── 左 / 右に分けて開く (= ユーザー要望: jpg 等の画像
+                      //    編集画面にも左右分割のボタンが欲しい)。
+                      //    分割ペインの中で開いている時は出さない。 ──
+                      if (widget.onSplitOpen != null) ...[
+                        IconButton(
+                          tooltip: context
+                              .read<MindMapProvider>()
+                              .t('openStyle.splitLeft'),
+                          icon: _splitPanelIcon(_SplitIconFill.left,
+                              color: const Color(0xFFFF6B6B), size: 22),
+                          onPressed: () =>
+                              unawaited(_handleSplitOpen(isLeftPanel: true)),
+                        ),
+                        const SizedBox(width: 8),
+                        IconButton(
+                          tooltip: context
+                              .read<MindMapProvider>()
+                              .t('openStyle.splitRight'),
+                          icon: _splitPanelIcon(_SplitIconFill.right,
+                              color: const Color(0xFF2196F3), size: 22),
+                          onPressed: () =>
+                              unawaited(_handleSplitOpen(isLeftPanel: false)),
+                        ),
+                        const SizedBox(width: 8),
+                      ],
                       IconButton(
                         tooltip: context.read<MindMapProvider>().t('btn.close'),
                         icon: const Icon(Icons.close_rounded,
                             color: Colors.white70, size: 22),
-                        onPressed: _closeEditor,
+                        onPressed: () => unawaited(_closeEditorGuarded()),
                       ),
                     ],
                   ),
@@ -261135,6 +262199,8 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
                           color: _annotColor,
                           width: _annotWidth,
                           shapes: _annotShapes,
+                          // 通常表示では選んでいる印を出さない。
+                          selected: const <int>{},
                         ),
                       ),
                     ),
@@ -261297,12 +262363,14 @@ class _ImgShape {
   final String kind; // line / arrow / rect / ellipse / check
   Offset start;
   Offset end;
-  final Color color;
-  final double width;
+  // ★ 置いた後でも選んで色や太さを変えられるようにするため、 固定をやめた
+  //   (= ユーザー要望: 一度挿入した図形を選んで動かしたり直したり)。
+  Color color;
+  double width;
 
   /// 中を塗るか (= ユーザー要望: 図形の中を塗りつぶしたり中空にしたり)。
   /// 面のある図形 (四角 / 楕円) だけで効く。
-  final bool filled;
+  bool filled;
   _ImgShape({
     required this.kind,
     required this.start,
@@ -261311,6 +262379,15 @@ class _ImgShape {
     required this.width,
     this.filled = false,
   });
+
+  _ImgShape copy() => _ImgShape(
+        kind: kind,
+        start: start,
+        end: end,
+        color: color,
+        width: width,
+        filled: filled,
+      );
 }
 
 class _ImgTextItem {
@@ -261323,6 +262400,26 @@ class _ImgTextItem {
     required this.pos,
     required this.color,
     this.fontSize = 28,
+  });
+
+  _ImgTextItem copy() => _ImgTextItem(
+        text: text,
+        pos: pos,
+        color: color,
+        fontSize: fontSize,
+      );
+}
+
+/// 画像編集の「取り消す / やり直す」 用の控え 1 枚。
+/// = ユーザー要望「Ctrl+Z で画像ファイルに書き込んだ図形を取り消したい」。
+class _ImgEditSnap {
+  final List<List<Offset>> strokes;
+  final List<_ImgShape> shapes;
+  final List<_ImgTextItem> texts;
+  const _ImgEditSnap({
+    required this.strokes,
+    required this.shapes,
+    required this.texts,
   });
 }
 
@@ -261339,6 +262436,9 @@ class _AnnotationPainter extends CustomPainter {
   /// いま引いている途中の図形 (無ければ null)。
   final _ImgShape? draft;
 
+  /// 選んでいる図形の番号 (= 画面に印を出すためだけ。 焼き込む時は空にする)。
+  final Set<int> selected;
+
   _AnnotationPainter({
     required this.strokes,
     required this.current,
@@ -261346,6 +262446,7 @@ class _AnnotationPainter extends CustomPainter {
     required this.width,
     this.shapes = const [],
     this.draft,
+    this.selected = const <int>{},
   });
 
   void _drawShape(Canvas canvas, _ImgShape sh) {
@@ -261423,6 +262524,32 @@ class _AnnotationPainter extends CustomPainter {
     }
     final d = draft;
     if (d != null) _drawShape(canvas, d);
+    // ★ 選んでいる図形の印 (= 画面での目印だけ。
+    //   焼き込む時は selected を空にして写さない)。
+    if (selected.isNotEmpty) {
+      final fill = Paint()..color = const Color(0x224FC3F7);
+      final line = Paint()
+        ..color = const Color(0xFF4FC3F7)
+        ..strokeWidth = 1.6
+        ..style = PaintingStyle.stroke;
+      for (final i in selected) {
+        if (i < 0 || i >= shapes.length) continue;
+        final r = Rect.fromPoints(shapes[i].start, shapes[i].end).inflate(8);
+        canvas.drawRect(r, fill);
+        canvas.drawRect(r, line);
+        if (selected.length == 1) {
+          final dot = Paint()..color = Colors.white;
+          final ring = Paint()
+            ..color = const Color(0xFF4FC3F7)
+            ..strokeWidth = 1.6
+            ..style = PaintingStyle.stroke;
+          for (final c in [r.topLeft, r.topRight, r.bottomLeft, r.bottomRight]) {
+            canvas.drawCircle(c, 5.5, dot);
+            canvas.drawCircle(c, 5.5, ring);
+          }
+        }
+      }
+    }
   }
 
   // ★ 入れ物 (strokes / shapes) も中身 (_ImgShape) も同じ実体を書き換えて
@@ -268796,7 +269923,8 @@ class _McpChatDialog extends StatefulWidget {
   State<_McpChatDialog> createState() => _McpChatDialogState();
 }
 
-class _McpChatDialogState extends State<_McpChatDialog> {
+class _McpChatDialogState extends State<_McpChatDialog>
+    with WidgetsBindingObserver {
   // 会話と実行中のループは画面の外 (_McpChatSession) が持つ。
   //   = ユーザー要望: チャット欄を閉じても処理が続くように。
   final _McpChatSession _session = _McpChatSession.instance;
@@ -268804,6 +269932,34 @@ class _McpChatDialogState extends State<_McpChatDialog> {
   bool get _busy => _session.busy;
   final TextEditingController _input = TextEditingController();
   final ScrollController _scroll = ScrollController();
+
+  /// 書き込み口の焦点 (= 打った文字の行き先)。
+  ///
+  /// ★ = ユーザー報告「入力した後、 他の所をアクティブにしてから戻ると
+  ///   打てなくなる」。 この欄は根っこの Overlay に浮かぶ窓の中に居るが、
+  ///   アプリにとっては後ろのマップがずっと「今の画面」 のままなので、
+  ///   ダイアログを開け閉めしたりキャンバスを押したりするたび、 焦点が
+  ///   マップ側 (autofocus のキー受け) へ引き戻されてしまう。
+  ///   焦点を自分で持っていないと取り返せないので、 State が持つ。
+  final FocusNode _promptFocus = FocusNode(debugLabel: 'mcp_prompt');
+
+  /// 一度でもこの欄に焦点があったか (= 戻ってきた時に返すかの判断)。
+  bool _hadPromptFocus = false;
+
+  /// いま「書く欄」 が出ている画面か (端末 / 説明の画面では出ていない)。
+  bool get _promptVisible =>
+      _inlineTerminal == null && !_showCapabilityPanel && !_showMcpInfo;
+
+  /// 書き込み口へ焦点を戻す。
+  /// 他所で文字を打っている最中なら横取りしない (= CLI の端末や、
+  /// 要素の名前を直している時に奪わないため)。
+  void _refocusPrompt() {
+    if (!mounted || !_promptVisible) return;
+    if (_promptFocus.hasPrimaryFocus) return;
+    final ctx = FocusManager.instance.primaryFocus?.context;
+    if (ctx != null && ctx.widget is EditableText) return;
+    _promptFocus.requestFocus();
+  }
 
   /// 送った指示の下に出すちいさなボタン (写す / 直す)。
   /// = ユーザー要望「一度投げたプロンプトを後からコピーしたり修正したい」。
@@ -269054,6 +270210,26 @@ class _McpChatDialogState extends State<_McpChatDialog> {
       _showCapabilityPanel = false;
       _showMcpInfo = false;
     });
+    // 会話へ戻ったら書き込み口へ焦点を返す (端末に持っていかれたままに
+    // しない = ユーザー報告: 戻ると打てなくなる)。
+    WidgetsBinding.instance.addPostFrameCallback((_) => _refocusPrompt());
+  }
+
+  /// 走らせたままの CLI の端末を出し直す (= 止めない)。
+  /// = ユーザー要望: 一覧へ戻るボタンで戻った後、 元の端末へ帰れるように。
+  void _showRunningCliTerminal(
+      MindMapProvider provider, AgentCliSession session) {
+    _lastCliSession = session;
+    _showInlineTerminal(
+      AgentTerminal(
+        session: session,
+        showHeader: false,
+        onPickLanguage: session.supportsSlashCommands
+            ? () => unawaited(_pickAgentCliLanguage(provider, session))
+            : null,
+      ),
+      session.title,
+    );
   }
 
   /// CLI 側の画面を出す。 まだ走っている端末があればそれを覗き直し、
@@ -269336,9 +270512,55 @@ class _McpChatDialogState extends State<_McpChatDialog> {
           );
         }
         final list = snap.data ?? const <AgentCliFound>[];
+        // ── 動かしたままの CLI (= ユーザー要望: 一覧へ戻った後でも、
+        //    止めずに覗き直せるように) ──
+        final running =
+            AgentCliRunner.active.where((s) => s.running).toList();
         return ListView(
           padding: const EdgeInsets.fromLTRB(12, 10, 12, 14),
           children: [
+            if (running.isNotEmpty) ...[
+              Text(provider.t('cli.running'),
+                  style: const TextStyle(
+                      color: Color(0xFF9CCC65),
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700)),
+              const SizedBox(height: 6),
+              for (final s in running)
+                Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  padding: const EdgeInsets.fromLTRB(10, 6, 6, 6),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF9CCC65).withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                        color: const Color(0xFF9CCC65).withValues(alpha: 0.35)),
+                  ),
+                  child: Row(children: [
+                    const Icon(Icons.terminal_rounded,
+                        size: 16, color: Color(0xFF9CCC65)),
+                    const SizedBox(width: 9),
+                    Expanded(
+                      child: Text(s.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 12.5)),
+                    ),
+                    TextButton.icon(
+                      style: TextButton.styleFrom(
+                        foregroundColor: const Color(0xFF9CCC65),
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      icon: const Icon(Icons.open_in_full_rounded, size: 15),
+                      label: Text(provider.t('cli.reopen'),
+                          style: const TextStyle(fontSize: 11)),
+                      onPressed: () => _showRunningCliTerminal(provider, s),
+                    ),
+                  ]),
+                ),
+              const SizedBox(height: 6),
+            ],
             Text(provider.t('cli.note'),
                 style: const TextStyle(
                     color: Colors.white54, fontSize: 11, height: 1.55)),
@@ -270344,6 +271566,11 @@ class _McpChatDialogState extends State<_McpChatDialog> {
   @override
   void initState() {
     super.initState();
+    // 窓が前面に戻った時に焦点を返せるように、 画面の出入りを見ておく。
+    WidgetsBinding.instance.addObserver(this);
+    _promptFocus.addListener(() {
+      if (_promptFocus.hasFocus) _hadPromptFocus = true;
+    });
     _session.bind(provider);
     _session.initialTask = widget.initialTask;
     _session.addListener(_onSessionChanged);
@@ -270422,11 +271649,23 @@ class _McpChatDialogState extends State<_McpChatDialog> {
   @override
   void dispose() {
     // ★ セッションは止めない (= ユーザー要望: 閉じても処理は続ける)。
+    WidgetsBinding.instance.removeObserver(this);
     _session.removeListener(_onSessionChanged);
+    _promptFocus.dispose();
     _input.dispose();
     _scroll.dispose();
     _capScroll.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    // 他の窓を触ってから戻ってきたら、 書き込み口へ焦点を返す
+    // (= ユーザー報告: 戻ってくると打てなくなる)。
+    if (state == AppLifecycleState.resumed && _hadPromptFocus) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _refocusPrompt());
+    }
   }
 
   void _scrollToEnd() {
@@ -271375,6 +272614,8 @@ class _McpChatDialogState extends State<_McpChatDialog> {
         _attachments.isEmpty &&
         const {'clear', '/clear', 'クリア'}.contains(text.toLowerCase())) {
       _input.clear();
+      // 送った後も書き込み口に焦点を残す (= ユーザー報告: 打てなくなる)。
+      _refocusPrompt();
       _promptHistoryIndex = -1;
       _promptDraft = '';
       _session.bind(provider);
@@ -271393,6 +272634,8 @@ class _McpChatDialogState extends State<_McpChatDialog> {
       return;
     }
     _input.clear();
+    // 送った後も書き込み口に焦点を残す (= ユーザー報告: 打てなくなる)。
+    _refocusPrompt();
     // 送ったら履歴の位置は先頭 (= 書きかけ) に戻す (↑ を押すと今送った物から)。
     _promptHistoryIndex = -1;
     _promptDraft = '';
@@ -271452,13 +272695,26 @@ class _McpChatDialogState extends State<_McpChatDialog> {
         child: _buildCollapsedBar(context),
       );
     }
-    Widget wrap(Widget child) => pane
-        ? Material(color: const Color(0xFF1A1A2E), child: child)
-        : Dialog(
-            backgroundColor: const Color(0xFF1A1A2E),
-            insetPadding: const EdgeInsets.all(24),
-            child: child,
-          );
+    Widget wrap(Widget child) {
+      // ★ 窓の中のどこを押しても書き込み口へ焦点を戻す
+      //   (= ユーザー報告: 他の所を触ってから戻ると打てなくなる)。
+      //   Listener なので押下の取り合いに参加せず、 帯を掴んで動かす操作や
+      //   ボタンの押下と競合しない。 判定は次の描画で行うので、 欄そのものや
+      //   他の入力欄を押した時は何もしない。
+      final body = Listener(
+        behavior: HitTestBehavior.translucent,
+        onPointerDown: (_) => WidgetsBinding.instance
+            .addPostFrameCallback((_) => _refocusPrompt()),
+        child: child,
+      );
+      return pane
+          ? Material(color: const Color(0xFF1A1A2E), child: body)
+          : Dialog(
+              backgroundColor: const Color(0xFF1A1A2E),
+              insetPadding: const EdgeInsets.all(24),
+              child: body,
+            );
+    }
     return wrap(
       ConstrainedBox(
         constraints: BoxConstraints(
@@ -271572,6 +272828,24 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                   setState(() => _showCapabilityPanel = true);
                 },
               ),
+              // ── CLI の一覧へ戻る (= ユーザー要望: 端末を開いた後、
+              //    「終了」 を押さないと選び直せなくて使いづらい) ──
+              //    走っている CLI は止めない。 一覧の先頭に「動かしたままの
+              //    CLI」 が並ぶので、 そこから覗き直せる。
+              if (_inlineTerminal != null && _inlineIsTerminal)
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  constraints: _hdrBtnConstraints(context),
+                  padding: _narrowHeader(context)
+                      ? EdgeInsets.zero
+                      : const EdgeInsets.all(8),
+                  tooltip: provider.t('cli.backToList'),
+                  icon: const Icon(Icons.format_list_bulleted_rounded,
+                      color: Colors.white54, size: 19),
+                  onPressed: () => _showInlineTerminal(
+                      _buildAgentCliList(provider), provider.t('cli.title'),
+                      isTerminal: false),
+                ),
               // ── パソコンの AI コマンド (= ユーザー要望: どうやって
               //    Claude Code や Codex を呼び出すのか分からない、
               //    ログインボタンを付けて欲しい) ──
@@ -272281,6 +273555,25 @@ class _McpChatDialogState extends State<_McpChatDialog> {
                   },
                   child: TextField(
                     controller: _input,
+                    // ★ 焦点を自分で持つ (= ユーザー報告: 他の所を触ってから
+                    //   戻ると打てなくなる)。 持っていないと取り返せない。
+                    focusNode: _promptFocus,
+                    autofocus: true,
+                    // 窓の中を押しただけなら焦点を離さない。 外を押した時だけ返す
+                    // (= CLI の端末と同じ作法)。
+                    onTapOutside: (e) {
+                      final box = context.findRenderObject() as RenderBox?;
+                      if (box != null && box.hasSize) {
+                        final p = box.globalToLocal(e.position);
+                        if (p.dx >= 0 &&
+                            p.dy >= 0 &&
+                            p.dx <= box.size.width &&
+                            p.dy <= box.size.height) {
+                          return;
+                        }
+                      }
+                      _promptFocus.unfocus();
+                    },
                     // 処理中でも打てる (= ユーザー要望)。
                     enabled: true,
                     style:

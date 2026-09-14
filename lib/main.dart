@@ -8531,6 +8531,21 @@ class _AssistantWindowAppState extends State<_AssistantWindowApp> {
   final List<({String role, String text})> _msgs = [];
   final TextEditingController _input = TextEditingController();
   final ScrollController _scroll = ScrollController();
+
+  /// 書き込み口の焦点。
+  /// ★ = ユーザー報告「他の所をアクティブにしてから戻ると打てなく
+  ///   なる」。 焦点を自分で持っていないと取り返せないので、 State が持つ。
+  final FocusNode _promptFocus = FocusNode(debugLabel: 'assist_prompt');
+
+  /// 書き込み口へ焦点を戻す。 他の欄を使っている最中は横取りしない。
+  void _refocusPrompt() {
+    if (!mounted) return;
+    if (_promptFocus.hasPrimaryFocus) return;
+    final ctx = FocusManager.instance.primaryFocus?.context;
+    if (ctx != null && ctx.widget is EditableText) return;
+    _promptFocus.requestFocus();
+  }
+
   bool _busy = false;
   bool _canceling = false;
   int _step = 0;
@@ -8564,6 +8579,7 @@ class _AssistantWindowAppState extends State<_AssistantWindowApp> {
   @override
   void dispose() {
     _poll?.cancel();
+    _promptFocus.dispose();
     _input.dispose();
     _scroll.dispose();
     super.dispose();
@@ -8663,6 +8679,8 @@ class _AssistantWindowAppState extends State<_AssistantWindowApp> {
     final text = _input.text.trim();
     if (text.isEmpty || _busy) return;
     _input.clear();
+    // 送った後も書き込み口に焦点を残す。
+    _refocusPrompt();
     // 送った文はすぐ画面に出す (本体からの押し出しを待たない)。
     setState(() {
       _msgs.add((role: 'user', text: text));
@@ -8693,7 +8711,13 @@ class _AssistantWindowAppState extends State<_AssistantWindowApp> {
       theme: ThemeData.dark(useMaterial3: true),
       home: Scaffold(
         backgroundColor: const Color(0xFF15152A),
-        body: SafeArea(
+        // ★ 窓の中のどこを押しても書き込み口へ焦点を戻す
+        //   (= ユーザー報告: 他の所を触ってから戻ると打てなくなる)。
+        body: Listener(
+          behavior: HitTestBehavior.translucent,
+          onPointerDown: (_) => WidgetsBinding.instance
+              .addPostFrameCallback((_) => _refocusPrompt()),
+          child: SafeArea(
           child: Column(children: [
             // ── ヘッダー ──
             Container(
@@ -8853,6 +8877,10 @@ class _AssistantWindowAppState extends State<_AssistantWindowApp> {
                     },
                     child: TextField(
                       controller: _input,
+                      // ★ 焦点を自分で持つ (= ユーザー報告: 他の所を触ってから
+                      //   戻ると打てなくなる)。
+                      focusNode: _promptFocus,
+                      autofocus: true,
                       minLines: 1,
                       maxLines: 5,
                       style: const TextStyle(
@@ -8891,6 +8919,7 @@ class _AssistantWindowAppState extends State<_AssistantWindowApp> {
               ]),
             ),
           ]),
+        ),
         ),
       ),
     );

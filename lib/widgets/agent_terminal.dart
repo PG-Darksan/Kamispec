@@ -204,6 +204,12 @@ class AgentTerminalState extends State<AgentTerminal> {
   void initState() {
     super.initState();
     live.add(this);
+    // ★ 同じセッションを 2 つの画面が抱えていると、 どちらも打ち込み口を
+    //   押さえようとして、 打った文字が両方に分かれて二重に見える。
+    //   新しい方に譲る。
+    for (final t in live.toList()) {
+      if (!identical(t, this) && identical(t._s, _s)) t.releaseKeyboard();
+    }
     _s.addListener(_onChanged);
     _inputCtrl.addListener(_onInputChanged);
     _scroll.addListener(_onScroll);
@@ -369,23 +375,43 @@ class AgentTerminalState extends State<AgentTerminal> {
     // ★ 打つそばから CLI の入力欄へ流す (= ユーザー要望: 確定を待たずに
     //   直接打ち込めるように)。 前に送った分との差だけを直す。
     final target = v.text;
+    // ★ 「前に送った分」 と「今の中身」 の**違う所だけ**を直す
+    //   (= ユーザー報告: 書いた文字が二重に入る)。
+    //   以前は「全部消して全部送り直す」 うえに、 確定のたびに欄を空へ戻して
+    //   `_liveSent` も空にしていた。 OS から同じ中身がもう一度届くと
+    //   (日本語の確定では実際に届く)、 消す分が 0 のまま丸ごともう一度
+    //   送られて、 CLI の行に同じ文字が 2 回並んでいた。
+    //   頭からの共通部分を数えて、 余った分を消し、 足りない分だけ足す。
+    //   同じ中身が二度届いても、 共通部分が全部なので何も送らない。
     if (target != _liveSent) {
-      if (_liveSent.isNotEmpty) {
-        // 送った分を消す (端末の後退は DEL)。
-        _s.sendRaw('\x7f' * _liveSent.runes.length);
+      final a = _liveSent.runes.toList();
+      final b = target.runes.toList();
+      var common = 0;
+      while (common < a.length && common < b.length && a[common] == b[common]) {
+        common++;
       }
-      if (target.isNotEmpty) _s.sendRaw(target);
+      if (a.length > common) _s.sendRaw('\x7f' * (a.length - common));
+      if (b.length > common) {
+        _s.sendRaw(String.fromCharCodes(b.sublist(common)));
+      }
       _liveSent = target;
       _stickToBottom();
     }
-    // 変換中は、 ここまで (確定を待つ)。
-    if (comp.isNotEmpty) return;
-    if (target.isEmpty) return;
-    // 確定した。 CLI 側には既に出ているので、 欄だけ空に戻す。
+    // ★ 確定しても欄は空にしない。 空にすると `_liveSent` が嘘になり、
+    //   次に届いた分を消せずに二重になる。 欄の文字は透明なので見えないし、
+    //   CLI が自分の行を消す時 (Enter / ^C / ^U など) に
+    //   `_resetMirror()` でこちらも合わせる。
+  }
+
+  /// CLI が自分の入力行を消した時に、 こちらの控えも合わせる。
+  void _resetMirror() {
     _flushing = true;
-    _inputCtrl.value = TextEditingValue.empty;
+    // TextEditingValue.empty はカーソルの位置が -1 (= カーソル無し) なので
+    // 使わない。 clear() は 0 に置く。
+    _inputCtrl.clear();
     _flushing = false;
     _liveSent = '';
+    if (_composing.isNotEmpty && mounted) setState(() => _composing = '');
   }
 
   /// 押されたキーを端末へ。
@@ -442,6 +468,10 @@ class AgentTerminalState extends State<AgentTerminal> {
         final c = label.toUpperCase().codeUnitAt(0);
         if (c >= 0x41 && c <= 0x5F) {
           _s.sendRaw(String.fromCharCode(c - 0x40));
+          // ^C / ^U / ^W / ^D は CLI 側の行が消えるので、 控えも合わせる。
+          if (c == 0x43 || c == 0x44 || c == 0x55 || c == 0x57) {
+            _resetMirror();
+          }
           _stickToBottom();
           return KeyEventResult.handled;
         }
@@ -463,8 +493,11 @@ class AgentTerminalState extends State<AgentTerminal> {
           _pendingKeys.write(ch);
           _pendingTimer?.cancel();
           // 判るまでは長めに、 死んでいると判った後は取りこぼさない程度に。
+          // 遅れて送っても二重にならなくなったので、 待ちは長めでよい
+          //   (= 画面の書き換えで詰まっている時に、 受け口より先に
+          //    こちらが送ってしまうのを防ぐ)。
           _pendingTimer = Timer(
-              Duration(milliseconds: _textPathAlive == null ? 160 : 30),
+              Duration(milliseconds: _textPathAlive == null ? 400 : 120),
               _flushPendingKeys);
           return KeyEventResult.ignored;
         }
@@ -487,6 +520,12 @@ class AgentTerminalState extends State<AgentTerminal> {
       if (_s.terminal.keyInput(tk, ctrl: ctrl, alt: alt, shift: shift)) {
         _stickToBottom();
       }
+      // ★ Enter / Esc で CLI は自分の入力行を片付けるので、 こちらの控えも
+      //   空に戻す (= 残しておくと、 次に打った時に消す分がずれて
+      //   さっきの行がもう一度出る)。
+      if (tk == TerminalKey.enter || tk == TerminalKey.escape) {
+        _resetMirror();
+      }
       // 端末が要らないと言った物も、 アプリ側に横取りさせない。
       return KeyEventResult.handled;
     }
@@ -502,6 +541,9 @@ class AgentTerminalState extends State<AgentTerminal> {
     // 待っても届かなかった = 受け口は使えない。 以後は自前で送る。
     _textPathAlive = false;
     _s.sendRaw(text);
+    // ★ 送った分は控えにも足す (= 足さないと、 後から受け口が動いた時に
+    //   同じ文字をもう一度送ってしまう)。
+    _liveSent = '$_liveSent$text';
     _stickToBottom();
   }
 
