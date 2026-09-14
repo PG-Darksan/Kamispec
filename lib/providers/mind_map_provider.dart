@@ -97389,11 +97389,9 @@ $cleanQ
 
   /// AI からは動かさない機能。 いずれも「押すつもりが無かった」 で済まない
   /// ものなので、 利用者自身がボタンを押す形に限る:
-  ///   sharePageLan … 端末を LAN に公開する (外向き)
   ///   sync         … ページをクラウドへ送る (外向き + 通信量課金)
   ///   appLock / focusLock … 利用者を自分のアプリから締め出す
   static const Set<String> _mcpBlockedCommands = {
-    'sharePageLan',
     'sync',
     'appLock',
     'focusLock',
@@ -97401,9 +97399,17 @@ $cleanQ
 
   void registerMcpCommands(
       List<Map<String, String>> commands, void Function(String id) runner) {
+    // ★ = 検証レポート「利用者専用コマンドの分類が不統一」。
+    //   以前は利用者専用の機能を一覧から**落として**いたので、
+    //   呼ぶ側は正しい綴りを知りようがなく、 あて推量の id
+    //   (cloudSync など) を渡しては「そんな機能は無い」 扱いに
+    //   なっていた。 一覧には残し、 印 (userOnly) を付けて区別する。
     _mcpCommands = List.unmodifiable([
       for (final c in commands)
-        if (!_mcpBlockedCommands.contains(c['id'])) c
+        if (_mcpBlockedCommands.contains(c['id']))
+          {...c, 'userOnly': 'true'}
+        else
+          c
     ]);
     _mcpCommandRunner = runner;
   }
@@ -97412,6 +97418,8 @@ $cleanQ
   bool mcpRunCommand(String id) {
     final runner = _mcpCommandRunner;
     if (runner == null) return false;
+    // 一覧には出すが、 利用者専用の機能は AI からは動かさない。
+    if (_mcpBlockedCommands.contains(id)) return false;
     if (!_mcpCommands.any((c) => c['id'] == id)) return false;
     runner(id);
     return true;
@@ -98332,10 +98340,18 @@ $cleanQ
     final ignored = <String>[];
     final blocked = <String>[];
     for (final id in ids) {
-      if (!known.contains(id)) {
+      // ★ 3 つに分ける (= 検証レポート: 「存在しない機能」 と
+      //   「あるが追加不可な機能」 を区別できない)。
+      //     blocked = 本物の id だが利用者自身が押す機能
+      //     ignored = そんな id は無い
+      if (_mcpBlockedCommands.contains(id)) {
         // 「押すのは自分でやるから置いといて」 と言われても、 起動できない
         //   機能を並べても押せないので、 これも置かない。
-        (_mcpBlockedCommands.contains(id) ? blocked : ignored).add(id);
+        blocked.add(id);
+        continue;
+      }
+      if (!known.contains(id)) {
+        ignored.add(id);
         continue;
       }
       if (wanted.contains(id)) continue;
@@ -98444,7 +98460,25 @@ $cleanQ
   Map<String, dynamic>? mcpReadPage(String pageId) =>
       mcpPageById(pageId)?.toJson();
 
-  String? mcpCreatePage({required String type, String? name}) {
+  /// [folderId] を渡すとそのフォルダーへ、 [toRoot] なら一番上へ作る。
+  /// どちらも無ければ、 今開いているフォルダーの中 (今までどおり)。
+  String? mcpCreatePage({
+    required String type,
+    String? name,
+    String? folderId,
+    bool toRoot = false,
+  }) {
+    // ★ = 検証レポート「新規ページの格納先が暗黙的」。 行き先を指定できる
+    //   ようにし、 作った後に実際どこへ入ったかを返せるようにする
+    //   (知らないフォルダー id は、 黙って別の所へ入れず断る)。
+    final wantFolder = (folderId ?? '').trim();
+    if (wantFolder.isNotEmpty &&
+        !_folders.any((f) => f.id == wantFolder)) {
+      return null;
+    }
+    final dest = toRoot
+        ? null
+        : (wantFolder.isNotEmpty ? wantFolder : _validOpenFolderId);
     // ★ = ユーザー報告「空白だけのページ名を新規作成できる」。
     //   名前を変える方 (mcpRenamePage) は空白を断るのに、 作る方は素通り
     //   していた。 名前は省略できる引数なので、 断るのではなく
@@ -98464,22 +98498,22 @@ $cleanQ
     if (!canCreatePageType(t)) return null;
     switch (t) {
       case 'bookshelf':
-        addBookshelfPage(name: name, folderId: _validOpenFolderId);
+        addBookshelfPage(name: name, folderId: dest);
         break;
       case 'paint':
-        addPaintPage(name: name, folderId: _validOpenFolderId);
+        addPaintPage(name: name, folderId: dest);
         break;
       case 'videoEditor':
-        addVideoEditorPage(name: name, folderId: _validOpenFolderId);
+        addVideoEditorPage(name: name, folderId: dest);
         break;
       case 'document':
-        addDocumentPage(name: name, folderId: _validOpenFolderId);
+        addDocumentPage(name: name, folderId: dest);
         break;
       case 'markdown':
-        addMarkdownPage(name: name, folderId: _validOpenFolderId);
+        addMarkdownPage(name: name, folderId: dest);
         break;
       default:
-        addPage(name: name, folderId: _validOpenFolderId);
+        addPage(name: name, folderId: dest);
     }
     if (_pages.isEmpty) return null;
     final created = _pages.last.id;

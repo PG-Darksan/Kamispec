@@ -437,9 +437,13 @@ class McpServer {
         'ids:[] first (that changes nothing and returns the current row) '
         'and show the user what is there before you replace it. '
         'Returns {header, ignored, blocked}: "ignored" are ids that do not '
-        'exist and "blocked" are user-only features (cloud sync, app lock, '
-        'focus lock) - neither was placed, so say so plainly instead of '
-        'reporting them as added. This tool can only fill the HEADER; it '
+        'exist at all, and "blocked" are REAL ids that only the user may '
+        'start - today exactly "sync" (cloud sync), "appLock" and '
+        '"focusLock". Neither group was placed, so say so plainly instead of '
+        'reporting them as added. Use the exact ids from list_app_commands '
+        '(user-only ones are listed there with "userOnly": "true"); guessing '
+        'a spelling such as "cloudSync" just comes back as ignored. '
+        'This tool can only fill the HEADER; it '
         'cannot move buttons to the bottom bar. If the user wants them at the '
         'bottom, tell them to do it in the button-customize screen.',
         {
@@ -458,9 +462,13 @@ class McpServer {
         'body with write_markdown right after creating it, otherwise the '
         'user just gets an empty page)' +
         (kStoreBuild ? '. ' : ' or "videoEditor" (video timeline). ') +
-        'Returns {pageId, type}: type is what '
-        'was really created. An unknown type falls back to "normal", so check '
-        'the returned type before telling the user what you made.',
+        'Returns {pageId, type, name, folderId, folderName}: "type" is what '
+        'was really created (an unknown type falls back to "normal", so check '
+        'it before telling the user what you made), and "folderId" is where '
+        'it actually went. '
+        'By default the page goes into the folder the user currently has '
+        'open. Pass "folderId" (from list_folders) to choose one, or '
+        '"toRoot": true to put it outside every folder.',
         {
           'type': {
             'type': 'string',
@@ -474,6 +482,8 @@ class McpServer {
             ]
           },
           'name': {'type': 'string'},
+          'folderId': {'type': 'string'},
+          'toRoot': {'type': 'boolean'},
         },
         ['type']),
     _tool(
@@ -1148,10 +1158,12 @@ class McpServer {
         'List the app features that can be launched (flashcards, silent '
         'camera, calendar, QR reader, timer, and so on). Returns id + label '
         'pairs. Call this first when the user asks to open or start a '
-        'feature you are not sure about. The list is the whole truth: cloud '
-        'sync, the app lock and the focus lock are deliberately missing '
-        'because only the user may start them, and anything else not in the '
-        'list simply does not exist.',
+        'feature you are not sure about. The list is the whole truth - '
+        'anything not in it simply does not exist. Entries marked '
+        '"userOnly": "true" ("sync" = cloud sync, "appLock", "focusLock") '
+        'are real features that only the user may start: you can neither run '
+        'them nor put them on the header, so name the button and ask the '
+        'user to press it.',
         {}),
     _tool(
         'run_app_command',
@@ -1736,20 +1748,38 @@ class McpServer {
           return _ok(r);
         }
       case 'create_page':
+        final wantFolder = '${a['folderId'] ?? ''}'.trim();
         final id = _provider.mcpCreatePage(
             type: a['type'] as String? ?? 'normal',
-            name: a['name'] as String?);
+            name: a['name'] as String?,
+            folderId: wantFolder.isEmpty ? null : wantFolder,
+            toRoot: a['toRoot'] == true);
         // 実際に出来た種類を返す (= ユーザー報告: 知らない種類を頼まれると
         //   黙って normal を作り、 頼まれた通りに作ったと答えてしまう)。
         return id == null
-            ? _err('could not create a "${a['type'] ?? 'normal'}" page: a '
-                'free note ("paint") page needs Pro, and the free plan caps '
-                'how many pages of each kind there can be. Tell the user - '
-                'do not retry with a different type.')
-            : _ok({
-                'pageId': id,
-                'type': _provider.mcpPageById(id)?.pageType ?? 'normal',
-              });
+            ? _err('could not create a "${a['type'] ?? 'normal'}" page: '
+                'either "folderId" is not a real folder (call list_folders), '
+                'or a free note ("paint") page needs Pro, or the free plan '
+                'caps how many pages of each kind there can be. Tell the '
+                'user - do not retry with a different type.')
+            : _ok(() {
+                // 実際にどこへ入ったかも返す (= 検証レポート: 作成直後に
+                // 格納先を確認できない)。
+                final page = _provider.mcpPageById(id);
+                final fid = page?.folderId;
+                return {
+                  'pageId': id,
+                  'type': page?.pageType ?? 'normal',
+                  'name': page?.name ?? '',
+                  'folderId': fid,
+                  'folderName': fid == null
+                      ? null
+                      : _provider.folders
+                          .where((f) => f.id == fid)
+                          .map((f) => f.name)
+                          .firstOrNull,
+                };
+              }());
       case 'add_node':
         {
           final pageId = a['pageId'] as String? ?? '';

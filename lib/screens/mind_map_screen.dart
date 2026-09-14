@@ -65028,8 +65028,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                   '2=bottom-left, 3=bottom-right).',
             };
           }
-          final kept = _resolveSplitCellPage(provider, keep) ??
-              (provider.pages.isEmpty ? null : provider.currentPage);
+          final kept = _pageShownInSplitCell(provider, keep);
           _closeMapSplitKeeping(keep);
           return {
             'layout': 'off',
@@ -65102,12 +65101,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         'note': 'a 2x2 split is desktop only - this device fell back to a '
             '2-pane split. Tell the user that.',
       'pages': [
-        for (final k in visible)
-          (k == _mapSplitEditorSlot
-                  ? provider.currentPage
-                  : _resolveSplitCellPage(provider, k))
-              ?.name ??
-              '',
+        for (final k in visible) _pageShownInSplitCell(provider, k)?.name ?? '',
       ],
       if (notPlaced.isNotEmpty) 'couldNotPlace': notPlaced,
     };
@@ -74232,6 +74226,21 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// どれも setState の中なので、 ここで setState はしない。
   set _mapSplitEditorSlot(int v) {
     if (_mapSplitEditorSlotRaw == v) return;
+    // ★ 編集セルを離れる前に、 そこに出ていたページ (= currentPage) を
+    //   控える。 これが無いと `_mapSplitCells[旧編集セル]` が空のまま残り、
+    //   後で「そのセルに何が出ているか」 を聞かれた時に当てずっぽうで
+    //   埋まる (= 検証レポートの「別ページが全画面化される」 の元)。
+    if (_mapSplitOpen &&
+        _mapSplitEditorSlotRaw >= 0 &&
+        _mapSplitEditorSlotRaw < _mapSplitCells.length &&
+        (_mapSplitCells[_mapSplitEditorSlotRaw] ?? '').isEmpty) {
+      try {
+        final p = context.read<MindMapProvider>();
+        if (p.pages.isNotEmpty) {
+          _mapSplitCells[_mapSplitEditorSlotRaw] = p.currentPage.id;
+        }
+      } catch (_) {}
+    }
     _mapSplitEditorSlotRaw = v;
     _exitCutMode();
   }
@@ -74773,6 +74782,16 @@ class _MindMapScreenState extends State<MindMapScreen>
     setState(() {
       _mapSplitOpen = !_mapSplitOpen;
       _mapSplitEditorSlot = 0;
+      // ★ 開いた直後の編集セルの中身を控えておく。
+      //   `_closeMapSplit` は `_mapSplitCells` を消さないので、 書かないと
+      //   前回の分割の古い id が残ったままになる
+      //   (= 検証レポートの「別ページが全画面化」 の元の 1 つ)。
+      if (_mapSplitOpen) {
+        try {
+          final p = context.read<MindMapProvider>();
+          if (p.pages.isNotEmpty) _mapSplitCells[0] = p.currentPage.id;
+        } catch (_) {}
+      }
       // モバイルは 4 分割にしない (= ユーザー要望: 画面が小さいので不要)。
       _mapSplitQuad = _mapSplitOpen && _mapSplitQuadPref && _isDesktop;
     });
@@ -74793,12 +74812,16 @@ class _MindMapScreenState extends State<MindMapScreen>
   ///  したウィンドウのページに移ってほしい)
   void _closeMapSplitKeeping(int? slot) {
     if (!_mapSplitOpen) return;
-    if (slot != null && slot != _mapSplitEditorSlot) {
-      // 編集セル以外を指していたら、 そのセルに出ているページへ移る。
-      final pid = _mapSplitCells[slot];
-      if (pid != null && pid.isNotEmpty) {
-        final provider = context.read<MindMapProvider>();
-        final idx = provider.pages.indexWhere((p) => p.id == pid);
+    if (slot != null) {
+      // ★ 「そのセルに実際に出ているページ」 を 1 つの係に聞く。
+      //   編集セルを指していた時は currentPage が返るので、 ここは空振りに
+      //   なる (= 今までの「編集セルなら何もしない」 と同じ)。
+      //   以前は `_mapSplitCells[slot]` を直に見ていたが、 編集セルの分は
+      //   誰も書いていないので、 古い id や当てずっぽうが残っていた。
+      final provider = context.read<MindMapProvider>();
+      final page = _pageShownInSplitCell(provider, slot);
+      if (page != null && page.id != provider.currentPage.id) {
+        final idx = provider.pages.indexWhere((p) => p.id == page.id);
         if (idx >= 0) provider.switchPage(idx);
       }
     }
@@ -74943,6 +74966,10 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (slot == _mapSplitEditorSlot) {
       final i = provider.pages.indexOf(page);
       if (i >= 0) provider.switchPage(i);
+      // ★ 編集セルの分も控えておく。 書かないでおくと、 後で編集セルが
+      //   別のセルへ移った時に、 ここが空のまま当てずっぽうで埋まる
+      //   (= 検証レポートの「別ページが全画面化される」 の元)。
+      setState(() => _mapSplitCells[slot] = page.id);
       return;
     }
     if (isCurrent) {
@@ -76835,6 +76862,27 @@ class _MindMapScreenState extends State<MindMapScreen>
       if (!used.contains(p.id)) return p;
     }
     return null;
+  }
+
+  /// セル [k] に **実際に出ている** ページ。
+  ///
+  /// ★ = 検証レポート「4 分割を解除すると指定したペインとは別ページが
+  ///   全画面化される」。 `_resolveSplitCellPage` は「閲覧セルに何を出すか」
+  ///   を決める係で、 候補から currentPage を**わざと外している**。 だから
+  ///   編集セル (= currentPage を出しているセル) について聞くと、 必ず
+  ///   別のページを答えてしまう。 名前を返す所と、 実際に切り替える所が
+  ///   それぞれ別の抜け方をしていて、 答えが食い違っていた。
+  ///   どちらもこの 1 つを通す。
+  MindMapPage? _pageShownInSplitCell(MindMapProvider provider, int k) {
+    if (provider.pages.isEmpty) return null;
+    if (!_mapSplitOpen) return provider.currentPage;
+    // 道具や Web を埋めたセルは、 編集セルでもマップを出していない。
+    if (k == _mapSplitEditorSlot &&
+        _mapSplitCellWeb[k] == null &&
+        _mapSplitCellTool[k] == null) {
+      return provider.currentPage;
+    }
+    return _resolveSplitCellPage(provider, k);
   }
 
   /// 分割レイアウト: 編集セル + 閲覧セル (2 分割 or 4 分割 = ユーザー要望)。
@@ -246891,6 +246939,12 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
       if (_lines.isEmpty) _lines.add('');
       _loadedHash = _fullText.hashCode.toString();
       if (mounted) setState(() => _loading = false);
+      // ★ 読み終わったら、 この編集欄にキーの受け口を渡しておく。
+      //   渡さないと、 最初の 1 回押すまで Ctrl+A が裏のマップの
+      //   「すべて選択」 へ流れてしまう (= ユーザー要望への備え)。
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && !_keyFocus.hasFocus) _keyFocus.requestFocus();
+      });
     } catch (e, st) {
       debugPrint('TextEditor load error: $e\n$st');
       if (mounted) {
@@ -246936,6 +246990,23 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
   bool _isLineSelected(int idx) {
     final r = _selRange;
     return r != null && idx >= r.start && idx <= r.end;
+  }
+
+  /// 本文をぜんぶ選ぶ (= ユーザー要望: Ctrl+A でテキストエリアの全選択)。
+  ///
+  /// この編集欄は「行の並び」 で出来ていて、 選択も**行の範囲**で持っている
+  /// (写す / 切り取る / 貼る / 消す は既にその範囲を見ている)。
+  void _selectAllLines() {
+    if (_lines.isEmpty) return;
+    if (_editingIdx != null) _commitEdit();
+    setState(() {
+      _selAnchorLine = 0;
+      _selFocusLine = _lines.length - 1;
+      _editingIdx = null;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _keyFocus.requestFocus();
+    });
   }
 
   void _clearLineSelection() {
@@ -247063,9 +247134,13 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
   // ─── 編集 ───────────────────────────────────────────────────────
   /// [caret] を渡すとその文字位置にカーソルを置く (= ユーザー要望:
   /// クリックした場所がすぐ編集できるように)。 省略時は行末。
-  void _beginEditLine(int idx, {int? caret}) {
+  /// [pushUndo] を false にすると、 取り消しの控えを積まない。
+  /// ★ 上下キーの押しっぱなしで行を移る時に使う。 カーソルを動かすだけで
+  ///   控えを積むと、 2 秒スクロールしただけで取り消しの履歴 (100 件) が
+  ///   全部それで埋まり、 Ctrl+Z が効かなくなる。
+  void _beginEditLine(int idx, {int? caret, bool pushUndo = true}) {
     if (idx < 0 || idx >= _lines.length) return;
-    _pushUndo();
+    if (pushUndo) _pushUndo();
     _commitEdit();
     final off =
         (caret ?? _lines[idx].length).clamp(0, _lines[idx].length).toInt();
@@ -247241,14 +247316,21 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
     final isShift = HardwareKeyboard.instance.isShiftPressed;
     // ── Ctrl+Shift+↑ / ↓ = 複数行の範囲選択 (= ユーザー要望) ──
     //    1 行ずつの入力欄なので、 行をまたぐ選択は自前で持つ。
-    if (isCtrl &&
-        isShift &&
+    // ★ = ユーザー要望「shift + 上下キーで複数行選択」。 以前は Ctrl も
+    //   一緒に押さないと効かなかった (Ctrl+Shift は今までどおり効く)。
+    if (isShift &&
         (event.logicalKey == LogicalKeyboardKey.arrowUp ||
             event.logicalKey == LogicalKeyboardKey.arrowDown)) {
       if (_extendLineSelection(
           event.logicalKey == LogicalKeyboardKey.arrowDown ? 1 : -1)) {
         return KeyEventResult.handled;
       }
+    }
+    // ★ = ユーザー要望「Ctrl+A でテキストエリアの全選択」。
+    //   ここで受け止めないと、 裏のマップの「すべて選択」 へ流れてしまう。
+    if (isCtrl && !isShift && event.logicalKey == LogicalKeyboardKey.keyA) {
+      _selectAllLines();
+      return KeyEventResult.handled;
     }
     // ── 選択している行に対する操作 ──
     final selRange = _bodyHasFocus ? _selRange : null;
@@ -250028,9 +250110,20 @@ $currentText
             Expanded(
               child: Focus(
                 onKeyEvent: (node, event) {
-                  if (event is! KeyDownEvent) {
+                  // ★ = ユーザー要望「上下キーを押しっぱなしにしたら
+                  //   そのままスクロールされ続けるように」。 押しっぱなしの
+                  //   間 OS が送ってくるのは KeyRepeatEvent なので、
+                  //   KeyDownEvent だけ見ていると 1 回で止まっていた。
+                  if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
                     return KeyEventResult.ignored;
                   }
+                  // 押しっぱなしで繰り返して良いのは行の移動だけ。
+                  // (Esc で何度も閉じたり、 Enter で行が増え続けたりしない)
+                  final isRepeat = event is KeyRepeatEvent;
+                  final isArrow =
+                      event.logicalKey == LogicalKeyboardKey.arrowUp ||
+                          event.logicalKey == LogicalKeyboardKey.arrowDown;
+                  if (isRepeat && !isArrow) return KeyEventResult.ignored;
                   if (event.logicalKey == LogicalKeyboardKey.escape) {
                     _cancelEdit();
                     return KeyEventResult.handled;
@@ -250048,12 +250141,24 @@ $currentText
                       return KeyEventResult.handled;
                     }
                   }
+                  // ★ = ユーザー要望「shift + 上下キーで複数行選択」。
+                  //   行を移る前に見る (下の移動は Shift 無しの時だけ)。
+                  if (isArrow && HardwareKeyboard.instance.isShiftPressed) {
+                    if (_extendLineSelection(
+                        event.logicalKey == LogicalKeyboardKey.arrowDown
+                            ? 1
+                            : -1)) {
+                      return KeyEventResult.handled;
+                    }
+                  }
                   if (event.logicalKey == LogicalKeyboardKey.arrowUp &&
                       !HardwareKeyboard.instance.isShiftPressed) {
                     final cur = _editingIdx;
                     if (cur != null && cur > 0) {
+                      // 今の桁を引き継ぐ (= 行を移るたびに行末へ飛ばない)。
+                      final col = _editCtrl.selection.baseOffset;
                       _commitEdit();
-                      _beginEditLine(cur - 1);
+                      _beginEditLine(cur - 1, caret: col, pushUndo: false);
                       return KeyEventResult.handled;
                     }
                   }
@@ -250061,8 +250166,9 @@ $currentText
                       !HardwareKeyboard.instance.isShiftPressed) {
                     final cur = _editingIdx;
                     if (cur != null && cur < _lines.length - 1) {
+                      final col = _editCtrl.selection.baseOffset;
                       _commitEdit();
-                      _beginEditLine(cur + 1);
+                      _beginEditLine(cur + 1, caret: col, pushUndo: false);
                       return KeyEventResult.handled;
                     }
                   }
@@ -250070,6 +250176,12 @@ $currentText
                       HardwareKeyboard.instance.isMetaPressed;
                   if (isCtrl && event.logicalKey == LogicalKeyboardKey.keyS) {
                     _save();
+                    return KeyEventResult.handled;
+                  }
+                  // ★ = ユーザー要望「Ctrl+A でテキストエリアの全選択」。
+                  //   1 行ぶんではなく本文ぜんぶを選ぶ。
+                  if (isCtrl && event.logicalKey == LogicalKeyboardKey.keyA) {
+                    _selectAllLines();
                     return KeyEventResult.handled;
                   }
                   return KeyEventResult.ignored;
@@ -253421,13 +253533,27 @@ class _OfficeFileTemplate {
     String? themeName,
   }) async {
     switch (type.toLowerCase()) {
-      case 'txt':
       case 'md':
         final body = <String>[
           if ((title ?? '').isNotEmpty) '# $title', '',
           ...(paragraphs ?? const []),
         ].join('\n');
         return Uint8List.fromList(utf8.encode(body));
+      case 'txt':
+        // ★ = 検証レポート「TXT のタイトルに Markdown 記法が入る」。
+        //   素の文字のファイルに「# 」 は意味を持たないので付けない。
+        //   見出しだと分かるよう、 下に罫線を引くだけにする
+        //   (md の方は今までどおり「# 」)。
+        final t = (title ?? '').trim();
+        final plain = <String>[
+          if (t.isNotEmpty) ...[
+            t,
+            '=' * (t.runes.length * 2).clamp(4, 60),
+            '',
+          ],
+          ...(paragraphs ?? const []),
+        ].join('\n');
+        return Uint8List.fromList(utf8.encode(plain));
       case 'csv':
         final r = rows ?? const <List<String>>[];
         final out = StringBuffer();
