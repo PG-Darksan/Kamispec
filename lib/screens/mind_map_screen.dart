@@ -8448,6 +8448,30 @@ class _MindMapScreenState extends State<MindMapScreen>
     return b.width * scale <= viewW + 1.0;
   }
 
+  /// ギャラリー (本棚) の内容範囲に translation を収める、 1 軸ぶんの計算。
+  ///
+  /// ★ パンのクランプ (_clampBookshelfPan) と矢印キー
+  ///   (_handleBookshelfArrowKey) で**同じ四角・同じ式**を使うために
+  ///   切り出してある。 別の四角で測ると「止まる位置」 と「寄せる位置」 が
+  ///   食い違い、 中身が画面の外に残ったまま手繰り寄せられなくなる
+  ///   (= 以前ここでその不具合を出した)。
+  static double _shelfClampAxis(double tv, double cMin, double cMax,
+      double viewLen, double scale, double buffer) {
+    final contentLen = scale * (cMax - cMin);
+    double lo, hi;
+    if (contentLen >= viewLen) {
+      // 内容が画面より大きい → 端を越えて空白を出せない。
+      lo = viewLen - scale * cMax - buffer; // 内容右端を画面右に寄せる下限
+      hi = -scale * cMin + buffer; // 内容左端を画面左に寄せる上限
+    } else {
+      // 内容が画面より小さい → 画面からはみ出さない範囲に収める。
+      lo = -scale * cMin - buffer;
+      hi = viewLen - scale * cMax + buffer;
+    }
+    if (lo > hi) return (lo + hi) / 2;
+    return tv.clamp(lo, hi);
+  }
+
   void _clampBookshelfPan(TransformationController ctrl) {
     if (_clampingShelf) return;
     final provider = context.read<MindMapProvider>();
@@ -8484,21 +8508,8 @@ class _MindMapScreenState extends State<MindMapScreen>
 
     // 画面座標: screen = scale * canvas + translation。
     // 内容が常にビューポートを覆う/収まるよう translation を制限。
-    double clampAxis(double tv, double cMin, double cMax, double viewLen) {
-      final contentLen = scale * (cMax - cMin);
-      double lo, hi;
-      if (contentLen >= viewLen) {
-        // 内容が画面より大きい → 端を越えて空白を出せない。
-        lo = viewLen - scale * cMax - buffer; // 内容右端を画面右に寄せる下限
-        hi = -scale * cMin + buffer; // 内容左端を画面左に寄せる上限
-      } else {
-        // 内容が画面より小さい → 画面からはみ出さない範囲に収める。
-        lo = -scale * cMin - buffer;
-        hi = viewLen - scale * cMax + buffer;
-      }
-      if (lo > hi) return (lo + hi) / 2;
-      return tv.clamp(lo, hi);
-    }
+    double clampAxis(double tv, double cMin, double cMax, double viewLen) =>
+        _shelfClampAxis(tv, cMin, cMax, viewLen, scale, buffer);
 
     // ★ 中身の無いギャラリーは左右に動かさない (= ユーザー要望)。
     //   空でも「ここに置ける」の + ボックスが 5×5 分並ぶので、
@@ -36712,6 +36723,32 @@ class _MindMapScreenState extends State<MindMapScreen>
     return d;
   }
 
+  /// 新しく作るファイルの置き場 (相手のページが分かっている時)。
+  ///
+  /// ★ = 動作検証レポート「明示した対象ページは別のフォルダーなのに、
+  ///   生成物は一覧で開いているフォルダーの連動先へ保存された」。
+  ///   ページを**名指しされた時だけ**、 そのページのフォルダーが勝つ。
+  ///   名指しが無い ([pageId] が空) 時は今までどおり「一覧で開いている
+  ///   フォルダー」 (= ユーザー要望: 新規作成したファイルは開いている
+  ///   フォルダーの中へ) に従う。 この 2 つはふだん同じ所を指すので、
+  ///   食い違うのは「別のフォルダーのページを名指しした時」 だけ。
+  Future<Directory> _newFileDirForPage(MindMapProvider provider, String pageId,
+      {String fallbackName = 'attachments'}) async {
+    if (pageId.trim().isNotEmpty) {
+      final own = provider.mcpFolderDirForPage(pageId);
+      if (own != null && own.isNotEmpty) {
+        final d = Directory(own);
+        try {
+          if (!await d.exists()) await d.create(recursive: true);
+          return d;
+        } catch (_) {
+          // 権限が無い等。 下の「開いているフォルダー」 へ落とす。
+        }
+      }
+    }
+    return _newFileDir(provider, fallbackName: fallbackName);
+  }
+
   /// 一覧に出している中身を読み直す (作った直後に出てくるように)。
   void _refreshDiskDir(String dirPath) {
     _diskCache.remove(dirPath);
@@ -44131,6 +44168,43 @@ class _MindMapScreenState extends State<MindMapScreen>
   ///   ここで一律に消すと、 Android からアシスタントを開けなくなる。
   bool _isDuplicateOnDesktop(String? id) =>
       _isDesktop && id == 'aiAssistant';
+
+  /// 押しても「窓が開くだけ」 で、 仕上げは利用者の操作が要る機能。
+  ///
+  /// ★ = 動作検証レポート (2026-09-15): MCP の run_app_command が一律
+  ///   "launched" と返すので、 AI が「クラウド同期しました」「ロックを
+  ///   掛けました」 と答えていた。 実際に走るのは窓を開く所まで
+  ///   (sync → _showSyncDialog、 focusLock → _showFocusLockDialog、
+  ///   appLock → 時間を選ぶ窓)。 印を付けて、 言い過ぎを止める。
+  static const Set<String> kCommandsNeedingUserFinish = {
+    'sync',
+    'focusLock',
+    'appLock',
+    'inquiry',
+    'voiceInput',
+  };
+
+  /// この端末で本当に動く機能か (= MCP と画面で食い違わせない)。
+  ///
+  /// ★ 画面のカスタマイズ候補はそれぞれ独自に絞り込んでいたのに、 MCP へ
+  ///   渡す一覧だけ素通しだった。 その結果、 パソコンでは何もしない
+  ///   appLock / focusLock を「置けます・動かせます」 と答えていた
+  ///   (= 動作検証レポート: _executeHeaderCommand が `if (_isDesktop) break;`
+  ///   で黙って落とす)。
+  bool _commandAvailableHere(String? id, MindMapProvider provider) {
+    if (id == null || id.isEmpty) return false;
+    if (_isRetiredCustomCommand(id)) return false;
+    if (_hideCommandForCurrentLocale(id, provider)) return false;
+    // ★ 落とすのは**本当に何もしない物だけ**。 画面ロックと集中ロックは
+    //   _executeHeaderCommand が `if (_isDesktop) break;` で黙って捨てるので、
+    //   パソコンでは無い物として扱う。
+    // ★ ポモドーロは**落とさない**。 パソコンでも外の窓で開く
+    //   (case 'pomodoro' の _isDesktop 分岐) ので、 ボタンの追加候補から
+    //   外れているだけ。 追加候補の絞り込みをそのまま持って来ると、
+    //   動く機能まで「この端末には無い」 と答えてしまう (= 粗探しで発見)。
+    if (_isDesktop && (id == 'appLock' || id == 'focusLock')) return false;
+    return true;
+  }
 
   static bool _isRetiredCustomCommand(String? id) =>
       id != null && _retiredCustomCommandIds.contains(id);
@@ -61490,7 +61564,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                                                     provider,
                                                     _VideoEditorPageView(
                                                     key: ValueKey(
-                                                        'veditor_${provider.currentPage.id}_${provider.mcpContentTick}'),
+                                                        'veditor_${provider.currentPage.id}'
+                                                        '_${provider.mcpPageTick(provider.currentPage.id)}'),
                                                     provider: provider,
                                                     pageId: provider
                                                         .currentPage.id)))
@@ -65025,11 +65100,22 @@ class _MindMapScreenState extends State<MindMapScreen>
   void _registerMcpHandlers(MindMapProvider provider) {
     provider.registerMcpCommands(
       [
+        // ★ この端末で動く物だけを渡す (= 動作検証レポート: パソコンでは
+        //   何もしない appLock / focusLock まで「置けます」 と答えていた)。
+        // ★ legacy は「ボタンの追加候補に出さない」 という印でしか無い。
+        //   これで切ると、 まだ生きている機能 (工程表 / 発表 / 面接練習 /
+        //   ロールプレイ / フォルダー内検索など) まで AI から呼べなくなる
+        //   (= 粗探しで発見)。 ここでは見ない。
         for (final c in _headerCustomizableCommands)
-          {
-            'id': '${c['id']}',
-            'label': provider.t('${c['labelKey']}'),
-          }
+          if (_commandAvailableHere(c['id'] as String?, provider))
+            {
+              'id': '${c['id']}',
+              'label': provider.t('${c['labelKey']}'),
+              // ★「窓が開くだけ」 の印。 これが付いている物を
+              //   「やりました」 と報告させない。
+              if (kCommandsNeedingUserFinish.contains(c['id']))
+                'needsUser': 'true',
+            }
       ],
       (id) => _executeHeaderCommand(id, provider),
     );
@@ -65569,7 +65655,11 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (name.isEmpty) return null;
     name = name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
     if (!name.toLowerCase().endsWith('.$kind')) name = '$name.$kind';
-    final pageId = '${spec['pageId'] ?? ''}';
+    // ★ 空 id は「今開いているページ」。 そのまま持ち主を見ると
+    //   owners.contains('') が必ず false になり、 自分のファイルなのに
+    //   逃がし先を探してしまう (= b399 の退行)。
+    final rawPageId = '${spec['pageId'] ?? ''}'.trim();
+    final pageId = provider.mcpFileHostPageId(rawPageId);
     try {
       // ★ まずは **そのページに貼ってある** 同じ名前のファイル。
       //   一覧で別のフォルダーを開いていても、 同じ物へ足せる。
@@ -65579,8 +65669,14 @@ class _MindMapScreenState extends State<MindMapScreen>
       }
       // 次に、 書く所と同じ所 (= いま開いているフォルダー)。
       //   ここがずれると、 同じ名前で頼むたびに 2 つ目が出来てしまう。
-      final dir = await _newFileDir(provider, fallbackName: 'mcp_files');
-      final f = File('${dir.path}${Platform.pathSeparator}$name');
+      final dir = await _newFileDirForPage(provider, rawPageId,
+          fallbackName: 'mcp_files');
+      // ★ 書き先と**同じ物差し**で引く。 他のページだけが貼っている物は
+      //   _mcpWritePath が 名前_1 へ逃がすので、 追記の相手もそちらになる。
+      //   ここを揃えないと、 逃がし先の pptx が「後ろへ足すだけ」 の
+      //   つもりでまるごと書き直され、 前のスライドが消える。
+      final f = File(await _mcpWritePath(
+          provider, pageId, '${dir.path}${Platform.pathSeparator}$name'));
       if (!await f.exists()) return null;
       // ★ ただし、 他のページだけが貼っているファイルには足さない
       //   (= RISK-01: そのページの中身を壊してしまう)。 書き先を決める
@@ -65758,17 +65854,31 @@ class _MindMapScreenState extends State<MindMapScreen>
       // ★ いま開いているフォルダーの中に作る (= ユーザー要望: 新規作成した
       //   ファイルは docs ではなく開いているフォルダーへ)。 開いていない時
       //   だけ、 今までどおりアプリの mcp_files へ。
+      // ★ 頼まれたページを 2 つに分けて持つ:
+      //   ・rawPageId … **名指しされたか**の判定だけに使う (置き場を決める)
+      //   ・pageId    … 実際にタイルが載るページ。 持ち主 (上書きしてよいか)
+      //                 の判定はこちら
+      //   ★ 空のまま持ち主を見ていたのが b399 の退行だった。 道具の説明は
+      //     「相手を言われていない時は pageId を省く」 と案内しているので
+      //     空 id はいつもの呼ばれ方で、 owners.contains('') は必ず false。
+      //     そのため自分のファイルを書き直すだけでも 名前_1 へ逃げ、
+      //     タイルまで 2 枚目が出来ていた。
+      final rawPageId = '${spec['pageId'] ?? ''}'.trim();
+      final pageId = provider.mcpFileHostPageId(rawPageId);
       // ★ 書き直す時は、 そのページに貼ってある物の隣へ書く (= 一覧で
       //   別のフォルダーを開いていると、 書き直しのつもりが 3 つ目の
       //   ファイルと 2 枚目のタイルになっていた)。
-      final pageId = '${spec['pageId'] ?? ''}';
       final onPage = _mcpExistingPathOnPage(provider, pageId, name);
       Directory? dir;
       if (onPage != null) {
         final d = File(onPage).parent;
         if (await d.exists()) dir = d;
       }
-      dir ??= await _newFileDir(provider, fallbackName: 'mcp_files');
+      // ★ = 動作検証レポート「明示した対象ページは別フォルダーなのに、
+      //   生成物は一覧で開いている『913』 の連動先へ保存された」。
+      //   名指しされたページのフォルダーが先、 一覧で開いているフォルダーは控え。
+      dir ??= await _newFileDirForPage(provider, rawPageId,
+          fallbackName: 'mcp_files');
       provider.mcpAllowReadDir(dir.path);
       provider
           .mcpAllowReadDir(dir.path.replaceAll('/', Platform.pathSeparator));
@@ -65790,6 +65900,14 @@ class _MindMapScreenState extends State<MindMapScreen>
       //   「中身のさわり」 の控えが古いままになる (= ユーザー報告: AI に
       //   100 行書かせてもギャラリーのサムネイルが更新されない)。
       //   書いた直後に必ず捨てる。
+      // アプリが作った物として控える (= 後で「タイルと一緒にファイルも
+      //   消して」 と頼まれた時、 利用者自身の物と見分ける唯一の手掛かり)。
+      // ★ **新しく出来た時だけ**控える。 上書きした物まで控えると、
+      //   利用者が自分で置いていた同じ名前のファイルが「アプリの物」 に
+      //   化けてしまい、 deleteFile:'generated' でごみ箱へ送れてしまう
+      //   (= 粗探しで発見。 その指定は「アプリが作った物だけ」 が売りなので、
+      //   ここが崩れると一番たちが悪い)。
+      if (!replaced) provider.mcpNoteCreatedFile(file.path);
       DocPreview.invalidate(file.path);
       FileImage(File(file.path)).evict();
       // 作った所を一覧に反映する。
@@ -65809,6 +65927,9 @@ class _MindMapScreenState extends State<MindMapScreen>
           .toList();
       return {
         'path': file.path,
+        // どこへ置いたかを必ず返す (= 一覧で開いているフォルダーへ落ちた時に、
+        //   AI が「どこに出来たか」 を言えるように)。
+        'savedIn': dir.path,
         'fileName': name,
         'replaced': replaced,
         if (shared.isNotEmpty) 'alsoOnPages': shared,
@@ -97288,11 +97409,94 @@ class _MindMapScreenState extends State<MindMapScreen>
     ctrl.value = m;
   }
 
+  /// ギャラリーを矢印キーで動かす 1 回ぶん (画面 px)。
+  ///
+  /// **1 回押した時**の量をホイール 1 目盛りにそろえる (= 同じ画面を 2 通りで
+  /// 動かすので、 量が違うと戸惑う)。 Windows の engine は 1 目盛り =
+  /// 行数 x 100 / 3 画素を送り、 WheelScrollScale がそれを今の行数へ掛け
+  /// 直しているので、 今の行数から同じ式で出せば必ず一致する。 読めない時は
+  /// 既定の 3 行ぶん。
+  ///
+  /// ★ 押しっぱなしの時は、 OS のキーリピートと本体の繰り返しタイマーの
+  ///   両方が走るので、 実際にはこの倍くらいの速さで流れる。 これは普通の
+  ///   マップ (80px 刻み) が前からそうなっているのと同じで、 ギャラリーだけ
+  ///   別の速さにすると却って戸惑うため、 わざとそろえてある。
+  double get _shelfArrowStep {
+    final lines = WheelScrollScale.osLines;
+    if (lines <= 0) return 100.0;
+    return lines * 100.0 / 3.0;
+  }
+
+  /// ギャラリー (本棚) を矢印キーで動かす
+  /// (= ユーザー要望: ギャラリーページで上下キー入力でスクロールできるように
+  ///  して欲しい)。
+  ///
+  /// ★ 収める四角は _bookshelfContentBounds — 真ん中へ寄せる所
+  ///   (_clampBookshelfPan) / 横の固定判定 (_shelfHLocked) / スクロールバーの
+  ///   可動域と**同じ物**を使う。 別の四角で測ると、 止まる位置と寄せる位置が
+  ///   食い違って中身が画面の外に残る。
+  /// ★ 横は原則動かさない。 列が増えて中身が画面幅を超えた時
+  ///   (= _shelfHLocked が false) だけ左右も受ける。
+  void _handleBookshelfArrowKey(
+      LogicalKeyboardKey key, TransformationController ctrl) {
+    final provider = context.read<MindMapProvider>();
+    final bounds = _bookshelfContentBounds(provider);
+    if (bounds == null) return; // 中身が無い = 動かす先も無い
+    // ★ 分割パネルを引いた「実際に見えている大きさ」 で測る。 画面全体で
+    //   測ると、 パネルの裏へ送り込めてしまう。
+    final view = _mapViewportSize();
+    if (!view.width.isFinite || view.width <= 1) return; // まだ測れない
+    final hLocked = _shelfHLocked(provider, ctrl, null, view.width);
+    // 1 段 = ホイール 1 目盛り。 1 画面 = 見えている高さの 9 割
+    // (行が途中で切れても前後がつながって見えるよう 1 割残す)。
+    final line = _shelfArrowStep;
+    final pageStep = math.max(line, view.height * 0.9);
+    double dx = 0, dy = 0;
+    if (key == LogicalKeyboardKey.arrowUp) dy = line;
+    if (key == LogicalKeyboardKey.arrowDown) dy = -line;
+    if (key == LogicalKeyboardKey.arrowLeft) dx = line;
+    if (key == LogicalKeyboardKey.arrowRight) dx = -line;
+    if (key == LogicalKeyboardKey.pageUp) dy = pageStep;
+    if (key == LogicalKeyboardKey.pageDown) dy = -pageStep;
+    // ロック中の軸はスクロールさせない (= 通常マップと同じ扱い)。
+    if (_lockH || hLocked) dx = 0;
+    if (_lockV) dy = 0;
+    if (dx == 0 && dy == 0) return;
+    final m = Matrix4.copy(ctrl.value);
+    final t = m.getTranslation();
+    final raw = m.getMaxScaleOnAxis();
+    final scale = raw <= 0 ? 1.0 : raw;
+    // 端の余白はクランプ側と同じ (キャンバス座標 120px)。
+    final buffer = 120.0 * scale;
+    final ntx = hLocked
+        ? (view.width - scale * (bounds.left + bounds.right)) / 2
+        : _shelfClampAxis(
+            t.x + dx, bounds.left, bounds.right, view.width, scale, buffer);
+    final nty = _shelfClampAxis(
+        t.y + dy, bounds.top, bounds.bottom, view.height, scale, buffer);
+    // もう端まで来ている時は何もしない (= 押しっぱなしで無駄に描き直さない)。
+    if ((ntx - t.x).abs() < 0.5 && (nty - t.y).abs() < 0.5) return;
+    _markMapScrollActivity();
+    m.setTranslationRaw(ntx, nty, 0);
+    ctrl.value = m;
+    // ★ 控えは「代入した後の値」 から取る。 ctrl.value への代入で
+    //   _onTransformChanged → _clampBookshelfPan が走り、 更に補正して
+    //   いることがある。 m を控えると、 次のフレームで軸ロックが補正前の
+    //   位置へ引き戻してしまう。
+    _lastMatrix = ctrl.value.clone();
+  }
+
   void _handleArrowKey(LogicalKeyboardKey key, TransformationController ctrl) {
-    // ── ギャラリーページでは矢印キーでのパンを無効化 (= ユーザー要望: 変な
-    //    位置に飛ぶのを防ぐ。 ギャラリーはマウス/トラックパッドでスクロール) ──
     final pageType = context.read<MindMapProvider>().currentPage.pageType;
+    // ── ギャラリーページ: 上下キーで縦にスクロールする (= ユーザー要望:
+    //    ギャラリーページで上下キー入力でスクロールできるようにして欲しい)。
+    //    ★ 昔ここで丸ごと止めていたのは、 下の通常マップ用クランプ
+    //      (translation <= 0) がギャラリーに合っていなかったから。
+    //      ギャラリーは中身を真ん中に寄せる = translation が正なので、
+    //      1 回目の押下で左上へ飛んでいた (= 旧コメント「変な位置に飛ぶ」)。
+    //      寄せる所と同じ四角で測る専用の処理に分けて復活させる。
     if (pageType == 'bookshelf') {
+      _handleBookshelfArrowKey(key, ctrl);
       return;
     }
     // フリーノート / 文書ページでも矢印キーでのパンはしない (= ユーザー報告:
@@ -160801,8 +161005,22 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
     if (mounted) setState(() {});
   }
 
+  /// 画面を作った時点の「AI がこのページを書き換えた回数」。
+  ///
+  /// ★ = 動作検証レポート (2026-09-15) の調べで見つかった取りこぼし:
+  ///   マークダウン / 文書 / フリーノートには離脱時保存の門があるのに、
+  ///   動画エディターだけ無条件に保存していた。 MCP が書き込むと画面が
+  ///   作り直されるので、 古い _items を持ったまま dispose が走り、
+  ///   さっき AI が足した項目をそのまま消していた。
+  /// ★ 見るのは**ページ単位**の印。 全体の印 (mcpContentTick) で見ると、
+  ///   関係の無いページへ AI が 1 行書いただけで、 この画面の未保存の
+  ///   打ち込み (時刻や字幕) が黙って捨てられる (= 粗探しで発見)。
+  ///   マークダウンのページが先に同じ直し方をしている。
+  int _mcpTickAtInit = 0;
+
   void initState() {
     super.initState();
+    _mcpTickAtInit = widget.provider.mcpPageTick(widget.pageId);
     // 録画の経過時間を出すため、 共通の録画係の変化を受け取る。
     ScreenRecorder.instance.addListener(_onRecChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -160841,7 +161059,11 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
     _videoLoadGeneration++;
     _ctrlItemId = '';
     _panelSaveDebounce?.cancel();
-    if (_loaded) {
+    // ★ AI (MCP) がこのページを書き換えたせいで作り直された時は保存しない。
+    //   ここで保存すると、 画面が持っている「書き換わる前」 の並びで
+    //   上書きしてしまい、 AI が足した項目が消える。
+    if (_loaded &&
+        widget.provider.mcpPageTick(widget.pageId) == _mcpTickAtInit) {
       final panelIndex = _items.indexWhere((e) => e.id == _panelItemId);
       if (panelIndex >= 0) {
         // ページ切替直前の時刻入力も、setStateせずモデルへ取り込んで保存する。

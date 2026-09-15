@@ -22,6 +22,7 @@ import '../services/cursor_style.dart';
 import '../services/display_light.dart';
 import '../services/google_auth.dart';
 import '../services/mcp_server.dart';
+import '../services/recycle_bin.dart';
 import '../services/home_shortcut_service.dart';
 // AI に端末のファイル / Web を読ませる時の取り出し部 (= ユーザー要望)。
 import '../services/talk_reference.dart';
@@ -86042,6 +86043,9 @@ $cleanQ
       }
     });
     _loadAiSettings();
+    // アプリが作ったファイルの控え (= AI に「タイルと一緒にファイルも消して」
+    //   と頼まれた時、 利用者自身の物を消さないための唯一の手掛かり)。
+    _loadMcpCreatedFiles();
     _loadChannelFilterSettings();
     _loadChannelQueues();
     _loadAutoSyncPageIds();
@@ -89447,6 +89451,160 @@ $cleanQ
   double get syncProgress => _syncProgress;
   String _syncStatusText = '';
   String get syncStatusText => _syncStatusText;
+
+  /// AI からクラウド同期を実際に走らせる (= ユーザー要望「クラウド同期も
+  /// MCP から行えるようにして欲しい」)。
+  ///
+  /// ★ ヘッダーの `sync` ボタンは**窓を開くだけ**で、 何を上げ下げするかは
+  ///   利用者が選ぶ。 それを AI から押しても「窓が開いた」 止まりなので、
+  ///   ここでは窓を通さず本当に転送する (= 動作検証レポート: MCP は
+  ///   一律 "launched" と返し、 AI が「同期しました」 と答えていた)。
+  /// ★ 上限 (uploadCapBytes / devSelfUploadCapBytes) はクラウドの通り道で
+  ///   効くので、 ここを通っても上げ過ぎる事は無い。
+  ///
+  /// 戻り値は必ず `{ok: bool, ...}`。 例外は投げずに理由を文字で返す
+  /// (= 投げると AI には「失敗した」 としか伝わらない)。
+  Future<Map<String, Object?>> mcpCloudSync({
+    required String action,
+    List<String> pageIds = const [],
+    String? folderId,
+  }) async {
+    final act = action.trim().toLowerCase();
+    if (act != 'upload' && act != 'download' && act != 'list') {
+      return {
+        'ok': false,
+        'reason': 'action must be "upload", "download" or "list"',
+      };
+    }
+    if (!isMaxUnlocked) {
+      return {
+        'ok': false,
+        'reason': 'cloud sync needs the Max plan. Tell the user - do not '
+            'retry. (${t('paywall.maxRequiredCloudSync')})',
+      };
+    }
+    if (_syncGroupId == null) {
+      return {
+        'ok': false,
+        'reason': 'this device has not joined a sync group yet. The user has '
+            'to create or join one first (${t('sync.joinGroupFirst')}).',
+      };
+    }
+    // ★ = 粗探しで発見: uploadToCloud / downloadFromCloud は「もう 1 つ
+    //   同期が走っている」「Esc で止められた」「上限に当たって飛ばした」 の
+    //   どれでも**例外を投げずに黙って戻る**。 例外が来なかったことを
+    //   「転送できた」 と読むと、 AI が「同期しました」 と答えてしまう
+    //   (この変更で潰したはずの嘘が、 そのままこちらへ移るだけになる)。
+    //   走る前後で状態を確かめ、 動いていなければ ok:false で返す。
+    if (isSyncing) {
+      return {
+        'ok': false,
+        'reason': 'another sync is already running (the user may have just '
+            'pressed Ctrl+S / Ctrl+D). Wait and tell them - do not retry '
+            'in a loop.',
+      };
+    }
+    _lastSyncLimitMessage = null;
+    try {
+      if (act == 'list') {
+        final pages = await fetchCloudPageList();
+        return {
+          'ok': true,
+          'action': 'list',
+          'cloudPages': [
+            for (final p in pages) {'pageId': p.id, 'name': p.name}
+          ],
+        };
+      }
+      if (act == 'upload') {
+        // 何も言われなければ、 今開いているページだけ (= 全部を黙って
+        //   上げない。 上げた分は使用量として引かれるため)。
+        final ids = pageIds.isNotEmpty
+            ? pageIds.where((e) => e.trim().isNotEmpty).toList()
+            : [if (_pages.isNotEmpty) currentPage.id];
+        final known = <String>[];
+        final unknown = <String>[];
+        for (final id in ids) {
+          (_pages.any((p) => p.id == id) ? known : unknown).add(id);
+        }
+        if (known.isEmpty) {
+          return {
+            'ok': false,
+            'reason': 'none of those page ids exist here: '
+                '${unknown.join(', ')} - call list_pages first',
+          };
+        }
+        final before = monthlyUploadBytes;
+        await uploadToCloud(known);
+        // 上限に当たった / 途中で止められた時は、 送れていない物がある。
+        final limitMsg = _lastSyncLimitMessage;
+        if (limitMsg != null && limitMsg.trim().isNotEmpty) {
+          return {
+            'ok': false,
+            'action': 'upload',
+            'reason': 'the upload stopped at a limit: $limitMsg. Some pages '
+                'or attachments were NOT sent - tell the user, do not say '
+                'it synced.',
+            'monthlyUploadBytes': monthlyUploadBytes,
+            'monthlyUploadLimit': monthlyUploadLimit,
+          };
+        }
+        return {
+          'ok': true,
+          'action': 'upload',
+          'uploaded': known,
+          if (unknown.isNotEmpty) 'unknownPageIds': unknown,
+          // 実際に増えた量。 0 なら何も送っていない (= 既に同じ中身だった、
+          //   あるいは黙って飛ばされた)。 そのまま伝えさせる。
+          'bytesSent': monthlyUploadBytes - before,
+          'monthlyUploadBytes': monthlyUploadBytes,
+          'monthlyUploadLimit': monthlyUploadLimit,
+        };
+      }
+      // download
+      final cloud = await fetchCloudPageList();
+      if (cloud.isEmpty) {
+        return {
+          'ok': false,
+          'action': 'download',
+          'reason': 'the cloud holds no pages for this group yet',
+        };
+      }
+      final want = pageIds.where((e) => e.trim().isNotEmpty).toList();
+      final ids = want.isNotEmpty
+          ? want.where((e) => cloud.any((p) => p.id == e)).toList()
+          : [for (final p in cloud) p.id];
+      if (ids.isEmpty) {
+        return {
+          'ok': false,
+          'action': 'download',
+          'reason': 'none of those page ids are in the cloud. Available: '
+              '${cloud.map((p) => '${p.id} (${p.name})').join(', ')}',
+        };
+      }
+      await downloadFromCloud(cloud, ids, targetFolderId: folderId);
+      final dlLimit = _lastSyncLimitMessage;
+      if (dlLimit != null && dlLimit.trim().isNotEmpty) {
+        return {
+          'ok': false,
+          'action': 'download',
+          'reason': 'the download stopped at a limit: $dlLimit. Some pages '
+              'or attachments were NOT brought down - tell the user, do not '
+              'say it synced.',
+          'monthlyDownloadBytes': monthlyDownloadBytes,
+        };
+      }
+      return {
+        'ok': true,
+        'action': 'download',
+        'downloaded': ids,
+        'monthlyDownloadBytes': monthlyDownloadBytes,
+      };
+    } catch (e) {
+      // 上限に当たった時もここへ来る。 理由をそのまま渡す。
+      return {'ok': false, 'reason': '$e'};
+    }
+  }
 
   Future<void> uploadToCloud(List<String> pageIds) async {
     if (!isMaxUnlocked) {
@@ -97592,14 +97750,18 @@ $cleanQ
   /// 実行係 (画面が登録する)。
   void Function(String id)? _mcpCommandRunner;
 
-  /// AI からは動かさない機能。 いずれも「押すつもりが無かった」 で済まない
-  /// ものなので、 利用者自身がボタンを押す形に限る:
+  /// AI からは動かさない機能。
   ///
   /// ★ = ユーザー要望「クラウド同期や集中ロック等も MCP から行えるように」。
   ///   空にした (= 止める機能は無い)。 仕組み自体は残してあるので、
   ///   もし又止めたい機能が出てきたらここへ入れる。
   ///   クラウドへ上げ過ぎないよう、 代わりに上限 (uploadCapBytes /
   ///   devSelfUploadCapBytes) をつけてある。
+  /// ★ **空である以上、 userOnly の印も blocked の中身も必ず空になる。**
+  ///   道具の説明文や assets/ai/ の説明書に「sync / appLock / focusLock は
+  ///   利用者限定」 と書き残すと、 AI は出来る事を断る
+  ///   (= 動作検証レポート 2026-09-15 の 4 番)。 ここを触ったら
+  ///   mcp_server.dart の説明文と assets/ai/ も**必ず**揃える。
   static const Set<String> _mcpBlockedCommands = <String>{};
 
   void registerMcpCommands(
@@ -98675,6 +98837,15 @@ $cleanQ
     if (page == null) return null;
     final json = page.toJson();
     final byId = {for (final n in page.nodes.values) n.id: n};
+    // ★ = 動作検証レポート 改善案 5「ファイルが消えた画像タイルが残る」。
+    //   新しく作る時は断るようにしたが (mcpAddImageNode / _imagePathRejection)、
+    //   既にあるページは誰も気付けない。 読んだ時に**壊れている物だけ**へ
+    //   印を付け、 貼り直す / 消すの判断を頼めるようにする。
+    //   見るのは添付のある要素だけ、 多くても maxStat 件まで (巨大な棚ページや、
+    //   まだ落ちて来ていないクラウドの道でここが固まらないように)。
+    const maxStat = 400;
+    var stat = 0;
+    final broken = <String>[];
     final nodes = json['nodes'];
     if (nodes is List) {
       for (final e in nodes) {
@@ -98683,7 +98854,20 @@ $cleanQ
         if (n == null) continue;
         // 小数は 1 桁で十分 (JSON を無駄に太らせない)。
         e['visualHeight'] = double.parse(n.visualHeight.toStringAsFixed(1));
+        final ap = (n.attachmentPath ?? '').trim();
+        if (ap.isEmpty || ap.startsWith('http') || stat >= maxStat) continue;
+        stat++;
+        if (File(ap).existsSync()) continue;
+        e['brokenAttachment'] = true;
+        broken.add((n.attachmentName ?? '').trim().isNotEmpty
+            ? n.attachmentName!.trim()
+            : _baseName(ap));
       }
+    }
+    if (broken.isNotEmpty) json['brokenAttachments'] = broken;
+    final bg = (page.backgroundImagePath ?? '').trim();
+    if (bg.isNotEmpty && !bg.startsWith('http') && !File(bg).existsSync()) {
+      json['brokenBackground'] = bg;
     }
     return json;
   }
@@ -99778,6 +99962,210 @@ $cleanQ
   /// 保存先は prefs `markdown_<pageId>`。 形は画面側と同じタブ束
   /// `{v:2, sel:.., tabs:[{id,name,text}]}` (画面の decodeMarkdownDoc と対)。
   /// [append] が true なら、 今見ているタブの末尾に足す。
+  // ── ページ本文の読み返し (= 動作検証レポート 改善案 2「AI が書いた
+  //    結果を事後検証できない」)。 本文はページ JSON の外 (prefs) にあるので
+  //    read_page では取れない。 書く側と**同じ入れ物・同じ選び方**で読む。
+  //    ★ 保存は打つたびに延びる猶予つき (markdown 400ms / document 700ms /
+  //      フリーノートのメモ 450ms) なので、 利用者が打ち続けている間は prefs が
+  //      古いままになり得る。 こちらから確かめる術は無いので、 見たままを返す。
+
+  /// マークダウンページの中身を読む (タブ束ごと)。
+  Future<Map<String, dynamic>?> mcpReadMarkdown(String pageId) async {
+    final page = mcpPageById(pageId);
+    if (page == null || page.pageType != 'markdown') return null;
+    try {
+      final prefs = await _prefsWithRetry();
+      final raw = prefs.getString('markdown_${page.id}');
+      if (raw == null || raw.trim().isEmpty) {
+        return {'pageId': page.id, 'selected': 0, 'tabs': const []};
+      }
+      if (!raw.trimLeft().startsWith('{')) {
+        // 旧い形は「素のテキスト 1 枚」。
+        return {
+          'pageId': page.id,
+          'selected': 0,
+          'tabs': [
+            {'index': 0, 'name': '1', 'text': raw}
+          ],
+        };
+      }
+      final j = jsonDecode(raw);
+      final tabs = <Map<String, Object?>>[];
+      if (j is Map && j['tabs'] is List) {
+        final list = j['tabs'] as List;
+        for (var i = 0; i < list.length; i++) {
+          final e = list[i];
+          if (e is! Map) continue;
+          final url = '${e['url'] ?? ''}'.trim();
+          tabs.add({
+            'index': i,
+            'name': '${e['name'] ?? ''}',
+            if (url.isNotEmpty) 'url': url,
+            'text': '${e['text'] ?? ''}',
+          });
+        }
+      }
+      var sel = (j is Map ? (j['sel'] as num?)?.toInt() : 0) ?? 0;
+      if (sel < 0 || sel >= tabs.length) sel = 0;
+      return {'pageId': page.id, 'selected': sel, 'tabs': tabs};
+    } catch (e) {
+      debugPrint('mcpReadMarkdown failed: $e');
+      return null;
+    }
+  }
+
+  /// 文書ページ (とフリーノートの文書モード) の本文を紙ごとに読む。
+  Future<Map<String, dynamic>?> mcpReadDocument(String pageId) async {
+    final page = mcpPageById(pageId);
+    if (page == null) return null;
+    if (page.pageType != 'document' && page.pageType != 'paint') return null;
+    try {
+      final prefs = await _prefsWithRetry();
+      final raw = prefs.getString('document_${page.id}');
+      if (raw == null || raw.trim().isEmpty) {
+        return {'pageId': page.id, 'papers': const []};
+      }
+      final decoded = jsonDecode(raw);
+      // デルタ (Quill の並び) から、 書かれている文字だけ取り出す。
+      String plain(dynamic delta) {
+        if (delta is! List) return '';
+        final b = StringBuffer();
+        for (final op in delta) {
+          if (op is Map && op['insert'] is String) b.write(op['insert']);
+        }
+        return b.toString();
+      }
+
+      final papers = <Map<String, Object?>>[];
+      if (decoded is Map && decoded['pages'] is List) {
+        final list = decoded['pages'] as List;
+        for (var i = 0; i < list.length; i++) {
+          papers.add({'index': i, 'text': plain(list[i])});
+        }
+      } else if (decoded is List) {
+        papers.add({'index': 0, 'text': plain(decoded)});
+      }
+      return {
+        'pageId': page.id,
+        // append_document_text は**最後の紙**の末尾へ足す。
+        'appendsTo': papers.isEmpty ? 0 : papers.length - 1,
+        'papers': papers,
+      };
+    } catch (e) {
+      debugPrint('mcpReadDocument failed: $e');
+      return null;
+    }
+  }
+
+  /// フリーノートの「今の紙」 に載っている物を読む。
+  /// 紙の選び方は書く側 (_mcpPaintSheetOf) と同じ。
+  Future<Map<String, dynamic>?> mcpReadPaintItems(String pageId) async {
+    final page = mcpPageById(pageId);
+    if (page == null || page.pageType != 'paint') return null;
+    try {
+      final prefs = await _prefsWithRetry();
+      final raw = prefs.getString('paint_${page.id}');
+      dynamic decoded;
+      if (raw != null && raw.trim().isNotEmpty) {
+        try {
+          decoded = jsonDecode(raw);
+        } catch (_) {}
+      }
+      final found = _mcpPaintSheetOf(decoded);
+      final sheet = found.sheet;
+      if (sheet.isEmpty) {
+        return {'pageId': page.id, 'texts': const [], 'note': 'empty sheet'};
+      }
+      List<dynamic> listOf(String k) =>
+          sheet[k] is List ? (sheet[k] as List) : const [];
+      final texts = <Map<String, Object?>>[];
+      final tl = listOf('t');
+      for (var i = 0; i < tl.length; i++) {
+        final e = tl[i];
+        if (e is! Map) continue;
+        // ★ 文字は 't'。 's' は**大きさ**なので、 そちらを先に見ると
+        //   どの項目も本文が "22.0" になる (= 粗探しで発見)。
+        texts.add({
+          'index': i,
+          'text': '${e['t'] ?? e['text'] ?? ''}',
+          if (e['s'] != null) 'size': e['s'],
+          if (e['x'] != null) 'x': e['x'],
+          if (e['y'] != null) 'y': e['y'],
+        });
+      }
+      final bgi = '${sheet['bgi'] ?? ''}'.trim();
+      return {
+        'pageId': page.id,
+        'sheetName': '${sheet['n'] ?? ''}',
+        'texts': texts,
+        'strokeCount': listOf('s').length,
+        'shapeCount': listOf('sh').length,
+        'imageCount': listOf('im').length,
+        if (bgi.isNotEmpty) 'backgroundImage': bgi,
+        'hasDocumentLayer':
+            sheet['doc'] is List && (sheet['doc'] as List).isNotEmpty,
+      };
+    } catch (e) {
+      debugPrint('mcpReadPaintItems failed: $e');
+      return null;
+    }
+  }
+
+  /// 動画エディターのタイムラインに載っている物を読む。
+  /// 返す鍵は add_video_editor_item が受ける物とそろえてある
+  /// (= 読んで、 そのまま直せるように)。
+  Future<Map<String, dynamic>?> mcpListVideoEditorItems(String pageId) async {
+    final page = mcpPageById(pageId);
+    if (page == null || page.pageType != 'videoEditor') return null;
+    try {
+      final prefs = await _prefsWithRetry();
+      final raw = prefs.getString('videoEditor_${page.id}');
+      if (raw == null || raw.trim().isEmpty) {
+        return {'pageId': page.id, 'items': const []};
+      }
+      final decoded = jsonDecode(raw);
+      final list = decoded is Map
+          ? (decoded['items'] is List ? decoded['items'] as List : const [])
+          : (decoded is List ? decoded : const []);
+      // ★ 保存は**短い鍵**。 長い名前で読むと全部が空で返る (= 粗探しで
+      //   発見: kind も時刻も道筋も取れず、 missingFile の知らせも死んでいた)。
+      //   返す側は add_video_editor_item の引数名にそろえる (= 読んで、
+      //   そのまま直せるように)。
+      const kindNames = {0: 'video', 1: 'text', 2: 'image'};
+      final items = <Map<String, Object?>>[];
+      for (var i = 0; i < list.length; i++) {
+        final e = list[i];
+        if (e is! Map) continue;
+        final path = '${e['p'] ?? e['path'] ?? ''}'.trim();
+        final kRaw = e['k'];
+        final kind = kRaw is num
+            ? (kindNames[kRaw.toInt()] ?? '')
+            : '${e['kind'] ?? kRaw ?? ''}';
+        final text = '${e['t'] ?? e['text'] ?? ''}';
+        items.add({
+          'index': i,
+          'itemId': '${e['id'] ?? ''}',
+          'kind': kind,
+          if (e['l'] != null) 'layer': e['l'],
+          if (e['s'] != null) 'startMs': e['s'],
+          if (e['d'] != null) 'durationMs': e['d'],
+          if (text.isNotEmpty) 'text': text,
+          if (path.isNotEmpty) 'path': path,
+          // 元のファイルが消えていれば知らせる (= 書き出しが真っ黒になるのを、
+          //   作り直す前に気付けるように)。
+          if (path.isNotEmpty &&
+              !path.startsWith('http') &&
+              !File(path).existsSync())
+            'missingFile': true,
+        });
+      }
+      return {'pageId': page.id, 'items': items};
+    } catch (e) {
+      debugPrint('mcpListVideoEditorItems failed: $e');
+      return null;
+    }
+  }
+
   Future<bool> mcpWriteMarkdown(String pageId, String text,
       {bool append = false}) async {
     final page = mcpPageById(pageId);
@@ -99806,6 +100194,11 @@ $cleanQ
                   'id': '${e['id'] ?? ''}',
                   'name': '${e['name'] ?? ''}',
                   'text': '${e['text'] ?? ''}',
+                  // ★ url を落としてはいけない (= 動作検証レポートの調べで
+                  //   発見)。 Web のタブは url で開くので、 ここで組み直す
+                  //   時に捨てると、 本文が空のただのタブに変わってしまう。
+                  if ('${e['url'] ?? ''}'.trim().isNotEmpty)
+                    'url': '${e['url']}',
                 });
               }
               sel = (j['sel'] as num?)?.toInt() ?? 0;
@@ -99954,6 +100347,7 @@ $cleanQ
         'id': id,
         'k': k,
         'l': lay,
+        // ↓ 短い鍵で保存する。 読み返す mcpListVideoEditorItems と対。
         's': start,
         'd': durationMs ?? 4000,
         'p': path ?? '',
@@ -99966,6 +100360,9 @@ $cleanQ
         'sc': 0.4,
       });
       await prefs.setString(key, jsonEncode({'v': 2, 'items': items}));
+      // ★ ページ単位の印も進める。 画面の鍵と離脱時保存の門がこちらを
+      //   見ているので、 進めないと書き込んだのに画面が作り直されない。
+      _bumpPageTick(pageId);
       _mcpContentTick++;
       // ★ 本文はページ JSON の外にあるので、 時刻は自分で進める
       //   (= ユーザー報告: 本文を直しても lastModified が変わらない)。
@@ -100102,13 +100499,55 @@ $cleanQ
     return out;
   }
 
+  /// そのページが入っているフォルダーの連動先 (無ければ null)。
+  ///
+  /// ★ = 動作検証レポート「明示した対象ページは『QA_20260915_追加検証』
+  ///   フォルダー内だが、 生成物は別フォルダー『913』 の連動先へ保存された」。
+  /// ★ [linkedDirectoryForPage] との違い: あちらは連動先が無い時に
+  ///   「アプリの保存先」 まで面倒を見るので、 ページの所属だけを知りたい
+  ///   ここでは使えない (連動先の無いページでも保存先を返してしまい、
+  ///   「開いているフォルダーの中へ」 という決まりを飛び越える)。
+  ///   ここは**そのページのフォルダーの連動先だけ**を答える。
+  String? mcpFolderDirForPage(String pageId) {
+    final page = mcpPageById(pageId);
+    final fid = (page?.folderId ?? '').trim();
+    if (fid.isEmpty) return null;
+    for (final f in _folders) {
+      if (f.id != fid) continue;
+      final path = (f.linkedDirPath ?? '').trim();
+      return path.isEmpty ? null : path;
+    }
+    return null;
+  }
+
+  /// ファイルのタイルを置ける種類のページか。
+  bool mcpCanHoldFileNode(String pageId) {
+    final p = mcpPageById(pageId);
+    return p != null && (p.pageType == 'normal' || p.pageType == 'bookshelf');
+  }
+
+  /// タイルが**実際に**置かれるページの id (空 id は今開いているページ、
+  /// 置けない種類なら開いているページへ逃げる)。
+  ///
+  /// ★ [mcpAddFileNode] の逃がし先と**必ず同じ**にする。 ずれると、
+  ///   持ち主で書き先を決める _mcpWritePath が別のページを持ち主と
+  ///   思い込み、 上書きで済む所を 名前_1 へ逃がしてしまう
+  ///   (= 道具の説明が「相手を言われていない時は pageId を省く」 と
+  ///   案内しているので、 空 id はいつもの呼ばれ方)。
+  String mcpFileHostPageId(String pageId) {
+    final direct = mcpPageById(pageId);
+    if (direct != null && mcpCanHoldFileNode(direct.id)) return direct.id;
+    if (_pages.isEmpty) return '';
+    return mcpCanHoldFileNode(currentPage.id) ? currentPage.id : '';
+  }
+
   /// 出来たファイルをノードとして貼る (画像以外も扱える)。
   String? mcpAddFileNode(String pageId, String filePath, {String? title}) {
     // ノードを置けるのはマインドマップとギャラリーだけ。 フリーノートや
     //   動画エディターに貼っても画面に出ないので、 今開いているページが
     //   置ける種類ならそちらへ回す (= 作ったファイルが行方不明になるのを防ぐ)。
     bool canHoldNodes(MindMapPage? p) =>
-        p != null && (p.pageType == 'normal' || p.pageType == 'bookshelf');
+        p != null && mcpCanHoldFileNode(p.id);
     var page = mcpPageById(pageId);
     if (!canHoldNodes(page)) {
       final cur = _pages.isEmpty ? null : currentPage;
@@ -100302,6 +100741,189 @@ $cleanQ
   /// 消せたら**消したノードの題名**を返す (null = 消せなかった)。
   /// 何を消したかを返さないと、 AI が「消しました」 としか言えず、
   /// 別のノードを消していても気付けない。
+  // ── 添付ファイルの後始末 (= 動作検証レポート 改善案 1「delete_node は
+  //    タイルを消すだけで、 物理ファイルが残る」)。 ────────────────────────
+
+  /// アプリが作ったファイルの控え (prefs `mcp_created_files_v1`)。
+  final Set<String> _mcpCreatedFiles = <String>{};
+  static const int _kMcpCreatedFilesMax = 2000;
+
+  Future<void> _loadMcpCreatedFiles() async {
+    try {
+      final prefs = await _prefsWithRetry();
+      _mcpCreatedFiles
+        ..clear()
+        ..addAll(prefs.getStringList('mcp_created_files_v1') ?? const []);
+    } catch (_) {}
+  }
+
+  /// 作った直後に呼ぶ。「利用者の物か、 アプリの物か」 を後で見分ける唯一の印。
+  void mcpNoteCreatedFile(String path) {
+    final v = path.trim();
+    if (v.isEmpty) return;
+    if (!_mcpCreatedFiles.add(v)) return;
+    while (_mcpCreatedFiles.length > _kMcpCreatedFilesMax) {
+      _mcpCreatedFiles.remove(_mcpCreatedFiles.first); // 古い物から捨てる
+    }
+    unawaited(() async {
+      try {
+        final prefs = await _prefsWithRetry();
+        await prefs.setStringList(
+            'mcp_created_files_v1', _mcpCreatedFiles.toList());
+      } catch (_) {}
+    }());
+  }
+
+  /// アプリが作ったファイルか。
+  ///
+  /// ★ **確かな印は無い**。 見ているのは控え (_mcpCreatedFiles) だけで、
+  ///   この仕組みを入れる前に作った物はどうやっても分からない。
+  ///   分からない物は**利用者の物として扱い、 絶対に消さない**。
+  ///   安全側に外すのは意図したもので、 消したい時は一覧から手で
+  ///   (ごみ箱へ) 消してもらう。
+  bool mcpFileWasCreatedHere(String filePath) {
+    if (filePath.trim().isEmpty) return false;
+    for (final v in _mcpCreatedFiles) {
+      if (mcpSamePath(v, filePath)) return true;
+    }
+    return false;
+  }
+
+  /// そのファイルを**ノードの添付以外**で使っている所 (人が読める説明)。
+  ///
+  /// ★ = 粗探しで発見: 使われているかをノードの添付だけで見ていたため、
+  ///   ページの背景・フリーノートに貼った絵・動画エディターの素材に
+  ///   なっているファイルを「誰も使っていない」 と見なしてごみ箱へ
+  ///   送っていた (どれもページ JSON の外か、 別の欄にある)。
+  ///   消す前と、 迷子を数える時の**両方**でここを通す。
+  Future<List<String>> mcpOtherUsesOfFile(String filePath) async {
+    final v = filePath.trim();
+    if (v.isEmpty) return const [];
+    final out = <String>[];
+    // ページの背景。
+    for (final pg in _pages) {
+      if (mcpSamePath(pg.backgroundImagePath ?? '', v)) {
+        out.add('background of "${pg.name}"');
+      }
+    }
+    // フリーノートに貼った絵 / 紙の背景、 動画エディターの素材。
+    //   どちらも本文が prefs にあるので、 ページ JSON には出て来ない。
+    try {
+      final prefs = await _prefsWithRetry();
+      bool hit(dynamic node) {
+        if (node is Map) {
+          for (final e in node.entries) {
+            final k = '${e.key}';
+            if ((k == 'p' || k == 'bgi' || k == 'path' || k == 'src') &&
+                e.value is String &&
+                mcpSamePath(e.value as String, v)) {
+              return true;
+            }
+            if (hit(e.value)) return true;
+          }
+        } else if (node is List) {
+          for (final e in node) {
+            if (hit(e)) return true;
+          }
+        }
+        return false;
+      }
+
+      for (final pg in _pages) {
+        for (final entry in const [
+          ('paint_', 'free note'),
+          ('videoEditor_', 'video timeline'),
+        ]) {
+          final raw = prefs.getString('${entry.$1}${pg.id}');
+          if (raw == null || raw.trim().isEmpty) continue;
+          if (!raw.contains(_baseName(v))) continue; // 早い足切り
+          try {
+            if (hit(jsonDecode(raw))) out.add('${entry.$2} "${pg.name}"');
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+    return out;
+  }
+
+  /// どのページからも使われていない、 アプリが作ったファイル。
+  /// = 「タイルだけ消した」 後に残っている物を見つけるため。
+  Future<List<String>> mcpOrphanGeneratedFiles() async {
+    final out = <String>[];
+    for (final v in _mcpCreatedFiles) {
+      if (mcpPagesUsingFile(v).isNotEmpty) continue;
+      if (!File(v).existsSync()) continue;
+      // ★ 背景 / フリーノート / 動画の素材になっている物を「迷子」 と
+      //   言わない (= 利用者が消してしまう)。
+      if ((await mcpOtherUsesOfFile(v)).isNotEmpty) continue;
+      out.add(v);
+    }
+    return out;
+  }
+
+  /// 添付の実ファイルをごみ箱へ送る。 戻り値は起きた事の説明。
+  ///
+  /// ★ 完全削除は**絶対にしない**。 ごみ箱へ送れない環境では消さずに理由を
+  ///   返す (画面と違って、 利用者に確かめる窓を出せないため)。
+  /// ★ 他のタイルがまだ使っているファイルには触らない。
+  Future<Map<String, Object?>> mcpDisposeAttachmentFile(
+      String filePath, String mode) async {
+    final v = filePath.trim();
+    if (v.isEmpty || mode == 'no') {
+      return {'fileKept': true, 'reason': 'only the tile was removed'};
+    }
+    if (!File(v).existsSync()) {
+      return {'fileKept': true, 'reason': 'the file was already gone'};
+    }
+    final users = mcpPagesUsingFile(v);
+    if (users.isNotEmpty) {
+      return {
+        'fileKept': true,
+        'reason': 'another tile still uses this file '
+            '(pages: ${users.join(', ')})',
+      };
+    }
+    // ★ タイル以外の使い道も見る (= 粗探しで発見: 背景 / フリーノートの絵 /
+    //   動画の素材になっているファイルをごみ箱へ送っていた)。
+    final other = await mcpOtherUsesOfFile(v);
+    if (other.isNotEmpty) {
+      return {
+        'fileKept': true,
+        'reason': 'this file is still used as: ${other.join(', ')}',
+      };
+    }
+    if (mode == 'generated' && !mcpFileWasCreatedHere(v)) {
+      return {
+        'fileKept': true,
+        'reason': 'this app did not create that file (or it was made before '
+            'the app started keeping track), so it was left alone. Ask the '
+            'user before removing it',
+      };
+    }
+    final r = await RecycleBin.send([v]);
+    if (r == RecycleResult.recycled) {
+      _mcpCreatedFiles.remove(v);
+      return {'fileRecycled': true, 'path': v};
+    }
+    return {
+      'fileKept': true,
+      'reason': r == RecycleResult.unsupported
+          ? 'this system has no recycle bin, and the app never deletes a '
+              'file permanently'
+          : 'the file could not be sent to the recycle bin (it may be open '
+              'in another program)',
+    };
+  }
+
+  /// そのノードが指している添付ファイルのパス (無ければ空)。
+  /// = 消す前に控えて、 後でごみ箱へ送るかを決めるため。
+  String mcpAttachmentPathOf(String pageId, String nodeKey) {
+    final page = mcpPageById(pageId);
+    if (page == null) return '';
+    final nodeId = _resolveNodeIdIn(page, nodeKey, fuzzy: false) ?? nodeKey;
+    return (page.nodes[nodeId]?.attachmentPath ?? '').trim();
+  }
+
   String? mcpDeleteNode(String pageId, String nodeKey) {
     final page = mcpPageById(pageId);
     if (page == null) return null;
@@ -100378,6 +101000,24 @@ $cleanQ
   /// [allowParallel] が true の時は、 同じ相手へ何本でも線を引く。
   /// 図の読み替え (sequenceDiagram など) は同じ二人が何度もやり取りするので、
   /// 一本にまとめると最後のひと言しか残らない (= 点検で判明)。
+  /// その 2 つが既に繋がっているか (向きは問わない)。
+  ///
+  /// ★ = 動作検証レポート 改善案 4「札を書き換えただけの物まで connected に
+  ///   数えている」。 mcpConnectNodes は bool しか返さないので、 繋ぐ**前**に
+  ///   ここで見て「新しく引いた」 と「既にあった」 を分ける。
+  /// ★「逆向きも同じ組と数える」 決まりは mcpConnectNodes の indexWhere と
+  ///   **必ず**同じにする。 別々に書くと片方だけ直って食い違う。
+  bool mcpConnectionExists(String pageId, String fromKey, String toKey) {
+    final page = mcpPageById(pageId);
+    if (page == null) return false;
+    final fromId = _resolveNodeIdIn(page, fromKey);
+    final toId = _resolveNodeIdIn(page, toKey);
+    if (fromId == null || toId == null || fromId == toId) return false;
+    return page.connections.any((c) =>
+        (c.fromId == fromId && c.toId == toId) ||
+        (c.fromId == toId && c.toId == fromId));
+  }
+
   bool mcpConnectNodes(String pageId, String fromKey, String toKey,
       {String? label,
       bool allowParallel = false,
@@ -100671,6 +101311,19 @@ $cleanQ
 
   /// ページをフォルダーへ入れる / 外へ出す ([folderId] が null なら外へ)。
   /// movePageToFolder は知らない id で黙って何もしないので、 先に確かめる。
+  /// そのページが既にそのフォルダーに入っているか (外は folderId = null)。
+  ///
+  /// ★ = 動作検証レポート 改善案 4「元から入っているフォルダーへの移動も
+  ///   moved に数えている」。 mcpMovePageToFolder は今の場所を見ずに true を
+  ///   返すので、 呼ぶ側が先に確かめる。
+  bool mcpPageIsInFolder(String pageId, String? folderId) {
+    final i = _pages.indexWhere((p) => p.id == pageId);
+    if (i < 0) return false;
+    final cur = (_pages[i].folderId ?? '').trim();
+    final want = (folderId ?? '').trim();
+    return cur == want;
+  }
+
   bool mcpMovePageToFolder(String pageId, String? folderId) {
     if (!_pages.any((p) => p.id == pageId)) return false;
     if (folderId != null && !_folders.any((f) => f.id == folderId)) {

@@ -52,6 +52,8 @@ class McpServer {
     'text_file_status',
     // ★ 前払いの AI クレジットを使う = お金が減る。 外部からは既定で出さない。
     'generate_page_background',
+    // ★ 利用者のクラウドの枠を使う (月の上限が減る)。 外部からは既定で出さない。
+    'cloud_sync',
   };
 
   final MindMapProvider _provider;
@@ -291,6 +293,12 @@ class McpServer {
     'list_app_commands',
     'list_paint_tabs',
     'read_device_file',
+    // ★ ページ本文の読み返し (= 動作検証レポート 改善案 2)。 何も変えない。
+    'read_markdown',
+    'read_document',
+    'read_paint_items',
+    'list_video_editor_items',
+    'list_orphan_files',
   };
 
   static Map<String, dynamic> _tool(
@@ -442,12 +450,13 @@ class McpServer {
         'ids:[] first (that changes nothing and returns the current row) '
         'and show the user what is there before you replace it. '
         'Returns {header, ignored, blocked}: "ignored" are ids that do not '
-        'exist at all, and "blocked" are REAL ids that only the user may '
-        'start - today exactly "sync" (cloud sync), "appLock" and '
-        '"focusLock". Neither group was placed, so say so plainly instead of '
-        'reporting them as added. Use the exact ids from list_app_commands '
-        '(user-only ones are listed there with "userOnly": "true"); guessing '
-        'a spelling such as "cloudSync" just comes back as ignored. '
+        'exist on this device, and "blocked" are real ids the app refuses to '
+        'place. "blocked" is EMPTY today - every id list_app_commands returns '
+        'can be placed, cloud sync ("sync") included, so never refuse it as '
+        'user-only. Ids in either list were NOT placed, so say so plainly '
+        'instead of reporting them as added. Use the exact ids from '
+        'list_app_commands; guessing a spelling such as "cloudSync" just '
+        'comes back as ignored. '
         'This tool can only fill the HEADER; it '
         'cannot move buttons to the bottom bar. If the user wants them at the '
         'bottom, tell them to do it in the button-customize screen.',
@@ -579,6 +588,14 @@ class McpServer {
         },
         ['pageId']),
     _tool(
+        'list_orphan_files',
+        'List files this app created that no tile uses any more - the '
+        'leftovers from deleting a tile without its file. Read-only: it '
+        'changes nothing. Show the list to the user and ask before removing '
+        'anything; files the app did not create are never listed, so this is '
+        'not a full audit of their folder.',
+        {}),
+    _tool(
         'delete_node',
         'Delete a node (and its connections) from a page. "node" accepts '
         'EITHER the node id OR its EXACT title (case and spacing are ignored, '
@@ -591,7 +608,17 @@ class McpServer {
         'remove. When the user names a partial match ("the nodes with TEST in '
         'the title"), read_page first, list the exact titles you matched, and '
         'get an OK before deleting - a partial match usually catches nodes '
-        'they did not mean.',
+        'they did not mean. '
+        '"deleteFile" decides what happens to the FILE on disk behind an '
+        'attachment tile: "no" (the default) removes only the tile; '
+        '"generated" also sends the file to the recycle bin, but ONLY when '
+        'this app created it; "yes" recycles it even if the user brought the '
+        'file themselves - ASK THEM FIRST. A file another tile still uses is '
+        'never touched, nothing is ever deleted permanently, and undo brings '
+        'back the tile but not the file. The reply carries "fileRecycled" or '
+        '"fileKept" with a reason - report that, do not claim the file is '
+        'gone. Use list_orphan_files to find leftovers from earlier '
+        'tile-only deletions.',
         {
           'pageId': {'type': 'string'},
           'node': {'type': 'string'},
@@ -599,6 +626,10 @@ class McpServer {
           'nodes': {
             'type': 'array',
             'items': {'type': 'string'},
+          },
+          'deleteFile': {
+            'type': 'string',
+            'enum': ['no', 'generated', 'yes'],
           },
         },
         ['pageId']),
@@ -1159,24 +1190,117 @@ class McpServer {
         // pageId は任意 (= ユーザー要望: 場所を明示しない時は
         //   開いているページに置く)。
         ['kind']),
+    // ─── ページ本文の読み返し (= 動作検証レポート 改善案 2「AI が書いた
+    //     結果を事後検証できず、 重ねて足したり丸ごと上書きしてしまう」)。
+    //     本文はページ JSON の外にあるので read_page では取れない ─────────
+    _tool(
+        'read_markdown',
+        'Read back a markdown page. read_page does NOT return the body - it '
+        'lives outside the page JSON, so this is the only way to see what is '
+        'actually written. Returns {selected, tabs:[{index, name, url?, '
+        'text}]}. write_markdown replaces the SELECTED tab, so read this '
+        'first before overwriting, and before appending, so you do not repeat '
+        'text that is already there. A tab with a "url" is a web tab: never '
+        'write into it, you would wipe the page it shows.',
+        {
+          'pageId': {'type': 'string'},
+        },
+        ['pageId']),
+    _tool(
+        'read_document',
+        'Read back a notepad ("document") page, or the document layer of a '
+        'free note ("paint"). read_page does NOT return the body. Returns '
+        '{papers:[{index, text}], appendsTo}. append_document_text always '
+        'adds to the LAST paper ("appendsTo"), so read this first to see what '
+        'is already written instead of repeating it.',
+        {
+          'pageId': {'type': 'string'},
+        },
+        ['pageId']),
+    _tool(
+        'read_paint_items',
+        'Read back what is on the CURRENT sheet of a free-note ("paint") '
+        'page - the same sheet add_paint_text writes to. Returns the text '
+        'items with their positions, plus how many strokes / shapes / images '
+        'are on the sheet and whether it has a background picture. Use it to '
+        'check what you already placed before adding more, so captions do '
+        'not pile up on top of each other. To see the other sheets call '
+        'list_paint_tabs, and select_paint_tab to move between them.',
+        {
+          'pageId': {'type': 'string'},
+        },
+        ['pageId']),
+    _tool(
+        'list_video_editor_items',
+        'Read back the timeline of a "videoEditor" page. Returns '
+        '{items:[{index, itemId, kind, layer, startMs, durationMs, text?, '
+        'path?, missingFile?}]} - the same field names add_video_editor_item '
+        'takes, so you can read one and rebuild it. Call this before adding '
+        'captions so you do not stack two on the same moment, and check '
+        '"missingFile": that clip will export as black.',
+        {
+          'pageId': {'type': 'string'},
+        },
+        ['pageId']),
+    // ─── クラウド同期 (= ユーザー要望「クラウド同期も MCP から行える
+    //     ように」)。 ヘッダーの sync ボタンは窓を開くだけなので、
+    //     本当に転送する道をここに用意する ───────────────────────────
+    _tool(
+        'cloud_sync',
+        'Actually transfer pages to or from the cloud - this really runs, it '
+        'does not just open a window (run_app_command "sync" only opens the '
+        'window). action: "upload" sends pages up, "download" brings them '
+        'down, "list" shows what the cloud holds without changing anything. '
+        'Upload with no pageIds sends ONLY the page the user is looking at - '
+        'never pass every page unless they asked for that, because uploads '
+        'count against their monthly allowance. Download with no pageIds '
+        'takes everything in the cloud. The reply is {ok, ...}: when ok is '
+        'false, read "reason" and tell the user - do NOT retry in a loop. '
+        'Needs the Max plan and a sync group; the user may also have set an '
+        'upload cap, and hitting it comes back as a reason. After an upload, '
+        'report monthlyUploadBytes vs monthlyUploadLimit if the user asks '
+        'how much is left.',
+        {
+          'action': {
+            'type': 'string',
+            'enum': ['upload', 'download', 'list'],
+          },
+          'pageIds': {
+            'type': 'array',
+            'items': {'type': 'string'},
+          },
+          'folderId': {'type': 'string'},
+        },
+        ['action']),
     _tool(
         'list_app_commands',
         'List the app features that can be launched (flashcards, silent '
-        'camera, calendar, QR reader, timer, and so on). Returns id + label '
-        'pairs. Call this first when the user asks to open or start a '
-        'feature you are not sure about. The list is the whole truth - '
-        'anything not in it simply does not exist. Entries marked '
-        '"userOnly": "true" ("sync" = cloud sync, "appLock", "focusLock") '
-        'are real features that only the user may start: you can neither run '
-        'them nor put them on the header, so name the button and ask the '
-        'user to press it.',
+        'camera, calendar, QR reader, timer, cloud sync, and so on). Returns '
+        'id + label pairs. Call this first when the user asks to open or '
+        'start a feature you are not sure about. The list is the whole truth '
+        'FOR THIS DEVICE: anything not in it does not exist or does not work '
+        'here (the app lock and the focus lock are mobile-only, so they are '
+        'absent on a PC), and everything in it can be run with '
+        'run_app_command and placed with set_header_buttons - cloud sync '
+        '("sync") included, so never refuse it as user-only. An entry marked '
+        '"needsUser": "true" does start, but it only OPENS a window the user '
+        'must then finish (choosing which pages to sync, choosing a lock '
+        'duration). Report those as "the window is open", never as '
+        '"synced" / "locked" / "done". To actually transfer pages yourself, '
+        'use cloud_sync instead.',
         {}),
     _tool(
         'run_app_command',
         'Launch one app feature by its id (see list_app_commands). Example '
         'ids: "flashcards" (flash cards), "silentCamera" (silent camera), '
-        '"calendar", "qrReader". The feature opens on screen for the user. '
-        'Just run it when asked - do not ask for confirmation first. '
+        '"calendar", "qrReader", "sync" (cloud sync). The feature opens on '
+        'screen for the user. Just run it when asked - do not ask for '
+        'confirmation first. READ THE REPLY: "launched" means it ran; '
+        '"opened" means a window is now on screen and the user has to finish '
+        'it there (cloud sync and the locks all behave this way, and a plan '
+        'upgrade prompt may appear instead) - say the window is open, never '
+        'that you synced or locked anything. To transfer pages yourself '
+        'without a window, use cloud_sync. '
         'This only OPENS features; it never edits data: deleting a page is '
         'delete_page, changing a page kind is set_page_type, and header '
         'buttons are set_header_buttons.',
@@ -1704,11 +1828,131 @@ class McpServer {
       ? v.toDouble()
       : (v is String ? double.tryParse(v.trim()) : null);
 
+  /// 番号 / 個数の引数を読む。 整数でなければ理由 (英語) を返す。
+  ///
+  /// ★ = 動作検証レポート 不具合 3「整数であるべき引数が黙って切り捨てられ、
+  ///   別の要素に当たる」。 `(a['x'] as num?)?.toInt()` は 0.9 を 0、
+  ///   1.9 を 1、 -0.9 を 0 にするので、 AI が小数を書いた時に**隣の**
+  ///   ノード / タブ / 行へ書き込んでおきながら成功と返していた。
+  ///   丸めずに突き返す (= 丸めた番号は必ず別の物を指すため)。
+  ///   文字列の "3" は受ける (= _numOf と同じ理由: AI は数を文字列で
+  ///   書きがちで、 `as num?` だと意味の分からない型エラーで落ちる)。
+  static ({int? value, String? error}) _intOf(
+    Object? v,
+    String name, {
+    int min = 0,
+    int? max,
+  }) {
+    if (v == null) return (value: null, error: null);
+    final num? n =
+        v is num ? v : (v is String ? num.tryParse(v.trim()) : null);
+    // ★ 値を文面に入れる時は jsonEncode を使わない。 Infinity / NaN を
+    //   渡されると jsonEncode 自身が例外を投げ、 道具の呼び出しごと落ちる
+    //   (= 粗探しで発見。 実際に dart run で再現した)。
+    final shown = v is String ? '"$v"' : '$v';
+    if (n == null || (n is double && !n.isFinite)) {
+      return (
+        value: null,
+        error: '"$name" must be a whole number - got $shown'
+      );
+    }
+    if (n % 1 != 0) {
+      return (
+        value: null,
+        error: '"$name" must be a WHOLE number, not $n. Fractions are '
+            'rejected, never rounded - a rounded index would hit a '
+            'different item.'
+      );
+    }
+    // ★ 桁が大き過ぎる値は toInt() で頭打ちになり、 やはり**別の物**を
+    //   指してしまう。 丸めと同じ理由で突き返す (= 粗探しで発見)。
+    if (n.abs() > 9007199254740991) {
+      return (
+        value: null,
+        error: '"$name" is too large to be a real index or count - got $shown'
+      );
+    }
+    final i = n.toInt();
+    if (i < min || (max != null && i > max)) {
+      return (
+        value: null,
+        error: max == null
+            ? '"$name" must be $min or greater - got $i'
+            : '"$name" must be between $min and $max - got $i'
+      );
+    }
+    return (value: i, error: null);
+  }
+
+  /// 配列でまとめて渡す道具の共通の入口。
+  /// 「その鍵を渡したのに中身が空」 だった時だけ、 短い断り文を返す。
+  /// 鍵そのものが無ければ null (= 1 件用の書き方なので、 そちらへ通す)。
+  ///
+  /// ★ = 動作検証レポート 不具合 5「空配列が 1 件用の道に落ちる」。
+  ///   `batch is List && batch.isNotEmpty` は「渡されたが空」 を
+  ///   「渡されていない」 と同じ扱いにするので、 中身の無い 1 件として
+  ///   失敗し、 見当違いの理由 (「そんなノードは無い」) と、 そのページの
+  ///   ノード一覧まで添えて返っていた。
+  /// ★ ここではノードの一覧を**絶対に添えない**。 0 件は「名前が違う」 では
+  ///   無いので、 選択肢を見せても直しようが無く、 返事の丈を食うだけ。
+  /// [usable] は _stringList などで空白を捨てた後の件数。 渡すと
+  ///   `["", "  "]` (空では無いが使える物が無い) も同じ道で断れる。
+  Map<String, dynamic>? _emptyBatch(
+    Map<String, dynamic> a,
+    String key,
+    String hint, {
+    int? usable,
+  }) {
+    if (!a.containsKey(key)) return null;
+    final v = a[key];
+    if (v is! List) return null; // 配列以外は今までどおり 1 件用へ
+    if ((usable ?? v.length) > 0) return null;
+    return _err(v.isEmpty
+        ? '"$key" was an empty array - 0 processed, nothing was changed. $hint'
+        : '"$key" had ${v.length} entries but none were usable (every one was '
+            'blank) - 0 processed, nothing was changed. $hint');
+  }
+
+  /// まとめて処理した道具の共通の戻り値。
+  ///
+  /// ★ = 動作検証レポート 改善案 4「数だけ返るので、 何がどうなったのか
+  ///   AI が分からない」。「新しく出来た」「既にあって中身が変わった」
+  ///   「既にその状態だった」「出来なかった」 を混ぜない。
+  ///   要素の形は add_gallery_item の failed に揃える
+  ///   ({index, 相手を指す鍵, reason?})。 三つ目の書き方を増やさない事。
+  static Map<String, Object?> _batchResult({
+    required List<Map<String, Object?>> created,
+    List<Map<String, Object?>> updated = const [],
+    List<Map<String, Object?>> unchanged = const [],
+    List<Map<String, Object?>> failed = const [],
+    Map<String, Object?> extra = const {},
+  }) =>
+      {
+        ...extra,
+        'created': created,
+        if (updated.isNotEmpty) 'updated': updated,
+        if (unchanged.isNotEmpty) 'unchanged': unchanged,
+        if (failed.isNotEmpty) 'failed': failed,
+        // AI がそのまま利用者へ読み上げられる 1 行 (= 頼まれた数では無く、
+        //   実際に変わった数を報告させるため)。
+        'summary': 'created ${created.length}, updated ${updated.length}, '
+            'unchanged ${unchanged.length}, failed ${failed.length}',
+      };
+
   /// ツール実行 (HTTP 経由と、 アプリ内 AI チャット [MCP チャット] の両方
   /// から呼ばれる)。
   Future<Map<String, dynamic>> callTool(
       String name, Map<String, dynamic> a) async {
-    double? numOf(String key) => (a[key] as num?)?.toDouble();
+    double? numOf(String key) => _numOf(a[key]); // ★ 文字列の "12" も受ける
+    // 整数の引数はここを通す。 1 つでも駄目なら、 何もせずに理由を返す
+    // (= 半分だけ実行して「成功」 と返すのが一番たちが悪いため)。
+    String? intErr;
+    int? intOf(String key, {int min = 0, int? max}) {
+      final r = _intOf(a[key], key, min: min, max: max);
+      if (r.error != null) intErr ??= r.error;
+      return r.value;
+    }
+
     switch (name) {
       // ── パソコンの操作は自動操作へ委ねる (= ユーザー要望) ──
       case 'run_automation':
@@ -1760,6 +2004,12 @@ class McpServer {
           return _ok({
             'nodeCount': page?.nodes.length ?? 0,
             'connectionCount': page?.connections.length ?? 0,
+            // ★ 壊れた添付も先頭へ (件数と同じ理由: 長いページでは後ろが
+            //   切られ、 要素ごとの印まで届かない)。
+            if (json['brokenAttachments'] != null)
+              'brokenAttachments': json['brokenAttachments'],
+            if (json['brokenBackground'] != null)
+              'brokenBackground': json['brokenBackground'],
             ...json,
           });
         }
@@ -1852,14 +2102,15 @@ class McpServer {
                 'no parent/child lines, so if the user wants them connected, '
                 'offer to convert the page with set_page_type "normal".');
           }
-          final batch = a['nodes'];
           // ★ 空配列で呼ばれた時に何も作らない (= 動作確認で判明: 「0 個
           //   追加して」 で空配列を投げると 1 件用の道に落ちて、 無題の
           //   ノードが 1 個出来たうえに成功として返っていた)。
-          if (batch is List && batch.isEmpty) {
-            return _err('"nodes" was an empty array - nothing was added. '
-                'If there is nothing to add, do not call add_node at all.');
-          }
+          //   同じ落とし穴が他の道具にも残っていたので _emptyBatch へ寄せた
+          //   (= 動作検証レポート 不具合 5)。
+          final addEmpty = _emptyBatch(a, 'nodes',
+              'If there is nothing to add, do not call add_node at all.');
+          if (addEmpty != null) return addEmpty;
+          final batch = a['nodes'];
           if (batch is List && batch.isNotEmpty) {
             final ids = <String>[];
             // 入力の並びと 1 対 1 で対応させる控え。 ★ 使えない要素を飛ばすと
@@ -1914,8 +2165,14 @@ class McpServer {
               // 親が指定されていればその場で繋ぐ。 parentIndex はこの呼び出しの
               // 中で先に作ったノードの番号 (0 始まり)。
               var parent = '${m['parentId'] ?? ''}'.trim();
-              final pi = _numOf(m['parentIndex'])?.toInt();
-              if (parent.isEmpty && pi != null) {
+              // ★ 番号は整数だけ (= 動作検証レポート 不具合 3: 0.9 を 0 に
+              //   丸めていたので、 頼まれたのとは**別の**ノードへ繋いで
+              //   おきながら成功と返していた)。 丸めずに「繋げなかった」 へ。
+              final piR = _intOf(m['parentIndex'], 'parentIndex');
+              final pi = piR.value;
+              if (parent.isEmpty && piR.error != null) {
+                unlinked.add('${m['title'] ?? ''}');
+              } else if (parent.isEmpty && pi != null) {
                 if (pi >= 0 && pi < slots.length - 1 && slots[pi].isNotEmpty) {
                   parent = slots[pi];
                 } else {
@@ -2023,6 +2280,19 @@ class McpServer {
       case 'delete_node':
         {
           final pageId = a['pageId'] as String? ?? '';
+          // ★ = 動作検証レポート 改善案 1「タイルは消えるのに実ファイルが
+          //   残る」。 既定は今までどおり「タイルだけ」。 消すのは
+          //   ごみ箱までで、 完全削除は決してしない。
+          final disposeMode = () {
+            final v = '${a['deleteFile'] ?? 'no'}'.trim().toLowerCase();
+            return const {'no', 'generated', 'yes'}.contains(v) ? v : 'no';
+          }();
+          // ★ 空配列は 1 件用へ落とさない (= 動作検証レポート 不具合 5:
+          //   中身の無い 1 件として失敗し、 そのページのノード一覧まで
+          //   添えて返っていた)。
+          final delEmpty = _emptyBatch(a, 'nodes',
+              'Pass the titles or ids to delete, or do not call delete_node.');
+          if (delEmpty != null) return delEmpty;
           // まとめて消せる形も持たせる (= 1 件ずつだと AI が取りこぼす)。
           final batch = a['nodes'];
           if (batch is List && batch.isNotEmpty) {
@@ -2030,9 +2300,21 @@ class McpServer {
             //   ノードが消えていても AI が気付けない)。
             final removed = <String>[];
             final missed = <String>[];
+            final files = <Map<String, Object?>>[];
             for (final e in batch) {
               final k = '${e ?? ''}'.trim();
+              // 消す前に添付の在処を控える (消した後では引けない)。
+              final was = disposeMode == 'no'
+                  ? ''
+                  : _provider.mcpAttachmentPathOf(pageId, k);
               final title = _provider.mcpDeleteNode(pageId, k);
+              if (title != null && was.isNotEmpty) {
+                files.add({
+                  'path': was,
+                  ...await _provider.mcpDisposeAttachmentFile(
+                      was, disposeMode),
+                });
+              }
               if (title == null) {
                 missed.add(k);
               } else {
@@ -2045,15 +2327,29 @@ class McpServer {
                 : _ok({
                     'deleted': removed,
                     if (missed.isNotEmpty) 'failed': missed,
+                    // 実ファイルをどうしたか (= 「消した」 と言い切らせない)。
+                    if (files.isNotEmpty) 'files': files,
                   });
           }
           final key = '${a['node'] ?? a['nodeId'] ?? ''}'.trim();
+          final wasOne = disposeMode == 'no'
+              ? ''
+              : _provider.mcpAttachmentPathOf(pageId, key);
           final removedTitle = _provider.mcpDeleteNode(pageId, key);
-          return removedTitle != null
-              ? _ok({'deleted': removedTitle})
-              : _err('no node "$key" on that page. Available nodes (use the '
-                  '"title" value as "node"): '
-                  '${jsonEncode(_provider.mcpNodeIndex(pageId))}');
+          if (removedTitle == null) {
+            return _err('no node "$key" on that page. Available nodes (use '
+                'the "title" value as "node"): '
+                '${jsonEncode(_provider.mcpNodeIndex(pageId))}');
+          }
+          return _ok({
+            'deleted': removedTitle,
+            if (wasOne.isNotEmpty)
+              'file': {
+                'path': wasOne,
+                ...await _provider.mcpDisposeAttachmentFile(
+                    wasOne, disposeMode),
+              },
+          });
         }
       case 'generate_page_background':
         {
@@ -2064,11 +2360,14 @@ class McpServer {
           //   描くと 1 枚分のクレジットを捨てる事になる。
           final genRefusal = _provider.mcpBackgroundRefusal(genPageId);
           if (genRefusal != null) return _err(genRefusal);
+          // 濃さは provider が 0..100 に丸める (set_page_background と同じ)。
+          final genOpacity = intOf('opacityPercent', min: -1 << 31);
+          if (intErr != null) return _err(intErr!);
           try {
             final path = await _provider.mcpGeneratePageBackground(
               genPageId,
               a['prompt'] as String? ?? '',
-              opacityPercent: (a['opacityPercent'] as num?)?.toInt(),
+              opacityPercent: genOpacity,
               fit: a['fit'] as String?,
             );
             final genPage = _provider.mcpPageById(genPageId);
@@ -2148,16 +2447,25 @@ class McpServer {
               !File(bgImg).existsSync()) {
             return _err('background image file not found: $bgImg');
           }
+          // ★ 濃さ / 色味は provider が範囲に丸める。 道具の説明も
+          //   「はみ出した値は丸める。 断らない」 と約束しているので、
+          //   ここで断ると背景の絵ごと落としてしまう (= 粗探しで発見)。
+          //   整数かどうかだけ見て、 範囲は provider に任せる。
+          final bgOpacity = intOf('opacityPercent', min: -1 << 31);
+          final bgHue = intOf('hueDegrees', min: -1 << 31);
+          final bgSat = intOf('saturationPercent', min: -1 << 31);
+          final bgBright = intOf('brightnessPercent', min: -1 << 31);
+          if (intErr != null) return _err(intErr!);
           final ok = await _provider.mcpSetPageBackground(
             bgPageId,
             template: a['template'] as String?,
             imagePath: a['imagePath'] as String?,
             clear: a['clear'] == true,
-            opacityPercent: (a['opacityPercent'] as num?)?.toInt(),
+            opacityPercent: bgOpacity,
             fit: a['fit'] as String?,
-            hueDegrees: (a['hueDegrees'] as num?)?.toInt(),
-            saturationPercent: (a['saturationPercent'] as num?)?.toInt(),
-            brightnessPercent: (a['brightnessPercent'] as num?)?.toInt(),
+            hueDegrees: bgHue,
+            saturationPercent: bgSat,
+            brightnessPercent: bgBright,
           );
           if (!ok) {
             return _err('page not found, or no valid background was given '
@@ -2194,50 +2502,80 @@ class McpServer {
             return v1.isNotEmpty ? v1 : '${m[a2] ?? ''}'.trim();
           }
 
+          final connEmpty = _emptyBatch(a, 'connections',
+              'Pass at least one {from, to}, or do not call connect_nodes.');
+          if (connEmpty != null) return connEmpty;
           // まとめて繋げる形 (= 取りこぼし対策)。
           final batch = a['connections'];
+          final entries = <Map<String, dynamic>>[];
           if (batch is List && batch.isNotEmpty) {
-            var done = 0;
-            final missed = <String>[];
             for (final e in batch) {
-              if (e is! Map) continue;
-              final m = e.cast<String, dynamic>();
-              final f = key(m, 'from', 'fromId');
-              final t = key(m, 'to', 'toId');
-              if (_provider.mcpConnectNodes(pageId, f, t,
-                  label: m['label'] as String?)) {
-                done++;
-              } else {
-                missed.add('$f -> $t');
-              }
+              if (e is Map) entries.add(e.cast<String, dynamic>());
             }
-            if (done == 0) {
-              // 「見つからない」 だけでは AI が直しようがないので、 その
-              //   ページに在るノードの id と題名を返して選び直させる。
-              return _err('could not connect ${missed.join(', ')}. '
-                  'Available nodes on this page (use the "title" value as '
-                  '"from"/"to"): ${jsonEncode(_provider.mcpNodeIndex(pageId))}');
-            }
-            return _ok({
-              'connected': done,
-              if (missed.isNotEmpty) 'failed': missed,
-            });
+          } else {
+            entries.add(a);
           }
-          final f = key(a, 'from', 'fromId');
-          final t = key(a, 'to', 'toId');
-          final ok = _provider.mcpConnectNodes(pageId, f, t,
-              label: a['label'] as String?);
-          return ok
-              // 実際に繋いだ id を返す (= 同じ題名のノードが 2 つある時に、
-              //   思った方に繋がったか AI が確かめられるように)。
-              ? _ok({
-                  'connected': 1,
-                  'fromId': _provider.mcpResolveNodeId(pageId, f),
-                  'toId': _provider.mcpResolveNodeId(pageId, t),
-                })
-              : _err('could not connect "$f" -> "$t". '
-                  'Available nodes on this page (use the "title" value as '
-                  '"from"/"to"): ${jsonEncode(_provider.mcpNodeIndex(pageId))}');
+          // ★ = 動作検証レポート 改善案 4「札を書き換えただけの物まで
+          //   connected に数えている」。 新しく引いた線と、 既にあった線を
+          //   混ぜない。 繋ぐ**前**に見ないと後からでは見分けられない。
+          final created = <Map<String, Object?>>[];
+          final updated = <Map<String, Object?>>[];
+          final unchanged = <Map<String, Object?>>[];
+          final failed = <Map<String, Object?>>[];
+          for (var i = 0; i < entries.length; i++) {
+            final m = entries[i];
+            final f = key(m, 'from', 'fromId');
+            final t = key(m, 'to', 'toId');
+            final label = m['label'] as String?;
+            if (f.isEmpty || t.isEmpty) {
+              failed.add({
+                'index': i,
+                'from': f,
+                'to': t,
+                'reason': '"from" and "to" are both required',
+              });
+              continue;
+            }
+            final existed = _provider.mcpConnectionExists(pageId, f, t);
+            if (!_provider.mcpConnectNodes(pageId, f, t, label: label)) {
+              failed.add({
+                'index': i,
+                'from': f,
+                'to': t,
+                'reason': 'no node on this page matched "from" and/or "to"',
+              });
+              continue;
+            }
+            final item = <String, Object?>{
+              'index': i,
+              'fromId': _provider.mcpResolveNodeId(pageId, f),
+              'toId': _provider.mcpResolveNodeId(pageId, t),
+            };
+            if (!existed) {
+              created.add(item);
+            } else if (label != null && label.trim().isNotEmpty) {
+              updated.add({...item, 'changed': 'label'});
+            } else {
+              unchanged.add({...item, 'reason': 'already connected'});
+            }
+          }
+          if (created.isEmpty && updated.isEmpty && unchanged.isEmpty) {
+            // 「見つからない」 だけでは AI が直しようがないので、 その
+            //   ページに在るノードの id と題名を返して選び直させる。
+            //   ★ 一覧を添えるのはここだけ。 空配列は上の _emptyBatch で
+            //   止まっているので、 0 件で一覧を吐く事はもう無い
+            //   (= 動作検証レポート 不具合 5)。
+            return _err('could not connect '
+                '${failed.map((e) => '${e['from']} -> ${e['to']}').join(', ')}'
+                '. Available nodes on this page (use the "title" value as '
+                '"from"/"to"): ${jsonEncode(_provider.mcpNodeIndex(pageId))}');
+          }
+          return _ok(_batchResult(
+            created: created,
+            updated: updated,
+            unchanged: unchanged,
+            failed: failed,
+          ));
         }
       case 'add_table_node':
         {
@@ -2327,42 +2665,53 @@ class McpServer {
           // ★ texts を渡しておきながら中身が空 (= [] や ["", "  "]) の時は、
           //   下の「1 枚だけ足す」 へ落とさずに断る。 落とすと題名も memo も
           //   絵も無い白紙のタイルが 1 枚だけ増えていた (= 検証レポート)。
-          if (a.containsKey('texts') && many.isEmpty) {
-            return _err('"texts" had no usable text (it was empty, or every '
-                'entry was blank). Nothing was added - pass at least one '
-                'non-blank title, or use "memo" / "imagePath" for a tile '
-                'without a title.');
-          }
+          final galEmpty = _emptyBatch(a, 'texts',
+              'Pass at least one non-blank title, or use "memo" / '
+              '"imagePath" for a tile without a title.',
+              usable: many.length);
+          if (galEmpty != null) return galEmpty;
           if (many.isNotEmpty) {
             // ★ 落ちた分を黙って捨てない (= これまでは titles に頼んだ分を
             //   全部並べつつ added だけ減っていたので、 何が出来なかったのか
-            //   分からなかった)。 add_node と同じ failed の形で返す。
-            final ids = <String>[];
-            final titles = <String>[];
+            //   分からなかった)。
+            final created = <Map<String, Object?>>[];
             final failed = <Map<String, Object?>>[];
+            // ★ 同じ題名を 2 枚作ると、 後から題名では指せない
+            //   (= 動作検証レポート 改善案 4)。 作るのは今までどおりだが、
+            //   重なった分は必ず知らせる。
+            final seen = <String>{};
+            final dup = <String>[];
             for (var i = 0; i < many.length; i++) {
               final t = many[i];
+              if (!seen.add(t.toLowerCase())) dup.add(t);
               final id = _provider.mcpAddGalleryItem(pageId, text: t);
-              if (id != null) {
-                ids.add(id);
-                titles.add(t);
-              } else {
+              if (id == null) {
                 failed.add({
                   'index': i,
                   'text': t,
                   'reason': 'not a gallery page (or page not found)',
                 });
+                continue;
               }
+              created.add({'index': i, 'nodeId': id, 'title': t});
             }
-            return ids.isEmpty
-                ? _err('not a gallery page (or page not found): $pageId '
-                    '- use list_pages and pick a page whose type is '
-                    '"bookshelf", or create one with create_page')
-                : _ok({
-                    'added': ids.length,
-                    'titles': titles,
-                    if (failed.isNotEmpty) 'failed': failed,
-                  });
+            if (created.isEmpty) {
+              return _err('not a gallery page (or page not found): $pageId '
+                  '- use list_pages and pick a page whose type is '
+                  '"bookshelf", or create one with create_page');
+            }
+            return _ok(_batchResult(
+              created: created,
+              failed: failed,
+              extra: {
+                // add_node と同じ鍵で返す (= 続けて指せるように)。
+                'nodeIds': [for (final e in created) e['nodeId']],
+                if (dup.isNotEmpty)
+                  'note': 'these titles now appear more than once on the page '
+                      '(${dup.join(', ')}): address those tiles by nodeId, '
+                      'not by title.',
+              },
+            ));
           }
           // 題名も memo も絵も無ければ、 中身の無いタイルは作らない。
           if (!_hasContent(a['text']) &&
@@ -2397,6 +2746,10 @@ class McpServer {
         {
           final pageId = a['pageId'] as String? ?? '';
           final many = _stringList(a['texts']);
+          final ptEmpty = _emptyBatch(
+              a, 'texts', 'Pass at least one line, or send a single "text".',
+              usable: many.length);
+          if (ptEmpty != null) return ptEmpty;
           final lines = many.isNotEmpty
               ? many
               : [if ((a['text'] as String? ?? '').isNotEmpty) a['text'] as String];
@@ -2448,12 +2801,17 @@ class McpServer {
       case 'add_paint_tabs':
         {
           final names = _stringList(a['names']);
+          final tabEmpty = _emptyBatch(a, 'names', 'Pass at least one name.',
+              usable: names.length);
+          if (tabEmpty != null) return tabEmpty;
           if (names.isEmpty) {
             return _err('pass the tab names in "names" (array of strings)');
           }
+          final tabBinder = intOf('binder');
+          if (intErr != null) return _err(intErr!);
           final added = await _provider.mcpAddPaintTabs(
               a['pageId'] as String? ?? '', names,
-              binder: (a['binder'] as num?)?.toInt());
+              binder: tabBinder);
           return added.isEmpty
               ? _err('could not add tabs - check that pageId is a free-note '
                   'page and that "binder" is a real index from list_paint_tabs')
@@ -2462,6 +2820,9 @@ class McpServer {
       case 'add_paint_binders':
         {
           final names = _stringList(a['names']);
+          final bdEmpty = _emptyBatch(a, 'names', 'Pass at least one name.',
+              usable: names.length);
+          if (bdEmpty != null) return bdEmpty;
           if (names.isEmpty) {
             return _err('pass the binder names in "names" (array of strings)');
           }
@@ -2474,10 +2835,13 @@ class McpServer {
         }
       case 'select_paint_tab':
         {
+          final selBinder = intOf('binder');
+          final selTab = intOf('tab');
+          if (intErr != null) return _err(intErr!);
           final ok = await _provider.mcpSelectPaintTab(
               a['pageId'] as String? ?? '',
-              binder: (a['binder'] as num?)?.toInt(),
-              tab: (a['tab'] as num?)?.toInt());
+              binder: selBinder,
+              tab: selTab);
           return ok
               ? _ok({'ok': true})
               : _err('could not switch - check the indexes with '
@@ -2487,10 +2851,13 @@ class McpServer {
         {
           final name = '${a['name'] ?? ''}'.trim();
           if (name.isEmpty) return _err('"name" is required');
+          final rnBinder = intOf('binder');
+          final rnTab = intOf('tab');
+          if (intErr != null) return _err(intErr!);
           final ok = await _provider.mcpRenamePaintItem(
               a['pageId'] as String? ?? '',
-              binder: (a['binder'] as num?)?.toInt(),
-              tab: (a['tab'] as num?)?.toInt(),
+              binder: rnBinder,
+              tab: rnTab,
               name: name);
           return ok
               ? _ok({'ok': true})
@@ -2530,6 +2897,10 @@ class McpServer {
         {
           final pageId = a['pageId'] as String? ?? '';
           final many = _stringList(a['texts']);
+          final adEmpty = _emptyBatch(a, 'texts',
+              'Pass at least one paragraph, or send a single "text".',
+              usable: many.length);
+          if (adEmpty != null) return adEmpty;
           final paras = many.isNotEmpty
               ? many
               : [if ((a['text'] as String? ?? '').isNotEmpty) a['text'] as String];
@@ -2559,22 +2930,25 @@ class McpServer {
           final pageId = a['pageId'] as String? ?? '';
           // ★ 1.5 秒のつもりで 1.5 を渡されると、 黙って 1 ミリ秒に切り捨てて
           //   成功と返していた (= 動作確認で判明)。 単位の取り違えは丸めずに
-          //   突き返す。
-          for (final k in const ['durationMs', 'startMs']) {
-            final v = a[k] as num?;
-            if (v == null) continue;
-            if (v % 1 != 0 || (k == 'durationMs' && v <= 0)) {
-              return _err('$k must be a whole number of MILLISECONDS '
-                  '(1.5 seconds = 1500, not 1.5)');
-            }
+          //   突き返す。 手で書いていた検査は _intOf へ寄せた (= 動作検証
+          //   レポート 不具合 3: 同じ取り違えが他の道具にも残っていたため)。
+          final veStart = intOf('startMs');
+          final veDuration = intOf('durationMs', min: 1);
+          // レーンは 6 本しか無い。 範囲外は丸めずに突き返す。
+          final veLayer = intOf('layer', min: 0, max: 5);
+          // ★ 色は「番号」 ではなく 32 ビットの ARGB。 整数の検査に掛けると、
+          //   不透明な色 (先頭が 0x80 以上) が軒並み弾かれて字幕そのものが
+          //   置けなくなる (= 粗探しで発見)。 他の道具と同じ _argbOf で読む。
+          final veColor = _argbOf(a['color']);
+          if (intErr != null) {
+            return _err('$intErr '
+                '(milliseconds are whole numbers: 1.5 seconds = 1500)');
           }
-          // レーンは 6 本しか無い。 範囲外は丸めずに突き返す (単位と同じ
-          //   考え方。 丸めると戻り値で伝えられない)。
-          final lay = a['layer'] as num?;
-          if (lay != null && (lay % 1 != 0 || lay < 0 || lay > 5)) {
-            return _err('layer must be a whole number from 0 to 5 '
-                '(0 = back-most); the timeline has only 6 lanes.');
-          }
+          final veEmpty = _emptyBatch(a, 'texts',
+              'Pass at least one caption, or use the single "kind"/"text" '
+              'form.',
+              usable: _stringList(a['texts']).length);
+          if (veEmpty != null) return veEmpty;
           // まとめて字幕を置ける形 (= 1 件ずつだと AI が取りこぼす)。
           final batch = a['texts'];
           if (batch is List && batch.isNotEmpty) {
@@ -2586,10 +2960,10 @@ class McpServer {
                 pageId,
                 kind: 'text',
                 text: t,
-                layer: (a['layer'] as num?)?.toInt() ?? 1,
-                durationMs: (a['durationMs'] as num?)?.toInt(),
+                layer: veLayer ?? 1,
+                durationMs: veDuration,
                 fontSize: numOf('fontSize'),
-                colorValue: (a['color'] as num?)?.toInt(),
+                colorValue: veColor,
               );
               if (one != null) ids.add(one);
             }
@@ -2602,11 +2976,11 @@ class McpServer {
             kind: a['kind'] as String? ?? '',
             text: a['text'] as String?,
             path: a['path'] as String?,
-            startMs: (a['startMs'] as num?)?.toInt(),
-            durationMs: (a['durationMs'] as num?)?.toInt(),
-            layer: (a['layer'] as num?)?.toInt(),
+            startMs: veStart,
+            durationMs: veDuration,
+            layer: veLayer,
             fontSize: numOf('fontSize'),
-            colorValue: (a['color'] as num?)?.toInt(),
+            colorValue: veColor,
           );
           return id == null
               ? _err('not a video editor page, or kind/text/path missing: '
@@ -2705,33 +3079,114 @@ class McpServer {
         }
       case 'list_app_commands':
         return _ok(_provider.mcpCommands);
+      case 'list_orphan_files':
+        {
+          final files = await _provider.mcpOrphanGeneratedFiles();
+          return _ok({
+            'count': files.length,
+            'files': files,
+            'note': files.isEmpty
+                ? 'nothing left over'
+                : 'these were created by this app and no tile uses them any '
+                    'more. Show them to the user and ask before removing '
+                    'any; files the app did not create are not listed.',
+          });
+        }
+      case 'read_markdown':
+        {
+          final pid = a['pageId'] as String? ?? '';
+          final r = await _provider.mcpReadMarkdown(pid);
+          return r == null
+              ? _err('"$pid" is not a markdown page (or there is no such '
+                  'page) - call list_pages and pick one whose type is '
+                  '"markdown"')
+              : _ok(r);
+        }
+      case 'read_document':
+        {
+          final pid = a['pageId'] as String? ?? '';
+          final r = await _provider.mcpReadDocument(pid);
+          return r == null
+              ? _err('"$pid" is not a notepad ("document") or free-note '
+                  '("paint") page, or there is no such page - call list_pages')
+              : _ok(r);
+        }
+      case 'read_paint_items':
+        {
+          final pid = a['pageId'] as String? ?? '';
+          final r = await _provider.mcpReadPaintItems(pid);
+          return r == null
+              ? _err('"$pid" is not a free-note ("paint") page, or there is '
+                  'no such page - call list_pages')
+              : _ok(r);
+        }
+      case 'list_video_editor_items':
+        {
+          final pid = a['pageId'] as String? ?? '';
+          final r = await _provider.mcpListVideoEditorItems(pid);
+          return r == null
+              ? _err('"$pid" is not a video editor page, or there is no such '
+                  'page - call list_pages')
+              : _ok(r);
+        }
+      case 'cloud_sync':
+        {
+          final r = await _provider.mcpCloudSync(
+            action: '${a['action'] ?? ''}',
+            pageIds: _stringList(a['pageIds']),
+            folderId: (a['folderId'] as String? ?? '').trim().isEmpty
+                ? null
+                : (a['folderId'] as String).trim(),
+          );
+          // ★ 失敗は _err で返す (= _ok で {ok:false} を返すと、 AI が
+          //   成功と読み違えて「同期しました」 と答える)。
+          return r['ok'] == true
+              ? _ok(r)
+              : _err('cloud sync did not run: ${r['reason']}');
+        }
       case 'run_app_command':
         {
           final id = a['id'] as String? ?? '';
           final ok = _provider.mcpRunCommand(id);
-          if (ok) return _ok('launched: $id');
+          if (ok) {
+            // ★ 「窓が開くだけ」 の機能を "launched" と返すと、 AI が
+            //   「同期しました」「ロックを掛けました」 と答えてしまう
+            //   (= 動作検証レポート 2026-09-15)。 起きた事を分けて返す。
+            final needsUser = _provider.mcpCommands
+                .any((c) => c['id'] == id && c['needsUser'] == 'true');
+            return _ok(needsUser
+                ? 'opened: $id - a window is now on screen and the user has '
+                    'to finish it there (and a plan upgrade prompt may have '
+                    'appeared instead). Say the window is open; do not claim '
+                    'the action itself is done.'
+                : 'launched: $id');
+          }
           // ★ 「知らない id」 と「利用者しか始められない機能」 を区別する。
           //   以前はどちらも同じ文面だったため、 存在しない id を投げた時にも
           //   「利用者が押してください」 と答えてしまい、 出来るはずの事まで
           //   断るようになっていた (= ユーザー報告)。
+          //   (_mcpBlockedCommands は今は空なので、 下へは届かない。)
           if (_provider.mcpIsBlockedCommand(id)) {
-            return _err('"$id" is a feature only the user can start '
-                '(cloud sync, and the app/focus locks). Tell the user to '
-                'press the button themselves.');
+            return _err('"$id" is a feature only the user can start. '
+                'Tell the user to press the button themselves.');
           }
-          return _err('unknown command id "$id". Call list_app_commands for '
-              'the valid ids. Note: deleting a page is delete_page, changing '
-              'a page kind is set_page_type, and putting buttons on the '
-              'header is set_header_buttons - those are tools, not commands.');
+          return _err('unknown command id "$id", or it does not work on this '
+              'device (the app lock and the focus lock are mobile-only). '
+              'Call list_app_commands for the ids that really work here. '
+              'Note: deleting a page is delete_page, changing a page kind is '
+              'set_page_type, and putting buttons on the header is '
+              'set_header_buttons - those are tools, not commands.');
         }
       case 'set_split_view':
         {
+          final splitCell = intOf('cell');
+          if (intErr != null) return _err(intErr!);
           final res = await _provider.mcpSetSplitView(
             layout: '${a['layout'] ?? ''}'.trim(),
             pageIds: [
               for (final e in (a['pageIds'] as List? ?? const [])) '$e'
             ],
-            cell: (a['cell'] as num?)?.toInt(),
+            cell: splitCell,
           );
           final err = res['error'];
           if (err != null) return _err('$err');
@@ -2751,9 +3206,12 @@ class McpServer {
         return _ok(_provider.mcpTextFileStatus());
       case 'text_file_read':
         {
+          final tfStart = intOf('startLine', min: 1);
+          final tfEnd = intOf('endLine', min: 1);
+          if (intErr != null) return _err(intErr!);
           final r = _provider.mcpTextFileRead(
-            startLine: (a['startLine'] as num?)?.toInt(),
-            endLine: (a['endLine'] as num?)?.toInt(),
+            startLine: tfStart,
+            endLine: tfEnd,
           );
           return r == null
               ? _err('no text file is open in the app text editor - '
@@ -2779,16 +3237,57 @@ class McpServer {
       // ── ページ / フォルダーの整理 ──
       case 'rename_page':
         {
-          final renamed = <Map<String, String>>[];
-          final failed = <String>[];
+          final renamed = <Map<String, Object?>>[];
+          final unchanged = <Map<String, Object?>>[];
+          final failed = <Map<String, Object?>>[];
+          var seq = 0;
+          // ★ = 動作検証レポート 改善案 4「failed が id だけで理由が無い」。
+          //   出来なかった訳 (名前が空 / そんなページは無い / 元から同じ名前)
+          //   を分けて返す。 まとめて頼まれた時に、 どれをどう直せばよいか
+          //   AI が分かるように。
           void one(String pageId, String nm) {
+            final i = seq++;
+            if (pageId.isEmpty) {
+              failed.add({
+                'index': i,
+                'pageId': pageId,
+                'reason': '"pageId" was blank - call list_pages for the ids',
+              });
+              return;
+            }
+            if (nm.trim().isEmpty) {
+              failed.add({
+                'index': i,
+                'pageId': pageId,
+                'reason': 'the new name was blank',
+              });
+              return;
+            }
+            final cur = _provider.mcpPageById(pageId);
+            if (cur != null && cur.name == nm.trim()) {
+              unchanged.add({
+                'index': i,
+                'pageId': pageId,
+                'name': nm.trim(),
+                'reason': 'already had that name',
+              });
+              return;
+            }
             if (_provider.mcpRenamePage(pageId, nm)) {
-              renamed.add({'pageId': pageId, 'name': nm.trim()});
+              renamed.add({'index': i, 'pageId': pageId, 'name': nm.trim()});
             } else {
-              failed.add(pageId.isEmpty ? '(blank id)' : pageId);
+              failed.add({
+                'index': i,
+                'pageId': pageId,
+                'reason': 'no page has that id',
+              });
             }
           }
 
+          final renEmpty = _emptyBatch(a, 'pages',
+              'Pass at least one {pageId, name}, or use the single '
+              '"pageId"/"name" form.');
+          if (renEmpty != null) return renEmpty;
           final batch = a['pages'];
           if (batch is List && batch.isNotEmpty) {
             for (final e in batch) {
@@ -2799,15 +3298,17 @@ class McpServer {
           } else {
             one('${a['pageId'] ?? ''}'.trim(), '${a['name'] ?? ''}');
           }
-          if (renamed.isEmpty) {
-            return _err('could not rename ${failed.join(', ')}: '
-                'no page has that id, or the name was blank '
-                '- call list_pages and use an id from it.');
+          if (renamed.isEmpty && unchanged.isEmpty) {
+            return _err('could not rename '
+                '${failed.map((e) => '${e['pageId']} (${e['reason']})').join(', ')}'
+                ' - call list_pages and use an id from it.');
           }
-          return _ok({
-            'renamed': renamed,
-            if (failed.isNotEmpty) 'failed': failed,
-          });
+          return _ok(_batchResult(
+            created: const [],
+            updated: renamed,
+            unchanged: unchanged,
+            failed: failed,
+          ));
         }
       case 'reorder_pages':
         {
@@ -2855,28 +3356,48 @@ class McpServer {
           final fid = '${a['folderId'] ?? ''}'.trim();
           final target = toRoot || fid.isEmpty ? null : fid;
           final ids = _stringList(a['pageIds']);
+          final mvEmpty = _emptyBatch(a, 'pageIds',
+              'Pass at least one page id, or use the single "pageId" form.',
+              usable: ids.length);
+          if (mvEmpty != null) return mvEmpty;
           final list =
               ids.isNotEmpty ? ids : [('${a['pageId'] ?? ''}').trim()];
-          var moved = 0;
-          final failed = <String>[];
-          for (final pid in list) {
+          // ★ 既にそのフォルダーに入っている物を moved に数えない
+          //   (= 動作検証レポート 改善案 4: 何が動いたのか分からない)。
+          final moved = <Map<String, Object?>>[];
+          final same = <Map<String, Object?>>[];
+          final failed = <Map<String, Object?>>[];
+          for (var i = 0; i < list.length; i++) {
+            final pid = list[i];
             if (pid.isEmpty) continue;
-            if (_provider.mcpMovePageToFolder(pid, target)) {
-              moved++;
-            } else {
-              failed.add(pid);
+            final already = _provider.mcpPageIsInFolder(pid, target);
+            if (!_provider.mcpMovePageToFolder(pid, target)) {
+              failed.add({
+                'index': i,
+                'pageId': pid,
+                'reason': 'unknown page id, or that folderId does not exist',
+              });
+              continue;
             }
+            (already ? same : moved).add({
+              'index': i,
+              'pageId': pid,
+              if (already) 'reason': 'already in that folder',
+            });
           }
-          if (moved == 0) {
-            return _err('could not move ${failed.join(', ')}: unknown '
+          if (moved.isEmpty && same.isEmpty) {
+            return _err('could not move '
+                '${failed.map((e) => e['pageId']).join(', ')}: unknown '
                 'page id, or that folderId does not exist '
                 '- call list_pages / list_folders.');
           }
-          return _ok({
-            'moved': moved,
-            'folderId': target,
-            if (failed.isNotEmpty) 'failed': failed,
-          });
+          return _ok(_batchResult(
+            created: const [],
+            updated: moved,
+            unchanged: same,
+            failed: failed,
+            extra: {'folderId': target},
+          ));
         }
       // ── 線だけを消す ──
       case 'disconnect_nodes':
@@ -2887,6 +3408,9 @@ class McpServer {
             return v1.isNotEmpty ? v1 : '${m[a2] ?? ''}'.trim();
           }
 
+          final discEmpty = _emptyBatch(a, 'connections',
+              'Pass at least one {from, to}, or do not call disconnect_nodes.');
+          if (discEmpty != null) return discEmpty;
           final batch = a['connections'];
           final pairs = <List<String>>[];
           if (batch is List && batch.isNotEmpty) {
@@ -2927,9 +3451,63 @@ class McpServer {
       case 'add_decoration':
         {
           final pageId = a['pageId'] as String? ?? '';
+          // ★ = 動作検証レポート 不具合 2「空・不正な入力が、 既定座標の
+          //   四角を成功扱いで作る」。 kind を 'rectangle' で埋め、 場所の
+          //   指定が無ければページの基準位置に 240x160 の四角を置いていたので、
+          //   `{}` でも、 居ないノードを囲めと言われた時でも、 誰も頼んで
+          //   いない四角が出来て added に数えられていた。
+          //   囲む相手も座標も無い図形は**作らない**。
+          // ★ 種類は**必ず enum から組む**。 手で並べ直すと、 star / heart /
+          //   hexagon など実際に描ける形まで弾いてしまう (= 粗探しで発見:
+          //   道具の説明は 15 種類を案内しているのに 8 種類しか通さなかった)。
+          //   折れ線だけは通過点が要るので、 ここでは扱わない
+          //   (mcpAddDecoration も同じ理由で断っている)。
+          final kinds = <String>{
+            for (final v in MapDecorationKind.values)
+              if (v != MapDecorationKind.polyline) v.name
+          };
+          // その 1 要素で図形を作れるか検分する。 作れない時は理由 (英語)。
+          String? problemOf(Map<String, dynamic> m) {
+            final kind = '${m['kind'] ?? ''}'.trim();
+            if (kind.isEmpty) {
+              return '"kind" is required (${kinds.join(' / ')}) - there is '
+                  'no default shape';
+            }
+            if (!kinds.any((k) => k.toLowerCase() == kind.toLowerCase())) {
+              return 'unknown kind "$kind" (use ${kinds.join(' / ')}; '
+                  '"polyline" is not available here)';
+            }
+            // 層は provider が 1..5 に丸める。 範囲で断ると、 丸めを当てにして
+            //   0 を渡された時に図形ごと消えてしまう (= 粗探しで発見)。
+            final lay = _intOf(m['layer'], 'layer', min: -1 << 31);
+            if (lay.error != null) return lay.error;
+            final around = _stringList(m['aroundNodes']);
+            if (around.isNotEmpty) {
+              final missed = [
+                for (final k in around)
+                  if (_provider.mcpResolveNodeId(pageId, k) == null) k
+              ];
+              if (missed.length == around.length) {
+                return 'none of the nodes in "aroundNodes" exist on this '
+                    'page (${missed.join(', ')}) - nothing was drawn. Call '
+                    'read_page and use the exact titles';
+              }
+              return null; // 1 つでも見つかれば囲める
+            }
+            final has = _numOf(m['x1']) != null &&
+                _numOf(m['y1']) != null &&
+                _numOf(m['x2']) != null &&
+                _numOf(m['y2']) != null;
+            if (!has) {
+              return 'give either "aroundNodes" (titles to enclose) or all '
+                  'four of x1/y1/x2/y2 - a shape with neither is not drawn';
+            }
+            return null;
+          }
+
           String? addOne(Map<String, dynamic> m) => _provider.mcpAddDecoration(
                 pageId,
-                kind: '${m['kind'] ?? 'rectangle'}',
+                kind: '${m['kind'] ?? ''}',
                 x1: _numOf(m['x1']),
                 y1: _numOf(m['y1']),
                 x2: _numOf(m['x2']),
@@ -2942,41 +3520,71 @@ class McpServer {
                 strokeWidth: _numOf(m['strokeWidth']),
                 text: m['text'] as String?,
                 filled: m['filled'] == true ? true : null,
-                layer: (m['layer'] as num?)?.toInt(),
+                layer: _intOf(m['layer'], 'layer', min: -1 << 31).value,
               );
 
+          final decoEmpty = _emptyBatch(a, 'shapes',
+              'Pass at least one shape, or do not call add_decoration. An '
+              'empty array does NOT mean "one default rectangle".');
+          if (decoEmpty != null) return decoEmpty;
+          if (_provider.mcpPageById(pageId) == null) {
+            return _err('page not found: "$pageId" - nothing was drawn');
+          }
           final batch = a['shapes'];
-          final made = <String>[];
-          final failed = <String>[];
+          final entries = <Map<String, dynamic>>[];
           if (batch is List && batch.isNotEmpty) {
             for (final e in batch) {
-              if (e is! Map) continue;
-              final m = e.cast<String, dynamic>();
-              final id = addOne(m);
-              if (id != null) {
-                made.add(id);
-              } else {
-                failed.add('${m['kind'] ?? '?'}');
-              }
+              entries.add(e is Map ? e.cast<String, dynamic>() : {});
             }
           } else {
-            final id = addOne(a);
-            if (id != null) {
-              made.add(id);
-            } else {
-              failed.add('${a['kind'] ?? '?'}');
+            entries.add(a);
+          }
+          // ★ 先に全部を検分してから作る。 途中で気付いて止めると、
+          //   「半分だけ描かれた」 という一番直しにくい状態になる。
+          final created = <Map<String, Object?>>[];
+          final failed = <Map<String, Object?>>[];
+          for (var i = 0; i < entries.length; i++) {
+            final why = problemOf(entries[i]);
+            if (why != null) {
+              failed.add({
+                'index': i,
+                'kind': '${entries[i]['kind'] ?? ''}',
+                'reason': why,
+              });
             }
           }
-          if (made.isEmpty) {
-            return _err('could not add ${failed.join(', ')} - the page was '
-                'not found, or that shape name does not exist (see the "kind" '
-                'list; "polyline" is not available here).');
+          if (failed.isNotEmpty && created.isEmpty && entries.length == 1) {
+            return _err('${failed.first['reason']} - nothing was drawn.');
           }
-          return _ok({
-            'added': made.length,
-            'decorationIds': made,
-            if (failed.isNotEmpty) 'failed': failed,
-          });
+          for (var i = 0; i < entries.length; i++) {
+            if (failed.any((f) => f['index'] == i)) continue;
+            final m = entries[i];
+            final id = addOne(m);
+            if (id == null) {
+              failed.add({
+                'index': i,
+                'kind': '${m['kind'] ?? ''}',
+                'reason': 'the app refused this shape',
+              });
+              continue;
+            }
+            created.add({
+              'index': i,
+              'decorationId': id,
+              'kind': '${m['kind'] ?? ''}',
+            });
+          }
+          if (created.isEmpty) {
+            return _err('nothing was drawn. '
+                '${failed.map((f) => '[${f['index']}] ${f['reason']}').join('; ')}');
+          }
+          return _ok(_batchResult(
+            created: created,
+            failed: failed,
+            extra: {
+              'decorationIds': [for (final e in created) e['decorationId']],
+            },
+          ));
         }
       case 'delete_decoration':
         {
@@ -2990,19 +3598,25 @@ class McpServer {
       // ── 端末のファイル (利用者の許可つき) ──
       case 'read_device_file':
         {
+          // ★ 既定値へ倒す前に理由を返す (= 粗探しで発見: `?? 12000` だと、
+          //   おかしな値を渡された事に誰も気付けない)。
+          final rdMax = intOf('maxChars', min: 1) ?? 12000;
+          if (intErr != null) return _err(intErr!);
           final r = await _provider.mcpReadDeviceFile(
             '${a['path'] ?? ''}',
             reason: '${a['reason'] ?? ''}',
-            maxChars: (a['maxChars'] as num?)?.toInt() ?? 12000,
+            maxChars: rdMax,
           );
           final err = r['error'];
           return err == null ? _ok(r) : _err('$err');
         }
       case 'pick_user_file':
         {
+          final puMax = intOf('maxChars', min: 1) ?? 12000;
+          if (intErr != null) return _err(intErr!);
           final r = await _provider.mcpPickAndReadFile(
             reason: '${a['reason'] ?? ''}',
-            maxChars: (a['maxChars'] as num?)?.toInt() ?? 12000,
+            maxChars: puMax,
           );
           final err = r['error'];
           return err == null ? _ok(r) : _err('$err');
@@ -3012,8 +3626,9 @@ class McpServer {
         {
           final q = '${a['query'] ?? ''}'.trim();
           if (q.isEmpty) return _err('query is required');
-          final hits = await _provider.mcpWebSearch(q,
-              limit: (a['limit'] as num?)?.toInt() ?? 8);
+          final wsLimit = intOf('limit', min: 1, max: 50) ?? 8;
+          if (intErr != null) return _err(intErr!);
+          final hits = await _provider.mcpWebSearch(q, limit: wsLimit);
           if (hits.isEmpty) {
             return _err('no results for "$q". Try different words, or ask '
                 'the user for a url.');
@@ -3022,9 +3637,11 @@ class McpServer {
         }
       case 'web_fetch':
         {
+          final wfMax = intOf('maxChars', min: 1) ?? 8000;
+          if (intErr != null) return _err(intErr!);
           final r = await _provider.mcpWebFetch(
             '${a['url'] ?? ''}',
-            maxChars: (a['maxChars'] as num?)?.toInt() ?? 8000,
+            maxChars: wfMax,
           );
           final err = r['error'];
           return err == null ? _ok(r) : _err('$err');

@@ -126,7 +126,7 @@ flowchart TD
 | `create_page` | 新規ページ。type = `normal` / `bookshelf` / `paint` / `document` / `markdown` / `videoEditor`<br/>戻り値 `{pageId, type}` の `type` が実際に出来た種類 (知らない type は `normal` に倒れる) |
 | `delete_page` | ページを完全に削除。最後の 1 枚は消せない<br/>★ 短い間に 2 枚を超えて消そうとすると拒否される (暴走の歯止め。【8】参照)<br/>★ 戻す道具は無い。アプリ側の Ctrl+Z (`undoLastDeletedPage`) で**直前の 1 枚だけ**復元できる |
 | `set_page_type` | 中身を残したまま種類を変える (`create_page` と同じ 6 種類)<br/>★ `markdown` ページの本文は `write_markdown` で書く。ファイルとして欲しいと言われた時だけ `create_document_file` の `md` |
-| `set_header_buttons` | ヘッダーにボタンを並べる。`replace: true` で総入れ替え<br/>戻り値 `{header, ignored, blocked}`。`ignored` = 存在しない id、`blocked` = 利用者しか使えない機能 (どちらも置かれていない) |
+| `set_header_buttons` | ヘッダーにボタンを並べる。`replace: true` で総入れ替え<br/>戻り値 `{header, ignored, blocked}`。`ignored` = この端末に無い id、`blocked` = **今は空** (どちらも置かれていない)。クラウド同期 (`sync`) も置ける |
 | `clear_chat_history` | AI アシスタントの会話履歴を消す (実行中の依頼は残る)。全消去のみで部分削除は不可 |
 | `tidy_page` | マインドマップを自動整列で並べ直す (`mcpTidyPage`)。normal ページ限定・Ctrl+Z で戻せる |
 
@@ -437,9 +437,19 @@ flowchart TD
 - 外部接続は既定で不許可 (`mcp_external_allowed = false`)。許可を切ると即座に
   `_mcpServer.stop()` で待ち受けを畳む。
 - 許可しても合言葉 (32 文字) を知らないと 401。合言葉は起動ごとに再生成。
-- `run_app_command` は、利用者本人しか始めてはいけない機能
-  (LAN 共有 / クラウド同期 / アプリロック / 集中ロック) を実行できない。
-  `set_header_buttons` でも同じ id は置けず、戻り値の `blocked` に入る。
+- `run_app_command` の止め札 (`_mcpBlockedCommands`) は **今は空**。
+  クラウド同期も含めて、`list_app_commands` に出る id は全部呼べるし
+  `set_header_buttons` でも置ける (= ユーザー要望)。代わりに上げ過ぎを
+  止めるのは**上限**の方 (`uploadCapBytes` / `devSelfUploadCapBytes`)。
+  - ただし `sync` は**窓が開くだけ**。本当に転送するのは `cloud_sync`
+    (`action: upload / download / list`)。`needsUser: "true"` が付いた機能は
+    どれも「窓を開いた」止まりなので、「やりました」と答えさせない。
+  - アプリロック / 集中ロックは携帯だけの機能。パソコンでは
+    `list_app_commands` に出ない (= 置けないのではなく、無い)。
+- 外から使う時、`run_app_command` / `cloud_sync` / ファイル系は
+  `kPowerfulTools` に入っていて、「パソコンの操作も許す」 を入れるまで
+  一覧にも出ない。断られた時は「止められている」ではなく
+  「その設定が入っていない」と伝える。
 - **ページの消し過ぎを止める歯止め** (`mcpDeletePage`)。90 秒のあいだに
   MCP から消せるのは 2 枚まで。3 枚目からは「頼まれた以上に消している」
   として拒否し、利用者に確認するよう促す。
