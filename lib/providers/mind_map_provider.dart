@@ -98829,6 +98829,33 @@ $cleanQ
     }
   }
 
+  /// AI の下ごしらえに載せるページ一覧 (= 調査報告 BUG-30
+  /// 「全ページの名前・ID・種別・更新時刻を毎回渡している」)。
+  ///
+  /// ★ ページ名には社名や個人名が入る。 頼まれてもいないページの名前まで
+  ///   毎回よそへ送るのは行き過ぎなので、 既定は**今のページと、 同じ
+  ///   フォルダーの物**だけにする。 全部見たい時は AI が list_pages を
+  ///   呼べばよい (道具はそのまま残してある)。
+  List<Map<String, dynamic>> mcpNearbyPages({int max = 30}) {
+    if (_pages.isEmpty) return const [];
+    final cur = currentPage;
+    final fid = cur.folderId;
+    final all = mcpListPages();
+    final near = [
+      for (final p in all)
+        if (p['id'] == cur.id || p['folderId'] == fid) p
+    ];
+    final shown = (near.isEmpty ? all : near).take(max).toList();
+    return shown;
+  }
+
+  /// AI へ渡さなかったページが何枚あるか (= 隠していると誤解させないため)。
+  int mcpHiddenFromContextCount({int max = 30}) {
+    final total = _pages.length;
+    final shown = mcpNearbyPages(max: max).length;
+    return total - shown < 0 ? 0 : total - shown;
+  }
+
   List<Map<String, dynamic>> mcpListPages() => [
         for (final p in _pages)
           {
@@ -99000,6 +99027,25 @@ $cleanQ
   double nodeWidthForTitle(String title, {double? fontSize}) =>
       aiNodeWidthForTitle(title, fontSize ?? defaultTitleFontSize);
 
+  /// リンクとして通してよい文字列か。
+  ///
+  /// ★ = 調査報告 BUG-14「URL として無効な文字列をリンクノードとして保存
+  ///   できる」。 押しても開けない物をリンクの見た目で置くと、 利用者には
+  ///   「壊れている」 としか見えない。 通すのは **http / https だけ**
+  ///   (アプリが開けるのはこの 2 つ)。 それ以外は本文の文字として扱う。
+  static bool mcpIsUsableLink(String v) {
+    final t = v.trim();
+    if (t.isEmpty) return false;
+    if (t.contains(' ')) return false;
+    final u = Uri.tryParse(t);
+    if (u == null) return false;
+    final sc = u.scheme.toLowerCase();
+    if (sc != 'http' && sc != 'https') return false;
+    // 行き先が無い (http:// だけ) 物は弾く。
+    if (u.host.trim().isEmpty) return false;
+    return true;
+  }
+
   String? mcpAddNode(
     String pageId, {
     required String title,
@@ -99044,6 +99090,16 @@ $cleanQ
     if (memoText.isNotEmpty) {
       node.contentType = NodeContentType.memo;
       node.memoText = memoText;
+    }
+    // ★ 開けない文字列をリンクにしない (= 調査報告 BUG-14)。
+    //   押しても何も起きないリンクは「壊れている」 としか見えないので、
+    //   通らない物は本文へ回す (捨てない)。
+    if (link.isNotEmpty && !mcpIsUsableLink(link)) {
+      if (memoText.isEmpty) {
+        node.contentType = NodeContentType.memo;
+        node.memoText = link;
+      }
+      link = '';
     }
     if (link.isNotEmpty) {
       // YouTube の動画 URL ならサムネイル付きの動画ノードにする
@@ -100260,6 +100316,14 @@ $cleanQ
         });
       }
       if (sel < 0 || sel >= tabs.length) sel = 0;
+      // ★ = 調査報告 BUG-17「URL 付き Web タブへの書き込み禁止が AI 向けの
+      //   注意書きだけで、 実行層で断っていない」。 Web タブは url で開く
+      //   物なので、 本文を書くと**その場で中身の無いタブに化ける**。
+      //   注意書きに頼らず、 ここで断る。
+      if ('${tabs[sel]['url'] ?? ''}'.trim().isNotEmpty) {
+        debugPrint('mcpWriteMarkdown: refused - tab $sel is a web tab');
+        return false;
+      }
       final cur = '${tabs[sel]['text'] ?? ''}'.trimRight();
       tabs[sel]['text'] =
           append ? (cur.isEmpty ? body : '$cur\n\n$body') : body;
@@ -100581,6 +100645,71 @@ $cleanQ
     return mcpCanHoldFileNode(currentPage.id) ? currentPage.id : '';
   }
 
+  /// ノート系ページの「中身がどれだけあるか」。
+  ///
+  /// ★ = 調査報告 BUG-20「本文やタイムラインがあっても list_pages の
+  ///   nodeCount が 0 になり、 空ページに見える」。 本文はページ JSON の外に
+  ///   あるので nodeCount では数えられない。 種別ごとの数え方をここに集める。
+  ///   戻り値は必ず `{hasContent, ...}`。 数えられない時は hasContent:false。
+  Future<Map<String, Object?>> mcpPageContentStats(String pageId) async {
+    final page = mcpPageById(pageId);
+    if (page == null) return {'hasContent': false};
+    try {
+      switch (page.pageType) {
+        case 'markdown':
+          final md = await mcpReadMarkdown(page.id);
+          final tabs = (md?['tabs'] as List?) ?? const [];
+          var chars = 0;
+          for (final t in tabs) {
+            if (t is Map) chars += '${t['text'] ?? ''}'.length;
+          }
+          return {
+            'hasContent': chars > 0 || tabs.length > 1,
+            'tabCount': tabs.length,
+            'textLength': chars,
+          };
+        case 'document':
+          final doc = await mcpReadDocument(page.id);
+          final papers = (doc?['papers'] as List?) ?? const [];
+          var chars = 0;
+          for (final t in papers) {
+            if (t is Map) chars += '${t['text'] ?? ''}'.length;
+          }
+          return {
+            'hasContent': chars > 0,
+            'paperCount': papers.length,
+            'textLength': chars,
+          };
+        case 'paint':
+          final pt = await mcpReadPaintItems(page.id);
+          final texts = (pt?['texts'] as List?) ?? const [];
+          final strokes = (pt?['strokeCount'] as int?) ?? 0;
+          final shapes = (pt?['shapeCount'] as int?) ?? 0;
+          final images = (pt?['imageCount'] as int?) ?? 0;
+          return {
+            'hasContent':
+                texts.isNotEmpty || strokes > 0 || shapes > 0 || images > 0,
+            'itemCount': texts.length + strokes + shapes + images,
+            'textCount': texts.length,
+          };
+        case 'videoEditor':
+          final ve = await mcpListVideoEditorItems(page.id);
+          final items = (ve?['items'] as List?) ?? const [];
+          return {
+            'hasContent': items.isNotEmpty,
+            'timelineItemCount': items.length,
+          };
+        default:
+          return {
+            'hasContent': page.nodes.isNotEmpty,
+            'itemCount': page.nodes.length,
+          };
+      }
+    } catch (_) {
+      return {'hasContent': false};
+    }
+  }
+
   /// 出来たファイルをノードとして貼る (画像以外も扱える)。
   String? mcpAddFileNode(String pageId, String filePath, {String? title}) {
     // ノードを置けるのはマインドマップとギャラリーだけ。 フリーノートや
@@ -100738,7 +100867,12 @@ $cleanQ
       node.contentType = (node.memoText ?? '').isEmpty
           ? NodeContentType.none
           : NodeContentType.memo;
-    } else if (url != null && url.trim().isNotEmpty) {
+    } else if (url != null &&
+        url.trim().isNotEmpty &&
+        // ★ 開けない文字列はリンクにしない (= 調査報告 BUG-14)。
+        //   ここは書き換えなので、 通らない値は**何もしない**
+        //   (元のリンクを壊さない)。
+        mcpIsUsableLink(url)) {
       final link = url.trim();
       if (_isYoutubeVideoUrl(link)) {
         node.youtubeUrl = link;
@@ -102007,7 +102141,13 @@ $cleanQ
   /// - 子ノードを並べる際、同じグループのメンバーを隣接させる（グループ幅の縮小に貢献）
   /// - 非メンバーノードがグループ領域に侵入していたら下へ押し出す
   /// - 2つのグループが重なっている場合、共通メンバーを持たない時のみ下方向に解消
-  void autoLayoutTree({Offset? referencePos}) {
+  /// 並べ直す時に、 接続点の決め方 (anchorMode) まで揃えるか。
+  ///
+  /// ★ = 調査報告 BUG-23「tidy_page は『位置だけ変更』 と説明しているのに、
+  ///   autoLayoutTree が全ノードの anchorMode を fourWay に変えてしまう」。
+  ///   接続点の向きは利用者が 1 つずつ選んでいる事があるので、 既定では
+  ///   **触らない**。 揃えたい時だけ true を渡す。
+  void autoLayoutTree({Offset? referencePos, bool normalizeAnchors = false}) {
     final nodeMap = currentPage.nodes;
     final conns = currentPage.connections;
     if (nodeMap.isEmpty) return;
@@ -102255,7 +102395,8 @@ $cleanQ
       final nodeY = y + (slotH - node.visualHeight) / 2;
       nodeMap[id] = node.copyWith(
         position: Offset(x.clamp(0.0, 20000.0), nodeY.clamp(0.0, 20000.0)),
-        anchorMode: NodeAnchorMode.fourWay,
+        // ★ 既定では接続点の決め方を変えない (= 調査報告 BUG-23)。
+        anchorMode: normalizeAnchors ? NodeAnchorMode.fourWay : null,
       );
       final kids = childrenOf[id] ?? [];
       if (kids.isEmpty) return;
@@ -102298,7 +102439,7 @@ $cleanQ
               col1X.clamp(0.0, 20000.0),
               curY.clamp(0.0, 20000.0),
             ),
-            anchorMode: NodeAnchorMode.fourWay,
+            anchorMode: normalizeAnchors ? NodeAnchorMode.fourWay : null,
           );
           curY += kn.visualHeight;
           if (i + 1 < perCol && i + 1 < kids.length) {
@@ -102315,7 +102456,7 @@ $cleanQ
               col2X.clamp(0.0, 20000.0),
               curY.clamp(0.0, 20000.0),
             ),
-            anchorMode: NodeAnchorMode.fourWay,
+            anchorMode: normalizeAnchors ? NodeAnchorMode.fourWay : null,
           );
           curY += kn.visualHeight;
           if (i + 1 < kids.length) {

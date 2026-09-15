@@ -37,15 +37,28 @@ JSON を埋め込んだ `.html` も読み込めます。
 }
 
 【nodes の各要素】※ id / title / x / y / color は必須
+
+★ **JSON にコメントは書けない。** 下の見本はそのまま貼って使えるよう、
+  コメントを外してある (以前は `//` が入っていて、案内どおり「厳密な JSON」
+  として渡すと JSON.parse が必ず失敗していた = 調査報告 BUG-18)。
+
+```json
 {
   "id": "n1",
   "title": "見出し",
   "x": 10000, "y": 10000,
   "color": 4285098345,
-  "contentType": 1,          // 省略可。1 = メモ付き
-  "memoText": "説明の文",     // contentType が 1 の時
-  "width": 160, "height": 40  // 省略可
+  "contentType": 1,
+  "memoText": "説明の文",
+  "width": 160,
+  "height": 40
 }
+```
+
+省略できる項目と意味:
+- `contentType` … 省略可。1 = メモ付き
+- `memoText` … `contentType` が 1 の時に使う
+- `width` / `height` … 省略可 (既定 160 / 40)
 
 【connections の各要素】※ 全て必須
 { "fromId": "n1", "toId": "n2", "fromAnchor": 2, "toAnchor": 3 }

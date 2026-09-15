@@ -6125,6 +6125,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     _loadFlashcardGenSettings();
     // アラームを復元して再スケジュール (= 再起動後も鳴るように)。
     _loadAlarms();
+    // ★ = 調査報告 BUG-28。 前回の終了で消えた通知の予定を貼り直す
+    //   (Windows は OS 側の予約が無く、 アプリの Timer が唯一の頼りのため)。
+    unawaited(_restorePendingReminders());
     // 手動登録したサブスクリプションと支払日前通知を復元。
     _loadManagedSubscriptions();
     // タイムラインの睡眠時間 (圧縮表示) 設定を復元。
@@ -35003,8 +35006,96 @@ class _MindMapScreenState extends State<MindMapScreen>
         _showNodeNotificationOverlay(nodeId ?? '', title, body);
       }
       _pendingNotificationTimers.remove(timerKey);
+      unawaited(_forgetPendingReminder(timerKey));
     });
     _pendingNotificationTimers[timerKey] = timer;
+    // ★ = 調査報告 BUG-28「Windows のリマインダーがメモリの Timer だけで、
+    //   終了・再起動で失われる」。 Windows には OS 側の予約
+    //   (zonedSchedule) が無く、 この Timer が唯一の頼りなので、 予定を
+    //   控えておいて次の起動で貼り直す。
+    unawaited(_rememberPendingReminder(timerKey,
+        notifId: notifId, title: title, body: body,
+        fireAt: fireAt, nodeId: nodeId));
+  }
+
+  // ── 通知の予定を控える (= 再起動で消えないように) ────────────────────
+  //    Android は OS の予約が本命なので控えなくてもよいが、 同じ道を通す。
+  static const String _kPendingRemindersKey = 'pending_reminders_v1';
+
+  Future<void> _rememberPendingReminder(
+    String key, {
+    required int notifId,
+    required String title,
+    required String body,
+    required DateTime fireAt,
+    String? nodeId,
+  }) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_kPendingRemindersKey);
+      final map = <String, dynamic>{};
+      if (raw != null && raw.trim().isNotEmpty) {
+        final d = jsonDecode(raw);
+        if (d is Map) map.addAll(d.cast<String, dynamic>());
+      }
+      map[key] = {
+        'notifId': notifId,
+        'title': title,
+        'body': body,
+        'at': fireAt.toIso8601String(),
+        if (nodeId != null) 'nodeId': nodeId,
+      };
+      await prefs.setString(_kPendingRemindersKey, jsonEncode(map));
+    } catch (_) {}
+  }
+
+  Future<void> _forgetPendingReminder(String key) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_kPendingRemindersKey);
+      if (raw == null || raw.trim().isEmpty) return;
+      final d = jsonDecode(raw);
+      if (d is! Map) return;
+      final map = d.cast<String, dynamic>();
+      if (map.remove(key) == null) return;
+      await prefs.setString(_kPendingRemindersKey, jsonEncode(map));
+    } catch (_) {}
+  }
+
+  /// 起動時に、 まだ来ていない通知を貼り直す。
+  ///
+  /// ★ 過ぎてしまった物は**出さない**。 起動のたびに古い通知が噴き出すと、
+  ///   何の知らせか分からず邪魔なだけなので、 黙って控えから外す。
+  Future<void> _restorePendingReminders() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_kPendingRemindersKey);
+      if (raw == null || raw.trim().isEmpty) return;
+      final d = jsonDecode(raw);
+      if (d is! Map) return;
+      final map = d.cast<String, dynamic>();
+      final now = DateTime.now();
+      final keep = <String, dynamic>{};
+      final revive = <Map<String, dynamic>>[];
+      map.forEach((k, v) {
+        if (v is! Map) return;
+        final at = DateTime.tryParse('${v['at'] ?? ''}');
+        if (at == null || !at.isAfter(now)) return; // 過ぎた物は捨てる
+        keep[k] = v;
+        revive.add(v.cast<String, dynamic>());
+      });
+      await prefs.setString(_kPendingRemindersKey, jsonEncode(keep));
+      if (!mounted) return;
+      for (final v in revive) {
+        _scheduleAbsoluteNotification(
+          notifId: (v['notifId'] as num?)?.toInt() ?? 0,
+          title: '${v['title'] ?? ''}',
+          body: '${v['body'] ?? ''}',
+          fireAt: DateTime.parse('${v['at']}'),
+          nodeId: v['nodeId'] as String?,
+        );
+      }
+    } catch (_) {}
   }
 
   // ─── アラーム (= ユーザー要望: アラーム機能) ─────────────────────────────────
@@ -271255,7 +271346,11 @@ class _McpChatSession extends ChangeNotifier {
 
   String _systemPrompt() {
     final tools = jsonEncode(McpServer.toolDefs);
-    final pages = jsonEncode(provider.mcpListPages());
+    // ★ = 調査報告 BUG-30。 既定では今のページと同じフォルダーの物だけを
+    //   下ごしらえに載せる。 無関係なページ名まで毎回よそへ送らない。
+    //   全部要る時は AI が list_pages を呼ぶ (道具は残してある)。
+    final pages = jsonEncode(provider.mcpNearbyPages());
+    final hiddenPages = provider.mcpHiddenFromContextCount();
     // ユーザーが書き置いた前提を最優先で守らせる (= ユーザー要望)。
     final pre = provider.mcpPreamble.trim();
     final preBlock = pre.isEmpty
@@ -271290,7 +271385,9 @@ class _McpChatSession extends ChangeNotifier {
         'あなたはマインドマップアプリ「Kamispec」を操作するアシスタントです。\n'
         '以下のツールを使ってページやノードを読み書きできます。\n'
         'ツール定義: $tools\n'
-        '現在のページ一覧: $pages\n'
+        '近くのページ一覧 (今のページと同じフォルダー): $pages\n'
+        '${hiddenPages > 0 ? 'この一覧には出していないページが他に $hiddenPages 枚あります。'
+            '必要なら list_pages で全部取れます。\n' : ''}'
         'ツールを使う時は、 説明文を付けず次の JSON だけを 1 つ返してください:\n'
         '{"tool":"ツール名","args":{...}}\n'
         'ツールの結果を受け取ったら、 続けて必要なら次のツール JSON を、 '
@@ -271519,9 +271616,42 @@ class _McpChatSession extends ChangeNotifier {
       'web_fetch': 8000,
       'web_search': 4000,
       'list_folders': 2000,
+      // ★ 本文を読み返す道具 (= 切り詰めると読み返す意味が無い)。
+      'read_markdown': 8000,
+      'read_document': 8000,
+      'read_paint_items': 4000,
+      'list_video_editor_items': 4000,
+      'list_orphan_files': 4000,
     };
     final cap = caps[name] ?? 1200;
-    return text.length > cap ? '${text.substring(0, cap)}…' : text;
+    if (text.length <= cap) return text;
+    // ★ = 調査報告 BUG-21「1200 文字で一律に切り捨てるので、 後半の ID や
+    //   失敗情報が失われる」。 黙って落とすと、 AI は作った物を指せなくなる
+    //   うえ「全部うまくいった」 と誤解する。
+    //   ・切ったことを必ず告げる (truncated)
+    //   ・作った物の id と、 出来なかった物は**切る前に**拾って残す
+    final head = text.substring(0, cap);
+    final keep = <String>[];
+    for (final key in const [
+      'nodeId',
+      'nodeIds',
+      'itemId',
+      'itemIds',
+      'decorationId',
+      'decorationIds',
+      'pageId',
+      'summary',
+      'failed',
+    ]) {
+      final m =
+          RegExp('"$key"\\s*:\\s*(\\[[^\\]]*\\]|"[^"]*"|\\d+)')
+              .firstMatch(text);
+      if (m != null && !head.contains(m.group(0)!)) keep.add(m.group(0)!);
+    }
+    final tail = keep.isEmpty ? '' : ' {${keep.join(', ')}}';
+    return '$head…'
+        '[truncated: ${text.length} chars total, showing $cap.'
+        ' Call the matching read tool for the rest.]$tail';
   }
 
   String _toolLabel(String name, Map<String, dynamic> args) {

@@ -3031,6 +3031,41 @@ Future<bool> _startOpenWithReceiver() async {
 /// このアプリを「プログラムから開く」 の一覧に載せる (Windows / HKCU のみ)。
 /// 管理者権限は不要で、 既定のアプリを勝手に奪うこともしない。
 /// 一覧に出ることで、 ユーザーが .txt / .pdf をこのアプリで開けるようになる。
+/// 端末の時間帯を timezone パッケージへ反映する。
+///
+/// ★ = 調査報告 BUG-29「タイムゾーンが Asia/Tokyo 固定で、 海外や夏時間に
+///   追従しない」。 決め打ちだと、 日本以外で使った時に通知が何時間もずれる。
+/// ★ 端末の IANA 名を直に取れる仕組みは入れていない (パッケージを増やすと
+///   ビルドの pin に影響する)。 代わりに **今のずれ (UTC との差) が一致する
+///   場所**を時間帯の表から選ぶ。 夏時間の有無も「今のずれ」 に含まれるので、
+///   実用上はこれで合う。 同じずれの場所が複数ある時は、 略称
+///   (JST / CET など) が一致する物を優先する。
+void _applyDeviceTimeZone() {
+  try {
+    final now = DateTime.now();
+    final want = now.timeZoneOffset;
+    final abbr = now.timeZoneName.trim();
+    tz.Location? byOffset;
+    for (final loc in tz.timeZoneDatabase.locations.values) {
+      final here = tz.TZDateTime.now(loc);
+      if (here.timeZoneOffset != want) continue;
+      byOffset ??= loc;
+      if (abbr.isNotEmpty && here.timeZoneName == abbr) {
+        tz.setLocalLocation(loc); // 略称まで一致 = これが本命
+        return;
+      }
+    }
+    if (byOffset != null) {
+      tz.setLocalLocation(byOffset);
+      return;
+    }
+    // どれにも当たらない時だけ、 今までどおりの既定へ。
+    tz.setLocalLocation(tz.getLocation('Asia/Tokyo'));
+  } catch (_) {
+    // 表が読めない等。 UTC のままでも動きはする。
+  }
+}
+
 Future<void> _registerWindowsOpenWith() async {
   if (kIsWeb || !Platform.isWindows) return;
   try {
@@ -3816,9 +3851,7 @@ void main(List<String> args) async {
   // タイムゾーン DB を読み込んで、 端末のローカル TZ を設定。
   // zonedSchedule は TZDateTime で時刻を指定するので必須。
   tz_data.initializeTimeZones();
-  try {
-    tz.setLocalLocation(tz.getLocation('Asia/Tokyo'));
-  } catch (_) {/* TZ 取得失敗時は UTC のままで問題なし */}
+  _applyDeviceTimeZone();
 
   // ── 通知の初期化 + Android 権限リクエストはバックグラウンドで ──
   // ★ 起動ハング対策: これらを runApp の前で await すると、 特に Android で

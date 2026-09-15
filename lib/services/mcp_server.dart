@@ -235,14 +235,28 @@ class McpServer {
       String method, Map<String, dynamic> params) async {
     switch (method) {
       case 'initialize':
-        return {
-          'protocolVersion':
-              (params['protocolVersion'] as String?) ?? '2025-06-18',
-          'capabilities': {
-            'tools': {'listChanged': false},
-          },
-          'serverInfo': {'name': 'kamispec-mcp', 'version': '1.0.0'},
-        };
+        {
+          // ★ = 調査報告 BUG-22「相手の protocolVersion をそのまま返すので、
+          //   対応していない版でも対応済みに見えてしまう」。 こちらが本当に
+          //   話せる版の中から選んで返す。 知らない版を言われた時は、 既定の
+          //   版を返した上で**話せる版の一覧**を添える (JSON-RPC の決まりでは
+          //   こうして相手に選び直させる)。
+          const supported = <String>['2025-06-18', '2025-03-26', '2024-11-05'];
+          final asked = (params['protocolVersion'] as String?)?.trim() ?? '';
+          final agreed = supported.contains(asked) ? asked : supported.first;
+          return {
+            'protocolVersion': agreed,
+            'capabilities': {
+              'tools': {'listChanged': false},
+            },
+            'serverInfo': {'name': 'kamispec-mcp', 'version': '1.0.0'},
+            if (asked.isNotEmpty && agreed != asked) ...{
+              'supportedProtocolVersions': supported,
+              'note': 'this server does not speak "$asked"; it answered with '
+                  '"$agreed". Use one of supportedProtocolVersions.',
+            },
+          };
+        }
       case 'ping':
         return {};
       case 'tools/list':
@@ -2046,8 +2060,18 @@ class McpServer {
           // いちばん上に開いているファイル (= ユーザー要望: 場所を明示され
           //   ない指示は、 マップではなくこれを相手にする)。
           final fd = _provider.frontDocument;
+          // ★ = 調査報告 BUG-20「本文やタイムラインがあっても nodeCount が 0
+          //   になり、 空ページに見える」。 本文はページ JSON の外にあるので
+          //   nodeCount では数えられない。 種別ごとの中身の量を足して返す。
+          final pages = _provider.mcpListPages();
+          for (final pg in pages) {
+            final t = '${pg['type'] ?? ''}';
+            if (t == 'normal' || t == 'bookshelf') continue;
+            final st = await _provider.mcpPageContentStats('${pg['id']}');
+            pg.addAll(st);
+          }
           return _ok({
-            'pages': _provider.mcpListPages(),
+            'pages': pages,
             if (fd != null)
               'openFileOnTop': {
                 'name': fd.name,
@@ -2312,6 +2336,11 @@ class McpServer {
           // id でも題名でもよい (= ユーザー報告: AI が id の書き写しを誤る)。
           final pageId = a['pageId'] as String? ?? '';
           final key = '${a['node'] ?? a['nodeId'] ?? ''}'.trim();
+          // ★ 書き換える相手が 1 つに決まらない時は断る (= 調査報告 BUG-16:
+          //   同じ題名が複数あると作成順の先頭が選ばれ、 別のノードを
+          //   書き換えてしまう)。
+          final updAmb = _ambiguous(pageId, key, 'node', fuzzy: false);
+          if (updAmb != null) return _err(updAmb);
           // 色とリンクも直せる (= ユーザー要望: 置いた後に変えたい)。
           final color = _argbOf(a['color']);
           final url = a['url'] == null ? null : '${a['url']}';
@@ -2404,6 +2433,10 @@ class McpServer {
                   });
           }
           final key = '${a['node'] ?? a['nodeId'] ?? ''}'.trim();
+          // ★ 消す相手が 1 つに決まらない時は当てずっぽうで選ばない
+          //   (= 調査報告 BUG-16)。 消す操作は取り返しが付きにくい。
+          final delAmb = _ambiguous(pageId, key, 'node', fuzzy: false);
+          if (delAmb != null) return _err(delAmb);
           final wasOne = disposeMode == 'no'
               ? ''
               : _provider.mcpAttachmentPathOf(pageId, key);
