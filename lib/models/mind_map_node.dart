@@ -1596,8 +1596,14 @@ class MindMapNode {
       youtubeUrl: json['youtubeUrl'] as String?,
       linkUrl: json['linkUrl'] as String?,
       color: Color(json['color'] as int),
-      width: (json['width'] as num?)?.toDouble() ?? 140.0,
-      height: (json['height'] as num?)?.toDouble() ?? 42.0,
+      // ★ = 調査報告 BUG-19「保存された幅が上限を超えている」。
+      //   手で広げた幅は 2000 まで正当なので 300 には丸めない。 ただし
+      //   壊れた値 (0 や桁違い) が入ると画面が組み立てられなくなるので、
+      //   手で広げられる範囲 (80〜2000) にだけ収めて読む。
+      //   高さも同じ理由で収める。
+      width: ((json['width'] as num?)?.toDouble() ?? 140.0).clamp(80.0, 2000.0),
+      height:
+          ((json['height'] as num?)?.toDouble() ?? 42.0).clamp(14.0, 4000.0),
       collapsed: json['collapsed'] as bool? ?? false,
       collapsedChildIds: (json['collapsedChildIds'] as List<dynamic>?)
           ?.map((e) => e as String)

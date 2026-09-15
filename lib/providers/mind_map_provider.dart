@@ -6115,8 +6115,10 @@ class MindMapProvider extends ChangeNotifier {
 
     // 親の子ノードで視聴完了したものを特定
     final toDelete = <String>[];
+    // ★ 親子として引いた線だけを辿る (= 調査報告 BUG-24: 関連線でつないだ
+    //   だけの無関係なノードまで子として消えてしまう)。
     for (final c in currentPage.connections.toList()) {
-      if (c.fromId == parentId) {
+      if (c.isParentChild && c.fromId == parentId) {
         final child = currentPage.nodes[c.toId];
         if (child == null) continue;
         final vid = _extractYtVideoId(child.youtubeUrl ?? '');
@@ -6150,8 +6152,10 @@ class MindMapProvider extends ChangeNotifier {
     }
 
     final remainingChildren = <MindMapNode>[];
+    // ★ 親子線だけ (= 調査報告 BUG-24)。 関連線の相手まで詰め直すと、
+    //   利用者が置いた無関係なノードが動いてしまう。
     for (final c in currentPage.connections) {
-      if (c.fromId == parentId) {
+      if (c.isParentChild && c.fromId == parentId) {
         final child = currentPage.nodes[c.toId];
         if (child != null) remainingChildren.add(child);
       }
@@ -85601,7 +85605,10 @@ $cleanQ
 
     // 既に真下に付箋があれば、さらに下にずらす
     for (final c in currentPage.connections) {
-      if (c.fromId == parent.id && c.fromAnchor == AnchorDirection.south) {
+      // ★ 親子線だけ見る (= 調査報告 BUG-24)。
+      if (c.isParentChild &&
+          c.fromId == parent.id &&
+          c.fromAnchor == AnchorDirection.south) {
         final existing = currentPage.nodes[c.toId];
         if (existing != null) {
           final bottom = existing.position.dy + existing.visualHeight + gap;
@@ -85635,8 +85642,9 @@ $cleanQ
     final baseX = parent.position.dx + parent.width + 80;
     double baseY = parent.position.dy;
     // 既存の子ノードの最下部を求める（visualHeightを考慮）
+    // ★ 親子線だけ見る (= 調査報告 BUG-24)。
     for (final c in currentPage.connections) {
-      if (c.fromId == parent.id) {
+      if (c.isParentChild && c.fromId == parent.id) {
         final child = currentPage.nodes[c.toId];
         if (child != null) {
           final bottom = child.position.dy + child.visualHeight + gap;
@@ -86065,6 +86073,8 @@ $cleanQ
     // アプリが作ったファイルの控え (= AI に「タイルと一緒にファイルも消して」
     //   と頼まれた時、 利用者自身の物を消さないための唯一の手掛かり)。
     _loadMcpCreatedFiles();
+    // 控えを入れる前に作った物を拾うため、 アプリの書類フォルダーも覚える。
+    _loadAppDocsDir();
     _loadChannelFilterSettings();
     _loadChannelQueues();
     _loadAutoSyncPageIds();
@@ -98580,13 +98590,68 @@ $cleanQ
   }
 
   /// 開いているテキストファイルの状態 (無ければ open: false)。
+  /// 1 つのファイルについて「今どういう状態か」 を 1 か所で答える。
+  ///
+  /// ★ = 調査報告 BUG-10「同じ前面のファイルを、 list_pages は
+  ///   openFileOnTop、 text_file_status は open:false、 list_orphan_files は
+  ///   孤立として返し、 状態 API が一致しない」。 3 か所が別々に判断して
+  ///   いたのが原因なので、 判断はここへ集める。
+  ///
+  ///   * isVisible  … 画面のいちばん上に出ている
+  ///   * isEditable … このアプリのテキストエディタで開いていて書き換えられる
+  ///   * isAttached … どこかのページのタイルが指している
+  ///   * isOrphan   … アプリが作った物で、 もうどのタイルも指していない
+  ///   editorKind は開いている編集画面の種類 (text / なし)。
+  Map<String, Object?> mcpFileState(String path) {
+    final t = path.trim();
+    final front = _frontDocument;
+    final isVisible = t.isNotEmpty &&
+        front != null &&
+        mcpSamePath(front.path, t);
+    final b = _mcpTextFile;
+    final isEditable = isVisible && b != null;
+    final users = mcpPagesUsingFile(t);
+    return {
+      'path': t,
+      'isVisible': isVisible,
+      'isEditable': isEditable,
+      'isAttached': users.isNotEmpty,
+      if (users.isNotEmpty) 'onPages': users,
+      // 見えている / 貼ってある物は孤立ではない (= 消す候補に出さない)。
+      'isOrphan': !isVisible &&
+          users.isEmpty &&
+          mcpFileWasCreatedHere(t) &&
+          File(t).existsSync(),
+      'editorKind': isEditable ? 'text' : (isVisible ? 'viewer' : 'none'),
+    };
+  }
+
   Map<String, dynamic> mcpTextFileStatus() {
     final b = _mcpTextFile;
-    if (b == null) return {'open': false};
+    final front = _frontDocument;
+    if (b == null) {
+      // ★ 「開いていない」 だけで終わらせない (= 調査報告 BUG-10)。
+      //   前面にファイルは出ているのに書き換えられないのか、 そもそも
+      //   何も開いていないのかで、 AI の次の一手が変わる。
+      return {
+        'open': false,
+        if (front != null) ...{
+          'fileName': front.name,
+          'path': front.path,
+          'editorKind': front.kind,
+          'note': 'a file IS on screen, but not in the text editor, so '
+              'text_file_read / text_file_edit cannot touch it.',
+        },
+      };
+    }
+    final st = front == null
+        ? const <String, Object?>{}
+        : mcpFileState(front.path);
     return {
       'open': true,
       'fileName': b.fileName(),
       'lineCount': b.getLines().length,
+      ...st,
     };
   }
 
@@ -100959,10 +101024,45 @@ $cleanQ
   ///   分からない物は**利用者の物として扱い、 絶対に消さない**。
   ///   安全側に外すのは意図したもので、 消したい時は一覧から手で
   ///   (ごみ箱へ) 消してもらう。
+  /// アプリ自身の書類フォルダー (控えを入れる前の物を拾うため)。
+  /// 起動時に 1 度だけ埋める。 読めなければ null のまま。
+  String? _appDocsDirCache;
+
+  Future<void> _loadAppDocsDir() async {
+    try {
+      final d = await getApplicationDocumentsDirectory();
+      _appDocsDirCache = d.path;
+    } catch (_) {}
+  }
+
   bool mcpFileWasCreatedHere(String filePath) {
-    if (filePath.trim().isEmpty) return false;
+    final t = filePath.trim();
+    if (t.isEmpty) return false;
     for (final v in _mcpCreatedFiles) {
-      if (mcpSamePath(v, filePath)) return true;
+      if (mcpSamePath(v, t)) return true;
+    }
+    // ★ = 調査報告 BUG-08「アプリ生成済みの孤立ファイルを取りこぼす」。
+    //   控え (_mcpCreatedFiles) は b400 で入れた仕組みなので、 それ以前に
+    //   作った物は載っていない。 ただし**アプリ自身の書類フォルダーの中**は
+    //   アプリしか物を置かないので、 そこに在る物は控えが無くても
+    //   アプリの物と見なしてよい。
+    //   利用者のデスクトップや書類は**含めない** (勝手に消さないため)。
+    final root = _appDocsDirCache;
+    if (root == null || root.isEmpty) return false;
+    String norm(String v) {
+      final x = v.replaceAll('\\', '/');
+      return Platform.isWindows ? x.toLowerCase() : x;
+    }
+
+    final r = norm(root);
+    final f = norm(t);
+    for (final sub in const [
+      'mcp_files',
+      'mcp_images',
+      'attachments',
+      'backgrounds',
+    ]) {
+      if (f.startsWith('$r/$sub/')) return true;
     }
     return false;
   }
@@ -101029,8 +101129,9 @@ $cleanQ
   Future<List<String>> mcpOrphanGeneratedFiles() async {
     final out = <String>[];
     for (final v in _mcpCreatedFiles) {
-      if (mcpPagesUsingFile(v).isNotEmpty) continue;
-      if (!File(v).existsSync()) continue;
+      // ★ 状態の判断は mcpFileState へ集めてある (= 調査報告 BUG-10:
+      //   3 か所が別々に判断して食い違っていた)。
+      if (!(mcpFileState(v)['isOrphan'] == true)) continue;
       // ★ 背景 / フリーノート / 動画の素材になっている物を「迷子」 と
       //   言わない (= 利用者が消してしまう)。
       if ((await mcpOtherUsesOfFile(v)).isNotEmpty) continue;
@@ -110893,31 +110994,52 @@ $example
     }
 
     // ノードをコピー
+    //
+    // ★ = 調査報告 BUG-11「copyNodesToPage が richText / tableData /
+    //   PDF メモ / linkedPageId / 格納情報を落とす」。 以前はここで項目を
+    //   手で並べて新しいノードを組み立てていたので、 書き写し忘れた物が
+    //   そのまま消えていた (項目が増えるたびに増える類の抜け)。
+    //   保存と同じ道 (toJson → fromJson) を通せば、 **今ある項目も、 後で
+    //   増える項目も**自動で付いて来る。 移動 (moveNodesToPage) が実体を
+    //   そのまま動かして無傷なのと、 これで釣り合う。
     for (final id in ids) {
       final node = sourceNodes[id];
       if (node == null) continue;
       final newId = idMap[id]!;
-      final newNode = MindMapNode(
-        id: newId,
-        title: node.title,
-        position: node.position,
-        contentType: node.contentType,
-        memoText: node.memoText,
-        youtubeUrl: node.youtubeUrl,
-        linkUrl: node.linkUrl,
-        color: node.color,
-        width: node.width,
-        height: node.height,
-        attachmentPath: node.attachmentPath,
-        attachmentName: node.attachmentName,
-        // ★ 画像の縦横比と図の元の文も持って行く (無いと絵の高さが崩れ、
-        //   図を後から直せなくなる)。
-        attachmentThumbPath: node.attachmentThumbPath,
-        attachmentAspectRatio: node.attachmentAspectRatio,
-        diagramSource: node.diagramSource,
-        chartData: node.chartData?.copy(),
-      );
-      targetPage.nodes[newId] = newNode;
+      final j = Map<String, dynamic>.from(node.toJson());
+      j['id'] = newId;
+      // ★ 他のノードを指している項目は、 コピー後の id へ読み替える。
+      //   読み替えないと、 コピー先から**元のページのノード**を指してしまう
+      //   (格納ノードを開くと元ページの物が消える、 等)。
+      //   選んでいない相手を指していた分は、 連れて来ていないので落とす。
+      List<dynamic>? remapList(Object? v) {
+        if (v is! List) return null;
+        final out = [
+          for (final e in v)
+            if (idMap[
+                    '${e ?? ''}'] !=
+                null)
+              idMap['${e ?? ''}']!
+        ];
+        return out;
+      }
+
+      final cc = remapList(j['collapsedChildIds']);
+      if (cc != null) j['collapsedChildIds'] = cc;
+      final cn = remapList(j['containedNodeIds']);
+      if (cn != null) j['containedNodeIds'] = cn;
+      final hid = j['hiddenInContainer'];
+      if (hid is String && hid.isNotEmpty) {
+        final mapped = idMap[hid];
+        if (mapped == null) {
+          // 格納していた親を連れて来ていない → 単体のノードとして置く
+          //   (隠れたまま置くと、 コピー先で見えないノードになる)。
+          j.remove('hiddenInContainer');
+        } else {
+          j['hiddenInContainer'] = mapped;
+        }
+      }
+      targetPage.nodes[newId] = MindMapNode.fromJson(j);
     }
 
     // 両端が選択範囲内の接続をコピー
