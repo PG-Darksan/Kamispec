@@ -12860,6 +12860,40 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Erro de IA: {err}',
       'ru': 'Ошибка ИИ: {err}',
     },
+    // ── 上げ過ぎないための上限 (= ユーザー要望) ──
+    'cloud.uploadCapNone': {
+      'ja': '上げる量の上限: なし',
+      'en': 'Upload cap: none',
+      'zh': '上传上限：无',
+      'ko': '업로드 상한: 없음',
+      'es': 'Límite de subida: ninguno',
+      'fr': 'Plafond d’envoi : aucun',
+      'de': 'Upload-Grenze: keine',
+      'pt': 'Limite de envio: nenhum',
+      'ru': 'Лимит загрузки: нет',
+    },
+    'cloud.uploadCapSet': {
+      'ja': '上げる量の上限: {size} まで',
+      'en': 'Upload cap: up to {size}',
+      'zh': '上传上限：最多 {size}',
+      'ko': '업로드 상한: {size} 까지',
+      'es': 'Límite de subida: hasta {size}',
+      'fr': 'Plafond d’envoi : jusqu’à {size}',
+      'de': 'Upload-Grenze: bis {size}',
+      'pt': 'Limite de envio: até {size}',
+      'ru': 'Лимит загрузки: до {size}',
+    },
+    'cloud.uploadCapStep': {
+      'ja': '変える',
+      'en': 'Change',
+      'zh': '更改',
+      'ko': '변경',
+      'es': 'Cambiar',
+      'fr': 'Modifier',
+      'de': 'Ändern',
+      'pt': 'Alterar',
+      'ru': 'Изменить',
+    },
     'cloud.uploadMonth': {
       'ja': 'クラウド アップロード (今月)',
       'en': 'Cloud upload (this month)',
@@ -17283,6 +17317,17 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Kopfzeile einblenden',
       'pt': 'Mostrar cabeçalho',
       'ru': 'Показать заголовок',
+    },
+    'view.keepContentWidth': {
+      'ja': '欄を閉じても本文を広げない',
+      'en': 'Keep text width when panels close',
+      'zh': '关闭侧栏时保持正文宽度',
+      'ko': '패널을 닫아도 본문 너비 유지',
+      'es': 'Mantener el ancho del texto al cerrar los paneles',
+      'fr': 'Garder la largeur du texte à la fermeture des panneaux',
+      'de': 'Textbreite beim Schließen der Bereiche beibehalten',
+      'pt': 'Manter a largura do texto ao fechar os painéis',
+      'ru': 'Сохранять ширину текста при закрытии панелей',
     },
     'text.memoPanel': {
       'ja': 'メモ',
@@ -77187,13 +77232,98 @@ class MindMapProvider extends ChangeNotifier {
   ///   使用状況が「無制限」 と出る)。 装った状態で見え方を確かめるための
   ///   機能なので、 上限まで開いてしまうと確かめられない。
   ///   Dev 枠 (引き換えコードの dev プラン) は今までどおり無制限。
+  // ── アップロードの上限 (= ユーザー要望: クラウド同期を AI からも
+  //    始められるようにする代わりに、 設定した容量を超えて上げられない
+  //    ようにしたい) ────────────────────────────────────────────────
+  //    0 = 掛けていない。 掛けると、 プランの枠より小さい方が効く。
+  int _uploadCapBytes = 0;
+  int get uploadCapBytes => _uploadCapBytes;
+  Future<void> setUploadCapBytes(int bytes) async {
+    _uploadCapBytes = bytes < 0 ? 0 : bytes;
+    notifyListeners();
+    try {
+      final prefs = await _prefsWithRetry();
+      await prefs.setInt('uploadCapBytes', _uploadCapBytes);
+    } catch (_) {}
+  }
+
+  /// 開発者が**自分に**掛けるアップロードの上限 (= ユーザー要望: 試すため)。
+  ///
+  /// 開発者の枠は実質無制限なので、 これが無いと上限に当たる動きを
+  /// 手元で確かめられない。 開発者モードの間だけ効く。
+  int _devSelfUploadCapBytes = 0;
+  int get devSelfUploadCapBytes => _devSelfUploadCapBytes;
+  bool get devSelfUploadCapActive =>
+      _developerMode && _devSelfUploadCapBytes > 0;
+
+  /// 押すたびに 1 段上げる (一番上まで行ったら「なし」 に戻る)。
+  /// AI の使い過ぎ防止 (kDevSelfCapSteps) と同じ作法。
+  static const List<int> kDevUploadCapSteps = [
+    1 * 1024 * 1024, // 1 MB
+    5 * 1024 * 1024,
+    10 * 1024 * 1024,
+    50 * 1024 * 1024,
+    100 * 1024 * 1024,
+    500 * 1024 * 1024,
+    1024 * 1024 * 1024, // 1 GB
+  ];
+
+  Future<void> stepDevSelfUploadCap() async {
+    if (!_developerMode) return;
+    final cur = _devSelfUploadCapBytes;
+    for (final v in kDevUploadCapSteps) {
+      if (cur < v) {
+        await setDevSelfUploadCapBytes(v);
+        return;
+      }
+    }
+    await setDevSelfUploadCapBytes(0); // 一周したら上限なしへ
+  }
+
+  Future<void> setDevSelfUploadCapBytes(int bytes) async {
+    if (!_developerMode) return;
+    _devSelfUploadCapBytes = bytes < 0 ? 0 : bytes;
+    notifyListeners();
+    try {
+      final prefs = await _prefsWithRetry();
+      await prefs.setInt('dev_self_upload_cap_bytes', _devSelfUploadCapBytes);
+    } catch (_) {}
+  }
+
+  /// 何らかの上限を自分で掛けているか (= 「無制限」 と出さないための判定)。
+  bool get uploadCapped => _uploadCapBytes > 0 || devSelfUploadCapActive;
+
+  /// 押すたびに上限を 1 段上げる (一番上まで行ったら「なし」 に戻る)。
+  Future<void> stepUploadCapBytes() async {
+    final cur = _uploadCapBytes;
+    for (final v in kDevUploadCapSteps) {
+      if (cur < v) {
+        await setUploadCapBytes(v);
+        return;
+      }
+    }
+    await setUploadCapBytes(0); // 一周したら上限なしへ
+  }
+
+  /// 掛けている上限をまとめて当てる。 0 は「掛けていない」。
+  int _applyUploadCaps(int base) {
+    var v = base;
+    if (devSelfUploadCapActive && _devSelfUploadCapBytes < v) {
+      v = _devSelfUploadCapBytes;
+    }
+    if (_uploadCapBytes > 0 && _uploadCapBytes < v) v = _uploadCapBytes;
+    return v;
+  }
+
   bool get _quotaUnlimited => currentPlan == SubscriptionPlan.dev;
 
   bool get isStorageUnlimited => _quotaUnlimited;
 
   /// プランごとのアップロード月上限 (バイト)。 0 は無制限の意味でも使えるが、
   /// 現状はすべて有限値。
-  int get monthlyUploadLimit {
+  int get monthlyUploadLimit => _applyUploadCaps(_monthlyUploadLimitBase);
+
+  int get _monthlyUploadLimitBase {
     if (_quotaUnlimited) return kUnlimitedBytes; // Dev 枠は実質無制限
     switch (currentPlan) {
       // ★ クラウド同期は Max 限定 (uploadToCloud / downloadFromCloud /
@@ -77673,6 +77803,8 @@ class MindMapProvider extends ChangeNotifier {
     // (= ユーザー要望: 開発者自身はクーポンを発行しなくても色々できるように)。
     final planStr = prefs.getString('dev_impersonate_plan');
     _devSelfCapUsd = prefs.getDouble('dev_self_cap_usd') ?? 0;
+    _devSelfUploadCapBytes = prefs.getInt('dev_self_upload_cap_bytes') ?? 0;
+    _uploadCapBytes = prefs.getInt('uploadCapBytes') ?? 0;
     _devSelfSpentUsd = prefs.getDouble('dev_self_spent_usd') ?? 0;
     _devImpersonatePlan = planStr == null
         ? SubscriptionPlan.dev
@@ -97462,13 +97594,13 @@ $cleanQ
 
   /// AI からは動かさない機能。 いずれも「押すつもりが無かった」 で済まない
   /// ものなので、 利用者自身がボタンを押す形に限る:
-  ///   sync         … ページをクラウドへ送る (外向き + 通信量課金)
-  ///   appLock / focusLock … 利用者を自分のアプリから締め出す
-  static const Set<String> _mcpBlockedCommands = {
-    'sync',
-    'appLock',
-    'focusLock',
-  };
+  ///
+  /// ★ = ユーザー要望「クラウド同期や集中ロック等も MCP から行えるように」。
+  ///   空にした (= 止める機能は無い)。 仕組み自体は残してあるので、
+  ///   もし又止めたい機能が出てきたらここへ入れる。
+  ///   クラウドへ上げ過ぎないよう、 代わりに上限 (uploadCapBytes /
+  ///   devSelfUploadCapBytes) をつけてある。
+  static const Set<String> _mcpBlockedCommands = <String>{};
 
   void registerMcpCommands(
       List<Map<String, String>> commands, void Function(String id) runner) {
@@ -98717,6 +98849,11 @@ $cleanQ
   }) {
     final page = mcpPageById(pageId);
     if (page == null) return null;
+    // ★ 無いファイルで添付ノードを作らない (= 動作検証レポート BUG-01:
+    //   存在しないパスを渡すと、 題名も絵も無い「壊れたタイル」 が
+    //   出来てしまい、 手で消すしかなかった)。 断る理由は呼び出し元
+    //   (MCP の受け口) が出す。 ここは作らないことだけを受け持つ。
+    if (filePath.isEmpty || !File(filePath).existsSync()) return null;
     final base = mcpReferenceFor(pageId);
     final node = MindMapNode(
       id: _uuid.v4(),
@@ -98735,6 +98872,12 @@ $cleanQ
     unawaited(_applyImageAspectRatio(pageId, node.id, filePath));
     return node.id;
   }
+
+  /// 絵として本当に読めるか確かめる (読めれば縦横比、 駄目なら null)。
+  /// = MCP の受け口が、 ノードを作る前に断るために使う。 中身は
+  ///   _imageAspectOfFile そのままで、 検査を二重に書かないための入口。
+  Future<double?> mcpImageAspect(String filePath) =>
+      _imageAspectOfFile(filePath);
 
   /// 画像ファイルの縦横比 (幅 / 高さ) を返す。 読めなければ null。
   /// ノードを置く前に高さを見積もるために使う。
@@ -98811,6 +98954,12 @@ $cleanQ
     //   ページ中のノードを格子に並べ直すので、 普通のマップに使うと
     //   利用者が組んだ配置を丸ごと壊してしまう。
     if (page.pageType != 'bookshelf') return null;
+    // ★ 無い絵でタイルを作らない (= 動作検証レポート BUG-01)。
+    if (imagePath != null &&
+        imagePath.isNotEmpty &&
+        !File(imagePath).existsSync()) {
+      return null;
+    }
     final node = MindMapNode(
       id: _uuid.v4(),
       title: text ?? '',
@@ -99920,8 +100069,38 @@ $cleanQ
   /// パスなど) ので、 どちらの区切りでも切れるようにする
   /// (= Platform.pathSeparator だけだとノード名がパスまるごとになっていた)。
   static String _baseName(String path) =>
-      path.split(RegExp(r'[\/]')).where((e) => e.isNotEmpty).lastOrNull ??
+      path.split(RegExp(r'[/\\]')).where((e) => e.isNotEmpty).lastOrNull ??
       path;
+
+  /// 同じファイルを指しているか (区切り文字と、 Windows の大小文字を吸収)。
+  /// 画面側の isSameFilePath と同じ物差し。 こちらからは呼べないので同居させる
+  /// (== で比べていた頃は、 同じファイルなのにタイルが 2 枚出来ていた)。
+  static bool mcpSamePath(String a, String b) {
+    if (a == b) return true;
+    if (a.isEmpty || b.isEmpty) return false;
+    String norm(String v) {
+      final t = v.replaceAll('\\', '/');
+      return Platform.isWindows ? t.toLowerCase() : t;
+    }
+
+    return norm(a) == norm(b);
+  }
+
+  /// そのファイルを貼っているページの id を全部返す (自分も含む)。
+  /// = 「1 つのファイルを何ページで使っているか」 を数えるため。
+  List<String> mcpPagesUsingFile(String filePath) {
+    if (filePath.isEmpty) return const [];
+    final out = <String>[];
+    for (final pg in _pages) {
+      for (final nd in pg.nodes.values) {
+        if (mcpSamePath(nd.attachmentPath ?? '', filePath)) {
+          out.add(pg.id);
+          break;
+        }
+      }
+    }
+    return out;
+  }
 
   /// 出来たファイルをノードとして貼る (画像以外も扱える)。
   String? mcpAddFileNode(String pageId, String filePath, {String? title}) {
@@ -99947,7 +100126,10 @@ $cleanQ
     //   入れ替わったのに新しいタイルがもう 1 枚増えていた)。
     //   中身はもう書き換わっているので、 元のノードをそのまま使い回す。
     for (final nd in page.nodes.values) {
-      if ((nd.attachmentPath ?? '') != filePath) continue;
+      // ★ == だと `/` と `\` の違いや大小文字でよそ者と見なされ、
+      //   同じファイルなのにタイルが 2 枚出来ていた。
+      if (!mcpSamePath(nd.attachmentPath ?? '', filePath)) continue;
+      nd.attachmentPath = filePath;
       if (title != null && title.trim().isNotEmpty) nd.title = title;
       nd.contentType = NodeContentType.attachment;
       nd.attachmentName = name;

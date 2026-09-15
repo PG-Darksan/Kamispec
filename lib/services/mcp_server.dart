@@ -1629,6 +1629,40 @@ class McpServer {
     return true; // 数値 / 真偽など
   }
 
+  /// 絵として貼れる拡張子。 node_widget.dart の isImageAttach と**必ず**
+  /// 同じにする (= 広げると、 検査は通るのにタイルに絵が出ない物が増える)。
+  static const Set<String> _kImageExts = {
+    'jpg', 'jpeg', 'jpe', 'png', 'gif', 'webp', 'bmp',
+  };
+
+  /// 絵として貼れないパスなら、 その理由 (英語) を返す。 貼れれば null。
+  ///
+  /// ★ = 動作検証レポート BUG-01「存在しない画像パスでも壊れたタイルが
+  ///   出来てしまう」。 双子の add_image_node には存在確認があったのに、
+  ///   add_gallery_item には無かった。 二度と離れないよう入口をここへ束ねる。
+  static String? _imagePathProblem(String path) {
+    final t = FileSystemEntity.typeSync(path, followLinks: true);
+    if (t == FileSystemEntityType.notFound) return 'file not found';
+    if (t != FileSystemEntityType.file) return 'not a regular file';
+    final dot = path.lastIndexOf('.');
+    final ext = dot >= 0 ? path.substring(dot + 1).toLowerCase() : '';
+    if (!_kImageExts.contains(ext)) {
+      return 'unsupported image type ".$ext" '
+          '(use ${_kImageExts.join(" / ")})';
+    }
+    return null;
+  }
+
+  /// 上の検査に加えて、 本当に絵として開けるかまで確かめる。
+  /// 中身が壊れた png などを、 ノードを作る前に弾くため。
+  Future<String?> _imagePathRejection(String path) async {
+    final why = _imagePathProblem(path);
+    if (why != null) return why;
+    final ar = await _provider.mcpImageAspect(path);
+    if (ar == null) return 'not a readable image (the file could not be decoded)';
+    return null;
+  }
+
   /// 配列の引数を文字列の並びに直す (空文字は捨てる)。
   static List<String> _stringList(Object? v) {
     if (v is! List) return const [];
@@ -2268,8 +2302,13 @@ class McpServer {
         if (path == null || path.isEmpty) {
           return _err('imageBase64 or imagePath is required');
         }
-        if (!File(path).existsSync()) {
-          return _err('image file not found: $path');
+        // ★ 双子の add_gallery_item と同じ物差しで断る (= BUG-01)。
+        //   存在確認だけだと、 .txt や壊れた png でも添付ノードが出来て
+        //   いた (絵の出ない黒いタイルになる)。
+        final imgWhy = await _imagePathRejection(path);
+        if (imgWhy != null) {
+          return _err('imagePath rejected: $imgWhy: $path '
+              '- no node was created.');
         }
         final id = _provider.mcpAddImageNode(
           pageId,
@@ -2295,16 +2334,35 @@ class McpServer {
                 'without a title.');
           }
           if (many.isNotEmpty) {
+            // ★ 落ちた分を黙って捨てない (= これまでは titles に頼んだ分を
+            //   全部並べつつ added だけ減っていたので、 何が出来なかったのか
+            //   分からなかった)。 add_node と同じ failed の形で返す。
             final ids = <String>[];
-            for (final t in many) {
+            final titles = <String>[];
+            final failed = <Map<String, Object?>>[];
+            for (var i = 0; i < many.length; i++) {
+              final t = many[i];
               final id = _provider.mcpAddGalleryItem(pageId, text: t);
-              if (id != null) ids.add(id);
+              if (id != null) {
+                ids.add(id);
+                titles.add(t);
+              } else {
+                failed.add({
+                  'index': i,
+                  'text': t,
+                  'reason': 'not a gallery page (or page not found)',
+                });
+              }
             }
             return ids.isEmpty
                 ? _err('not a gallery page (or page not found): $pageId '
                     '- use list_pages and pick a page whose type is '
                     '"bookshelf", or create one with create_page')
-                : _ok({'added': ids.length, 'titles': many});
+                : _ok({
+                    'added': ids.length,
+                    'titles': titles,
+                    if (failed.isNotEmpty) 'failed': failed,
+                  });
           }
           // 題名も memo も絵も無ければ、 中身の無いタイルは作らない。
           if (!_hasContent(a['text']) &&
@@ -2314,11 +2372,22 @@ class McpServer {
                 'or at least one of "text" / "memo" / "imagePath". '
                 'No tile was created.');
           }
+          // ★ 絵を渡された時は、 タイルを作る前に確かめる (= BUG-01:
+          //   無いパスでも「壊れたタイル」 が出来て、 手で消すしか
+          //   なかった)。 断る理由をそのまま返し、 何も作らない。
+          final gimg = (a['imagePath'] as String? ?? '').trim();
+          if (gimg.isNotEmpty) {
+            final why = await _imagePathRejection(gimg);
+            if (why != null) {
+              return _err('imagePath rejected: $why: $gimg '
+                  '- no tile was created.');
+            }
+          }
           final id = _provider.mcpAddGalleryItem(
             pageId,
             text: a['text'] as String?,
             memo: a['memo'] as String?,
-            imagePath: a['imagePath'] as String?,
+            imagePath: gimg.isEmpty ? null : gimg,
           );
           return id == null
               ? _err('not a gallery page (or page not found): $pageId')

@@ -41640,23 +41640,68 @@ class _MindMapScreenState extends State<MindMapScreen>
                     if (provider.isMaxUnlocked || provider.isStorageUnlimited)
                       const SizedBox(height: 14),
                     if (provider.isMaxUnlocked || provider.isStorageUnlimited)
+                    // ★ 自分で上限を掛けている時は「無制限」 と出さない
+                    //   (= 上限を掛けた意味が分からなくなる)。
                     _usageRow(
                       label: provider.t('cloud.uploadMonth'),
-                      detail: provider.isStorageUnlimited
+                      detail: (provider.isStorageUnlimited &&
+                              !provider.uploadCapped)
                           ? '${_formatBytes(provider.monthlyUploadBytes)} / 無制限'
                           : '${_formatBytes(provider.monthlyUploadBytes)} / ${_formatBytes(provider.monthlyUploadLimit)}',
-                      percent: provider.isStorageUnlimited ||
+                      percent: (provider.isStorageUnlimited &&
+                                  !provider.uploadCapped) ||
                               provider.monthlyUploadLimit <= 0
                           ? 0.0
                           : (provider.monthlyUploadBytes /
                                   provider.monthlyUploadLimit)
                               .clamp(0.0, 1.0),
-                      unlimited: provider.isStorageUnlimited,
+                      unlimited: provider.isStorageUnlimited &&
+                          !provider.uploadCapped,
                       barColor: provider.monthlyUploadRemaining <= 0 &&
-                              !provider.isStorageUnlimited
+                              !(provider.isStorageUnlimited &&
+                                  !provider.uploadCapped)
                           ? Colors.redAccent
                           : const Color(0xFF66BB6A),
                     ),
+                    // ── 上げ過ぎないための上限 (= ユーザー要望: 設定した
+                    //    容量を超えてクラウドに上げられないように)。
+                    //    AI からもクラウド同期を始められるようにしたので、
+                    //    自分で天井を決められるようにする。 ──
+                    if (provider.isMaxUnlocked || provider.isStorageUnlimited)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: Row(children: [
+                          Expanded(
+                            child: Text(
+                              provider.uploadCapBytes <= 0
+                                  ? provider.t('cloud.uploadCapNone')
+                                  : provider
+                                      .t('cloud.uploadCapSet')
+                                      .replaceFirst(
+                                          '{size}',
+                                          MindMapProvider.formatBytes(
+                                              provider.uploadCapBytes)),
+                              style: const TextStyle(
+                                  color: Colors.white54, fontSize: 11),
+                            ),
+                          ),
+                          TextButton(
+                            style: TextButton.styleFrom(
+                              foregroundColor: provider.uploadCapBytes > 0
+                                  ? const Color(0xFF66BB6A)
+                                  : Colors.white54,
+                              visualDensity: VisualDensity.compact,
+                            ),
+                            onPressed: () async {
+                              await provider.stepUploadCapBytes();
+                              if (!sctx.mounted) return;
+                              setD(() {});
+                            },
+                            child: Text(provider.t('cloud.uploadCapStep'),
+                                style: const TextStyle(fontSize: 11)),
+                          ),
+                        ]),
+                      ),
                     if (provider.isMaxUnlocked || provider.isStorageUnlimited)
                       const SizedBox(height: 14),
                     // ─── クラウド ダウンロード (今月) ───
@@ -65524,14 +65569,77 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (name.isEmpty) return null;
     name = name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
     if (!name.toLowerCase().endsWith('.$kind')) name = '$name.$kind';
+    final pageId = '${spec['pageId'] ?? ''}';
     try {
-      // ★ 書く所と同じ所を見る (= いま開いているフォルダー)。
+      // ★ まずは **そのページに貼ってある** 同じ名前のファイル。
+      //   一覧で別のフォルダーを開いていても、 同じ物へ足せる。
+      final onPage = _mcpExistingPathOnPage(provider, pageId, name);
+      if (onPage != null && await File(onPage).exists()) {
+        return File(onPage);
+      }
+      // 次に、 書く所と同じ所 (= いま開いているフォルダー)。
       //   ここがずれると、 同じ名前で頼むたびに 2 つ目が出来てしまう。
       final dir = await _newFileDir(provider, fallbackName: 'mcp_files');
       final f = File('${dir.path}${Platform.pathSeparator}$name');
-      if (await f.exists()) return f;
+      if (!await f.exists()) return null;
+      // ★ ただし、 他のページだけが貼っているファイルには足さない
+      //   (= RISK-01: そのページの中身を壊してしまう)。 書き先を決める
+      //   _mcpWritePath と必ず同じ物差しにする。
+      final owners = provider.mcpPagesUsingFile(f.path);
+      if (owners.isEmpty || owners.contains(pageId)) return f;
     } catch (_) {}
     return null;
+  }
+
+  /// そのページに既に貼ってある同じ名前のファイルの場所 (無ければ null)。
+  /// = 「さっき作った資料を書き直して」 の相手。 一覧で別のフォルダーを
+  ///   開いていても、 貼ってある物の隣へ書き直せるようにするため
+  ///   (これが無いと、 書き直しのつもりが 3 つ目のファイルと 2 枚目の
+  ///    タイルになっていた)。
+  String? _mcpExistingPathOnPage(
+      MindMapProvider provider, String pageId, String name) {
+    if (pageId.isEmpty || name.isEmpty) return null;
+    final page = provider.mcpPageById(pageId);
+    if (page == null) return null;
+    for (final nd in page.nodes.values) {
+      final ap = nd.attachmentPath ?? '';
+      if (ap.isEmpty) continue;
+      if (_baseName(ap).toLowerCase() == name.toLowerCase()) return ap;
+    }
+    return null;
+  }
+
+  /// MCP から作るファイルを、 実際にどこへ書くか決める。
+  ///
+  /// ★ = 動作検証レポート RISK-01「別々のページで同じ名前のファイルを作ると
+  ///   物理ファイルが 1 つに合流し、 片方の中身が黙って消える」。
+  ///   名前と「いま開いているフォルダー」 だけで場所を決めていたので、
+  ///   ページ A の 資料.pptx の上に、 ページ B の 資料.pptx が
+  ///   そのまま上書きされていた。
+  ///
+  ///   そこで**持ち主**で見る。 置き場所の形は一切変えない (= 利用者の
+  ///   フォルダーに id 名の下請けフォルダーを作らない)。
+  ///     * 誰も貼っていない  → 今までどおり上書き (自分で作った物の作り直し)
+  ///     * 自分のページも貼っている → 上書き (わざと共有している使い方)
+  ///     * 他のページだけが貼っている → **触らずに** 資料_1.pptx へ逃がす
+  ///   既存のファイルは 1 バイトも動かさないので、 元のページのタイル・
+  ///   さわり・クラウドの控えはそのまま生き続ける。
+  Future<String> _mcpWritePath(
+      MindMapProvider provider, String pageId, String candidate) async {
+    if (!await File(candidate).exists()) return candidate;
+    final owners = provider.mcpPagesUsingFile(candidate);
+    if (owners.isEmpty || owners.contains(pageId)) return candidate;
+    final dot = candidate.lastIndexOf('.');
+    final sep = candidate.lastIndexOf(RegExp(r'[/\\]'));
+    final head = dot > sep && dot > 0 ? candidate.substring(0, dot) : candidate;
+    final tail = dot > sep && dot > 0 ? candidate.substring(dot) : '';
+    for (var i = 1; i < 500; i++) {
+      final alt = '${head}_$i$tail';
+      if (!await File(alt).exists()) return alt;
+      final ao = provider.mcpPagesUsingFile(alt);
+      if (ao.isEmpty || ao.contains(pageId)) return alt;
+    }
+    return candidate;
   }
 
   Future<Map<String, dynamic>?> _buildMcpFile(Map<String, dynamic> spec) async {
@@ -65650,10 +65758,17 @@ class _MindMapScreenState extends State<MindMapScreen>
       // ★ いま開いているフォルダーの中に作る (= ユーザー要望: 新規作成した
       //   ファイルは docs ではなく開いているフォルダーへ)。 開いていない時
       //   だけ、 今までどおりアプリの mcp_files へ。
-      final dir = await _newFileDir(provider, fallbackName: 'mcp_files');
-      // アプリ自身が作った物は、 読み返す時に許可の窓を出さない (= 毎回
-      //   聞かれると AI が中身を確かめられず、 新しく作り直してしまう)。
-      //   ※ この控えは起動している間だけ。
+      // ★ 書き直す時は、 そのページに貼ってある物の隣へ書く (= 一覧で
+      //   別のフォルダーを開いていると、 書き直しのつもりが 3 つ目の
+      //   ファイルと 2 枚目のタイルになっていた)。
+      final pageId = '${spec['pageId'] ?? ''}';
+      final onPage = _mcpExistingPathOnPage(provider, pageId, name);
+      Directory? dir;
+      if (onPage != null) {
+        final d = File(onPage).parent;
+        if (await d.exists()) dir = d;
+      }
+      dir ??= await _newFileDir(provider, fallbackName: 'mcp_files');
       provider.mcpAllowReadDir(dir.path);
       provider
           .mcpAllowReadDir(dir.path.replaceAll('/', Platform.pathSeparator));
@@ -65662,7 +65777,12 @@ class _MindMapScreenState extends State<MindMapScreen>
       //   mcpAddFileNode が使い回すようにした)。
       //   名前だけを頼りに他所のファイルを書き換えに行くのは**やらない**
       //   (利用者が自分で貼った同名のファイルを壊しかねないため)。
-      final file = File('${dir.path}/$name');
+      // ★ 他のページだけが使っているファイルの上には書かない
+      //   (= RISK-01)。 その時は 名前_1.拡張子 へ逃がし、
+      //   元のファイルには 1 バイトも触らない。
+      final file =
+          File(await _mcpWritePath(provider, pageId, '${dir.path}/$name'));
+      name = _baseName(file.path); // 逃がした時は名前が変わっている
       // 書く前に見ておく (書いた後だと必ず true になる)。
       final replaced = await file.exists();
       await file.writeAsBytes(bytes, flush: true);
@@ -65679,13 +65799,19 @@ class _MindMapScreenState extends State<MindMapScreen>
       //   (同じパスのノードが既にあれば mcpAddFileNode が使い回すので、
       //    タイルは増えない = ユーザー報告の「新規で新しいファイルが
       //    作成されてしまった」 の本体)。
-      final pageId = '${spec['pageId'] ?? ''}';
       final nodeId = provider.mcpAddFileNode(pageId, file.path,
           title: title.isEmpty ? null : title);
+      // ★ 同じファイルを他のページでも使っている時は、 それを伝える
+      //   (= 書き換えると向こうの見え方も変わるため)。
+      final shared = provider
+          .mcpPagesUsingFile(file.path)
+          .where((id) => id != pageId)
+          .toList();
       return {
         'path': file.path,
         'fileName': name,
         'replaced': replaced,
+        if (shared.isNotEmpty) 'alsoOnPages': shared,
         if (nodeId != null) 'nodeId': nodeId,
       };
     } catch (e, st) {
@@ -99003,6 +99129,71 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     color: Colors.white38,
                                     fontSize: 10,
                                     height: 1.5),
+                              ),
+                            ],
+                          ),
+                        ),
+
+                        const SizedBox(height: 20),
+
+                        // ── 自分に掛けるアップロードの上限 (= ユーザー要望:
+                        //    試すために、 開発者自身にも上限を掛けたい) ──
+                        //    開発者の枠は実質無制限なので、 これが無いと
+                        //    上限に当たる動きを手元で確かめられない。
+                        _devSection('自分に掛けるアップロードの上限',
+                            Icons.cloud_upload_rounded,
+                            const Color(0xFF4FC3F7)),
+                        const SizedBox(height: 8),
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF12161F),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.white12),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                provider.devSelfUploadCapBytes <= 0
+                                    ? '上限なし (いつもどおり上げられます)'
+                                    : '上限 ${MindMapProvider.formatBytes(provider.devSelfUploadCapBytes)}'
+                                        ' / 今月上げた分 '
+                                        '${MindMapProvider.formatBytes(provider.monthlyUploadBytes)}',
+                                style: const TextStyle(
+                                    color: Colors.white70,
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600),
+                              ),
+                              const SizedBox(height: 8),
+                              // 押すたびに 1 段上がる (1MB → … → 1GB → なし)。
+                              ElevatedButton.icon(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor:
+                                      provider.devSelfUploadCapBytes > 0
+                                          ? const Color(0xFF4FC3F7)
+                                          : const Color(0xFF1A2030),
+                                  foregroundColor:
+                                      provider.devSelfUploadCapBytes > 0
+                                          ? Colors.black87
+                                          : Colors.white70,
+                                  side: BorderSide(
+                                      color:
+                                          provider.devSelfUploadCapBytes > 0
+                                              ? const Color(0xFF4FC3F7)
+                                              : Colors.white24),
+                                  padding: const EdgeInsets.symmetric(
+                                      vertical: 10),
+                                  minimumSize: const Size(double.infinity, 38),
+                                ),
+                                icon: const Icon(Icons.add_rounded, size: 16),
+                                onPressed: () async {
+                                  await provider.stepDevSelfUploadCap();
+                                  if (!sctx.mounted) return;
+                                  setD(() {});
+                                },
+                                label: const Text('上限を 1 段上げる',
+                                    style: TextStyle(fontSize: 12)),
                               ),
                             ],
                           ),
@@ -203556,6 +203747,8 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
       if (!mounted) return;
       _prefAiPanelOpen = prefs.getBool(_kPrefAiPanelOpen);
       _prefMemoPanelOpen = prefs.getBool(_kPrefMemoPanelOpen);
+      // 欄を閉じた時に広げないか (既定は広げない = ユーザー要望)。
+      _keepContentWidth = prefs.getBool(_kPrefKeepContentWidth) ?? true;
       // 初回でなく、 前は閉じていたなら、 予約した自動オープンを取り消す。
       // ★ その時は「場所取り」 も一緒に外す。 外し忘れると、 欄は出ないのに
       //   両脇に空の帯だけ残り、 PDF が狭いまま開く (= ユーザー報告)。
@@ -203596,6 +203789,15 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
 
   /// メモ欄の幅 (ドラッグで可変)。
   double _memoPanelWidth = 320.0;
+
+  /// 欄を閉じても、 PDF をその場所まで広げない (= ユーザー要望: 欄が閉じて
+  /// 左右に目いっぱい広がると反って読みにくい)。 テキストエディターと同じ鍵。
+  /// 幅が変わらないので、 開閉のたびに SfPdfViewer が組み直されて表示ページが
+  /// 飛ぶことも無くなる。 場所取り (_panelSlotsReserved) とは**別物**で、
+  /// あちらは読み込み後に外れる立ち上がりだけの仕組み。
+  bool _keepContentWidth = true;
+  static const double _kMinContentWidth = 480.0;
+  static const String _kPrefKeepContentWidth = 'viewerKeepContentWidth_v1';
 
   /// メモ欄と AI 欄の左右位置を入れ替えているか。
   /// 既定 (false) = メモ左 / AI 右。true で左右逆。
@@ -208731,6 +208933,32 @@ try {
                             },
                           ),
                         ),
+                        // ── 欄を閉じた時に PDF を広げない / 広げる
+                        //    (= ユーザー要望)。 既定は「広げない」。 ──
+                        if (!widget.compactHost)
+                          IconButton(
+                            tooltip: context
+                                .read<MindMapProvider>()
+                                .t('view.keepContentWidth'),
+                            icon: Icon(
+                              Icons.vertical_split_rounded,
+                              color: _keepContentWidth
+                                  ? const Color(0xFF4DB6AC)
+                                  : Colors.white70,
+                              size: 20,
+                            ),
+                            onPressed: () async {
+                              _suppressPdfPageChangeBriefly();
+                              setState(() =>
+                                  _keepContentWidth = !_keepContentWidth);
+                              try {
+                                final prefs =
+                                    await SharedPreferences.getInstance();
+                                await prefs.setBool(
+                                    _kPrefKeepContentWidth, _keepContentWidth);
+                              } catch (_) {}
+                            },
+                          ),
                         // ── ページに追加 (= ユーザー要望) ──
                         // まだマップに載っていない時だけ出す。
                         if (_canAddToPage)
@@ -208877,7 +209105,7 @@ try {
                   _buildPdfDrawToolbarBar(),
                   // ── 本体 ──
                   Expanded(
-                    child: Builder(builder: (_) {
+                    child: LayoutBuilder(builder: (_, cons) {
                       // ★ メモ / AI 欄は **いつも左右へ埋め込む**
                       //   (= ユーザー要望: 画面を引いてもフローティングに
                       //   しない)。
@@ -208896,8 +209124,28 @@ try {
                       final showMemo = hasMemoPanel && _memoPanelOpen;
                       // 既定: メモ=左 / AI=右。入れ替え時は左右逆。
                       final memoOnLeft = !_panelsSwapped;
+                      final showAi = _aiPanelOpen;
                       final screenW = MediaQuery.of(context).size.width;
                       final maxW = (screenW * 0.8).clamp(280.0, 1400.0);
+                      // ── 欄を閉じても PDF はその場所まで広がらない
+                      //    (= ユーザー要望)。 欄のあった側に幅だけ残す。
+                      //    掴む線も枠も出さない (= 以前「空の帯が残って
+                      //    見える」 と報告があったため、 ただの余白にする)。
+                      //    窓が狭い時は PDF を潰さないよう、 取れる分だけ。 ──
+                      final memoW = _memoPanelWidth.clamp(240.0, maxW) + 6;
+                      final aiW = _aiPanelWidth.clamp(280.0, maxW) + 6;
+                      final keep = _keepContentWidth && !widget.compactHost;
+                      final wantMemo =
+                          (keep && hasMemoPanel && !showMemo && !reserveSlots)
+                              ? memoW
+                              : 0.0;
+                      final wantAi =
+                          (keep && !showAi && !reserveSlots) ? aiW : 0.0;
+                      final want = wantMemo + wantAi;
+                      final room = cons.maxWidth - _kMinContentWidth;
+                      final k = (want <= 0 || room <= 0)
+                          ? 0.0
+                          : (room / want).clamp(0.0, 1.0);
                       final memoSlot = (showMemo || (reserveSlots && hasMemoPanel))
                           ? _buildResizableDock(
                               panel: _spreadDockSurface(
@@ -208919,8 +209167,7 @@ try {
                                         .clamp(240.0, maxW));
                               },
                             )
-                          : null;
-                      final showAi = _aiPanelOpen;
+                          : (wantMemo > 0 ? SizedBox(width: wantMemo * k) : null);
                       final aiSlot = (showAi || reserveSlots)
                           ? _buildResizableDock(
                               panel: _spreadDockSurface(
@@ -208940,7 +209187,7 @@ try {
                                         .clamp(280.0, maxW));
                               },
                             )
-                          : null;
+                          : (wantAi > 0 ? SizedBox(width: wantAi * k) : null);
                       final leftSlot = memoOnLeft ? memoSlot : aiSlot;
                       final rightSlot = memoOnLeft ? aiSlot : memoSlot;
                       final body = Row(
@@ -245813,6 +246060,15 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
   double _memoPanelW = 320.0;
   double _aiPanelW = 380.0;
 
+  /// 欄を閉じても、 本文をその場所まで広げない (= ユーザー要望: 欄が閉じて
+  /// 左右に目いっぱい広がると、 1 行が長くなり過ぎて反って読みにくい)。
+  /// 欄のあった所は**ただの余白**として空けておくだけで、 掴む線も枠も
+  /// 出さない (= 以前「空の帯が残って見える」 と報告があったため)。
+  /// 本文が狭くなる方が読みにくいので、 窓が狭い時は空ける量を自動で減らす。
+  bool _keepContentWidth = true;
+  static const double _kMinContentWidth = 640.0;
+  static const String _kPrefKeepContentWidth = 'viewerKeepContentWidth_v1';
+
   /// メモの紐付け先ノード。 widget.nodeId が無い場合 (= アプリで開く) は
   /// 「ページに追加」 でノード化した時にここへ入る (= ユーザー要望)。
   String? _nodeId;
@@ -246889,6 +247145,11 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
           v != _alignMode &&
           const {'left', 'center', 'right'}.contains(v)) {
         setState(() => _alignMode = v);
+      }
+      // 欄を閉じた時に広げないか (既定は広げない)。 PDF ビューアと同じ鍵。
+      final keep = prefs.getBool(_kPrefKeepContentWidth) ?? true;
+      if (mounted && keep != _keepContentWidth) {
+        setState(() => _keepContentWidth = keep);
       }
     } catch (_) {}
   }
@@ -248359,46 +248620,69 @@ $currentText
             //    残し、 ボタンだけ隠す。 カーソルを乗せると表示ボタンが出る)。
             _buildHeader(dark, fg),
             Expanded(
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  // ── 左: メモパネル (= ユーザー要望: PDF ビューアの様な
-                  //    メモ欄。 境界ドラッグで幅可変) ──
-                  if (_isDesktopEditor && _memoPanelOpen) ...[
-                    _buildMemoPanel(dark, fg),
-                    _panelResizeHandle(left: true),
-                  ],
-                  Expanded(
-                    child: Stack(
-                      children: [
-                        Positioned.fill(child: body),
-                        // ── 音声読み上げ操作バー (= ユーザー要望) ──
-                        if (_readerVisible && _reader != null)
-                          Positioned(
-                            left: 0,
-                            right: 0,
-                            bottom: 14,
-                            child: Center(
-                              child: ReadAloudBar(
-                                controller: _reader!,
-                                onClose: _stopReadAloud,
+              child: LayoutBuilder(builder: (_, cons) {
+                // ── 欄を閉じても本文はその場所まで広がらない
+                //    (= ユーザー要望: 左右に目いっぱい広がると反って
+                //    読みにくい)。 閉じている欄の幅だけ、 その欄のあった側に
+                //    余白を残す。 掴む線も飾りも出さない (= 以前「空の帯が
+                //    残って見える」 と報告があったため)。
+                //    窓が狭い時は本文を潰さないよう、 取れる分だけにする
+                //    (= マークダウンのプレビューと同じ考え方)。 ──
+                // 分割ペインの中 (compactHost) はそもそも狭いのでしない。
+                final keep = _isDesktopEditor &&
+                    _keepContentWidth &&
+                    !widget.compactHost;
+                final memoGap =
+                    (keep && !_memoPanelOpen) ? _memoPanelW + 6 : 0.0;
+                final aiGap = (keep && !_aiPanelOpen) ? _aiPanelW + 6 : 0.0;
+                final want = memoGap + aiGap;
+                final room = cons.maxWidth - _kMinContentWidth;
+                final k = (want <= 0 || room <= 0)
+                    ? 0.0
+                    : (room / want).clamp(0.0, 1.0);
+                return Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // ── 左: メモパネル (= ユーザー要望: PDF ビューアの様な
+                    //    メモ欄。 境界ドラッグで幅可変) ──
+                    if (_isDesktopEditor && _memoPanelOpen) ...[
+                      _buildMemoPanel(dark, fg),
+                      _panelResizeHandle(left: true),
+                    ] else if (memoGap > 0)
+                      SizedBox(width: memoGap * k),
+                    Expanded(
+                      child: Stack(
+                        children: [
+                          Positioned.fill(child: body),
+                          // ── 音声読み上げ操作バー (= ユーザー要望) ──
+                          if (_readerVisible && _reader != null)
+                            Positioned(
+                              left: 0,
+                              right: 0,
+                              bottom: 14,
+                              child: Center(
+                                child: ReadAloudBar(
+                                  controller: _reader!,
+                                  onClose: _stopReadAloud,
+                                ),
                               ),
                             ),
-                          ),
-                        // (ヘッダー非表示中の再表示は、 ヘッダーへカーソルを
-                        //  乗せた時に出るボタンに変更 = ユーザー要望)
-                      ],
+                          // (ヘッダー非表示中の再表示は、 ヘッダーへカーソルを
+                          //  乗せた時に出るボタンに変更 = ユーザー要望)
+                        ],
+                      ),
                     ),
-                  ),
-                  // ── 右: AI チャットパネル (= ユーザー要望: PDF ビューアの
-                  //    様な AI 欄 + MCP でファイルを編集できる AI。
-                  //    境界ドラッグで幅可変) ──
-                  if (_isDesktopEditor && _aiPanelOpen) ...[
-                    _panelResizeHandle(left: false),
-                    _buildAiChatPanel(dark, fg),
+                    // ── 右: AI チャットパネル (= ユーザー要望: PDF ビューアの
+                    //    様な AI 欄 + MCP でファイルを編集できる AI。
+                    //    境界ドラッグで幅可変) ──
+                    if (_isDesktopEditor && _aiPanelOpen) ...[
+                      _panelResizeHandle(left: false),
+                      _buildAiChatPanel(dark, fg),
+                    ] else if (aiGap > 0)
+                      SizedBox(width: aiGap * k),
                   ],
-                ],
-              ),
+                );
+              }),
             ),
             _buildStatusBar(dark, fg),
           ],
@@ -248470,6 +248754,20 @@ $currentText
       ),
       child: Row(
         children: [
+          // ── ページ切り替えはヘッダーの**左端** (= ユーザー要望)。
+          //    この画面は本体の上に重ねて開くので、 引き出しにも
+          //    本体のヘッダーにも手が届かない。 分割ペインの中 (compactHost)
+          //    は本物のヘッダーが見えているので出さない (二重になる)。 ──
+          if (!widget.compactHost) ...[
+            IconButton(
+              tooltip: context.read<MindMapProvider>().t('cmd.openDrawer'),
+              icon: Icon(Icons.list_alt_rounded,
+                  color: fg.withValues(alpha: 0.75)),
+              visualDensity: VisualDensity.compact,
+              onPressed: () => unawaited(_openPageListAndLeaveIfSwitched()),
+            ),
+            const SizedBox(width: 4),
+          ],
           Icon(_languageIcon(_language), color: _languageColor(_language)),
           const SizedBox(width: 8),
           // タイトルは固定幅にする (= Flexible だと中央ボタン領域と
@@ -248617,6 +248915,27 @@ $currentText
                 }
               },
             ),
+          // ── 欄を閉じた時に本文を広げない / 広げる (= ユーザー要望) ──
+          //    既定は「広げない」。 押すと今までどおり目いっぱい広がる。
+          if (_isDesktopEditor)
+            IconButton(
+              tooltip:
+                  context.read<MindMapProvider>().t('view.keepContentWidth'),
+              icon: Icon(
+                Icons.vertical_split_rounded,
+                color: _keepContentWidth
+                    ? const Color(0xFF4DB6AC)
+                    : fg.withValues(alpha: 0.7),
+              ),
+              onPressed: () async {
+                setState(() => _keepContentWidth = !_keepContentWidth);
+                try {
+                  final prefs = await SharedPreferences.getInstance();
+                  await prefs.setBool(
+                      _kPrefKeepContentWidth, _keepContentWidth);
+                } catch (_) {}
+              },
+            ),
           // (ダウンロードは保存ボタンの右に移した = ユーザー要望)
           // ── プレビュー切替 (.md は Mermaid 記法も描画、 .html は書いた
           //    ページをそのまま表示 = ユーザー要望) ──
@@ -248709,21 +249028,13 @@ $currentText
           //    ヘッダーにも手が届かない (Ctrl+Shift+E も届かない)。
           //    分割ペインの中に埋めている時 (compactHost) は本物のヘッダーが
           //    見えているので出さない (二重になる)。
-          if (!widget.compactHost) ...[
-            IconButton(
-              tooltip: context.read<MindMapProvider>().t('cmd.openDrawer'),
-              icon: Icon(Icons.list_alt_rounded,
-                  color: fg.withValues(alpha: 0.75)),
-              onPressed: () =>
-                  unawaited(_openPageListAndLeaveIfSwitched()),
-            ),
+          if (!widget.compactHost)
             IconButton(
               tooltip: context.read<MindMapProvider>().t('menu.settings'),
               icon: Icon(Icons.settings_rounded,
                   color: fg.withValues(alpha: 0.75)),
               onPressed: () => openSettingsFromAnywhere?.call(context),
             ),
-          ],
           // ── 別のファイルに切り替える (= ユーザー要望: 複数のテキスト /
           //    json / マークダウンの中身を見る時に、 いちいち開いて閉じてを
           //    繰り返すのが面倒)。 閉じずにこの窓のまま中身だけ入れ替える。
