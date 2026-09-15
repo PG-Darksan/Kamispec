@@ -5729,6 +5729,18 @@ class MindMapProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ── ページ一覧を名前だけにする (= ユーザー要望: 更新日や容量が
+  //    全部に出ていると表示領域が嶵む) ─────────────────
+  //    true = 副題 (要素数 / 大きさ / 更新日時) を出さず、 1 行で並べる。
+  bool _drawerCompactRows = false;
+  bool get drawerCompactRows => _drawerCompactRows;
+  Future<void> setDrawerCompactRows(bool v) async {
+    _drawerCompactRows = v;
+    final prefs = await _prefsWithRetry();
+    await prefs.setBool('drawerCompactRows', v);
+    notifyListeners();
+  }
+
   // ── ページ削除後の取り消し確認表示 ─────────────────────────────────
   // false (既定): ページ削除後に「取り消しますか？」SnackBar を出す。
   // true: 削除後はそのまま消し、確認/Undo通知を出さない。
@@ -57920,6 +57932,29 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'выбр.',
     },
     // 複数フォルダー選択のラベル接尾辞
+    // ── コンパクト表示 (= ユーザー要望) ──
+    'drawer.compactOn': {
+      'ja': '名前だけにする',
+      'en': 'Show names only',
+      'zh': '只显示名称',
+      'ko': '이름만 보기',
+      'es': 'Mostrar solo los nombres',
+      'fr': 'Afficher seulement les noms',
+      'de': 'Nur Namen zeigen',
+      'pt': 'Mostrar apenas os nomes',
+      'ru': 'Показывать только имена',
+    },
+    'drawer.compactOff': {
+      'ja': '大きさや更新日も出す',
+      'en': 'Show size and date too',
+      'zh': '同时显示大小和日期',
+      'ko': '크기와 날짜도 보기',
+      'es': 'Mostrar también tamaño y fecha',
+      'fr': 'Afficher aussi la taille et la date',
+      'de': 'Auch Größe und Datum zeigen',
+      'pt': 'Mostrar também tamanho e data',
+      'ru': 'Показывать размер и дату',
+    },
     'drawer.foldersSelected': {
       'ja': ' 個のフォルダー',
       'en': ' folders',
@@ -95018,6 +95053,7 @@ $cleanQ
     CursorWrap.instance.apply(_cursorWrapEnabled);
     // メモ欄一括折りたたみ (デフォルト false = 従来通り全文表示)
     _memoCollapsedGlobal = prefs.getBool('memoCollapsedGlobal') ?? false;
+    _drawerCompactRows = prefs.getBool('drawerCompactRows') ?? false;
     // 動画ノードの重複生成許可フラグ (デフォルト false)
     _allowDuplicateVideoNodes =
         prefs.getBool('allowDuplicateVideoNodes') ?? false;
@@ -95280,10 +95316,14 @@ $cleanQ
     final n =
         pageType == 'normal' ? _pages.length + 1 : _nextTypeNumber(pageType);
     final defaultName = '${_typePagePrefix(pageType, _appLanguage)}$n';
+    // ★ どの入口から来ても、 フォルダーの外には作らない (= ユーザー要望)。
+    //   ここが唯一の組み立て所なので、 渡し忘れた呼び出しもここで拾える。
+    final dest = folderId ?? folderIdForNewItem();
+    _lastNewItemFolderId = dest;
     final page = MindMapPage(
         id: _uuid.v4(),
         name: name ?? defaultName,
-        folderId: folderId,
+        folderId: dest,
         pageType: pageType);
     // ── 既定のテンプレ背景 (= ユーザー要望: ギャラリーにも) ──
     // 一番最初のページはミッドナイト。 以降はページを作る度にテンプレ背景から
@@ -96101,6 +96141,39 @@ $cleanQ
   /// 実在するフォルダーを指している時だけ、 開いているフォルダーの id を返す
   /// (= 点検で判明: 消えたフォルダーの id が残ると、 作ったページがどこにも
   /// 出てこなくなる)。
+  /// 新しく作る物の行き先フォルダー。 **null を返さない**。
+  ///
+  /// ★ = ユーザー要望「フォルダーの外のページはあくまで後方互換のための
+  ///   もので、 新規で作られる物がそこに出来ないようにして欲しい」。
+  ///   これまでは「開いているフォルダー」 が無ければ null (= 外) だった。
+  ///   開いている物 → 直前に作った所 → 最初のフォルダー → 無ければ作る、
+  ///   の順で必ずどこかのフォルダーに落とす。
+  ///   ★ 既にある「外のページ」 は一切動かさない。 見え方も出し方も
+  ///     今までどおり (後方互換)。 ここは**作る時だけ**の話。
+  String folderIdForNewItem({String? prefer}) {
+    final want = (prefer ?? '').trim();
+    if (want.isNotEmpty && _folders.any((f) => f.id == want)) return want;
+    final open = _validOpenFolderId;
+    if (open != null) return open;
+    final last = _lastNewItemFolderId;
+    if (last != null && _folders.any((f) => f.id == last)) return last;
+    if (_folders.isNotEmpty) return _folders.first.id;
+    return ensureDefaultFolder();
+  }
+
+  /// 直前に物を作ったフォルダー (一覧を閉じている間の行き先)。
+  String? _lastNewItemFolderId;
+
+  /// フォルダーが 1 つも無ければ作る。 その id を返す。
+  String ensureDefaultFolder() {
+    if (_folders.isNotEmpty) return _folders.first.id;
+    final id = addFolder(name: '${t('folder.title')} 1');
+    // 作ったばかりの入れ物を「開いているフォルダー」 にしておく
+    // (初回起動で、 作ったページがどこにも見えないのを防ぐ)。
+    drawerOpenFolderId ??= id;
+    return id;
+  }
+
   String? get _validOpenFolderId {
     final id = drawerOpenFolderId;
     if (id == null || id.isEmpty) return null;

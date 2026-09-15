@@ -5989,6 +5989,10 @@ class _MindMapScreenState extends State<MindMapScreen>
       if (!mounted) return;
       await _showQuickPageSwitcher(context.read<MindMapProvider>());
     };
+    // 差し替えた割り当て / 個別の on-off を尊重したいので、 組み合わせの
+    // 解決は本体に任せる。
+    commandIdForKeyEventFromAnywhere =
+        (e) => _commandForKeyCombo(_getPressedKeyCombo(e));
     openSettingsFromAnywhere = (ctx) {
       if (!mounted) return;
       _showSettingsSheet(ctx, context.read<MindMapProvider>());
@@ -8097,6 +8101,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     openUrlInAppFromAnywhere = null;
     openPageListFromAnywhere = null;
     openSettingsFromAnywhere = null;
+    commandIdForKeyEventFromAnywhere = null;
     pdfDrawBurnedNotifier.removeListener(_onPdfDrawBurned);
     // 支払いの見張りを外す (= ユーザー要望で入れた知らせ)。
     if (_planWatcher != null) {
@@ -69831,6 +69836,24 @@ class _MindMapScreenState extends State<MindMapScreen>
                       onPressed: () => _beginShortcutAssign(provider),
                     ));
                   }),
+                // ── コンパクト表示 (= ユーザー要望: 更新日や容量が全部に
+                //    出ていると表示領域が嵩むので、 名前だけにできるように) ──
+                IconButton(
+                  icon: Icon(
+                    provider.drawerCompactRows
+                        ? Icons.density_small_rounded
+                        : Icons.density_medium_rounded,
+                    color: provider.drawerCompactRows
+                        ? const Color(0xFF6C63FF)
+                        : Colors.white54,
+                    size: 18,
+                  ),
+                  tooltip: provider.t(provider.drawerCompactRows
+                      ? 'drawer.compactOff'
+                      : 'drawer.compactOn'),
+                  onPressed: () => unawaited(provider
+                      .setDrawerCompactRows(!provider.drawerCompactRows)),
+                ),
                 // ── 複数選択を始める / やめる (= ユーザー要望: モバイルには
                 //    Ctrl も Shift も無いので、 「+」 の左にボタンを置く) ──
                 //    今のページを 1 枚選んだ状態で始めると、 そのまま
@@ -70236,6 +70259,10 @@ class _MindMapScreenState extends State<MindMapScreen>
     // ★ 複数選択 (= ユーザー要望: 手動で消したり複数選択できるように)。
     //   ページの選択と同じ見た目 (シアン) にそろえる。
     final picked = _drawerSelectedFilePaths.contains(e.path);
+    // ★ = ユーザー報告「一部ページの掴みが無い」。 ページの行は左端に
+    //   つまみ (drag_indicator) が出ているのに、 見た目をそろえたファイルの
+    //   行には無かったので、 掴めない物に見えていた。 同じつまみを出す。
+    final handleW = _isDesktop ? 22.0 : 42.0;
     final row = Container(
       margin: EdgeInsets.fromLTRB(8 + indent, 2, 8, 2),
       decoration: BoxDecoration(
@@ -70257,18 +70284,38 @@ class _MindMapScreenState extends State<MindMapScreen>
           dense: true,
           contentPadding: const EdgeInsets.only(left: 4, right: 4),
           leading: SizedBox(
-            width: 28,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-              child: Icon(fileIcon,
-                  size: 16, color: fileColor.withValues(alpha: 0.6)),
-            ),
+            width: 28 + handleW,
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              // つまみ (= ページの行と同じ位置・同じ絵)。
+              MouseRegion(
+                cursor: SystemMouseCursors.grab,
+                child: SizedBox(
+                  width: handleW,
+                  child: Center(
+                    child: Icon(
+                      Icons.drag_indicator,
+                      color: _isDesktop ? Colors.white24 : Colors.white54,
+                      size: _isDesktop ? 14 : 22,
+                    ),
+                  ),
+                ),
+              ),
+              Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                child: Icon(fileIcon,
+                    size: 16, color: fileColor.withValues(alpha: 0.6)),
+              ),
+            ]),
           ),
           title: Text(e.displayTitle,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(color: Colors.white60, fontSize: 13)),
-          subtitle: Row(children: [
+          // コンパクト表示の時は名前だけ (= ページの行とそろえる)。
+          subtitle: provider.drawerCompactRows
+              ? null
+              : Row(children: [
             if (e.ext.isNotEmpty)
               Text(e.ext.toUpperCase(),
                   style: const TextStyle(
@@ -70352,7 +70399,13 @@ class _MindMapScreenState extends State<MindMapScreen>
       ),
     );
     // ファイルはページへ投げて埋め込める (= ユーザー要望)。
-    return Draggable<_DrawerFileDragData>(
+    // ★ ページの行と同じ「長押しで掴む」 にそろえる (すぐ掴むと、 一覧を
+    //   指で転がした時に掴んでしまう)。 落とし先はマップ (= そのページへ
+    //   埋め込む)。
+    return LongPressDraggable<_DrawerFileDragData>(
+      delay: _isDesktop
+          ? const Duration(milliseconds: 80)
+          : const Duration(milliseconds: 220),
       data: _DrawerFileDragData(e.path, e.name),
       dragAnchorStrategy: pointerDragAnchorStrategy,
       feedback: Material(
@@ -95315,7 +95368,31 @@ class _MindMapScreenState extends State<MindMapScreen>
     );
   }
 
+  /// Ctrl+Shift+D (= 「ページを消す」)。
+  ///
+  /// ★ = ユーザー報告「一部ページは Ctrl+Shift+D で削除できない」。
+  ///   一覧には「ページの行」 と見た目の同じ「ディスクのファイルの行」 が
+  ///   並んでいるが、 ここは「今開いているページ」 だけを消していた。
+  ///   ファイルの行は押しても「今のページ」 にならないので、 永遠に消せない
+  ///   うえ、 見ている物とは別のページが黙って消えていた。
+  ///   一覧で選んでいる物があれば、 そちらを消す。
   void _confirmDeletePage(BuildContext context, MindMapProvider provider) {
+    // ディスクのファイルを選んでいるなら、 それをごみ箱へ。
+    if (_drawerSelectedFilePaths.isNotEmpty) {
+      unawaited(_deleteDiskEntries(
+          provider, _drawerSelectedFilePaths.toList()));
+      return;
+    }
+    // ページを選んでいるなら、 その 1 枚を (複数ならまとめては
+    // 一覧の帯からやるので、 ここでは最初の 1 枚)。
+    if (_drawerSelectedPageIds.length == 1) {
+      final id = _drawerSelectedPageIds.first;
+      final i = provider.pages.indexWhere((p) => p.id == id);
+      if (i >= 0) {
+        _confirmDeletePageAt(context, provider, i);
+        return;
+      }
+    }
     _confirmDeletePageAt(context, provider, provider.currentPageIndex);
   }
 
@@ -141934,7 +142011,21 @@ $body''';
       ));
     }
 
-    return CallbackShortcuts(
+    // ★ Ctrl+Shift+E = ページ一覧 (= ユーザー要望: マークダウンの
+    //   ページでも効くように)。 本文の入力欄にカーソルがある間は、
+    //   本体のキー処理が「文字を打っている」 と見て手を引くので届かない。
+    //   canRequestFocus: false なので、 文字の入力は妄げない。
+    return Focus(
+      canRequestFocus: false,
+      skipTraversal: true,
+      onKeyEvent: (node, event) {
+        if (commandIdForKeyEventFromAnywhere?.call(event) != 'openDrawer') {
+          return KeyEventResult.ignored;
+        }
+        unawaited(openPageListFromAnywhere?.call());
+        return KeyEventResult.handled;
+      },
+      child: CallbackShortcuts(
       // F2 で選んでいるタブの名前を変える (= ユーザー要望: ダブルクリック
       //   または選択して F2)。
       // Ctrl+Z は消したタブを戻す (= ユーザー要望: 確認を出さない代わり)。
@@ -142111,6 +142202,7 @@ $body''';
           ]),
         ),
       ]),
+      ),
       ),
       ),
     );
@@ -175040,7 +175132,11 @@ class _DrawerTile extends StatelessWidget {
               fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
             ),
             overflow: TextOverflow.ellipsis),
-        subtitle: Column(
+        // ★ コンパクト表示 (= ユーザー要望: 更新日や容量が全部に
+        //   出ていると表示領域が嶵む)。 名前だけにして 1 行にする。
+        subtitle: provider.drawerCompactRows
+            ? null
+            : Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -200855,6 +200951,27 @@ void Function(String url, {bool newTab})? openUrlInAppFromAnywhere;
 /// ★ 引き出しそのものは開けない (重ねた画面の**裏**で開いてしまい、
 ///   見えないのに入力だけ吸う)。 上に出せる「ページを選ぶ窓」 を使う。
 Future<void> Function()? openPageListFromAnywhere;
+
+/// 押されたキーがどのコマンドかを本体に聞く入口。
+///
+/// ★ = ユーザー要望「txt やマークダウンページであっても ctrl+shift+e で
+///   ページ一覧を表示できるように」。 割り当ては利用者が差し替えられるし、
+///   個別に切ってもいるので、 組み合わせを直に書かず本体に聞く。
+/// _MindMapScreenState.initState が入れる。
+String? Function(KeyEvent event)? commandIdForKeyEventFromAnywhere;
+
+/// 「ページ一覧」 のショートカットを、 本体の外の画面からも効かせる。
+/// 受け取ったら true (= その打鍵はここで止める)。
+Future<bool> handlePageListShortcut(KeyEvent event) async {
+  if (event is! KeyDownEvent) return false;
+  if (commandIdForKeyEventFromAnywhere?.call(event) != 'openDrawer') {
+    return false;
+  }
+  final open = openPageListFromAnywhere;
+  if (open == null) return false;
+  await open();
+  return true;
+}
 
 /// 設定の画面を出す入口 (同上)。
 void Function(BuildContext ctx)? openSettingsFromAnywhere;
@@ -247470,6 +247587,23 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
     }
   }
 
+  /// ページ一覧を出し、 別のページを選んだらこの画面から出て行く。
+  ///
+  /// = ユーザー要望「txt やマークダウンのファイルを開いた状態でも
+  ///   ページ一覧を出してページ遷移できるように」。 見出しのボタンと
+  ///   Ctrl+Shift+E の両方がここを通る (動きをそろえるため)。
+  Future<void> _openPageListAndLeaveIfSwitched() async {
+    if (!mounted) return;
+    final before = context.read<MindMapProvider>().currentPage.id;
+    await openPageListFromAnywhere?.call();
+    if (!mounted) return;
+    // 開いたままだと裏だけ変わって、 遷移した気がしない。
+    final after = context.read<MindMapProvider>().currentPage.id;
+    if (after != before && await _confirmDiscard()) {
+      if (mounted) Navigator.of(context).maybePop();
+    }
+  }
+
   Future<bool> _confirmDiscard({BuildContext? anchor}) async {
     if (!_dirty) return true;
     // × ボタンの近く + フローティング窓の上に出す (= ユーザー要望)。
@@ -247489,6 +247623,14 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
     final isCtrl = HardwareKeyboard.instance.isControlPressed ||
         HardwareKeyboard.instance.isMetaPressed;
     final isShift = HardwareKeyboard.instance.isShiftPressed;
+    // ★ Ctrl+Shift+E = ページ一覧 (= ユーザー要望: ファイルを開いた
+    //   ままでもページを移れるように)。 この画面は本体の上に重なって
+    //   いるので、 本体のキー処理には届かない。 見出しのボタンと同じ道を通す。
+    //   割り当てを差し替えていても効くよう、 組み合わせは本体に聞く。
+    if (commandIdForKeyEventFromAnywhere?.call(event) == 'openDrawer') {
+      unawaited(_openPageListAndLeaveIfSwitched());
+      return KeyEventResult.handled;
+    }
     // ── Ctrl+Shift+↑ / ↓ = 複数行の範囲選択 (= ユーザー要望) ──
     //    1 行ずつの入力欄なので、 行をまたぐ選択は自前で持つ。
     // ★ = ユーザー要望「shift + 上下キーで複数行選択」。 以前は Ctrl も
@@ -248572,17 +248714,8 @@ $currentText
               tooltip: context.read<MindMapProvider>().t('cmd.openDrawer'),
               icon: Icon(Icons.list_alt_rounded,
                   color: fg.withValues(alpha: 0.75)),
-              onPressed: () async {
-                final before = context.read<MindMapProvider>().currentPage.id;
-                await openPageListFromAnywhere?.call();
-                if (!mounted) return;
-                // 別のページを選んだなら、 そちらへ出て行く
-                //   (開いたままだと、 裏だけ変わって遷移した気がしない)。
-                final after = context.read<MindMapProvider>().currentPage.id;
-                if (after != before && await _confirmDiscard()) {
-                  if (mounted) Navigator.of(context).maybePop();
-                }
-              },
+              onPressed: () =>
+                  unawaited(_openPageListAndLeaveIfSwitched()),
             ),
             IconButton(
               tooltip: context.read<MindMapProvider>().t('menu.settings'),

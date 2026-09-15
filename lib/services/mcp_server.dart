@@ -472,8 +472,10 @@ class McpServer {
         'it before telling the user what you made), and "folderId" is where '
         'it actually went. '
         'By default the page goes into the folder the user currently has '
-        'open. Pass "folderId" (from list_folders) to choose one, or '
-        '"toRoot": true to put it outside every folder.',
+        'open; if none is open the app picks one. A new page is NEVER '
+        'created outside every folder - pages sitting outside folders are '
+        'only old data kept for compatibility. Pass "folderId" (from '
+        'list_folders) to choose the folder.',
         {
           'type': {
             'type': 'string',
@@ -488,7 +490,6 @@ class McpServer {
           },
           'name': {'type': 'string'},
           'folderId': {'type': 'string'},
-          'toRoot': {'type': 'boolean'},
         },
         ['type']),
     _tool(
@@ -1773,7 +1774,9 @@ class McpServer {
             type: a['type'] as String? ?? 'normal',
             name: a['name'] as String?,
             folderId: wantFolder.isEmpty ? null : wantFolder,
-            toRoot: a['toRoot'] == true);
+            // ★ 新規はフォルダーの外には作らない (= ユーザー要望)。
+            //   外は古いデータのための場所なので、 toRoot は受けない。
+            toRoot: false);
         // 実際に出来た種類を返す (= ユーザー報告: 知らない種類を頼まれると
         //   黙って normal を作り、 頼まれた通りに作ったと答えてしまう)。
         return id == null
