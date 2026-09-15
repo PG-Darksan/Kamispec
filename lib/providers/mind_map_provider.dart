@@ -98457,8 +98457,31 @@ $cleanQ
           }
       ];
 
-  Map<String, dynamic>? mcpReadPage(String pageId) =>
-      mcpPageById(pageId)?.toJson();
+  /// ★ = 検証レポート「表ノードの height が行数に関係なく 14 として返る」。
+  ///   表や図の `height` は **上端のつまむ帯 (14px) の分**で、 描いて
+  ///   いる高さではない。 この 14 を信じて次の要素を置くと必ず重なるので、
+  ///   実際に描かれる高さ (= 整列が使っている物) を `visualHeight` として
+  ///   一緒に返す。
+  ///   ★ 保存側 (MindMapNode.toJson) には足さない。 あれは prefs とクラウドへ
+  ///   そのまま書かれる本物のデータなので、 導出値を混ぜるとページの
+  ///   差分や容量の勘定まで揺れる。
+  Map<String, dynamic>? mcpReadPage(String pageId) {
+    final page = mcpPageById(pageId);
+    if (page == null) return null;
+    final json = page.toJson();
+    final byId = {for (final n in page.nodes.values) n.id: n};
+    final nodes = json['nodes'];
+    if (nodes is List) {
+      for (final e in nodes) {
+        if (e is! Map<String, dynamic>) continue;
+        final n = byId[e['id'] as String?];
+        if (n == null) continue;
+        // 小数は 1 桁で十分 (JSON を無駄に太らせない)。
+        e['visualHeight'] = double.parse(n.visualHeight.toStringAsFixed(1));
+      }
+    }
+    return json;
+  }
 
   /// [folderId] を渡すとそのフォルダーへ、 [toRoot] なら一番上へ作る。
   /// どちらも無ければ、 今開いているフォルダーの中 (今までどおり)。
@@ -100251,7 +100274,12 @@ $cleanQ
       }
     }
     final deco = MapDecoration(
-      id: 'deco_${DateTime.now().microsecondsSinceEpoch}',
+      // ★ = 検証レポート「図形を一括追加すると複数図形へ同一 ID が割り当て
+      //   られ、1 件の削除操作で複数図形が消える」。
+      //   時刻を ID に使っていたので、 まとめて作ると同じ数字になる
+      //   (Windows の時計は 1 マイクロ秒ごとには進まない)。
+      //   他の要素と同じく、 必ず違う値 (UUID) を使う。
+      id: 'deco_${_uuid.v4()}',
       kind: k,
       start: start,
       end: end,

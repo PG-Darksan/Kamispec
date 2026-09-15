@@ -358,7 +358,12 @@ class McpServer {
         'Read one page. Returns nodeCount and connectionCount FIRST (they '
         'survive even if the rest is long), then the full page JSON (nodes, '
         'connections, decorations). Use it to check what really got made '
-        'before you report it.',
+        'before you report it. '
+        'Each node also carries "visualHeight": the height it is actually '
+        'DRAWN at. Use visualHeight, never "height", when you work out where '
+        'to put the next node - a table or chart node stores height:14 (just '
+        'its drag strip at the top) while its visualHeight is the whole '
+        'table. The same applies to image, video and long-memo nodes.',
         {'pageId': {'type': 'string'}},
         ['pageId']),
     _tool(
@@ -1608,6 +1613,21 @@ class McpServer {
     return out;
   }
 
+  /// その引数に「中身」 があるか。
+  ///
+  /// ★ = 検証レポート「空白だけのタイトルで内容のないノードを作成できる」
+  ///   「空の texts 配列で空のギャラリー項目が作られる」。
+  ///   これまでは鍵が**有るかどうか**しか見ていなかったので、
+  ///   `{"title":"   "}` や `texts: []` が素通りしていた。
+  ///   空白だけ / 空の配列 / 空の入れ物は「無い」 と数える。
+  static bool _hasContent(Object? v) {
+    if (v == null) return false;
+    if (v is String) return v.trim().isNotEmpty;
+    if (v is Iterable) return v.any(_hasContent);
+    if (v is Map) return v.values.any(_hasContent);
+    return true; // 数値 / 真偽など
+  }
+
   /// 配列の引数を文字列の並びに直す (空文字は捨てる)。
   static List<String> _stringList(Object? v) {
     if (v is! List) return const [];
@@ -1828,9 +1848,11 @@ class McpServer {
                 m = <String, dynamic>{'title': s};
               }
               // 中身の無い要素で無題ノードを作らない。
-              if (!m.containsKey('title') &&
-                  !m.containsKey('memo') &&
-                  !m.containsKey('url')) {
+              // ★ 鍵ではなく中身で見る (= 検証レポート: {"title":"   "} が
+              //   素通りしていた。 ["   "] は上で既に弾いている)。
+              if (!_hasContent(m['title']) &&
+                  !_hasContent(m['memo']) &&
+                  !_hasContent(m['url'])) {
                 slots.add('');
                 continue;
               }
@@ -1899,11 +1921,14 @@ class McpServer {
             });
           }
           // 題名も memo も url も無い呼び出しでは何も作らない。
-          if (!a.containsKey('title') &&
-              !a.containsKey('memo') &&
-              !a.containsKey('url')) {
-            return _err('nothing to add: pass "nodes" (an array) or at least '
-                'a "title". No node was created.');
+          // ★ 鍵が有るかどうかではなく、 中身が有るかどうかで見る
+          //   (= 検証レポート: title:"   " で空のノードが出来ていた)。
+          if (!_hasContent(a['title']) &&
+              !_hasContent(a['memo']) &&
+              !_hasContent(a['url'])) {
+            return _err('nothing to add: "title", "memo" and "url" were all '
+                'empty or blank. Pass "nodes" (an array) or at least a real '
+                '"title". No node was created.');
           }
           final id = _provider.mcpAddNode(
             pageId,
@@ -2257,6 +2282,15 @@ class McpServer {
           // まとめて渡された時は 1 回で全部置く (= 1 件ずつだと AI が
           //   途中でやめたり同じ物を重ねたりして数が合わなかった)。
           final many = _stringList(a['texts']);
+          // ★ texts を渡しておきながら中身が空 (= [] や ["", "  "]) の時は、
+          //   下の「1 枚だけ足す」 へ落とさずに断る。 落とすと題名も memo も
+          //   絵も無い白紙のタイルが 1 枚だけ増えていた (= 検証レポート)。
+          if (a.containsKey('texts') && many.isEmpty) {
+            return _err('"texts" had no usable text (it was empty, or every '
+                'entry was blank). Nothing was added - pass at least one '
+                'non-blank title, or use "memo" / "imagePath" for a tile '
+                'without a title.');
+          }
           if (many.isNotEmpty) {
             final ids = <String>[];
             for (final t in many) {
@@ -2268,6 +2302,14 @@ class McpServer {
                     '- use list_pages and pick a page whose type is '
                     '"bookshelf", or create one with create_page')
                 : _ok({'added': ids.length, 'titles': many});
+          }
+          // 題名も memo も絵も無ければ、 中身の無いタイルは作らない。
+          if (!_hasContent(a['text']) &&
+              !_hasContent(a['memo']) &&
+              !_hasContent(a['imagePath'])) {
+            return _err('nothing to add: pass "texts" (an array of titles), '
+                'or at least one of "text" / "memo" / "imagePath". '
+                'No tile was created.');
           }
           final id = _provider.mcpAddGalleryItem(
             pageId,

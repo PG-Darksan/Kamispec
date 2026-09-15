@@ -5983,6 +5983,16 @@ class _MindMapScreenState extends State<MindMapScreen>
       unawaited(_openMcpChat(context.read<MindMapProvider>(),
           floatingPanel: true));
     };
+    // ファイルを開いている間でも、 ページを移ったり設定を出したり
+    // できるようにする (= ユーザー要望)。
+    openPageListFromAnywhere = () async {
+      if (!mounted) return;
+      await _showQuickPageSwitcher(context.read<MindMapProvider>());
+    };
+    openSettingsFromAnywhere = (ctx) {
+      if (!mounted) return;
+      _showSettingsSheet(ctx, context.read<MindMapProvider>());
+    };
     // ── 本体が起きていない間にフローティングメモから頼まれた「マップに
     //    追加」 を取り込む (= ユーザー要望)。 読み込みが済んでから。 ──
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -8085,6 +8095,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     // 浮かぶ窓からの呼び出し口を外す (画面が無くなった後に呼ばれないように)。
     openAssistantFromFloating = null;
     openUrlInAppFromAnywhere = null;
+    openPageListFromAnywhere = null;
+    openSettingsFromAnywhere = null;
     pdfDrawBurnedNotifier.removeListener(_onPdfDrawBurned);
     // 支払いの見張りを外す (= ユーザー要望で入れた知らせ)。
     if (_planWatcher != null) {
@@ -48634,7 +48646,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
     final pts = List<Offset>.of(_polylinePoints);
     final deco = MapDecoration(
-      id: 'deco_${DateTime.now().microsecondsSinceEpoch}',
+      id: _newDecorationId(),
       kind: MapDecorationKind.polyline,
       // start / end は外接矩形や移動処理が使うので、 端の点を入れておく。
       start: pts.first,
@@ -48700,7 +48712,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         ? Offset(center.dx + halfW, center.dy)
         : Offset(center.dx + halfW, center.dy + halfH);
     final deco = MapDecoration(
-      id: 'deco_${DateTime.now().microsecondsSinceEpoch}',
+      id: _newDecorationId(),
       kind: kind,
       start: start,
       end: end,
@@ -48780,7 +48792,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       }
       // 6px 以上動いてれば確定 (= タップだけだと小さすぎるので破棄)
       final deco = MapDecoration(
-        id: 'deco_${DateTime.now().microsecondsSinceEpoch}',
+        id: _newDecorationId(),
         kind: _drawingDecorationKind!,
         start: startSnap?.point ?? start,
         end: endSnap?.point ?? end,
@@ -87641,6 +87653,31 @@ class _MindMapScreenState extends State<MindMapScreen>
                           color: Colors.white,
                           fontSize: 13,
                           fontWeight: FontWeight.w600)),
+                ),
+                // ── ページ一覧 / 設定 (= ユーザー要望: マークダウンの
+                //    ファイルを開いた状態でもページを移れるように) ──
+                //    この画面は本体の上に重ねて開くので、 引き出しにも
+                //    ヘッダーにも手が届かない。
+                IconButton(
+                  tooltip: mdProvider.t('cmd.openDrawer'),
+                  icon: const Icon(Icons.list_alt_rounded,
+                      size: 18, color: Colors.white70),
+                  onPressed: () async {
+                    final before = mdProvider.currentPage.id;
+                    await openPageListFromAnywhere?.call();
+                    if (!mounted) return;
+                    // 別のページを選んだなら、 そちらへ出て行く。
+                    if (mdProvider.currentPage.id != before &&
+                        popCtx.mounted) {
+                      Navigator.of(popCtx).maybePop();
+                    }
+                  },
+                ),
+                IconButton(
+                  tooltip: mdProvider.t('menu.settings'),
+                  icon: const Icon(Icons.settings_rounded,
+                      size: 18, color: Colors.white70),
+                  onPressed: () => openSettingsFromAnywhere?.call(popCtx),
                 ),
                 IconButton(
                   tooltip: mdProvider.t('btn.close'),
@@ -134040,6 +134077,16 @@ String? wrapMarkdownTableAsAppTable(String src, List<List<String>> rows) {
   }
   return null;
 }
+
+/// 図形 (装飾) の id を作る。
+///
+/// ★ = 検証レポート「図形を一括追加すると同一 ID が割り当てられ、
+///   1 件の削除で複数消える」。 時刻を id に使うと、 まとめて作った時に
+///   同じ数字になる (Windows の時計は 1 マイクロ秒ごとには進まない)。
+///   画面からは 1 つずつ作るので実害は出にくいが、 同じ間違いを残さない。
+int _decoIdSeq = 0;
+String _newDecorationId() =>
+    'deco_${DateTime.now().microsecondsSinceEpoch}_${_decoIdSeq++}';
 
 String? replaceFencedBlockAt(String src, int line, String code) {
   if (line <= 0) return null;
@@ -200798,6 +200845,20 @@ void Function()? openAssistantFromFloating;
 /// として開く。
 void Function(String url, {bool newTab})? openUrlInAppFromAnywhere;
 
+/// ページの一覧を出す入口 (本体の画面が起動時に差し込む)。
+///
+/// = ユーザー要望「txt やマークダウンのページ / ファイルを開いた状態でも、
+///   ページ一覧を出してページを移ったり、 設定画面を出せるように」。
+/// ファイルは本体の画面の**上に重ねた別の画面**として開くので、 その間は
+/// 本体の引き出し (drawer) にもヘッダーにも手が届かない。 ここに関数を
+/// 預けておけば、 重ねた画面の中からでも呼べる。
+/// ★ 引き出しそのものは開けない (重ねた画面の**裏**で開いてしまい、
+///   見えないのに入力だけ吸う)。 上に出せる「ページを選ぶ窓」 を使う。
+Future<void> Function()? openPageListFromAnywhere;
+
+/// 設定の画面を出す入口 (同上)。
+void Function(BuildContext ctx)? openSettingsFromAnywhere;
+
 /// 浮かぶ窓の AI ボタン。 押すとその窓が AI に切り替わり、
 /// **右クリック / 長押し**でどの AI を開くかを選べる
 /// (= ユーザー要望: ChatGPT しか開けない)。
@@ -245468,6 +245529,118 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
   bool _lineDragSelecting = false;
   int? _lineDragAnchor;
 
+  // ── なぞり選択が画面の外へ出た時に、 ついていく (= ユーザー要望:
+  //    「txt ファイルをカーソルで範囲選択した時に画面外に出たら追跡する」) ──
+  //    それまでは「どの行の上に入ったか」 だけで選んでいたので、 表示の外へ
+  //    出ると入る行がもう無く、 そこで止まっていた。
+  //    PDF の描き込み (pdf_draw_layer) と同じ作りにそろえる。
+  /// 端から何 px の所で動き始めるか。
+  static const double _kDragScrollBand = 28.0;
+
+  /// 動かす間隔。
+  static const Duration _kDragScrollTick = Duration(milliseconds: 32);
+
+  /// 編集欄の枠を測るための鍵 (画面のどこにあるかを知る)。
+  final GlobalKey _editorBoxKey = GlobalKey();
+
+  Timer? _dragScrollTimer;
+
+  /// 最後にポインタが居た場所 (画面の座標)。
+  ///
+  /// ★ 指を止めたままだと知らせは来ないので、 動かすたびにこの位置から
+  ///   選択の端を計算し直す。 これが無いと、 スクロールはするのに
+  ///   選択範囲が伸びない。
+  Offset? _dragScrollLastGlobal;
+
+  /// 編集欄の枠 (画面の座標)。 まだ配置されていなければ null。
+  Rect? get _editorBoxRect {
+    final box = _editorBoxKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return null;
+    return box.localToGlobal(Offset.zero) & box.size;
+  }
+
+  /// その画面座標が指している行 (0 始まり)。
+  int? _lineAtGlobal(Offset global) {
+    final rect = _editorBoxRect;
+    if (rect == null || _lines.isEmpty || !_scroll.hasClients) return null;
+    final local = global.dy - rect.top;
+    final i = ((_scroll.offset + local) / _lineHeight).floor();
+    return i.clamp(0, _lines.length - 1);
+  }
+
+  /// なぞっている間の、 端に近づいた時の自動スクロール。
+  void _updateDragScroll(Offset global) {
+    _dragScrollLastGlobal = global;
+    final rect = _editorBoxRect;
+    if (rect == null) return;
+    final over = global.dy < rect.top + _kDragScrollBand
+        ? global.dy - (rect.top + _kDragScrollBand)
+        : (global.dy > rect.bottom - _kDragScrollBand
+            ? global.dy - (rect.bottom - _kDragScrollBand)
+            : 0.0);
+    if (over == 0.0) {
+      _stopDragScroll();
+      return;
+    }
+    _dragScrollTimer ??= Timer.periodic(_kDragScrollTick, (_) {
+      if (!mounted || !_lineDragSelecting || !_scroll.hasClients) {
+        _stopDragScroll();
+        return;
+      }
+      final r = _editorBoxRect;
+      final g = _dragScrollLastGlobal;
+      if (r == null || g == null) return;
+      final o = g.dy < r.top + _kDragScrollBand
+          ? g.dy - (r.top + _kDragScrollBand)
+          : (g.dy > r.bottom - _kDragScrollBand
+              ? g.dy - (r.bottom - _kDragScrollBand)
+              : 0.0);
+      if (o == 0.0) {
+        _stopDragScroll();
+        return;
+      }
+      // 離れるほど速く。 ただし出し過ぎない。
+      final step = (o / 4).clamp(-30.0, 30.0);
+      final pos = _scroll.position;
+      final next = (pos.pixels + step)
+          .clamp(pos.minScrollExtent, pos.maxScrollExtent)
+          .toDouble();
+      if ((next - pos.pixels).abs() < 0.5) {
+        // もう端。 動かないなら止める (止めないと回り続ける)。
+        _stopDragScroll();
+        return;
+      }
+      _scroll.jumpTo(next);
+      _extendDragSelectionTo(g);
+    });
+  }
+
+  void _stopDragScroll() {
+    _dragScrollTimer?.cancel();
+    _dragScrollTimer = null;
+  }
+
+  /// なぞっている先の行まで選択を伸ばす。
+  void _extendDragSelectionTo(Offset global) {
+    if (!_lineDragSelecting) return;
+    final a = _lineDragAnchor;
+    if (a == null) return;
+    final idx = _lineAtGlobal(global);
+    if (idx == null) return;
+    if (_selAnchorLine == a && _selFocusLine == idx) return;
+    if (_editingIdx != null) _commitEdit();
+    setState(() {
+      _selAnchorLine = a;
+      _selFocusLine = idx;
+    });
+  }
+
+  void _endLineDrag() {
+    _lineDragSelecting = false;
+    _dragScrollLastGlobal = null;
+    _stopDragScroll();
+  }
+
   int? _selAnchorLine;
 
   /// 今いる行 (アンカーとの間が選択範囲になる)。
@@ -246570,6 +246743,8 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
     _unregisterPaneCloseGuard(widget.paneGuardKey, this);
     final b = _mcpBinding;
     if (b != null) _providerRef?.mcpUnbindTextFile(b);
+    // なぞり選択の自動スクロールを必ず止める。
+    _stopDragScroll();
     _editCtrl.dispose();
     _editFocus.dispose();
     _keyFocus.dispose();
@@ -248386,6 +248561,36 @@ $currentText
             icon: const Icon(Icons.save_rounded, color: Color(0xFF6C63FF)),
             onPressed: _save,
           ),
+          // ── ページ一覧 / 設定 (= ユーザー要望: ファイルを開いた状態でも
+          //    ページを移ったり設定を出せるように) ──
+          //    この画面は本体の**上に重ねて**開くので、 引き出しにも
+          //    ヘッダーにも手が届かない (Ctrl+Shift+E も届かない)。
+          //    分割ペインの中に埋めている時 (compactHost) は本物のヘッダーが
+          //    見えているので出さない (二重になる)。
+          if (!widget.compactHost) ...[
+            IconButton(
+              tooltip: context.read<MindMapProvider>().t('cmd.openDrawer'),
+              icon: Icon(Icons.list_alt_rounded,
+                  color: fg.withValues(alpha: 0.75)),
+              onPressed: () async {
+                final before = context.read<MindMapProvider>().currentPage.id;
+                await openPageListFromAnywhere?.call();
+                if (!mounted) return;
+                // 別のページを選んだなら、 そちらへ出て行く
+                //   (開いたままだと、 裏だけ変わって遷移した気がしない)。
+                final after = context.read<MindMapProvider>().currentPage.id;
+                if (after != before && await _confirmDiscard()) {
+                  if (mounted) Navigator.of(context).maybePop();
+                }
+              },
+            ),
+            IconButton(
+              tooltip: context.read<MindMapProvider>().t('menu.settings'),
+              icon: Icon(Icons.settings_rounded,
+                  color: fg.withValues(alpha: 0.75)),
+              onPressed: () => openSettingsFromAnywhere?.call(context),
+            ),
+          ],
           // ── 別のファイルに切り替える (= ユーザー要望: 複数のテキスト /
           //    json / マークダウンの中身を見る時に、 いちいち開いて閉じてを
           //    繰り返すのが面倒)。 閉じずにこの窓のまま中身だけ入れ替える。
@@ -250028,9 +250233,17 @@ $currentText
     final bg = dark ? const Color(0xFF1A1A24) : const Color(0xFFF5F5F0);
     return Listener(
       // なぞり選択の終わり (= ユーザー要望: 上下ドラッグで複数行選択)。
-      onPointerUp: (_) => _lineDragSelecting = false,
-      onPointerCancel: (_) => _lineDragSelecting = false,
+      onPointerUp: (_) => _endLineDrag(),
+      onPointerCancel: (_) => _endLineDrag(),
+      // ★ 画面の外へ出ても追いかける (= ユーザー要望)。 行の上に入った時
+      //   だけを見ていると、 外に出た瞬間に入る行が無くなって止まる。
+      onPointerMove: (e) {
+        if (!_lineDragSelecting) return;
+        _extendDragSelectionTo(e.position);
+        _updateDragScroll(e.position);
+      },
       child: Container(
+      key: _editorBoxKey,
       color: bg,
       // 分割の時はバーを右端の 1 本にまとめるので、 ここには出さない。
       child: ScrollConfiguration(
