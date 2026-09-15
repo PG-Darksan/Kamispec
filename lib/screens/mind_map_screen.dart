@@ -6421,6 +6421,9 @@ class _MindMapScreenState extends State<MindMapScreen>
         _mapSplitCells[slotIdx] = dropped[di++].id;
       }
     });
+    // 見えている幅が変わったので、 ギャラリーは真ん中へ寄せ直す
+    //   (= ユーザー要望: 分割したら端が切れないように)。
+    _recenterBookshelfIfNeeded();
     _appSnack(
       context,
       SnackBar(
@@ -8691,6 +8694,24 @@ class _MindMapScreenState extends State<MindMapScreen>
     final sc = scale ?? _kDefaultScale;
     final sz =
         View.of(context).physicalSize / View.of(context).devicePixelRatio;
+    final tx = sz.width / 2 - (p.dx + 80) * sc;
+    final ty = sz.height / 2 - (p.dy + 28) * sc;
+    return Matrix4.identity()
+      ..translate(tx, ty)
+      ..scale(sc);
+  }
+
+  /// [p] を**実際に見えている所**の真ん中に置く行列。
+  ///
+  /// ★ [_matrixFor] は窓全体 (View.of) の真ん中に置くので、 画面を分割して
+  ///   いると中身が隣のペインの裏へ寄り、 端が切れて見えなくなる
+  ///   (= ユーザー要望: ギャラリーを分割したら画面中央が分割画面の中央に)。
+  ///   見えている大きさは _mapViewportSize が既に正しく測っている
+  ///   (分割パネルも下の帯も除いてある) ので、 そちらで組む。
+  Matrix4 _matrixForInViewport(Offset p, [double? scale]) {
+    final sc = scale ?? _kDefaultScale;
+    final sz = _mapViewportSize();
+    if (!sz.width.isFinite || sz.width <= 1) return _matrixFor(p, sc);
     final tx = sz.width / 2 - (p.dx + 80) * sc;
     final ty = sz.height / 2 - (p.dy + 28) * sc;
     return Matrix4.identity()
@@ -75340,6 +75361,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       _mapSplitCellWebCur.clear();
       _mapSplitCellTool.clear();
       _syncNarrowPaneRatio();
+      // 畳んだ後も見えている幅が変わる (= ユーザー要望)。
+      _recenterBookshelfIfNeeded();
       _mapSplitCellFile.clear();
     });
   }
@@ -80335,6 +80358,8 @@ class _MindMapScreenState extends State<MindMapScreen>
             _mapSplitCells[slotIdx] = dropped[di++].id;
           }
         });
+        // 見えている幅が変わったので寄せ直す (= ユーザー要望)。
+        _recenterBookshelfIfNeeded();
         _appSnack(
           context,
           SnackBar(
@@ -80439,8 +80464,34 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
     if (!minX.isFinite) return;
     final center = Offset((minX + maxX) / 2, (minY + maxY) / 2);
-    // _matrixFor は (p.dx+80, p.dy+28) を画面中央に置くので、 中心を補正。
-    ctrl.value = _matrixFor(center - const Offset(80, 28), _kDefaultScale);
+    // (p.dx+80, p.dy+28) を真ん中に置くので、 中心を補正。
+    // ★ 窓全体ではなく**見えている所**の真ん中へ (= ユーザー要望: 分割した
+    //   時に端が切れないように)。
+    ctrl.value =
+        _matrixForInViewport(center - const Offset(80, 28), _kDefaultScale);
+    // 寄せた後に、 パンのクランプと同じ物差しで収め直す (= 寄せる位置と
+    //   止まる位置が食い違わないように)。
+    _clampBookshelfPan(ctrl);
+  }
+
+  /// 見えている大きさが変わった時に、 ギャラリーを中央へ寄せ直す。
+  ///
+  /// ★ = ユーザー要望「ギャラリーページを画面分割したら画面が切れない様に」。
+  ///   分割の開け閉てやペインの大きさ変更では、 中身はそのままで**見えて
+  ///   いる幅だけ**が変わるので、 寄せ直さないと端が隠れたままになる。
+  void _recenterBookshelfIfNeeded() {
+    if (!mounted) return;
+    final provider = context.read<MindMapProvider>();
+    if (provider.pages.isEmpty) return;
+    final page = provider.currentPage;
+    if (page.pageType != 'bookshelf') return;
+    final pid = page.id;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final now = context.read<MindMapProvider>();
+      if (now.pages.isEmpty || now.currentPage.id != pid) return;
+      _centerBookshelfView(pid, _ctrlFor(pid));
+    });
   }
 
   /// この数を超えたら「見えている範囲だけ描く」 に切り替える
@@ -93676,6 +93727,12 @@ class _MindMapScreenState extends State<MindMapScreen>
       return;
     }
     final codeCtrl = TextEditingController();
+    // ★ = ユーザー報告「ページが 1 枚も無い状態でクラウド同期を押すと真っ白に
+    //   なる」。 下で `pages[currentPageIndex]` と直に引いていたので、 0 枚の
+    //   時に組み立ての最中で落ち、 リリース版では画面が白いだけになっていた。
+    //   「今のページ」 が無い事は有り得るので、 空の id で通して押せなくする。
+    final curPageId =
+        provider.pages.isEmpty ? '' : provider.currentPage.id;
     showDialog(
       context: ctx,
       builder: (dctx) => StatefulBuilder(
@@ -93728,20 +93785,18 @@ class _MindMapScreenState extends State<MindMapScreen>
                               // 現在のマップの自動同期ON/OFF
                               InkWell(
                                 borderRadius: BorderRadius.circular(16),
-                                onTap: () {
-                                  final pid = provider
-                                      .pages[provider.currentPageIndex].id;
-                                  provider.setPageAutoSync(
-                                      pid, !provider.isPageAutoSync(pid));
-                                  setD(() {});
-                                },
+                                onTap: curPageId.isEmpty
+                                    ? null
+                                    : () {
+                                        provider.setPageAutoSync(curPageId,
+                                            !provider.isPageAutoSync(curPageId));
+                                        setD(() {});
+                                      },
                                 child: Container(
                                   padding: const EdgeInsets.symmetric(
                                       horizontal: 8, vertical: 3),
                                   decoration: BoxDecoration(
-                                    color: provider.isPageAutoSync(provider
-                                            .pages[provider.currentPageIndex]
-                                            .id)
+                                    color: provider.isPageAutoSync(curPageId)
                                         ? const Color(0xFF43B97F)
                                             .withValues(alpha: 0.2)
                                         : Colors.white.withValues(alpha: 0.05),
@@ -93751,35 +93806,23 @@ class _MindMapScreenState extends State<MindMapScreen>
                                       mainAxisSize: MainAxisSize.min,
                                       children: [
                                         Icon(
-                                          provider.isPageAutoSync(provider
-                                                  .pages[
-                                                      provider.currentPageIndex]
-                                                  .id)
+                                          provider.isPageAutoSync(curPageId)
                                               ? Icons.sync_rounded
                                               : Icons.sync_disabled_rounded,
-                                          color: provider.isPageAutoSync(
-                                                  provider
-                                                      .pages[provider
-                                                          .currentPageIndex]
-                                                      .id)
+                                          color: provider
+                                                  .isPageAutoSync(curPageId)
                                               ? const Color(0xFF43B97F)
                                               : Colors.white70,
                                           size: 14,
                                         ),
                                         const SizedBox(width: 4),
                                         Text(
-                                          provider.isPageAutoSync(provider
-                                                  .pages[
-                                                      provider.currentPageIndex]
-                                                  .id)
+                                          provider.isPageAutoSync(curPageId)
                                               ? provider.t('sync.autoSyncOn')
                                               : provider.t('sync.autoSyncOff'),
                                           style: TextStyle(
-                                            color: provider.isPageAutoSync(
-                                                    provider
-                                                        .pages[provider
-                                                            .currentPageIndex]
-                                                        .id)
+                                            color: provider
+                                                    .isPageAutoSync(curPageId)
                                                 ? const Color(0xFF43B97F)
                                                 : Colors.white70,
                                             fontSize: 10,
@@ -94363,7 +94406,17 @@ class _MindMapScreenState extends State<MindMapScreen>
   // ─── アップロード: ページ選択ダイアログ ─────────────────────────────────────
 
   void _showUploadPageSelector(BuildContext ctx, MindMapProvider provider) {
-    final selected = <String>{provider.pages[provider.currentPageIndex].id};
+    // ★ ページが 1 枚も無い時に pages[currentPageIndex] を直に引くと、
+    //   組み立ての最中で落ちて画面が真っ白になる (= ユーザー報告と同じ形)。
+    //   上げる物が無いので、 その旨を出して開かない。
+    if (provider.pages.isEmpty) {
+      ScaffoldMessenger.maybeOf(ctx)?.showSnackBar(SnackBar(
+        backgroundColor: const Color(0xFFE57373),
+        content: Text(provider.t('sync.noPagesToUpload')),
+      ));
+      return;
+    }
+    final selected = <String>{provider.currentPage.id};
     showDialog(
       context: ctx,
       barrierDismissible: false,
@@ -249178,8 +249231,11 @@ $currentText
             ),
             const SizedBox(width: 4),
           ],
-          Icon(_languageIcon(_language), color: _languageColor(_language)),
-          const SizedBox(width: 8),
+          // ★ ファイル名の前に種類の絵は出さない (= ユーザー要望: ページ
+          //   一覧のボタンと同じ絵に見えて見分けが付かない)。 種類は名前の
+          //   右の色付きの札 (Dart / Python 等) で分かるので、 二重に出す
+          //   必要が無い。 左端はページ切り替えボタンだけにする。
+          const SizedBox(width: 4),
           // タイトルは固定幅にする (= Flexible だと中央ボタン領域と
           //   余白を取り合って中央がズレるため)。
           ConstrainedBox(
@@ -249438,13 +249494,7 @@ $currentText
           //    ヘッダーにも手が届かない (Ctrl+Shift+E も届かない)。
           //    分割ペインの中に埋めている時 (compactHost) は本物のヘッダーが
           //    見えているので出さない (二重になる)。
-          if (!widget.compactHost)
-            IconButton(
-              tooltip: context.read<MindMapProvider>().t('menu.settings'),
-              icon: Icon(Icons.settings_rounded,
-                  color: fg.withValues(alpha: 0.75)),
-              onPressed: () => openSettingsFromAnywhere?.call(context),
-            ),
+          // (設定はヘッダーの右端へ移した = ユーザー要望)
           // ── 別のファイルに切り替える (= ユーザー要望: 複数のテキスト /
           //    json / マークダウンの中身を見る時に、 いちいち開いて閉じてを
           //    繰り返すのが面倒)。 閉じずにこの窓のまま中身だけ入れ替える。
@@ -249573,6 +249623,17 @@ $currentText
               }
             },
           ),
+          // ── このアプリの設定 (= ユーザー要望: ヘッダーの右端に) ──
+          //    この画面は本体の**上に重ねて**開くので、 引き出しにも本体の
+          //    ヘッダーにも手が届かない。 分割ペインの中 (compactHost) は
+          //    本物のヘッダーが見えているので出さない (二重になる)。
+          if (!widget.compactHost)
+            IconButton(
+              tooltip: context.read<MindMapProvider>().t('menu.settings'),
+              icon: Icon(Icons.settings_rounded,
+                  color: fg.withValues(alpha: 0.75)),
+              onPressed: () => openSettingsFromAnywhere?.call(context),
+            ),
           // ── ヘッダーを隠す (= ユーザー要望: 閉じるボタンの隣に配置) ──
           IconButton(
             tooltip: context.read<MindMapProvider>().t('text.hideHeader'),
@@ -261816,8 +261877,37 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
   bool _annotColorsOpen = false;
 
   /// 注釈の道具 (= ユーザー要望: PDF と同じく図形・線も置けるように)。
-  /// 'pen' / 'line' / 'arrow' / 'rect' / 'ellipse' / 'check'
+  /// 'pen' / 'line' / 'arrow' / 'rect' / 'ellipse' / 'check' / 'select'
   String _annotTool = 'pen';
+
+  // ── 印の種類と連番 (= ユーザー要望: チェックの他に ① みたいな連番で
+  //    数字が出るアイコンも。 PDF の描き込みで使える物を画像でも) ──
+  //    id は PdfDrawLayer.kCheckMarks と**同じ**にそろえてある。
+  static const List<({String id, IconData icon})> _kImgMarks = [
+    (id: 'check', icon: Icons.check_rounded),
+    (id: 'circle', icon: Icons.circle_outlined),
+    (id: 'cross', icon: Icons.close_rounded),
+    (id: 'triangle', icon: Icons.change_history_rounded),
+    (id: 'square', icon: Icons.crop_square_rounded),
+    (id: 'number', icon: Icons.looks_one_rounded),
+  ];
+  String _annotMark = 'check';
+
+  /// 次に置く番号。 置くたびに 1 つ進む (= ユーザー要望: 連番)。
+  int _annotSeqNext = 1;
+
+  /// 連番を 1 つ進める (置いた時だけ)。 番号の印以外では何もしない。
+  void _bumpAnnotSeq() {
+    if (_annotTool != 'check' || _annotMark != 'number') return;
+    if (_annotSeqNext < 999) _annotSeqNext++;
+  }
+
+  IconData get _annotMarkIcon {
+    for (final m in _kImgMarks) {
+      if (m.id == _annotMark) return m.icon;
+    }
+    return Icons.check_rounded;
+  }
 
   /// 置いた図形と、 いま引いている途中の図形。
   final List<_ImgShape> _annotShapes = [];
@@ -262716,6 +262806,8 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
       color: _annotColor,
       width: _annotActiveWidth,
       filled: _annotFilled && _annotCanFill,
+      mark: _annotMark,
+      seq: _annotSeqNext,
     );
   }
 
@@ -262801,7 +262893,10 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
         onTapUp: (d) {
           if (!shapeMode) return;
           _pushImgUndo();
-          setState(() => _annotShapes.add(_makeAnnotShapeAt(d.localPosition)));
+          setState(() {
+            _annotShapes.add(_makeAnnotShapeAt(d.localPosition));
+            _bumpAnnotSeq();
+          });
         },
         onPanStart: (d) {
           // 引き終わった時に 1 件積むので、 ここで控えを取る。
@@ -262819,6 +262914,8 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
                       color: _annotColor,
                       width: _annotActiveWidth,
                       filled: _annotFilled && _annotCanFill,
+                      mark: _annotMark,
+                      seq: _annotSeqNext,
                     );
             } else {
               _curStroke = [d.localPosition];
@@ -262851,6 +262948,7 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
               if (sh != null &&
                   (_annotFixed || (sh.end - sh.start).distance >= 4)) {
                 _annotShapes.add(sh);
+                _bumpAnnotSeq();
                 // 次に固定で置く時のために、 今の大きさを覚えておく。
                 if (!_annotFixed) {
                   final r = Rect.fromPoints(sh.start, sh.end);
@@ -263289,44 +263387,119 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
                     const SizedBox(width: 6),
                     // ── 道具えらび (= ユーザー要望: PDF と同じように図形・
                     //    線も入れられるように) ──
+                    // ★ どのボタンも何をする物か分かるよう、 必ず名前を
+                    //   出す (= ユーザー報告: カーソルみたいなアイコンの
+                    //   役割がよく分からない)。 先頭の矢印は「置いた図形を
+                    //   選んで動かす / 消す」 道具で、 これが無いと描いた後に
+                    //   直せなくなるため残してある。
                     ...[
-                      // ★ 置いた図形を選んで動かす (= ユーザー要望)。
-                      ('select', Icons.near_me_outlined),
-                      ('pen', Icons.edit_rounded),
-                      ('line', Icons.remove_rounded),
-                      ('arrow', Icons.arrow_forward_rounded),
-                      ('rect', Icons.crop_square_rounded),
-                      ('ellipse', Icons.circle_outlined),
-                      ('check', Icons.check_rounded),
+                      ('select', Icons.near_me_outlined, '選ぶ (動かす・消す)'),
+                      ('pen', Icons.edit_rounded, 'ペン'),
+                      ('line', Icons.remove_rounded, '直線'),
+                      ('arrow', Icons.arrow_forward_rounded, '矢印'),
+                      ('rect', Icons.crop_square_rounded, '四角'),
+                      ('ellipse', Icons.circle_outlined, '丸'),
+                      ('check', _annotMarkIcon, '印 (チェック・連番など)'),
                     ].map((t) => Padding(
                           padding: const EdgeInsets.symmetric(horizontal: 1),
-                          child: InkWell(
-                            borderRadius: BorderRadius.circular(6),
-                            onTap: () => setState(() {
-                              _annotTool = t.$1;
-                              if (t.$1 != 'select') _annotSel.clear();
-                            }),
-                            child: Container(
-                              width: 30,
-                              height: 30,
-                              decoration: BoxDecoration(
-                                color: _annotTool == t.$1
-                                    ? _annotColor.withValues(alpha: 0.25)
-                                    : Colors.white.withValues(alpha: 0.05),
-                                borderRadius: BorderRadius.circular(6),
-                                border: Border.all(
-                                    color: _annotTool == t.$1
-                                        ? _annotColor
-                                        : Colors.white12),
-                              ),
-                              child: Icon(t.$2,
-                                  size: 17,
+                          child: Tooltip(
+                            message: t.$3,
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(6),
+                              onTap: () => setState(() {
+                                _annotTool = t.$1;
+                                if (t.$1 != 'select') _annotSel.clear();
+                              }),
+                              child: Container(
+                                width: 30,
+                                height: 30,
+                                decoration: BoxDecoration(
                                   color: _annotTool == t.$1
-                                      ? Colors.white
-                                      : Colors.white60),
+                                      ? _annotColor.withValues(alpha: 0.25)
+                                      : Colors.white.withValues(alpha: 0.05),
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(
+                                      color: _annotTool == t.$1
+                                          ? _annotColor
+                                          : Colors.white12),
+                                ),
+                                child: Icon(t.$2,
+                                    size: 17,
+                                    color: _annotTool == t.$1
+                                        ? Colors.white
+                                        : Colors.white60),
+                              ),
                             ),
                           ),
                         )),
+                    // ── 印の種類えらび (= ユーザー要望: チェックの他に
+                    //    ① みたいな連番で数字が出る物も出せるように)。
+                    //    PDF の描き込みと同じ並びにしてある。 ──
+                    if (_annotTool == 'check') ...[
+                      const SizedBox(width: 4),
+                      ..._kImgMarks.map((m) => Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 1),
+                            child: Tooltip(
+                              message: m.id == 'number'
+                                  ? '連番 (1 2 3 …)'
+                                  : '印の形をえらぶ',
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(6),
+                                onTap: () =>
+                                    setState(() => _annotMark = m.id),
+                                child: Container(
+                                  width: 26,
+                                  height: 26,
+                                  decoration: BoxDecoration(
+                                    color: _annotMark == m.id
+                                        ? _annotColor.withValues(alpha: 0.3)
+                                        : Colors.white.withValues(alpha: 0.04),
+                                    borderRadius: BorderRadius.circular(6),
+                                    border: Border.all(
+                                        color: _annotMark == m.id
+                                            ? _annotColor
+                                            : Colors.white12),
+                                  ),
+                                  child: Icon(m.icon,
+                                      size: 14,
+                                      color: _annotMark == m.id
+                                          ? Colors.white
+                                          : Colors.white54),
+                                ),
+                              ),
+                            ),
+                          )),
+                      // 次に出る番号。 押すと 1 に戻す (= 数え直したい時)。
+                      if (_annotMark == 'number')
+                        Padding(
+                          padding: const EdgeInsets.only(left: 4),
+                          child: Tooltip(
+                            message: '次に置く番号 (押すと 1 に戻す)',
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(6),
+                              onTap: () =>
+                                  setState(() => _annotSeqNext = 1),
+                              child: Container(
+                                height: 26,
+                                padding:
+                                    const EdgeInsets.symmetric(horizontal: 8),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withValues(alpha: 0.05),
+                                  borderRadius: BorderRadius.circular(6),
+                                  border:
+                                      Border.all(color: Colors.white12),
+                                ),
+                                alignment: Alignment.center,
+                                child: Text(_imgSeqGlyph(_annotSeqNext),
+                                    style: const TextStyle(
+                                        color: Colors.white70,
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w700)),
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
                     const SizedBox(width: 4),
                     // ── 大きさ・形を固定して置く (= ユーザー要望: PDF と
                     //    同じく、 チェックなどを毎回同じ大きさで出したい) ──
@@ -263877,10 +264050,26 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
 /// 画像に重ねるテキスト 1 個分 (位置はキャプチャ領域のピクセル座標)。
 /// 画像に描く図形 1 個 (= ユーザー要望: 画像編集でも PDF と同じように
 /// 図形・線・文字を入れられるように)。
+/// 連番の字 (①②③…)。 丸囲みは 20 までしか無いので、 それ以降は (21) に。
+/// PDF の描き込み (PdfDrawLayer._seqGlyph) と**同じ規則**にそろえてある。
+String _imgSeqGlyph(int n) {
+  if (n >= 1 && n <= 20) return String.fromCharCode(0x2460 + (n - 1));
+  return '($n)';
+}
+
 class _ImgShape {
   final String kind; // line / arrow / rect / ellipse / check
   Offset start;
   Offset end;
+
+  /// 'check' の時の印の種類 (= ユーザー要望: PDF の描き込みと同じ物を
+  /// 画像でも使いたい)。 check / circle / cross / triangle / square / number。
+  /// PDF 側の PdfDrawLayer.kCheckMarks と**同じ id** にそろえてある。
+  final String mark;
+
+  /// 連番 (mark == 'number' の時だけ使う)。 置いた時の番号を覚えておく
+  /// (後から並べ替えても番号は変わらない)。
+  final int seq;
   // ★ 置いた後でも選んで色や太さを変えられるようにするため、 固定をやめた
   //   (= ユーザー要望: 一度挿入した図形を選んで動かしたり直したり)。
   Color color;
@@ -263896,6 +264085,8 @@ class _ImgShape {
     required this.color,
     required this.width,
     this.filled = false,
+    this.mark = 'check',
+    this.seq = 1,
   });
 
   _ImgShape copy() => _ImgShape(
@@ -263905,6 +264096,8 @@ class _ImgShape {
         color: color,
         width: width,
         filled: filled,
+        mark: mark,
+        seq: seq,
       );
 }
 
@@ -263998,11 +264191,64 @@ class _AnnotationPainter extends CustomPainter {
         final side = math.min(rect.width, rect.height);
         final box =
             Rect.fromCenter(center: rect.center, width: side, height: side);
-        final path = Path()
-          ..moveTo(box.left + side * 0.12, box.top + side * 0.55)
-          ..lineTo(box.left + side * 0.42, box.top + side * 0.85)
-          ..lineTo(box.left + side * 0.92, box.top + side * 0.15);
-        canvas.drawPath(path, paint);
+        // ★ 印の種類は PDF の描き込みと同じ物をそろえてある
+        //   (= ユーザー要望: PDF で使える項目を画像でも)。
+        switch (sh.mark) {
+          case 'circle':
+            canvas.drawCircle(box.center, side * 0.42, paint);
+            break;
+          case 'cross':
+            canvas.drawLine(
+                Offset(box.left + side * 0.18, box.top + side * 0.18),
+                Offset(box.right - side * 0.18, box.bottom - side * 0.18),
+                paint);
+            canvas.drawLine(
+                Offset(box.right - side * 0.18, box.top + side * 0.18),
+                Offset(box.left + side * 0.18, box.bottom - side * 0.18),
+                paint);
+            break;
+          case 'triangle':
+            canvas.drawPath(
+                Path()
+                  ..moveTo(box.center.dx, box.top + side * 0.12)
+                  ..lineTo(box.right - side * 0.12, box.bottom - side * 0.15)
+                  ..lineTo(box.left + side * 0.12, box.bottom - side * 0.15)
+                  ..close(),
+                paint);
+            break;
+          case 'square':
+            canvas.drawRect(
+                Rect.fromCenter(
+                    center: box.center, width: side * 0.72, height: side * 0.72),
+                paint);
+            break;
+          case 'number':
+            // 数字は線では作れないので文字として描く。 丸囲みの ① は
+            //   20 までしか無いので、 それ以降は (21) の形にする。
+            final glyph = _imgSeqGlyph(sh.seq);
+            final tp = TextPainter(
+              text: TextSpan(
+                  text: glyph,
+                  style: TextStyle(
+                      color: sh.color,
+                      fontSize: side * 0.9,
+                      height: 1.1,
+                      fontWeight: FontWeight.w700)),
+              textDirection: TextDirection.ltr,
+            )..layout();
+            tp.paint(
+                canvas,
+                box.center -
+                    Offset(tp.width / 2, tp.height / 2));
+            break;
+          default:
+            canvas.drawPath(
+                Path()
+                  ..moveTo(box.left + side * 0.12, box.top + side * 0.55)
+                  ..lineTo(box.left + side * 0.42, box.top + side * 0.85)
+                  ..lineTo(box.left + side * 0.92, box.top + side * 0.15),
+                paint);
+        }
         break;
       case 'arrow':
         canvas.drawLine(sh.start, sh.end, paint);

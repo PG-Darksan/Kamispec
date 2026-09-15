@@ -115,14 +115,51 @@ class AgentCliSession extends ChangeNotifier {
   //      画面を組み直すと重いため) ので、 これだけでは画面が変わらない。
   //      走っている間だけ小さな見張りを回して、 値が変わった時にだけ
   //      知らせる。
+  // ★ 判定は [starting] に任せる。 _readyAfterStart を直に見ると、 ずっと
+  //   喋り続ける相手で _kStartupCap を過ぎた後も false のままになり、
+  //   「停止」 が永久に出せなくなる (= 逃げ道を塞いでしまう)。
   bool get busy =>
-      _running && DateTime.now().difference(_lastOutputAt) < _kIdle;
+      _running &&
+      !starting &&
+      DateTime.now().difference(_lastOutputAt) < _kIdle;
+
+  // ── 立ち上がっている最中か (= ユーザー要望: CodexCLI が立ち上がる
+  //    タイミングでも「停止」 が出るのはおかしい) ──
+  //
+  //    [busy] は「出力が途切れないか」 で考え中かを見ている。 ところが
+  //    CLI は**起動中にも**名乗りや設定の読み込みを書き続けるので、 その
+  //    間ずっと busy になり、 まだ何も走っていないのに「停止」 が出ていた。
+  //    押しても、 起動しかけの CLI に Esc を送るだけで意味が無い。
+  //
+  //    ★ 起動の終わりは「一度でも出力が途切れた時」 で見る。 待ち時間を
+  //      決め打ちにしないので、 速い機械でも遅い機械でも合う。
+  //    ★ 万一ずっと喋り続ける相手でも [_kStartupCap] で必ず抜ける
+  //      (抜けないと「停止」 が永久に出せなくなる)。
+  static const Duration _kStartupCap = Duration(seconds: 60);
+  DateTime? _startedAt;
+  bool _readyAfterStart = false;
+
+  bool get starting {
+    if (!_running || _readyAfterStart) return false;
+    final t = _startedAt;
+    if (t != null && DateTime.now().difference(t) > _kStartupCap) return false;
+    return true;
+  }
 
   Timer? _busyTimer;
   bool _busyShown = false;
 
   void _startBusyTimer() {
     _busyTimer ??= Timer.periodic(const Duration(milliseconds: 400), (_) {
+      // ★ 起動の終わり = 出力が一度途切れた時。 ここで捕まえる。
+      if (_running &&
+          !_readyAfterStart &&
+          DateTime.now().difference(_lastOutputAt) >= _kIdle) {
+        _readyAfterStart = true;
+        _busyShown = false;
+        notifyListeners();
+        return;
+      }
       final now = busy;
       if (now == _busyShown) return;
       _busyShown = now;
@@ -228,6 +265,10 @@ class AgentCliSession extends ChangeNotifier {
       );
       _pty = pty;
       _running = true;
+      // 立ち上がり直し。 「起動中」 からやり直す (= 停止を出さない)。
+      _startedAt = DateTime.now();
+      _readyAfterStart = false;
+      _busyShown = false;
       _startBusyTimer();
       // ★ 文字の切れ目を跨いでも壊れないように、 流れたまま解く
       //   (1 回分ずつ utf8.decode すると、 途中で切れた文字が □ になる)。
@@ -274,6 +315,8 @@ class AgentCliSession extends ChangeNotifier {
     if (exitCode != null) return;
     exitCode = code;
     _running = false;
+    _readyAfterStart = false;
+    _startedAt = null;
     _queueTimer?.cancel();
     _queueTimer = null;
     _busyTimer?.cancel();

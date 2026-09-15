@@ -1227,6 +1227,23 @@ class AgentTerminalState extends State<AgentTerminal> {
               ]),
             ),
           ),
+          // ── 立ち上がっている最中は「起動中」 とだけ出す
+          //    (= ユーザー要望: CodexCLI が立ち上がるタイミングでも
+          //    「停止」 が出るのはおかしい)。 まだ止める処理が無いため。 ──
+          if (running && _s.starting)
+            const Padding(
+              padding: EdgeInsets.only(right: 8),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                SizedBox(
+                    width: 12,
+                    height: 12,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 1.6, color: Color(0xFF8AA0C0))),
+                SizedBox(width: 6),
+                Text('起動中',
+                    style: TextStyle(color: Colors.white38, fontSize: 11)),
+              ]),
+            ),
           // ── 処理を止める (= ユーザー要望: 処理が始まったら出す) ──
           //    CLI そのものは閉じない。 どの CLI も走っている処理を
           //    打ち切るのは Esc なので、 それを送るだけ。

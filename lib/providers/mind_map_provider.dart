@@ -57385,6 +57385,19 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Sem sincronização (apenas local)',
       'ru': 'Не синхронизировано (только локально)',
     },
+    // ★ = ユーザー報告「ページが 1 枚も無い状態で同期を押すと真っ白」。
+    //   上げる物が無い事を伝えて、 選ぶ窓は開かない。
+    'sync.noPagesToUpload': {
+      'ja': '上げられるページがありません。 先にページを作ってください。',
+      'en': 'There are no pages to upload. Create a page first.',
+      'zh': '没有可上传的页面。请先创建页面。',
+      'ko': '업로드할 페이지가 없습니다. 먼저 페이지를 만드세요.',
+      'es': 'No hay páginas que subir. Crea una página primero.',
+      'fr': "Aucune page à envoyer. Créez d'abord une page.",
+      'de': 'Es gibt keine Seiten zum Hochladen. Lege zuerst eine Seite an.',
+      'pt': 'Não há páginas para enviar. Crie uma página primeiro.',
+      'ru': 'Нет страниц для загрузки. Сначала создайте страницу.',
+    },
     'sync.autoSyncOn': {
       'ja': '自動同期ON',
       'en': 'Auto-sync ON',
