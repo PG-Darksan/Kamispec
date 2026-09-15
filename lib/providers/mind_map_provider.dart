@@ -19604,16 +19604,19 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Cota Dev restante {usd} / {cap} (~{out} tokens)',
       'ru': 'Осталось Dev-квоты {usd} / {cap} (~{out} токенов)',
     },
+    // ★ 中身と食い違わせない (= 動作検証レポート)。 AI の書き換えは
+    //   _applyMcpEdits が最後に _save() を呼ぶので、 画面だけでなく
+    //   **その場でファイルにも書かれる**。 前の文面は逆の事を言っていた。
     'text.aiEditIntro': {
-      'ja': '開いているファイルを AI が直接書き換えます。\n例:「見出しごとに整理して」「誤字を直して」\n書き換えは Ctrl+Z で戻せます。\n保存するまでファイルには書き込まれません。',
-      'en': 'The AI edits the open file directly.\nE.g. "Organize by headings" or "Fix typos".\nChanges can be undone with Ctrl+Z and are not written until you save.',
-      'zh': 'AI 会直接改写当前打开的文件。\n例如「按标题整理」「修正错别字」。\n修改可用 Ctrl+Z 撤销，保存前不会写入文件。',
-      'ko': 'AI가 열려 있는 파일을 직접 수정합니다.\n예: "제목별로 정리해줘", "오타 고쳐줘"\n수정은 Ctrl+Z로 되돌릴 수 있고 저장 전에는 파일에 쓰이지 않습니다.',
-      'es': 'La IA edita directamente el archivo abierto.\nEj.: «Organiza por títulos» o «Corrige erratas».\nSe puede deshacer con Ctrl+Z y no se guarda hasta que tú guardes.',
-      'fr': 'L\'IA modifie directement le fichier ouvert.\nEx. : « Organise par titres » ou « Corrige les fautes ».\nAnnulable avec Ctrl+Z ; rien n\'est écrit avant l\'enregistrement.',
-      'de': 'Die KI bearbeitet die geöffnete Datei direkt.\nz. B. „Nach Überschriften ordnen" oder „Tippfehler korrigieren".\nMit Strg+Z rückgängig; gespeichert wird erst durch dich.',
-      'pt': 'A IA edita diretamente o arquivo aberto.\nEx.: "Organize por títulos" ou "Corrija erros".\nDesfaça com Ctrl+Z; nada é gravado até você salvar.',
-      'ru': 'ИИ напрямую редактирует открытый файл.\nНапр.: «Упорядочь по заголовкам», «Исправь опечатки».\nОтмена — Ctrl+Z; файл не записывается до сохранения.',
+      'ja': '開いているファイルを AI が直接書き換えます。\n例:「見出しごとに整理して」「誤字を直して」\n書き換えはそのままファイルにも保存されます。\n戻したい時は Ctrl+Z。',
+      'en': 'The AI edits the open file directly.\nE.g. "Organize by headings" or "Fix typos".\nEdits are saved to the file straight away; undo with Ctrl+Z.',
+      'zh': 'AI 会直接改写当前打开的文件。\n例如「按标题整理」「修正错别字」。\n修改会立即写入文件；可用 Ctrl+Z 撤销。',
+      'ko': 'AI가 열려 있는 파일을 직접 수정합니다.\n예: "제목별로 정리해줘", "오타 고쳐줘"\n수정은 곧바로 파일에 저장됩니다. 되돌리려면 Ctrl+Z.',
+      'es': 'La IA edita directamente el archivo abierto.\nEj.: «Organiza por títulos» o «Corrige erratas».\nLos cambios se guardan en el archivo al instante; deshaz con Ctrl+Z.',
+      'fr': 'L\'IA modifie directement le fichier ouvert.\nEx. : « Organise par titres » ou « Corrige les fautes ».\nLes modifications sont enregistrées aussitôt ; annuler avec Ctrl+Z.',
+      'de': 'Die KI bearbeitet die geöffnete Datei direkt.\nz. B. „Nach Überschriften ordnen" oder „Tippfehler korrigieren".\nÄnderungen werden sofort in die Datei gespeichert; rückgängig mit Strg+Z.',
+      'pt': 'A IA edita diretamente o arquivo aberto.\nEx.: "Organize por títulos" ou "Corrija erros".\nAs alterações são gravadas no arquivo na hora; desfaça com Ctrl+Z.',
+      'ru': 'ИИ напрямую редактирует открытый файл.\nНапр.: «Упорядочь по заголовкам», «Исправь опечатки».\nПравки сразу записываются в файл; отмена — Ctrl+Z.',
     },
     'font.notPlaced': {
       'ja': '日本語フォントが未配置',
@@ -57979,27 +57982,30 @@ class MindMapProvider extends ChangeNotifier {
     },
     // 複数フォルダー選択のラベル接尾辞
     // ── コンパクト表示 (= ユーザー要望) ──
+    // ★ 何の大きさ・更新日なのかを必ず書く (= ユーザー要望:「大きさ」 が
+    //   何を指しているか分かりにくい)。 目的語 (ページ一覧) と、 中身
+    //   (容量・更新日) を名前で出す。
     'drawer.compactOn': {
-      'ja': '名前だけにする',
-      'en': 'Show names only',
-      'zh': '只显示名称',
-      'ko': '이름만 보기',
-      'es': 'Mostrar solo los nombres',
-      'fr': 'Afficher seulement les noms',
-      'de': 'Nur Namen zeigen',
-      'pt': 'Mostrar apenas os nomes',
-      'ru': 'Показывать только имена',
+      'ja': 'ページ一覧を名前だけにする',
+      'en': 'Page list: names only',
+      'zh': '页面列表：仅显示名称',
+      'ko': '페이지 목록: 이름만',
+      'es': 'Lista de páginas: solo nombres',
+      'fr': 'Liste des pages : noms seulement',
+      'de': 'Seitenliste: nur Namen',
+      'pt': 'Lista de páginas: apenas nomes',
+      'ru': 'Список страниц: только имена',
     },
     'drawer.compactOff': {
-      'ja': '大きさや更新日も出す',
-      'en': 'Show size and date too',
-      'zh': '同时显示大小和日期',
-      'ko': '크기와 날짜도 보기',
-      'es': 'Mostrar también tamaño y fecha',
-      'fr': 'Afficher aussi la taille et la date',
-      'de': 'Auch Größe und Datum zeigen',
-      'pt': 'Mostrar também tamanho e data',
-      'ru': 'Показывать размер и дату',
+      'ja': 'ページ一覧に容量と更新日も表示',
+      'en': 'Page list: show file size and date too',
+      'zh': '页面列表：同时显示容量和更新日期',
+      'ko': '페이지 목록: 용량과 수정일도 표시',
+      'es': 'Lista de páginas: mostrar también tamaño y fecha',
+      'fr': 'Liste des pages : afficher aussi la taille et la date',
+      'de': 'Seitenliste: auch Dateigröße und Datum zeigen',
+      'pt': 'Lista de páginas: mostrar também tamanho e data',
+      'ru': 'Список страниц: показывать размер и дату',
     },
     'drawer.foldersSelected': {
       'ja': ' 個のフォルダー',
@@ -98832,6 +98838,25 @@ $cleanQ
   ///   ★ 保存側 (MindMapNode.toJson) には足さない。 あれは prefs とクラウドへ
   ///   そのまま書かれる本物のデータなので、 導出値を混ぜるとページの
   ///   差分や容量の勘定まで揺れる。
+  /// その文字列が**ディスク上のファイル**を指しているか。
+  ///
+  /// ★ = 動作検証レポート (2026-09-15)「組み込み背景を破損扱いする」。
+  ///   背景は `builtin-map-background:castle` のように**文字列だけで描ける**
+  ///   組み込み資源のことがある。 それを端末のファイルとして existsSync で
+  ///   調べると必ず「無い」 になり、 ちゃんと出ている月と城の背景を
+  ///   「壊れています」 と報告していた (AI が要らぬ貼り直しを勧める)。
+  ///   `C:\...` の頭を仕組み名と読み違えないよう、 1 文字だけの頭
+  ///   (= Windows のドライブ文字) は通す。
+  static bool _isLocalFileRef(String v) {
+    final t = v.trim();
+    if (t.isEmpty) return false;
+    final i = t.indexOf(':');
+    if (i <= 1) return true; // 区切りが無い / C: などのドライブ文字
+    final scheme = t.substring(0, i).toLowerCase();
+    // 英字で始まる仕組み名 (http, https, builtin-map-background, data, asset…)
+    return !RegExp(r'^[a-z][a-z0-9+.\-]*$').hasMatch(scheme);
+  }
+
   Map<String, dynamic>? mcpReadPage(String pageId) {
     final page = mcpPageById(pageId);
     if (page == null) return null;
@@ -98855,7 +98880,9 @@ $cleanQ
         // 小数は 1 桁で十分 (JSON を無駄に太らせない)。
         e['visualHeight'] = double.parse(n.visualHeight.toStringAsFixed(1));
         final ap = (n.attachmentPath ?? '').trim();
-        if (ap.isEmpty || ap.startsWith('http') || stat >= maxStat) continue;
+        // ★ ディスク上のファイルだけ調べる (= 組み込み資源や http は、
+        //   無くて当たり前なので「壊れている」 とは言わない)。
+        if (!_isLocalFileRef(ap) || stat >= maxStat) continue;
         stat++;
         if (File(ap).existsSync()) continue;
         e['brokenAttachment'] = true;
@@ -98866,7 +98893,7 @@ $cleanQ
     }
     if (broken.isNotEmpty) json['brokenAttachments'] = broken;
     final bg = (page.backgroundImagePath ?? '').trim();
-    if (bg.isNotEmpty && !bg.startsWith('http') && !File(bg).existsSync()) {
+    if (_isLocalFileRef(bg) && !File(bg).existsSync()) {
       json['brokenBackground'] = bg;
     }
     return json;
@@ -100675,6 +100702,10 @@ $cleanQ
     final node =
         page.nodes[_resolveNodeIdIn(page, nodeKey, fuzzy: false) ?? nodeKey];
     if (node == null) return false;
+    // ★ 空白だけの題名にしない (= 動作検証レポート: 通ってしまうと、 以降は
+    //   id を知らない限り指せなくなる)。 題名を変えない呼び方 (null) とは
+    //   区別する。 作る側 (mcpCreatePage) と同じ作法。
+    if (title != null && title.trim().isEmpty) return false;
     // 色・リンクの書き換えは戻せるようにしておく (= 見た目が変わる操作)。
     if (colorValue != null || url != null || clearUrl) {
       _pushUndoForPage(pageId, coalesceKey: 'mcpUpdateNode:$pageId');
@@ -100985,6 +101016,45 @@ $cleanQ
     return null;
   }
 
+  /// その指し方で当たるノードの id を**同じ精度のものだけ**返す。
+  ///
+  /// ★ = 動作検証レポート (2026-09-15)「同名タイトルが複数あると、 画面位置
+  ///   ではなく作成順の先頭が選ばれる。 完全一致が無ければ部分一致で別の
+  ///   ノードを選ぶ事もある」。 どれを選んでも当てずっぽうになるので、
+  ///   呼ぶ側はここで 2 件以上返ったら**断って id を聞き返す**。
+  ///   探す順は _resolveNodeIdIn と必ず同じにする (ずれると、 断ってから
+  ///   実行すると別の物に当たる、 という一番たちの悪い形になる)。
+  List<String> mcpMatchingNodeIds(String pageId, String key,
+      {bool fuzzy = true}) {
+    final page = mcpPageById(pageId);
+    if (page == null) return const [];
+    final k = key.trim();
+    if (k.isEmpty) return const [];
+    if (page.nodes.containsKey(k)) return [k];
+    String norm(String v) =>
+        v.trim().toLowerCase().replaceAll(RegExp(r'[\s\u3000]+'), '');
+    final nk = norm(k);
+    if (nk.isEmpty) return const [];
+    final exact = [
+      for (final e in page.nodes.entries)
+        if (e.value.title.trim() == k) e.key
+    ];
+    if (exact.isNotEmpty) return exact;
+    final loose = [
+      for (final e in page.nodes.entries)
+        if (norm(e.value.title) == nk) e.key
+    ];
+    if (loose.isNotEmpty) return loose;
+    if (!fuzzy) return const [];
+    return [
+      for (final e in page.nodes.entries)
+        if (norm(e.value.title).isNotEmpty &&
+            (norm(e.value.title).contains(nk) ||
+                nk.contains(norm(e.value.title))))
+          e.key
+    ];
+  }
+
   /// そのページのノードを「id と題名」 の一覧で返す (= 失敗した時に AI へ
   /// 選択肢を見せて、 言い直せるようにするため)。
   List<Map<String, String>> mcpNodeIndex(String pageId) {
@@ -101195,6 +101265,115 @@ $cleanQ
   }
 
   /// 図形を消す。 read_page が返す decorations の id を指す。
+  /// 既にある図形を書き換える (種類 / 色 / 太さ / 文字 / 塗り / 層)。
+  ///
+  /// ★ = 動作検証レポート (2026-09-15)「画面の『図形を編集』 では直せるのに、
+  ///   MCP には追加と削除しか無いので、 AI に頼むと作り直しになる」。
+  ///   位置は動かさない (動かすのは掴んで置く操作なので、 画面の仕事)。
+  ///   渡されなかった項目はそのまま。 知らない id なら false。
+  bool mcpUpdateDecoration(
+    String pageId,
+    String decorationId, {
+    String? kind,
+    int? colorRgb,
+    double? strokeWidth,
+    String? text,
+    bool? filled,
+    int? layer,
+  }) {
+    final page = mcpPageById(pageId);
+    if (page == null) return false;
+    final i = page.decorations.indexWhere((d) => d.id == decorationId);
+    if (i < 0) return false;
+    MapDecorationKind? k;
+    if (kind != null && kind.trim().isNotEmpty) {
+      for (final v in MapDecorationKind.values) {
+        if (v.name.toLowerCase() == kind.trim().toLowerCase()) k = v;
+      }
+      // 知らない種類は黙って無視しない (= 直したつもりで直っていない、 が
+      //   一番困る)。 折れ線は通過点が要るので作る側と同じく扱わない。
+      if (k == null || k == MapDecorationKind.polyline) return false;
+    }
+    _pushUndoForPage(pageId, coalesceKey: 'mcpDeco:$pageId');
+    page.decorations[i] = page.decorations[i].copyWith(
+      kind: k,
+      colorRgb: colorRgb == null ? null : (colorRgb & 0xFFFFFF),
+      strokeWidth: strokeWidth,
+      text: text,
+      filled: filled,
+      layer: layer?.clamp(1, 5),
+    );
+    page.lastModifiedAt = DateTime.now();
+    _saveToStorage();
+    notifyListeners();
+    _requestMcpFocus(pageId);
+    return true;
+  }
+
+  /// 動画エディターの項目を書き換える / 消す。
+  ///
+  /// ★ = 動作検証レポート (2026-09-15)「読み取りと追加は出来るが、 移動・
+  ///   レイヤー変更・時刻変更・文言変更・削除が出来ない」。 保存は短い鍵
+  ///   ({id,k,l,s,d,p,t,fs,c}) なので、 読み返す mcpListVideoEditorItems と
+  ///   同じ対応表で書く。 [remove] が true なら消す。
+  Future<Map<String, Object?>> mcpEditVideoEditorItem(
+    String pageId,
+    String itemId, {
+    int? layer,
+    int? startMs,
+    int? durationMs,
+    String? text,
+    bool remove = false,
+  }) async {
+    final page = mcpPageById(pageId);
+    if (page == null || page.pageType != 'videoEditor') {
+      return {'ok': false, 'reason': 'not a video editor page: $pageId'};
+    }
+    final id = itemId.trim();
+    if (id.isEmpty) return {'ok': false, 'reason': '"itemId" is required'};
+    try {
+      final prefs = await _prefsWithRetry();
+      final key = 'videoEditor_${page.id}';
+      final raw = prefs.getString(key);
+      if (raw == null || raw.trim().isEmpty) {
+        return {'ok': false, 'reason': 'the timeline is empty'};
+      }
+      final decoded = jsonDecode(raw);
+      final list = decoded is Map
+          ? (decoded['items'] is List
+              ? List<dynamic>.from(decoded['items'] as List)
+              : <dynamic>[])
+          : (decoded is List ? List<dynamic>.from(decoded) : <dynamic>[]);
+      final i = list.indexWhere((e) => e is Map && '${e['id'] ?? ''}' == id);
+      if (i < 0) {
+        return {
+          'ok': false,
+          'reason': 'no item with itemId "$id" - call '
+              'list_video_editor_items for the real ids',
+        };
+      }
+      if (remove) {
+        list.removeAt(i);
+      } else {
+        final m = Map<String, dynamic>.from(list[i] as Map);
+        if (layer != null) m['l'] = layer.clamp(0, 5);
+        if (startMs != null) m['s'] = startMs < 0 ? 0 : startMs;
+        if (durationMs != null && durationMs > 0) m['d'] = durationMs;
+        if (text != null) m['t'] = text;
+        list[i] = m;
+      }
+      await prefs.setString(key, jsonEncode({'v': 2, 'items': list}));
+      _bumpPageTick(page.id);
+      _mcpContentTick++;
+      _touchPageBody(page.id);
+      notifyListeners();
+      _requestMcpFocus(page.id);
+      return {'ok': true, 'itemId': id, if (remove) 'removed': true};
+    } catch (e) {
+      return {'ok': false, 'reason': '$e'};
+    }
+  }
+
   bool mcpDeleteDecoration(String pageId, String decorationId) {
     final page = mcpPageById(pageId);
     if (page == null) return false;

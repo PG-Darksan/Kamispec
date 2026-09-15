@@ -63,8 +63,13 @@ class McpServer {
   String? url;
 
   /// 外部アプリからの接続に必要な合言葉 (= ユーザー要望: 別のプログラムから
-  /// 勝手に操作されないように)。 起動のたびに作り直す。 これを知らない
-  /// プログラムは 401 で弾かれる。
+  /// 勝手に操作されないように)。 これを知らないプログラムは 401 で弾かれる。
+  ///
+  /// ★ 中身は MindMapProvider が prefs (`mcp_token_v1`) に持っていて、
+  ///   ここは start() で預かるだけ。 **起動のたびには作り直さない**
+  ///   (作り直すと、 相手側の設定に書いた URL が次の起動で必ず 401 になり、
+  ///   外部接続が使い物にならない)。 失効させる道は
+  ///   MindMapProvider.regenerateMcpToken だけ。
   String? _token;
   String? get token => _token;
 
@@ -407,12 +412,12 @@ class McpServer {
         'that drawing to another device. '
         'Converting a note page ("paint" / "document" / "markdown") to '
         '"normal" does NOT turn its text into nodes: the text is kept aside '
-        'and simply stops being displayed, so the mind map looks empty. No '
-        'tool can read a note body back (read_page returns nodes / '
-        'connections / decorations only), so ask the user for the headings - '
-        'or use text already in this conversation - and create the nodes '
-        'yourself with add_node. A page turned into "markdown" can be '
-        'filled in with write_markdown. '
+        'and simply stops being displayed, so the mind map looks empty. Read '
+        'the old body back FIRST - read_markdown / read_document / '
+        'read_paint_items, or list_video_editor_items for a video page - and '
+        'create the nodes yourself with add_node. (read_page still returns '
+        'nodes / connections / decorations only, never the body.) A page '
+        'turned into "markdown" can be filled in with write_markdown. '
         '${kStoreBuild ? 'These five' : 'These six'} are the only page '
         'kinds the app has; if the user names '
         'something else, say so instead of picking the closest one.',
@@ -587,6 +592,49 @@ class McpServer {
           'clearUrl': {'type': 'boolean'},
         },
         ['pageId']),
+    // ─── 既にある物を直す (= 動作検証レポート: 画面では直せるのに MCP には
+    //     追加と削除しか無く、 AI に頼むと作り直しになる) ─────────────────
+    _tool(
+        'update_decoration',
+        'Change a shape that is ALREADY on the page - its kind, colour, line '
+        'thickness, label, fill or layer. "color" is RGB and the alpha byte '
+        'is ignored, the same as add_decoration (node colours are ARGB). '
+        'Get the id from read_page '
+        '("decorations"), or from what add_decoration returned. Only the '
+        'fields you pass change; everything else stays. This does NOT move or '
+        'resize the shape (dragging is the user\'s job) - to reposition one, '
+        'delete it and add it again with new coordinates. Use this instead of '
+        'deleting and re-adding just to recolour something.',
+        {
+          'pageId': {'type': 'string'},
+          'decorationId': {'type': 'string'},
+          'kind': {'type': 'string'},
+          'color': {'type': 'integer'},
+          'strokeWidth': {'type': 'number'},
+          'text': {'type': 'string'},
+          'filled': {'type': 'boolean'},
+          'layer': {'type': 'integer'},
+        },
+        ['pageId', 'decorationId']),
+    _tool(
+        'update_video_editor_item',
+        'Change or remove ONE item already on a video timeline - its lane '
+        '(layer), start time, length or caption text. Get itemId from '
+        'list_video_editor_items. Only the fields you pass change. Set '
+        '"remove": true to delete the item instead. Times are whole '
+        'milliseconds (1.5 seconds = 1500). This is the only way to fix a '
+        'caption you placed at the wrong moment - do not add a second one on '
+        'top of it.',
+        {
+          'pageId': {'type': 'string'},
+          'itemId': {'type': 'string'},
+          'layer': {'type': 'integer'},
+          'startMs': {'type': 'integer'},
+          'durationMs': {'type': 'integer'},
+          'text': {'type': 'string'},
+          'remove': {'type': 'boolean'},
+        },
+        ['pageId', 'itemId']),
     _tool(
         'list_orphan_files',
         'List files this app created that no tile uses any more - the '
@@ -775,9 +823,12 @@ class McpServer {
         '(imageBase64 + fileName like "chart.png") or as an absolute local '
         'file path (imagePath). Returns nodeId. '
         'This is the ONE tool with no batch form: for several images call it '
-        'once per image. An invented array argument is ignored, so passing '
-        'three paths in one call would attach only one and still look like a '
-        'success.',
+        'once per image. An array in "imagePath" / "imageBase64" is rejected '
+        'outright, and an invented key such as "images" is ignored entirely - '
+        'either way nothing is attached, so never bundle images into one '
+        'call. The path is also checked before anything is created: a '
+        'missing file, a non-image extension or a file that cannot be '
+        'decoded comes back as an error and no node is made.',
         {
           'pageId': {'type': 'string'},
           'imageBase64': {'type': 'string'},
@@ -1283,7 +1334,7 @@ class McpServer {
         'absent on a PC), and everything in it can be run with '
         'run_app_command and placed with set_header_buttons - cloud sync '
         '("sync") included, so never refuse it as user-only. An entry marked '
-        '"needsUser": "true" does start, but it only OPENS a window the user '
+        '"needsUser": true does start, but it only OPENS a window the user '
         'must then finish (choosing which pages to sync, choosing a lock '
         'duration). Report those as "the window is open", never as '
         '"synced" / "locked" / "done". To actually transfer pages yourself, '
@@ -1785,6 +1836,27 @@ class McpServer {
     final ar = await _provider.mcpImageAspect(path);
     if (ar == null) return 'not a readable image (the file could not be decoded)';
     return null;
+  }
+
+  /// その指し方が**1 つに決まらない**時だけ、 断り文を返す。 決まれば null。
+  ///
+  /// ★ = 動作検証レポート (2026-09-15)「同名タイトルが複数あると作成順の
+  ///   先頭が選ばれ、 完全一致が無ければ部分一致で別のノードに当たる」。
+  ///   線を引く / 書き換える / 消すのどれも、 当てずっぽうで別の物に当たると
+  ///   後から気付けない。 2 件以上当たったら id を聞き返す。
+  String? _ambiguous(String pageId, String key, String argName,
+      {bool fuzzy = true}) {
+    final hits = _provider.mcpMatchingNodeIds(pageId, key, fuzzy: fuzzy);
+    if (hits.length < 2) return null;
+    final index = {
+      for (final e in _provider.mcpNodeIndex(pageId)) e['id']: e['title']
+    };
+    final titled = [
+      for (final id in hits) {'id': id, 'title': index[id] ?? ''}
+    ];
+    return '"$argName": "$key" matches ${hits.length} nodes on this page, so '
+        'picking one would be a guess. Pass the exact "id" instead: '
+        '${jsonEncode(titled)}';
   }
 
   /// 配列の引数を文字列の並びに直す (空文字は捨てる)。
@@ -2536,6 +2608,17 @@ class McpServer {
               });
               continue;
             }
+            final amb = _ambiguous(pageId, f, 'from') ??
+                _ambiguous(pageId, t, 'to');
+            if (amb != null) {
+              failed.add({
+                'index': i,
+                'from': f,
+                'to': t,
+                'reason': amb,
+              });
+              continue;
+            }
             final existed = _provider.mcpConnectionExists(pageId, f, t);
             if (!_provider.mcpConnectNodes(pageId, f, t, label: label)) {
               failed.add({
@@ -2953,6 +3036,11 @@ class McpServer {
           final batch = a['texts'];
           if (batch is List && batch.isNotEmpty) {
             final ids = <String>[];
+            // ★ startMs を捨てない (= 動作検証レポート: まとめて字幕を置くと
+            //   開始時刻が無視され、 全部が勝手な位置に並んでいた)。
+            //   1 枚目は言われた時刻から、 2 枚目からはその後ろへ続ける
+            //   (時刻を渡されていない時は今までどおりアプリ任せ)。
+            var nextStart = veStart;
             for (final e in batch) {
               final t = '${e ?? ''}'.trim();
               if (t.isEmpty) continue;
@@ -2960,12 +3048,14 @@ class McpServer {
                 pageId,
                 kind: 'text',
                 text: t,
+                startMs: nextStart,
                 layer: veLayer ?? 1,
                 durationMs: veDuration,
                 fontSize: numOf('fontSize'),
                 colorValue: veColor,
               );
               if (one != null) ids.add(one);
+              if (nextStart != null) nextStart += veDuration ?? 4000;
             }
             return ids.isEmpty
                 ? _err('not a video editor page: $pageId')
@@ -3078,7 +3168,63 @@ class McpServer {
           return _err('file creation failed: $e');
         }
       case 'list_app_commands':
-        return _ok(_provider.mcpCommands);
+        // ★ needsUser を文字列 "true" のまま返すと、 型に厳しい相手が
+        //   判定を誤る (= 動作検証レポート)。 本物の真偽値に直して返す。
+        return _ok([
+          for (final c in _provider.mcpCommands)
+            {
+              for (final e in c.entries)
+                if (e.key != 'needsUser') e.key: e.value,
+              if (c['needsUser'] == 'true') 'needsUser': true,
+            }
+        ]);
+      case 'update_decoration':
+        {
+          final pageId = a['pageId'] as String? ?? '';
+          final did = '${a['decorationId'] ?? ''}'.trim();
+          if (did.isEmpty) return _err('"decorationId" is required');
+          final dLayer = intOf('layer', min: -1 << 31);
+          if (intErr != null) return _err(intErr!);
+          final argb = _argbOf(a['color']);
+          final ok = _provider.mcpUpdateDecoration(
+            pageId,
+            did,
+            kind: a['kind'] as String?,
+            colorRgb: argb == null ? null : (argb & 0xFFFFFF),
+            strokeWidth: _numOf(a['strokeWidth']),
+            text: a['text'] as String?,
+            filled: a['filled'] is bool ? a['filled'] as bool : null,
+            layer: dLayer,
+          );
+          return ok
+              ? _ok({'updated': did})
+              : _err('no decoration "$did" on that page, or "kind" was not a '
+                  'real shape name (read_page lists them under '
+                  '"decorations")');
+        }
+      case 'update_video_editor_item':
+        {
+          final pageId = a['pageId'] as String? ?? '';
+          final vLayer = intOf('layer', min: 0, max: 5);
+          final vStart = intOf('startMs');
+          final vDur = intOf('durationMs', min: 1);
+          if (intErr != null) {
+            return _err('$intErr '
+                '(milliseconds are whole numbers: 1.5 seconds = 1500)');
+          }
+          final r = await _provider.mcpEditVideoEditorItem(
+            pageId,
+            '${a['itemId'] ?? ''}',
+            layer: vLayer,
+            startMs: vStart,
+            durationMs: vDur,
+            text: a['text'] as String?,
+            remove: a['remove'] == true,
+          );
+          return r['ok'] == true
+              ? _ok(r)
+              : _err('could not change the timeline item: ${r['reason']}');
+        }
       case 'list_orphan_files':
         {
           final files = await _provider.mcpOrphanGeneratedFiles();

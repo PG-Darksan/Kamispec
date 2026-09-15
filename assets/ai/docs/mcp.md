@@ -63,7 +63,8 @@ claude mcp add --transport http kamispec "<URL>"
 ```
 
 > - ★ 待ち受けは **127.0.0.1 のみ**。LAN には一切公開しない。
-> - ★ 合言葉 (token) は起動のたびに作り直す。前回の URL は再起動後には通らない。
+> - ★ 合言葉 (token) は**保存される** (prefs `mcp_token_v1`)。再起動しても URL は変わらない。
+>   作り直すのは「合言葉を作り直す」を押した時だけ。
 
 ---
 
@@ -436,13 +437,14 @@ flowchart TD
 - 待ち受けは **127.0.0.1 固定**。LAN・外部からは届かない。
 - 外部接続は既定で不許可 (`mcp_external_allowed = false`)。許可を切ると即座に
   `_mcpServer.stop()` で待ち受けを畳む。
-- 許可しても合言葉 (32 文字) を知らないと 401。合言葉は起動ごとに再生成。
+- 許可しても合言葉 (32 文字) を知らないと 401。合言葉は保存されるので再起動しても同じ。
+  漏れた時は「合言葉を作り直す」で失効させる。
 - `run_app_command` の止め札 (`_mcpBlockedCommands`) は **今は空**。
   クラウド同期も含めて、`list_app_commands` に出る id は全部呼べるし
   `set_header_buttons` でも置ける (= ユーザー要望)。代わりに上げ過ぎを
   止めるのは**上限**の方 (`uploadCapBytes` / `devSelfUploadCapBytes`)。
   - ただし `sync` は**窓が開くだけ**。本当に転送するのは `cloud_sync`
-    (`action: upload / download / list`)。`needsUser: "true"` が付いた機能は
+    (`action: upload / download / list`)。`needsUser: true` が付いた機能は
     どれも「窓を開いた」止まりなので、「やりました」と答えさせない。
   - アプリロック / 集中ロックは携帯だけの機能。パソコンでは
     `list_app_commands` に出ない (= 置けないのではなく、無い)。

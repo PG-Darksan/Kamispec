@@ -2359,6 +2359,21 @@ class _MindMapScreenState extends State<MindMapScreen>
   ///   その為にモーダルの窓をやめ、 キャンバスを掴める浮かぶ札にした。
   bool _terminalPaletteOpen = false;
 
+  /// 図形の再編集パレットを出しているか (= 非モーダルの浮かぶ札)。
+  ///
+  /// ★ = ユーザー要望「挿入した図形を再編集する画面もパレットを出して、
+  ///   図形を移動させたりの操作を行いながらできるようにして欲しい」。
+  ///   窓 (showDialog) のままだと幕がポインタを全部吸うので、 図形を掴んで
+  ///   動かせない (どころかキャンバスを触ると窓の方が閉じる)。
+  bool _decoEditPaletteOpen = false;
+
+  /// 再編集パレットの置き場所 (_mapViewportKey の Stack の中の座標)。
+  /// 開いた時に図形の脇へ置き、 以降は帯を掴んで動かせる。
+  Offset _decoEditPalettePos = const Offset(12, 12);
+
+  /// 再編集パレットの幅 (= 浮く札は横に制限が無いので決め打ちが要る)。
+  static const double _kDecoEditPaletteWidth = 330.0;
+
   /// これから置く端子の形 (null = まだ形を選んでいない)。
   String? _placingTerminalShape;
 
@@ -3018,6 +3033,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     _rangeSelectModeRaw = v;
     // 範囲選択に入ったら図形パレットも閉じる (= 同時には使えない)。
     if (v) _shapePaletteOpen = false;
+    // 再編集パレットも同じ (図形を掴む操作がぶつかる)。
+    if (v) _decoEditPaletteOpen = false;
     // 端子パレットも同じ (どちらもキャンバスのドラッグを使う)。
     if (v) {
       _terminalPaletteOpen = false;
@@ -48241,6 +48258,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       _placingTerminalEnd = null;
       // 図形の挿入とは同時に使えない (どちらもドラッグを使う)。
       _shapePaletteOpen = false;
+      _decoEditPaletteOpen = false;
       _drawingDecorationKind = null;
       _shapePaletteAnchor = _lastGlobalPointerPos;
     });
@@ -48519,6 +48537,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       _shapePaletteAnchor = _lastGlobalPointerPos;
       // 端子パレットとは同時に使えない (どちらもドラッグを使う)。
       _terminalPaletteOpen = false;
+      _decoEditPaletteOpen = false;
       _placingTerminalShape = null;
       _placingTerminalStart = null;
       _placingTerminalEnd = null;
@@ -49055,6 +49074,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     context.read<MindMapProvider>().removeMapDecoration(id);
     setState(() {
       _selectedDecorationId = null;
+      // 直す相手が消えたので、 再編集パレットも畳む。
+      _decoEditPaletteOpen = false;
       // 消した後に選ぶ物が残っていなければ、 選択モードも終わりにする
       // (= ユーザー要望: 削除したら選択モード自体も解除)。
       if (_rangeSelectedIds.isEmpty && _rangeSelectedDecorationIds.isEmpty) {
@@ -49918,7 +49939,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                 color: Color(0xFF4FC3F7), size: 18),
             label: Text(provider.t('shape.edit'),
                 style: const TextStyle(color: Color(0xFF4FC3F7))),
-            onPressed: () => _showDecorationEditDialog(provider),
+            onPressed: () => _openDecorationEditPalette(provider),
           ),
           TextButton.icon(
             icon: const Icon(Icons.title_rounded,
@@ -50206,198 +50227,317 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 画面中央のダイアログではなく、 押した場所 (= 図形の上に出ている
   /// 「編集」 ボタン) のすぐそばに、 要素をクリックした時と同じ形の
   /// ポップアップとして出す (= ユーザー要望)。
-  void _showDecorationEditDialog(MindMapProvider provider) {
+  /// 図形の再編集パレットを開く (= 出したまま図形を掴んで動かせる浮かぶ札)。
+  ///
+  /// ★ = ユーザー要望「挿入した図形を再編集する画面もパレットを出して、
+  ///   図形を移動させたりの操作を行いながらできるようにして欲しい」。
+  ///   以前は _showNearDialogMain (= showDialog) の窓だったので、 開いて
+  ///   いる間は幕がポインタを全部吸い、 図形を掴んで動かせなかった
+  ///   (どころかキャンバスを触ると窓の方が閉じた)。 端子や図形の挿入
+  ///   パレットと同じ「浮く札」 にして、 触りながら直せるようにする。
+  void _openDecorationEditPalette(MindMapProvider provider) {
     final id = _selectedDecorationId;
     if (id == null) return;
-    final deco = provider.decorations.firstWhere(
-      (d) => d.id == id,
-      orElse: () => MapDecoration(
-          id: id,
-          kind: MapDecorationKind.line,
-          start: Offset.zero,
-          end: Offset.zero),
+    MapDecoration? deco;
+    for (final d in provider.decorations) {
+      if (d.id == id) {
+        deco = d;
+        break;
+      }
+    }
+    setState(() {
+      _decoEditPaletteOpen = true;
+      // 挿入系のパレットとは同時に使わない (どちらもキャンバスの操作を使う)。
+      _shapePaletteOpen = false;
+      _terminalPaletteOpen = false;
+      _decoEditPalettePos =
+          deco == null ? const Offset(12, 12) : _decoEditPaletteSpot(deco);
+    });
+  }
+
+  void _closeDecorationEditPalette() {
+    if (!_decoEditPaletteOpen) return;
+    setState(() => _decoEditPaletteOpen = false);
+  }
+
+  /// パレットの初めの置き場所。
+  ///
+  /// ★ 図形の**真上**には 編集 / 文字 / レイヤー / 削除 の帯が出ている
+  ///   (_buildShapeSelectionToolbarBody)。 上下に置くとその帯か図形本体を
+  ///   覆って押せなくなるので、 右脇 → 入らなければ左脇に置く。
+  Offset _decoEditPaletteSpot(MapDecoration deco) {
+    const double palH = 340; // 高さの概算 (縁からはみ出さない為だけに使う)
+    const double gap = 16;
+    final box =
+        _mapViewportKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return const Offset(12, 12);
+    final provider = context.read<MindMapProvider>();
+    final ctrl = _ctrlFor(provider.currentPage.id);
+    final r = Rect.fromPoints(deco.start, deco.end);
+    final tl = box.globalToLocal(_canvasToGlobal(r.topLeft, ctrl));
+    final br = box.globalToLocal(_canvasToGlobal(r.bottomRight, ctrl));
+    final w = box.size.width;
+    final h = box.size.height;
+    var left = math.max(tl.dx, br.dx) + gap;
+    if (left + _kDecoEditPaletteWidth > w - 8) {
+      final leftSide = math.min(tl.dx, br.dx) - gap - _kDecoEditPaletteWidth;
+      left = leftSide >= 8
+          ? leftSide
+          : math.max(8.0, w - _kDecoEditPaletteWidth - 8);
+    }
+    var top = math.min(tl.dy, br.dy);
+    if (top + palH > h - 8) top = h - palH - 8;
+    if (top < 8) top = 8;
+    return Offset(left, top);
+  }
+
+  /// 図形の再編集パレット (= 浮く札。 出したまま図形を掴んで動かせる)。
+  Widget _buildDecorationEditPalette(MindMapProvider provider) {
+    final vw = MediaQuery.sizeOf(context).width;
+    // ★ 幅を決めておく。 浮かせた札は横に制限が無いので、 中の Slider の
+    //   Expanded が「幅が決まっていない」 で落ちる。 狭い画面では詰める。
+    final palW = math.min(_kDecoEditPaletteWidth, math.max(260.0, vw - 16));
+    return Positioned(
+      left: _decoEditPalettePos.dx
+          .clamp(0.0, math.max(0.0, vw - palW))
+          .toDouble(),
+      top: math.max(0.0, _decoEditPalettePos.dy),
+      child: Material(
+        color: Colors.transparent,
+        child: SizedBox(
+          width: palW,
+          child: _buildDecorationEditBody(provider,
+              floating: true, onClose: _closeDecorationEditPalette),
+        ),
+      ),
     );
-    int color = deco.colorRgb;
-    double width = deco.strokeWidth;
-    MapDecorationKind kind = deco.kind;
-    bool filled = deco.isFilled;
+  }
+
+  /// 図形の再編集の中身 (浮く札と窓の両方で使う)。
+  ///
+  /// 値は毎回 provider から読み直す。 ★ 控えを captured した変数に持つと、
+  /// パレットを出したまま図形を動かした後の 色 / 太さ の変更で、 開いた時の
+  /// 座標を書き戻して図形が元の場所へ飛ぶ (= 浮く札にして初めて出る不具合。
+  /// updateMapDecoration は一覧の要素を**差し替える**ので、 開いた時に掴んだ
+  /// 実体は 1 回目の変更で古くなる)。
+  Widget _buildDecorationEditBody(MindMapProvider provider,
+      {required bool floating, required VoidCallback onClose}) {
+    final id = _selectedDecorationId;
+    if (id == null) return const SizedBox.shrink();
+    MapDecoration? cur;
+    for (final d in provider.decorations) {
+      if (d.id == id) {
+        cur = d;
+        break;
+      }
+    }
+    if (cur == null) return const SizedBox.shrink();
+    final deco = cur;
+    final int color = deco.colorRgb;
+    final double width = deco.strokeWidth;
+    final MapDecorationKind kind = deco.kind;
+    final bool filled = deco.isFilled;
+
     // 変更は押したそばから絵に反映する (= その場で見比べられる)。
-    void apply() {
-      provider.updateMapDecoration(deco.copyWith(
-          kind: kind, colorRgb: color, strokeWidth: width, filled: filled));
+    // 必ず「今の」 図形から copyWith する (上の ★ の理由)。
+    void apply({MapDecorationKind? k, int? rgb, double? sw, bool? fill}) {
+      MapDecoration? now;
+      for (final d in provider.decorations) {
+        if (d.id == id) {
+          now = d;
+          break;
+        }
+      }
+      if (now == null) return;
+      provider.updateMapDecoration(now.copyWith(
+        kind: k ?? now.kind,
+        colorRgb: rgb ?? now.colorRgb,
+        strokeWidth: sw ?? now.strokeWidth,
+        filled: fill ?? now.isFilled,
+      ));
     }
 
-    // ignore: discarded_futures
-    _showNearDialogMain<void>(
-      width: 340,
-      height: 320,
-      builder: (dctx) => StatefulBuilder(
-        builder: (sctx, setD) => Container(
-          decoration: BoxDecoration(
-            color: const Color(0xFF2A2A3E),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
-            boxShadow: [
-              BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.45),
-                  blurRadius: 16,
-                  offset: const Offset(0, 6)),
-            ],
-          ),
-          padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
+    final header = Row(children: [
+      if (floating) ...[
+        const Icon(Icons.drag_indicator_rounded,
+            size: 16, color: Colors.white38),
+        const SizedBox(width: 4),
+      ],
+      Expanded(
+        child: Text(provider.t('shape.editTitle'),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+                color: Colors.white,
+                fontSize: 14,
+                fontWeight: FontWeight.w700)),
+      ),
+      InkWell(
+        onTap: onClose,
+        borderRadius: BorderRadius.circular(14),
+        child: const Padding(
+          padding: EdgeInsets.all(4),
+          child: Icon(Icons.close_rounded, color: Colors.white54, size: 18),
+        ),
+      ),
+    ]);
+
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF2A2A3E),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
+        boxShadow: [
+          BoxShadow(
+              color: Colors.black.withValues(alpha: 0.45),
+              blurRadius: 16,
+              offset: const Offset(0, 6)),
+        ],
+      ),
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ── 掴んで動かす帯 (= 邪魔な所に来たらどかせる) ──
+          //   帯は Column の 1 行なので、 ボタンの後ろに敷く必要は無い。
+          //   × は帯の中の InkWell が先に取る。
+          if (floating)
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onPanUpdate: (d) => setState(() {
+                final q = _decoEditPalettePos + d.delta;
+                _decoEditPalettePos =
+                    Offset(math.max(-260.0, q.dx), math.max(0.0, q.dy));
+              }),
+              child: header,
+            )
+          else
+            header,
+          const SizedBox(height: 8),
+          Text(provider.t('shape.kind'),
+              style: const TextStyle(color: Colors.white60, fontSize: 12)),
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
             children: [
-              Row(children: [
-                Expanded(
-                  child: Text(provider.t('shape.editTitle'),
-                      style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w700)),
-                ),
+              for (final k in _shapeKindsOrder)
                 InkWell(
-                  onTap: () => Navigator.pop(dctx),
-                  borderRadius: BorderRadius.circular(14),
-                  child: const Padding(
-                    padding: EdgeInsets.all(4),
-                    child: Icon(Icons.close_rounded,
-                        color: Colors.white54, size: 18),
-                  ),
-                ),
-              ]),
-              const SizedBox(height: 8),
-              Text(provider.t('shape.kind'),
-                  style: const TextStyle(color: Colors.white60, fontSize: 12)),
-              const SizedBox(height: 6),
-              Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: [
-                  for (final k in _shapeKindsOrder)
-                    InkWell(
-                      onTap: () => setD(() {
-                        kind = k;
-                        apply();
-                      }),
-                      borderRadius: BorderRadius.circular(8),
-                      child: Container(
-                        width: 34,
-                        height: 34,
-                        decoration: BoxDecoration(
-                          color: kind == k
-                              ? const Color(0xFF4FC3F7).withValues(alpha: 0.25)
-                              : Colors.white.withValues(alpha: 0.05),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
-                              color: kind == k
-                                  ? const Color(0xFF4FC3F7)
-                                  : Colors.white12),
-                        ),
-                        child: Center(
-                          child: _ShapeKindIcon(k,
-                              size: 18,
-                              hollow: !filled,
-                              color: kind == k
-                                  ? const Color(0xFF4FC3F7)
-                                  : Colors.white70),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-              const SizedBox(height: 10),
-              // ── 中空 / 中塗り の切り替え (= パレットと同じ札) ──
-              Row(children: [
-                InkWell(
-                  onTap: () => setD(() {
-                    filled = !filled;
-                    apply();
-                  }),
+                  onTap: () => apply(k: k),
                   borderRadius: BorderRadius.circular(8),
                   child: Container(
-                    height: 30,
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    width: 34,
+                    height: 34,
                     decoration: BoxDecoration(
-                      color: !filled
+                      color: kind == k
                           ? const Color(0xFF4FC3F7).withValues(alpha: 0.25)
                           : Colors.white.withValues(alpha: 0.05),
                       borderRadius: BorderRadius.circular(8),
                       border: Border.all(
-                          color: !filled
+                          color: kind == k
                               ? const Color(0xFF4FC3F7)
                               : Colors.white12),
                     ),
-                    child: Row(mainAxisSize: MainAxisSize.min, children: [
-                      Icon(
-                          !filled
-                              ? Icons.circle_outlined
-                              : Icons.circle_rounded,
-                          size: 16,
-                          color: !filled
+                    child: Center(
+                      child: _ShapeKindIcon(k,
+                          size: 18,
+                          hollow: !filled,
+                          color: kind == k
                               ? const Color(0xFF4FC3F7)
                               : Colors.white70),
-                      const SizedBox(width: 4),
-                      Text(provider.t('shape.hollow'),
-                          style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w700,
-                              color: !filled
-                                  ? const Color(0xFF4FC3F7)
-                                  : Colors.white54)),
-                    ]),
+                    ),
                   ),
                 ),
-              ]),
-              const SizedBox(height: 10),
-              Text(provider.t('cal.color'),
-                  style: const TextStyle(color: Colors.white60, fontSize: 12)),
-              const SizedBox(height: 6),
-              Wrap(
-                children: [
-                  for (final c in _shapePalette)
-                    _shapeColorSwatch(c, color == c, () {
-                      setD(() {
-                        color = c;
-                        apply();
-                      });
-                    }),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Row(children: [
-                Text(provider.t('shape.thickness'),
-                    style:
-                        const TextStyle(color: Colors.white60, fontSize: 12)),
-                Expanded(
-                  child: Slider(
-                    value: width.clamp(1.0, 20.0),
-                    min: 1,
-                    max: 20,
-                    activeColor: const Color(0xFF4FC3F7),
-                    onChanged: (v) => setD(() {
-                      width = v;
-                      apply();
-                    }),
-                  ),
-                ),
-                Text('${width.round()}',
-                    style:
-                        const TextStyle(color: Colors.white70, fontSize: 12)),
-              ]),
-              Align(
-                alignment: Alignment.centerRight,
-                child: TextButton(
-                  onPressed: () => Navigator.pop(dctx),
-                  child: Text(provider.t('btn.close'),
-                      style: const TextStyle(color: Color(0xFF4FC3F7))),
-                ),
-              ),
             ],
           ),
-        ),
+          const SizedBox(height: 10),
+          // ── 中空 / 中塗り の切り替え (= パレットと同じ札) ──
+          Row(children: [
+            InkWell(
+              onTap: () => apply(fill: !filled),
+              borderRadius: BorderRadius.circular(8),
+              child: Container(
+                height: 30,
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                decoration: BoxDecoration(
+                  color: !filled
+                      ? const Color(0xFF4FC3F7).withValues(alpha: 0.25)
+                      : Colors.white.withValues(alpha: 0.05),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                      color: !filled
+                          ? const Color(0xFF4FC3F7)
+                          : Colors.white12),
+                ),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  Icon(!filled ? Icons.circle_outlined : Icons.circle_rounded,
+                      size: 16,
+                      color: !filled
+                          ? const Color(0xFF4FC3F7)
+                          : Colors.white70),
+                  const SizedBox(width: 4),
+                  Text(provider.t('shape.hollow'),
+                      style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: !filled
+                              ? const Color(0xFF4FC3F7)
+                              : Colors.white54)),
+                ]),
+              ),
+            ),
+          ]),
+          const SizedBox(height: 10),
+          Text(provider.t('cal.color'),
+              style: const TextStyle(color: Colors.white60, fontSize: 12)),
+          const SizedBox(height: 6),
+          Wrap(
+            children: [
+              for (final c in _shapePalette)
+                _shapeColorSwatch(c, color == c, () => apply(rgb: c)),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(children: [
+            Text(provider.t('shape.thickness'),
+                style: const TextStyle(color: Colors.white60, fontSize: 12)),
+            Expanded(
+              child: Slider(
+                value: width.clamp(1.0, 20.0),
+                min: 1,
+                max: 20,
+                activeColor: const Color(0xFF4FC3F7),
+                onChanged: (v) => apply(sw: v),
+              ),
+            ),
+            Text('${width.round()}',
+                style: const TextStyle(color: Colors.white70, fontSize: 12)),
+          ]),
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton(
+              onPressed: onClose,
+              child: Text(provider.t('btn.close'),
+                  style: const TextStyle(color: Color(0xFF4FC3F7))),
+            ),
+          ),
+        ],
       ),
+    );
+  }
+
+  /// 窓で出す道 (今はどこからも呼んでいないが、 狭い画面などで要る時のために
+  /// 中身は共通にして残してある)。
+  // ignore: unused_element
+  void _showDecorationEditDialog(MindMapProvider provider) {
+    if (_selectedDecorationId == null) return;
+    // ignore: discarded_futures
+    _showNearDialogMain<void>(
+      width: 340,
+      height: 340,
+      builder: (dctx) => _buildDecorationEditBody(provider,
+          floating: false, onClose: () => Navigator.pop(dctx)),
     );
   }
 
@@ -59826,6 +59966,12 @@ class _MindMapScreenState extends State<MindMapScreen>
               _exitShapeInsertMode();
               return;
             }
+            // ★ 再編集パレットは図形の選択より**先**に畳む。 1 回目の Esc で
+            //   札だけ消え、 図形は選ばれたまま残る (= 続けて動かせる)。
+            if (_decoEditPaletteOpen) {
+              _closeDecorationEditPalette();
+              return;
+            }
             if (_selectedDecorationId != null) {
               setState(() => _selectedDecorationId = null);
               return;
@@ -60184,6 +60330,9 @@ class _MindMapScreenState extends State<MindMapScreen>
               _exitTerminalInsertMode();
             } else if (_drawingDecorationKind != null || _shapePaletteOpen) {
               _exitShapeInsertMode();
+            } else if (_decoEditPaletteOpen) {
+              // 札だけ畳む (図形の選択は残す = Esc と同じ順)。
+              _closeDecorationEditPalette();
             } else if (_selectedDecorationId != null) {
               setState(() => _selectedDecorationId = null);
             }
@@ -61668,6 +61817,14 @@ class _MindMapScreenState extends State<MindMapScreen>
                               //    好きな大きさで置けるように) ──
                               if (_terminalPaletteOpen)
                                 _buildTerminalPalette(provider),
+                              // ── 図形の再編集パレット (= ユーザー要望:
+                              //    出したまま図形を動かせるように) ──
+                              //    選択が外れたら自動で消える。 下の
+                              //    ツールバーは**消さない** (出したまま
+                              //    文字やレイヤーも触れるようにするため)。
+                              if (_decoEditPaletteOpen &&
+                                  _selectedDecorationId != null)
+                                _buildDecorationEditPalette(provider),
                               // ── 図形選択時のツールバー ──
                               // 作成済み図形を選択中: 色 / 太さ / 種類の編集 + 削除。
                               // パレットを出している間は重ねない。
@@ -69957,6 +70114,17 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// ToDo と並べて出す時は、 タブが要らないので付けない。
   Widget _buildMapsPanel(BuildContext context, MindMapProvider provider,
       {required bool showSwitcher}) {
+    // ★ パソコンだけ見出しの右に Ctrl+Shift+E の札と ⌘ ボタンが並ぶので、
+    //   既定の大きさ (触る面積 44px) のボタンが 3 つ入ると見出しの幅が
+    //   残らない (= ユーザー報告:「ページ一覧の文字が入り切れていない」)。
+    //   指で触るモバイルは既定のまま、 マウスのパソコンだけ詰める。
+    //   実際に縮むのは tapTargetSize。 大きさや余白だけでは縮まない。
+    final headerBtnStyle = _isDesktop
+        ? IconButton.styleFrom(
+            padding: EdgeInsets.zero,
+            minimumSize: const Size(32, 32),
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap)
+        : null;
     return Column(children: [
             // ── マップ一覧 / ToDo 切替タブ (狭い画面のときだけ) ──
             if (showSwitcher) _buildDrawerViewSwitcher(),
@@ -70002,12 +70170,25 @@ class _MindMapScreenState extends State<MindMapScreen>
                   const Icon(Icons.map_outlined,
                       color: Colors.white54, size: 18),
                   const SizedBox(width: 10),
+                  // ★ 見出しが「ページ一 / 覧」 と語の途中で折り返していた
+                  //   (= ユーザー報告:「ページ一覧の文字が入り切れていない」)。
+                  //   ボタンが増えて残り幅が見出しより狭くなり、 既定の
+                  //   折り返しが効いていたのが原因。 日本語は単語の切れ目が
+                  //   無いのでどこででも折れてしまう。
+                  //   幅が足りない時だけ縮めて、 必ず 1 行で出す。
                   Expanded(
-                      child: Text(provider.t('drawer.title'),
-                          style: const TextStyle(
-                              color: Colors.white70,
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600))),
+                      child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerLeft,
+                    child: Text(provider.t('drawer.title'),
+                        maxLines: 1,
+                        softWrap: false,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600)),
+                  )),
                 ],
                 if (_isDesktop)
                   Container(
@@ -70095,6 +70276,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                         : Colors.white54,
                     size: 18,
                   ),
+                  style: headerBtnStyle,
                   tooltip: provider.t(provider.drawerCompactRows
                       ? 'drawer.compactOff'
                       : 'drawer.compactOn'),
@@ -70114,6 +70296,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                         ? const Color(0xFF00E5FF)
                         : Colors.white54,
                   ),
+                  style: headerBtnStyle,
                   tooltip: provider.t(_drawerMultiSelectActive
                       ? 'drawer.endMultiSelect'
                       : 'drawer.startMultiSelect'),
@@ -70133,6 +70316,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                 // ポップオーバー表示する。
                 Builder(builder: (btnCtx) {
                   return IconButton(
+                    style: headerBtnStyle,
                     icon: const Icon(Icons.add, color: Colors.white54),
                     tooltip: provider.t('drawer.addMenu'),
                     onPressed: () =>
@@ -175538,15 +175722,19 @@ class _DrawerTile extends StatelessWidget {
             }(),
           ),
         ),
+        // ★ ページの行だけ maxLines が無く、 長い名前が 2 行に折り返って
+        //   いた (= ユーザー報告:「ページ一覧の文字が入り切れていない」)。
+        //   ディスクのファイルの行は前から 1 行なので、 そちらに揃える。
         title: Text(page.name,
             style: TextStyle(
               color: isActive ? Colors.white : Colors.white60,
               fontSize: 13,
               fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
             ),
+            maxLines: 1,
             overflow: TextOverflow.ellipsis),
         // ★ コンパクト表示 (= ユーザー要望: 更新日や容量が全部に
-        //   出ていると表示領域が嶵む)。 名前だけにして 1 行にする。
+        //   出ていると表示領域が嵩む)。 名前だけにして 1 行にする。
         subtitle: provider.drawerCompactRows
             ? null
             : Column(
