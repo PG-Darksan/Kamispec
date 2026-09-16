@@ -6116,6 +6116,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     // 開いていたフォルダーを開き直す (= vscode と同じ)。
     unawaited(_loadRecentFolders().then((_) => _loadOpenFolderId()));
     unawaited(_loadShowAppFiles());
+    // 利用者が並べ替えた順を読む (= ユーザー要望: ファイルの順も入れ替えたい)。
+    unawaited(_loadDiskOrder());
     // チェック (✓) の大きさを読む (= ユーザー要望)。
     unawaited(_loadPdfCheckScale());
     _loadMapSplitPrefs();
@@ -70451,12 +70453,83 @@ class _MindMapScreenState extends State<MindMapScreen>
   //    build の中でディスクを触らない。読んだ結果をここに溜めて、
   //    build はそれを読むだけにする (毎フレーム列挙すると固まる)。
   final Map<String, List<_DiskEntry>> _diskCache = {};
+
+  /// ディスクの行の並び (= ユーザー要望:「マークダウン等のページの順番を
+  /// 入れ替えられないのも使い辛い」)。
+  /// フォルダーの在処 → その中のファイル名を利用者が並べた順。
+  /// ★ ここに載っていないファイル (= 後から増えた物) は、 今までどおり
+  ///   名前順で後ろに続ける。 消えたファイルの名前が残っていても害は無い。
+  final Map<String, List<String>> _diskOrder = {};
+  static const String _kDiskOrderPrefsKey = 'diskFileOrder_v1';
+
+  Future<void> _loadDiskOrder() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_kDiskOrderPrefsKey);
+      if (raw == null || raw.isEmpty) return;
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return;
+      final loaded = <String, List<String>>{};
+      decoded.forEach((k, v) {
+        if (v is List) loaded['$k'] = [for (final e in v) '$e'];
+      });
+      if (!mounted || loaded.isEmpty) return;
+      setState(() => _diskOrder.addAll(loaded));
+    } catch (_) {}
+  }
+
+  Future<void> _persistDiskOrder() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_kDiskOrderPrefsKey, jsonEncode(_diskOrder));
+    } catch (_) {}
+  }
+
+  /// そのファイルが入っているフォルダー。
+  static String _dirOfPath(String path) {
+    final i = path.lastIndexOf(Platform.pathSeparator);
+    final j = path.lastIndexOf('/');
+    final k = i > j ? i : j;
+    return k <= 0 ? path : path.substring(0, k);
+  }
+
+  /// [dir] の中で [movedName] を [targetName] の直前へ入れる。
+  void _reorderDiskEntry(String dir, String movedName, String targetName) {
+    final cached = _diskCache[dir];
+    if (cached == null || movedName == targetName) return;
+    // 今見えている並びを土台にする (= 一度も並べ替えていなくても、
+    //   見た目どおりの順から始められる)。
+    final names = [
+      for (final e in cached)
+        if (!e.isDir && !e.isMore) e.name,
+    ];
+    if (!names.remove(movedName)) return;
+    final to = names.indexOf(targetName);
+    if (to < 0) return;
+    names.insert(to, movedName);
+    _diskOrder[dir] = names;
+    unawaited(_persistDiskOrder());
+    unawaited(_scanDir(dir)); // 並びを当て直して出し直す
+  }
   final Set<String> _diskOpen = {};
   final Set<String> _diskLoading = {};
 
   /// アプリが書いた .json も出すか (既定は隠す。ページのタイルと二重になる)。
   /// 一覧の右クリックで切り替えられる (= 点検で判明: 隠したまま戻せなかった)。
   bool _diskShowAppFiles = false;
+
+  /// 一覧の行を掴み始めるまでの待ち時間。
+  ///
+  /// ★ = ユーザー報告「ページ一覧からページをダブルクリックしないと開けない」。
+  ///   二重クリックの判定をしていた訳ではなく、 **掴みの判定が普通のクリックを
+  ///   食っていた**のが正体。 Flutter の掴みは、 この時間が過ぎた時点で
+  ///   **指が 1px も動いていなくても**勝ちを宣言する。 パソコンで 80ms しか
+  ///   待っていなかったので、 人の左クリック (だいたい 100〜200ms) はほぼ
+  ///   必ず掴みに化け、 行の onTap が取り消されていた。 2 度目の速い方の
+  ///   クリックだけが通るため、「ダブルクリックでしか開けない」 ように見える。
+  /// ★ 長押しの既定 (500ms) より**短く**しておく。 同じにすると、 先に
+  ///   受け口を登録している側が必ず勝って掴みが始まらなくなる。
+  static const Duration _kDrawerDragDelay = Duration(milliseconds: 400);
   static const String _kShowAppFilesPrefsKey = 'diskShowAppFiles';
 
   Future<void> _loadShowAppFiles() async {
@@ -70523,8 +70596,23 @@ class _MindMapScreenState extends State<MindMapScreen>
             modified: mt));
       }
       // フォルダーを先に、その中で名前順。
+      // フォルダーを先に、 その中で名前順。
+      // ★ 利用者が並べ替えた順があれば、 そちらを優先する (= ユーザー要望:
+      //   マークダウン等のファイルの順番も入れ替えられるように)。
+      final saved = _diskOrder[dir];
+      final rank = <String, int>{};
+      if (saved != null) {
+        for (var i = 0; i < saved.length; i++) {
+          rank[saved[i]] = i;
+        }
+      }
       out.sort((a, b) {
         if (a.isDir != b.isDir) return a.isDir ? -1 : 1;
+        final ra = rank[a.name];
+        final rb = rank[b.name];
+        if (ra != null && rb != null) return ra.compareTo(rb);
+        if (ra != null) return -1; // 並べた物が先
+        if (rb != null) return 1;
         return a.name.toLowerCase().compareTo(b.name.toLowerCase());
       });
       // 多すぎる時は打ち切る (全部作ると一覧が固まる)。
@@ -70802,10 +70890,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     // ★ 複数選択 (= ユーザー要望: 手動で消したり複数選択できるように)。
     //   ページの選択と同じ見た目 (シアン) にそろえる。
     final picked = _drawerSelectedFilePaths.contains(e.path);
-    // ★ = ユーザー報告「一部ページの掴みが無い」。 ページの行は左端に
-    //   つまみ (drag_indicator) が出ているのに、 見た目をそろえたファイルの
-    //   行には無かったので、 掴めない物に見えていた。 同じつまみを出す。
-    final handleW = _isDesktop ? 22.0 : 42.0;
+    // ★ つまみは出さない (= ユーザー要望:「掴みのアイコンも要らないから
+    //   消して」)。 行のどこを押し続けても運べるので、 絵で示す必要が無い。
+    //   ページの行も同じ形にそろえてある。
     final row = Container(
       margin: EdgeInsets.fromLTRB(8 + indent, 2, 8, 2),
       decoration: BoxDecoration(
@@ -70827,29 +70914,12 @@ class _MindMapScreenState extends State<MindMapScreen>
           dense: true,
           contentPadding: const EdgeInsets.only(left: 4, right: 4),
           leading: SizedBox(
-            width: 28 + handleW,
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              // つまみ (= ページの行と同じ位置・同じ絵)。
-              MouseRegion(
-                cursor: SystemMouseCursors.grab,
-                child: SizedBox(
-                  width: handleW,
-                  child: Center(
-                    child: Icon(
-                      Icons.drag_indicator,
-                      color: _isDesktop ? Colors.white24 : Colors.white54,
-                      size: _isDesktop ? 14 : 22,
-                    ),
-                  ),
-                ),
-              ),
-              Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-                child: Icon(fileIcon,
-                    size: 16, color: fileColor.withValues(alpha: 0.6)),
-              ),
-            ]),
+            width: 28,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+              child: Icon(fileIcon,
+                  size: 16, color: fileColor.withValues(alpha: 0.6)),
+            ),
           ),
           title: Text(e.displayTitle,
               maxLines: 1,
@@ -70945,10 +71015,33 @@ class _MindMapScreenState extends State<MindMapScreen>
     // ★ ページの行と同じ「長押しで掴む」 にそろえる (すぐ掴むと、 一覧を
     //   指で転がした時に掴んでしまう)。 落とし先はマップ (= そのページへ
     //   埋め込む)。
-    return LongPressDraggable<_DrawerFileDragData>(
-      delay: _isDesktop
-          ? const Duration(milliseconds: 80)
-          : const Duration(milliseconds: 220),
+    // ── 並べ替えの受け口 (= ユーザー要望:「マークダウン等のページの順番を
+    //    入れ替えられないのも使い辛い」) ──
+    //    ページの行の _ReorderDropZone と同じ作り。 受ける型が違うので、
+    //    ページの行を落としてもここは反応しない (= 混ざらない)。
+    //    ★ 同じフォルダーの中だけ。 別のフォルダーへ運ぶのは「移動」 で、
+    //      並べ替えとは別の話なので受けない。
+    final dirPath = _dirOfPath(e.path);
+    Widget withReorder(Widget child) => DragTarget<_DrawerFileDragData>(
+          onWillAcceptWithDetails: (d) =>
+              !e.isDir &&
+              d.data.path != e.path &&
+              _dirOfPath(d.data.path) == dirPath,
+          onAcceptWithDetails: (d) =>
+              _reorderDiskEntry(dirPath, d.data.name, e.name),
+          builder: (c, cand, rej) => Container(
+            decoration: cand.isEmpty
+                ? null
+                : const BoxDecoration(
+                    border: Border(
+                        top: BorderSide(
+                            color: Color(0xFF00E5FF), width: 2.5))),
+            child: child,
+          ),
+        );
+
+    return withReorder(LongPressDraggable<_DrawerFileDragData>(
+      delay: _kDrawerDragDelay,
       data: _DrawerFileDragData(e.path, e.name),
       dragAnchorStrategy: pointerDragAnchorStrategy,
       feedback: Material(
@@ -70975,7 +71068,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       onDraggableCanceled: (_, __) => _draggingDiskFile = null,
       onDragEnd: (_) => _draggingDiskFile = null,
       child: row,
-    );
+    ));
   }
 
   /// いま掴んでいるディスクのファイル (キャンバスが受け取る時に見る)。
@@ -72489,125 +72582,78 @@ class _MindMapScreenState extends State<MindMapScreen>
               _drawerLastAnchorIndex = null;
             });
           },
-          // ── ドラッグ判定領域の制御 ──
-          // タイル全体を LongPressDraggable でラップすると、右側の
-          // 自動同期ボタンや「・・・」ボタンを長押ししただけで
-          // ドラッグが起動してメニューが開けなくなる。
-          // そこで Stack 構造にして:
-          //   1. 通常の tile (= _DrawerTile, ボタン群を含む) を底に置き
-          //   2. 左側 (右マージン 64px) だけに透明な LongPressDraggable
-          //      レイヤーを被せ、長押しでドラッグ開始する
-          // hitTestBehavior: translucent により、タップは下の
-          // _DrawerTile に通り、長押しのみドラッグへ流れる。
-          // ── ドラッグハンドル方式 ──
-          // ユーザーフィードバック: タイル全体の左半分がドラッグ領域だと、
-          // タイトルをタップしようとしても誤ってドラッグが起動する。
-          // 解決策: 左端 24px の「掴みハンドル」だけをドラッグ可能領域とし、
-          // タイル本体 (タップ・長押し) は通常の InkWell として動作させる。
-          // ハンドルには Icons.drag_indicator を表示して視覚的にも明示する。
-          child: Stack(
-            children: [
-              // 元のタイル全体 (左にハンドル分のパディングを追加して重なりを回避)
-              // モバイルは掴みやすいようハンドルを広く取る (= ユーザー要望:
-              //   モバイルでマップ一覧の並び替えができない問題の修正)。
-              Padding(
-                padding: EdgeInsets.only(left: _isDesktop ? 22 : 42),
-                child: tile,
-              ),
-              // 左端の掴みハンドル (デスクトップ 24px / モバイル 42px、 視覚アイコン付き)
-              Positioned(
-                left: 0,
-                top: 0,
-                bottom: 0,
-                width: _isDesktop ? 24 : 42,
-                child: LongPressDraggable<_DrawerPageDragData>(
-                  data: dragData,
-                  delay: _isDesktop
-                      ? const Duration(milliseconds: 80)
-                      : const Duration(milliseconds: 250),
-                  // ── ドラッグ開始時に Drawer を自動で閉じる ──
-                  // Scaffold.drawer はモーダル overlay (= 右側に半透明
-                  // barrier が出る) なので、 Drawer を閉じないと
-                  // キャンバスの DragTarget まで pointer event が
-                  // 届かず drop が成立しない。 ドラッグ開始した瞬間に
-                  // Drawer を閉じて、 feedback widget はそのまま追従。
-                  // この時 root Navigator ではなく Scaffold が管理する
-                  // drawer を閉じる必要があるので `Scaffold.maybeOf` を使う。
-                  onDragStarted: () {
-                    // ── ドロワーは閉じない (= ユーザー要望: ドラッグでマップ一覧の
-                    //   並び替えができるように) ──
-                    // 以前はここで closeDrawer していたが、 それだと並び替え用の
-                    //   ドロップゾーン (= 他のページタイル) が消えてしまい、 並び替えが
-                    //   できなくなっていた。 キャンバスへのドロップ (サブマップ化) は
-                    //   下のグローバル pointer route で位置検出するため、 ドロワーを
-                    //   閉じる必要はない (ドロワー内 = 並び替え、 ドロワー外 = サブマップ)。
-                    if (mounted) {
-                      setState(() {
-                        _draggingMapPage = true;
-                        _currentDrawerDragData = dragData;
-                      });
-                    }
-                  },
-                  onDragEnd: (_) {
-                    // ドラッグが終了 (= 成功・失敗どちらでも) state クリア。
-                    // 既に _globalPointerForMapDrop で処理されている場合は
-                    // すでに false になっているので no-op。
-                    if (mounted && _draggingMapPage) {
-                      setState(() {
-                        _draggingMapPage = false;
-                        _currentDrawerDragData = null;
-                      });
-                    }
-                  },
-                  feedback: Material(
-                    color: Colors.transparent,
-                    child: Container(
-                      constraints: const BoxConstraints(maxWidth: 240),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF6C63FF).withValues(alpha: 0.95),
-                        borderRadius: BorderRadius.circular(10),
-                        boxShadow: [
-                          BoxShadow(
-                              color: Colors.black.withValues(alpha: 0.4),
-                              blurRadius: 12,
-                              offset: const Offset(0, 4)),
-                        ],
-                      ),
-                      child: Row(mainAxisSize: MainAxisSize.min, children: [
-                        const Icon(Icons.drag_indicator,
-                            color: Colors.white, size: 18),
-                        const SizedBox(width: 6),
-                        Flexible(
-                          child: Text(
-                              dragData.pageIds.length > 1
-                                  ? '${dragData.primaryTitle} (+${dragData.pageIds.length - 1})'
-                                  : dragData.primaryTitle,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w700)),
-                        ),
-                      ]),
-                    ),
-                  ),
-                  child: MouseRegion(
-                    cursor: SystemMouseCursors.grab,
-                    child: Center(
-                      // モバイルは掴みやすいよう大きく・はっきり表示する
-                      //   (= ユーザー要望: モバイルで並び替えできない問題)。
-                      child: Icon(
-                        Icons.drag_indicator,
-                        color: _isDesktop ? Colors.white24 : Colors.white54,
-                        size: _isDesktop ? 14 : 22,
-                      ),
-                    ),
-                  ),
+          // ── 掴む所は行そのもの (= ユーザー要望:「掴みのアイコンも要らない
+          //    から消して」) ──
+          //    以前は左端 22/42px の「つまみ」 だけが掴める所で、 そこに
+          //    Icons.drag_indicator を出していた。 つまみを消したので、
+          //    行のどこを押し続けても運べるようにする。
+          //    ★ 右側の ⋮ や雲のボタンは _kDrawerDragDelay より先に押下を
+          //      取るので、 行全体を包んでもボタンは死なない。
+          //    ★ 待ち時間は _kDrawerDragDelay (400ms)。 これより短いと、
+          //      ふつうのクリックが掴みに化けて行が開けなくなる
+          //      (= ユーザー報告「ダブルクリックしないと開けない」 の正体)。
+          child: LongPressDraggable<_DrawerPageDragData>(
+            data: dragData,
+            delay: _kDrawerDragDelay,
+            // ── ドロワーは閉じない (= ユーザー要望: ドラッグでマップ一覧の
+            //   並び替えができるように) ──
+            //   閉じると並び替えの受け口 (= 他のページの行) ごと消えてしまう。
+            //   キャンバスへの持ち出し (サブマップ化) は下の pointer route が
+            //   位置で見分けるので、 閉じる必要は無い。
+            onDragStarted: () {
+              if (mounted) {
+                setState(() {
+                  _draggingMapPage = true;
+                  _currentDrawerDragData = dragData;
+                });
+              }
+            },
+            onDragEnd: (_) {
+              if (mounted && _draggingMapPage) {
+                setState(() {
+                  _draggingMapPage = false;
+                  _currentDrawerDragData = null;
+                });
+              }
+            },
+            feedback: Material(
+              color: Colors.transparent,
+              child: Container(
+                constraints: const BoxConstraints(maxWidth: 240),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF6C63FF).withValues(alpha: 0.95),
+                  borderRadius: BorderRadius.circular(10),
+                  boxShadow: [
+                    BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.4),
+                        blurRadius: 12,
+                        offset: const Offset(0, 4)),
+                  ],
                 ),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  // ★ これは運んでいる最中の浮き札の絵で、 つまみではない
+                  //   (消してしまうと何を運んでいるか分からなくなる)。
+                  const Icon(Icons.drag_indicator,
+                      color: Colors.white, size: 18),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                        dragData.pageIds.length > 1
+                            ? '${dragData.primaryTitle} (+${dragData.pageIds.length - 1})'
+                            : dragData.primaryTitle,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700)),
+                  ),
+                ]),
               ),
-            ],
+            ),
+            childWhenDragging: Opacity(opacity: 0.35, child: tile),
+            child: tile,
           ),
         ),
       ),
@@ -80412,7 +80458,20 @@ class _MindMapScreenState extends State<MindMapScreen>
     // linkedPageId が設定される (= タップでそのページに遷移できるサブマップ
     // 参照ノード)。 既存の `_DrawerPageDragData` を Drawer 側で発火して
     // いるので、 こちらは DragTarget として受けるだけで OK。
-    return DragTarget<_DrawerPageDragData>(
+    // ── 見えている大きさが変わったら知らせてもらう (= ユーザー要望:
+    //    画面分割したら自動的に中央が分割画面の中央に来るように)。 ──
+    //    分割の開閉・境界線のドラッグ・2/4 分割の切替・窓の大きさ変更は、
+    //    どれも「このキャンバスの箱の大きさが変わる」 に行き着くので、
+    //    操作を一つずつ拾うのをやめて結果の方を見る。
+    //    SizeChangedLayoutNotifier は**変わった時だけ**知らせるので、
+    //    毎フレーム走ることは無い。
+    return NotificationListener<SizeChangedLayoutNotification>(
+      onNotification: (_) {
+        _scheduleShelfViewportFit();
+        return true; // ここで止める (隣のセルへ伝えない)
+      },
+      child: SizeChangedLayoutNotifier(
+        child: DragTarget<_DrawerPageDragData>(
       // ★ hit test を確実にするため opaque に設定 ★
       // 旧設定 (= translucent デフォルト) では子の InteractiveViewer に
       // hit test を取られて DragTarget が反応しないケースがあった。
@@ -80525,6 +80584,8 @@ class _MindMapScreenState extends State<MindMapScreen>
             _buildMapViewportScrollbars(provider, ctrl),
         ]);
       },
+        ),
+      ),
     );
   }
 
@@ -80538,23 +80599,14 @@ class _MindMapScreenState extends State<MindMapScreen>
   void _centerBookshelfView(String pid, TransformationController ctrl) {
     final provider = context.read<MindMapProvider>();
     if (provider.currentPage.id != pid) return;
-    double minX = double.infinity, minY = double.infinity, maxX = 0, maxY = 0;
-    void acc(double l, double t, double r, double b) {
-      if (l < minX) minX = l;
-      if (t < minY) minY = t;
-      if (r > maxX) maxX = r;
-      if (b > maxY) maxY = b;
-    }
-
-    for (final n in provider.currentPage.nodes.values) {
-      acc(n.position.dx, n.position.dy, n.position.dx + n.width,
-          n.position.dy + n.visualHeight);
-    }
-    for (final r in provider.bookshelfFrontierRects()) {
-      acc(r.left, r.top, r.right, r.bottom);
-    }
-    if (!minX.isFinite) return;
-    final center = Offset((minX + maxX) / 2, (minY + maxY) / 2);
+    // ★ 収める四角は _bookshelfContentBounds — パンの制限・横の固定判定・
+    //   スクロールバー・矢印キーが使っているのと**同じ物**にする。
+    //   ここだけ自前で数えていたので、 格納して隠した要素まで数に入り、
+    //   左上を 0 から測っていた。 寄せる位置と止まる位置が食い違うと、
+    //   中身が画面の外に残ったまま手繰り寄せられなくなる。
+    final b = _bookshelfContentBounds(provider);
+    if (b == null) return;
+    final center = b.center;
     // (p.dx+80, p.dy+28) を真ん中に置くので、 中心を補正。
     // ★ 窓全体ではなく**見えている所**の真ん中へ (= ユーザー要望: 分割した
     //   時に端が切れないように)。
@@ -80570,20 +80622,64 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// ★ = ユーザー要望「ギャラリーページを画面分割したら画面が切れない様に」。
   ///   分割の開け閉てやペインの大きさ変更では、 中身はそのままで**見えて
   ///   いる幅だけ**が変わるので、 寄せ直さないと端が隠れたままになる。
-  void _recenterBookshelfIfNeeded() {
-    if (!mounted) return;
+  /// 寄せ直しを 1 フレームに 1 回だけ予約するための旗
+  /// (= 境界線のドラッグ中に毎フレーム走らせないため)。
+  bool _shelfViewportFitScheduled = false;
+
+  /// キャンバスの見えている大きさが変わった、 の合図。
+  ///
+  /// ★ レイアウトの最中に呼ばれるので、 行列の書き換えは次のフレームへ
+  ///   回す (レイアウト中に代入すると組み直しになる)。
+  void _scheduleShelfViewportFit() {
+    if (!mounted || _shelfViewportFitScheduled) return;
+    _shelfViewportFitScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _shelfViewportFitScheduled = false;
+      _fitShelfToViewport();
+    });
+  }
+
+  /// ギャラリーを、 今の「見えている大きさ」 に合わせ直す。
+  ///
+  /// ★ = ユーザー要望「画面分割したら自動的に中央が分割画面の中央に来る
+  ///   ように」。 以前は「分割を開いた時」 のような操作を一つずつ拾って
+  ///   いたので、 ヘッダーの分割ボタンから開いた時だけ寄せ直しが走らず、
+  ///   一度動かすまで中央にならなかった (= ユーザー報告: 直ぐには
+  ///   切り替わらない)。 呼ぶ所を数えるのをやめ、 結果 (= 箱の大きさが
+  ///   変わった) の方を見る。
+  void _fitShelfToViewport() {
+    if (!mounted || _clampingShelf) return;
+    // ★ 操作中は触らない (= 掴んでいる物が手から飛ぶ)。 見送っても、
+    //   指を離した後の _onTransformChanged → _clampBookshelfPan が拾う。
+    if (_pauseViewer || _shelfHandleDragging || _isCanvasTextEditing) return;
+    // ★ ペインをアクティブにした直後も触らない (わざと位置を引き継いで
+    //   いるので、 ここで寄せ直すと「変な方向に動く」 が再発する)。
+    if (_justActivatedSplitPane) return;
     final provider = context.read<MindMapProvider>();
     if (provider.pages.isEmpty) return;
     final page = provider.currentPage;
     if (page.pageType != 'bookshelf') return;
     final pid = page.id;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      final now = context.read<MindMapProvider>();
-      if (now.pages.isEmpty || now.currentPage.id != pid) return;
-      _centerBookshelfView(pid, _ctrlFor(pid));
-    });
+    final ctrl = _ctrlFor(pid);
+    final bounds = _bookshelfContentBounds(provider);
+    if (bounds == null) return;
+    final raw = ctrl.value.getMaxScaleOnAxis();
+    final scale = raw <= 0 ? 1.0 : raw;
+    final view = _mapViewportSize();
+    if (!view.width.isFinite || view.width <= 1) return;
+    // ★ 縦に収まりきる時だけ両方の中央へ寄せる。 下までスクロールして見る
+    //   ような長いギャラリーで縦まで戻すと、 分割を開いただけで見ていた所を
+    //   見失う。 その時は横だけそろえたいので、 パンの制限と同じ係に任せる。
+    if (bounds.height * scale <= view.height + 1.0) {
+      _centerBookshelfView(pid, ctrl);
+    } else {
+      _clampBookshelfPan(ctrl);
+    }
   }
+
+  /// 明示的に寄せ直したい所 (分割を閉じた直後など) のための入口。
+  /// ふだんの合図は _buildCanvas の SizeChangedLayoutNotifier が出す。
+  void _recenterBookshelfIfNeeded() => _scheduleShelfViewportFit();
 
   /// この数を超えたら「見えている範囲だけ描く」 に切り替える
   /// (= ユーザー報告: 大量のファイルを読み込むとカクついて動かなくなる)。
