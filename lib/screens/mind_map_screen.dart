@@ -41,6 +41,7 @@ import '../services/screen_recorder.dart';
 import '../services/rec_hotkey.dart';
 import '../services/cursor_wrap.dart';
 import '../services/mouse_remap.dart';
+import '../services/os_quick_toggles.dart';
 import '../services/pc_settings.dart';
 // ホイールの行数をその場で効かせる (= ユーザー要望)。
 import '../services/wheel_scroll_scale.dart';
@@ -36546,6 +36547,65 @@ class _MindMapScreenState extends State<MindMapScreen>
     );
   }
 
+  /// 電源モードを 1 段回す (= ユーザー要望:「バッテリーのモードを省電力
+  /// モードに切り替えたりできるボタン」)。
+  ///
+  /// ★ 触るのはタスクバーのスライダーと同じ「重ねる設定」 だけ。 電源
+  ///   プランそのものは書き換えない (利用者が組んだ設定を壊さないため)。
+  void _cyclePowerMode(MindMapProvider provider) {
+    if (!OsQuickToggles.isSupported) {
+      _appSnack(
+          context,
+          SnackBar(
+              backgroundColor: const Color(0xFFE57373),
+              content: Text(provider.t('power.windowsOnly'))));
+      return;
+    }
+    final next = OsQuickToggles.cyclePowerMode();
+    if (next == null) {
+      _appSnack(
+          context,
+          SnackBar(
+              backgroundColor: const Color(0xFFE57373),
+              content: Text(provider.t('power.failed'))));
+      return;
+    }
+    final label = provider.t(switch (next) {
+      PowerMode.saver => 'power.saver',
+      PowerMode.balanced => 'power.balanced',
+      PowerMode.performance => 'power.performance',
+    });
+    _appSnack(
+        context,
+        SnackBar(
+            backgroundColor: const Color(0xFF43B97F),
+            duration: const Duration(seconds: 2),
+            content: Text(
+                provider.t('power.switched').replaceFirst('{mode}', label))));
+    setState(() {}); // ボタンの絵を今のモードに合わせ直す
+  }
+
+  /// 仮想デスクトップを切り替える (= ユーザー要望)。
+  void _switchDesktop(MindMapProvider provider, {required bool forward}) {
+    if (!OsQuickToggles.isSupported) {
+      _appSnack(
+          context,
+          SnackBar(
+              backgroundColor: const Color(0xFFE57373),
+              content: Text(provider.t('power.windowsOnly'))));
+      return;
+    }
+    final ok =
+        forward ? OsQuickToggles.nextDesktop() : OsQuickToggles.prevDesktop();
+    if (!ok) {
+      _appSnack(
+          context,
+          SnackBar(
+              backgroundColor: const Color(0xFFE57373),
+              content: Text(provider.t('desktop.failed'))));
+    }
+  }
+
   void _showSubscriptionManagerDialog() {
     final provider = context.read<MindMapProvider>();
     // AI で作った解約リンクボタンを読み込んでから開く (初回のみ)。
@@ -44879,6 +44939,27 @@ class _MindMapScreenState extends State<MindMapScreen>
       'legacy': true,
     },
     {
+      // 電源モード (= ユーザー要望:「バッテリーのモードを省電力モードに
+      //   切り替えたりできるボタン」)。 押すたびに
+      //   省電力 → バランス → 最高性能 → … と回る。
+      //   触るのはタスクバーのスライダーと同じ「重ねる設定」 だけで、
+      //   電源プランそのものは書き換えない (= 利用者が組んだ設定を壊さない)。
+      'id': 'powerMode',
+      'labelKey': 'hdr.powerMode',
+      'icon': Icons.battery_saver_rounded,
+      'color': Color(0xFF7CD992),
+    },
+    {
+      // 仮想デスクトップの切り替え (= ユーザー要望:「デスクトップの
+      //   切り替えボタンも欲しい」)。 押すと右隣のデスクトップへ移る。
+      //   ★ ヘッダーのボタンは右クリックを受けない作りなので、 戻る方は
+      //     用意していない (Ctrl+Win+← が今までどおり使える)。
+      'id': 'switchDesktop',
+      'labelKey': 'hdr.switchDesktop',
+      'icon': Icons.desktop_windows_rounded,
+      'color': Color(0xFF64B5F6),
+    },
+    {
       // 無音カメラ (= ユーザー要望)。
       'id': 'silentCamera',
       'labelKey': 'hdr.silentCamera',
@@ -48103,6 +48184,15 @@ class _MindMapScreenState extends State<MindMapScreen>
         break;
       case 'subscriptionManager':
         _showSubscriptionManagerDialog();
+        break;
+      case 'powerMode':
+        // 電源モードを 1 段回す (= ユーザー要望)。 何になったかを必ず出す
+        //   (見た目が変わらないので、 出さないと効いたか分からない)。
+        _cyclePowerMode(provider);
+        break;
+      case 'switchDesktop':
+        // 右隣のデスクトップへ (= ユーザー要望)。
+        _switchDesktop(provider, forward: true);
         break;
       case 'silentCamera':
         // 無音カメラ (= ユーザー要望)。 撮影して写真をマップに追加。
@@ -70992,10 +71082,20 @@ class _MindMapScreenState extends State<MindMapScreen>
           // 何も選んでいなければ、 今までどおり開く。
           // Ctrl (または Shift) 押しでは、 いつでも選び足せる。
           onTap: () {
-            final add = HardwareKeyboard.instance.isControlPressed ||
-                HardwareKeyboard.instance.isShiftPressed ||
+            // ★ Shift と Ctrl を分ける (= ユーザー報告「shift+クリックが
+            //   ctrl+クリックと同じ挙動になっている、 間のファイルがまとめて
+            //   選択されていない」)。 以前はどちらも同じ「足す」 だった。
+            final hasShift = HardwareKeyboard.instance.isShiftPressed;
+            final hasCtrl = HardwareKeyboard.instance.isControlPressed ||
                 HardwareKeyboard.instance.isMetaPressed;
-            if (_drawerSelectedFilePaths.isNotEmpty || add) {
+            if (hasShift &&
+                _shiftRangeSelectFile(provider, e.path)) {
+              return;
+            }
+            if (_drawerSelectedFilePaths.isNotEmpty || hasCtrl || hasShift) {
+              // ★ 起点を控える (= 次の Shift+クリックの範囲の始まり)。
+              //   これが無いと、 1 つ目を選んでも範囲の数え始めが決まらない。
+              _recordDrawerFileAnchor(provider, e.path);
               setState(() {
                 if (!_drawerSelectedFilePaths.remove(e.path)) {
                   _drawerSelectedFilePaths.add(e.path);
@@ -71003,11 +71103,15 @@ class _MindMapScreenState extends State<MindMapScreen>
               });
               return;
             }
+            // 開く時も起点は控えておく (= 開いた行から Shift で選べるように)。
+            _recordDrawerFileAnchor(provider, e.path);
             unawaited(_openAttachment(e.path));
           },
           // 長押しで選び始める (携帯でも選べるように)。
-          onLongPress: () =>
-              setState(() => _drawerSelectedFilePaths.add(e.path)),
+          onLongPress: () {
+            _recordDrawerFileAnchor(provider, e.path);
+            setState(() => _drawerSelectedFilePaths.add(e.path));
+          },
         ),
       ),
     );
@@ -71040,7 +71144,9 @@ class _MindMapScreenState extends State<MindMapScreen>
           ),
         );
 
-    return withReorder(LongPressDraggable<_DrawerFileDragData>(
+    // ★ ページの行と同じ待ち方にする (= 本家の LongPressDraggable は待って
+    //   いる間に 1px でも動くと自分から降りるので、 400ms では掴めない)。
+    return withReorder(_DrawerRowDraggable<_DrawerFileDragData>(
       delay: _kDrawerDragDelay,
       data: _DrawerFileDragData(e.path, e.name),
       dragAnchorStrategy: pointerDragAnchorStrategy,
@@ -71701,9 +71807,14 @@ class _MindMapScreenState extends State<MindMapScreen>
             icon: const Icon(Icons.delete_sweep_rounded,
                 color: Color(0xFFFF6B6B), size: 22),
             tooltip: provider.t('drawer.bulkDelete'),
+            // ★ ファイルも渡す (= ユーザー報告「ページ一覧からまとめて
+            //   ファイルを削除することができない」)。 以前はページと
+            //   フォルダーだけを渡していたので、 ファイルだけ選んでいると
+            //   どちらも空になり、 押しても黙って何も起きなかった。
             onPressed: () => _confirmBulkDelete(context, provider,
                 folderIds: _drawerSelectedFolderIds.toList(),
-                pageIds: _drawerSelectedPageIds.toList()),
+                pageIds: _drawerSelectedPageIds.toList(),
+                filePaths: _drawerSelectedFilePaths.toList()),
           ),
         ),
         // 選択解除
@@ -72021,12 +72132,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         final hi = (tappedIdx > anchor ? tappedIdx : anchor).clamp(0, flat.length - 1);
         setState(() {
           for (int i = lo; i <= hi; i++) {
-            final it = flat[i];
-            if (it.kind == _DrawerFlatItemKind.page) {
-              _drawerSelectedPageIds.add(it.id);
-            } else {
-              _drawerSelectedFolderIds.add(it.id);
-            }
+            _addFlatItemToSelection(flat[i]);
           }
         });
         return true;
@@ -72060,6 +72166,76 @@ class _MindMapScreenState extends State<MindMapScreen>
   ///          最後にルートのページ群。
   /// このインデックスを使うと「上のマップを選択 → Shift で下のマップ」で
   /// 物理的に挟まれているマップを全て一発選択できる。
+  /// ディスクの行を、 画面に出ているのと**同じ順**で数える。
+  /// _buildDiskRows と同じ並び (隠す判断も同じ) にする事。 ずれると、
+  /// 見えている物と違う範囲が選ばれて却って危ない。
+  void _addDiskFlatItems(
+      MindMapProvider provider, String dir, List<_DrawerFlatItem> out) {
+    final cached = _diskCache[dir];
+    if (cached == null) return; // まだ読めていない = 画面にも出ていない
+    for (final e in cached) {
+      if (e.isMore) continue; // 「他 N 件」 の札は選べない
+      if (!e.isDir && e.isAppPage && !_diskShowAppFiles) continue;
+      out.add(_DrawerFlatItem(
+          kind: _DrawerFlatItemKind.file, id: e.path, isDir: e.isDir));
+      if (e.isDir && _diskOpen.contains(e.path)) {
+        _addDiskFlatItems(provider, e.path, out);
+      }
+    }
+  }
+
+  /// 一覧の 1 件を、 種別に合った入れ物へ入れる。
+  ///
+  /// ★ 以前は「ページで無ければフォルダー」 という二択だったので、 ファイルを
+  ///   足すとファイルのパスがフォルダーの入れ物へ入ってしまう。 ここで必ず
+  ///   振り分ける。 ディスクのフォルダーの行は選べない (番号だけ占める)。
+  void _addFlatItemToSelection(_DrawerFlatItem it) {
+    switch (it.kind) {
+      case _DrawerFlatItemKind.page:
+        _drawerSelectedPageIds.add(it.id);
+        break;
+      case _DrawerFlatItemKind.folder:
+        _drawerSelectedFolderIds.add(it.id);
+        break;
+      case _DrawerFlatItemKind.file:
+        if (!it.isDir) _drawerSelectedFilePaths.add(it.id);
+        break;
+    }
+  }
+
+  /// ファイルの行を Shift で範囲選択する。 出来たら true。
+  ///
+  /// ★ = ユーザー報告「shift+クリックが ctrl+クリックと同じ挙動になっている」。
+  ///   ファイルの行は Shift も Ctrl も同じ「足す」 として扱っていて、 範囲の
+  ///   処理がどこにも無かった。 ページの行と同じ物差し (_drawerFlatItems の
+  ///   番号) で数える。
+  bool _shiftRangeSelectFile(MindMapProvider provider, String path) {
+    final anchor = _drawerLastAnchorIndex;
+    if (anchor == null) return false;
+    final flat = _drawerFlatItems(provider);
+    if (flat.isEmpty) return false;
+    final idx = flat.indexWhere(
+        (it) => it.kind == _DrawerFlatItemKind.file && it.id == path);
+    if (idx < 0) return false;
+    final a = anchor.clamp(0, flat.length - 1);
+    final lo = idx < a ? idx : a;
+    final hi = idx > a ? idx : a;
+    setState(() {
+      for (int i = lo; i <= hi; i++) {
+        _addFlatItemToSelection(flat[i]);
+      }
+    });
+    return true;
+  }
+
+  /// ファイルの行を押した時の基準を控える (= Shift の起点)。
+  void _recordDrawerFileAnchor(MindMapProvider provider, String path) {
+    final flat = _drawerFlatItems(provider);
+    final idx = flat.indexWhere(
+        (it) => it.kind == _DrawerFlatItemKind.file && it.id == path);
+    if (idx >= 0) _drawerLastAnchorIndex = idx;
+  }
+
   List<_DrawerFlatItem> _drawerFlatItems(MindMapProvider provider) {
     final items = <_DrawerFlatItem>[];
     // ★ フォルダーを開いている間は、 一覧に出ている物だけを数える
@@ -72071,6 +72247,9 @@ class _MindMapScreenState extends State<MindMapScreen>
         if (provider.isPageHidden(p.id)) continue;
         items.add(_DrawerFlatItem(kind: _DrawerFlatItemKind.page, id: p.id));
       }
+      // 画面ではページの下にそのフォルダーのファイルが続く。 同じ順で足す。
+      final dir = (opened.linkedDirPath ?? '').trim();
+      if (dir.isNotEmpty) _addDiskFlatItems(provider, dir, items);
       return items;
     }
     for (final folder in provider.folders) {
@@ -72081,6 +72260,8 @@ class _MindMapScreenState extends State<MindMapScreen>
           if (provider.isPageHidden(p.id)) continue;
           items.add(_DrawerFlatItem(kind: _DrawerFlatItemKind.page, id: p.id));
         }
+        final fdir = (folder.linkedDirPath ?? '').trim();
+        if (fdir.isNotEmpty) _addDiskFlatItems(provider, fdir, items);
       }
     }
     for (final p in provider.pagesInFolder(null)) {
@@ -72118,12 +72299,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         final hi = (tappedIdx > anchor ? tappedIdx : anchor).clamp(0, flat.length - 1);
         setState(() {
           for (int i = lo; i <= hi; i++) {
-            final it = flat[i];
-            if (it.kind == _DrawerFlatItemKind.page) {
-              _drawerSelectedPageIds.add(it.id);
-            } else {
-              _drawerSelectedFolderIds.add(it.id);
-            }
+            _addFlatItemToSelection(flat[i]);
           }
         });
         return true;
@@ -72592,9 +72768,13 @@ class _MindMapScreenState extends State<MindMapScreen>
           //    ★ 待ち時間は _kDrawerDragDelay (400ms)。 これより短いと、
           //      ふつうのクリックが掴みに化けて行が開けなくなる
           //      (= ユーザー報告「ダブルクリックしないと開けない」 の正体)。
-          child: LongPressDraggable<_DrawerPageDragData>(
+          child: _DrawerRowDraggable<_DrawerPageDragData>(
             data: dragData,
             delay: _kDrawerDragDelay,
+            // ★ 浮き札はカーソルに付ける。 これが無いと、 行の右の方を掴んだ
+            //   時に札が左へ大きくずれ、 挿し込む線の上下判定も掴んだ場所
+            //   次第で逆になる。
+            dragAnchorStrategy: pointerDragAnchorStrategy,
             // ── ドロワーは閉じない (= ユーザー要望: ドラッグでマップ一覧の
             //   並び替えができるように) ──
             //   閉じると並び替えの受け口 (= 他のページの行) ごと消えてしまう。
@@ -73202,13 +73382,32 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// フォルダー削除時はその中のページも一緒に消すかをユーザーが選択 (デフォルト)
   Future<void> _confirmBulkDelete(
       BuildContext context, MindMapProvider provider,
-      {required List<String> folderIds, required List<String> pageIds}) async {
+      {required List<String> folderIds,
+      required List<String> pageIds,
+      // ★ ディスクのファイル (= ユーザー報告「ページ一覧からまとめて
+      //   ファイルを削除することができない」)。 消し方が違う (ごみ箱へ送る)
+      //   ので、 ページ / フォルダーの確認とは別に、 専用の確認を出す。
+      List<String> filePaths = const []}) async {
     // ★ 本物のフォルダーを開いた物 (= 連動フォルダー) は、 まとめて削除では
     //   触らない (= ユーザー要望: デスクトップなどを開いた後に、 誤って
     //   フォルダーごと消せないように)。 1 つずつの確認付きでだけ外せる。
     final keptLinked = folderIds.where(provider.folderIsDiskLinked).length;
     folderIds = folderIds.where((id) => !provider.folderIsDiskLinked(id)).toList();
+    // ★ ファイルは消し方が違う (ごみ箱へ送る) ので、 先に専用の確認で片付ける。
+    //   ページ / フォルダーと混ざって選ばれていても取りこぼさないよう、
+    //   下の早戻りより**前**に済ませる (= ユーザー報告「ページ一覧から
+    //   まとめてファイルを削除することができない」)。
+    final files = filePaths.where((e) => e.trim().isNotEmpty).toList();
+    if (files.isNotEmpty) {
+      await _deleteDiskEntries(provider, files);
+      if (!mounted) return;
+      setState(() {
+        _drawerSelectedFilePaths.clear();
+        _drawerLastAnchorIndex = null;
+      });
+    }
     if (folderIds.isEmpty && pageIds.isEmpty) {
+      if (files.isNotEmpty) return; // ファイルは上で片付けた
       if (keptLinked > 0 && context.mounted) {
         showTopToast(
             context,
@@ -75369,10 +75568,26 @@ class _MindMapScreenState extends State<MindMapScreen>
   }
 
   /// 分割レイアウトが占める領域 (AppBar より下) のサイズ。
-  Size _mapSplitBodySize() {
+  /// 分割レイアウトが実際に置かれている箱 (AppBar の下 / 外側の分割パネルの内側)。
+  ///
+  /// ★ 窓全体 (View.of) から数えてはいけない。 分割レイアウトは
+  ///   _mapViewportKey の Stack の中 = 外側の分割パネル (PDF / Web) と並ぶ
+  ///   Expanded の中に置かれているので、 窓全体で数えるとパネルのぶんだけ
+  ///   セルが右へはみ出した矩形になり、 ギャラリーの中央寄せもセルの
+  ///   あたり判定もずれる (= ユーザー報告: 分割しても中央が来ない)。
+  Rect _mapSplitBodyRect() {
+    final box =
+        _mapViewportKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box != null && box.hasSize && box.size.width > 1) {
+      return box.localToGlobal(Offset.zero) & box.size;
+    }
+    // まだ配置が済んでいない時だけ、 窓全体から見積もる。
     final s = View.of(context).physicalSize / View.of(context).devicePixelRatio;
-    return Size(s.width, math.max(1.0, s.height - kToolbarHeight));
+    const top = kToolbarHeight;
+    return Rect.fromLTWH(0, top, s.width, math.max(1.0, s.height - top));
   }
+
+  Size _mapSplitBodySize() => _mapSplitBodyRect().size;
 
   /// ドラッグで動かせる分割の境界線 (= ユーザー要望)。 ダブルクリックで
   /// 半分に戻す。
@@ -75449,6 +75664,10 @@ class _MindMapScreenState extends State<MindMapScreen>
       // モバイルは 4 分割にしない (= ユーザー要望: 画面が小さいので不要)。
       _mapSplitQuad = _mapSplitOpen && _mapSplitQuadPref && _isDesktop;
     });
+    // ★ 見えている大きさが変わったので、 ギャラリーは寄せ直す
+    //   (= ユーザー報告: 分割しても中央が分割画面の中央に来ない)。
+    //   ここが一番使われる道なのに、 唯一呼んでいなかった。
+    _afterMapSplitChanged();
   }
 
   /// [globalPos] が入っている分割セルの番号。 どのセルでもなければ null。
@@ -76565,9 +76784,7 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// セル [k] の画面上の矩形 (AppBar 下の body 領域基準)。
   Rect _splitCellGlobalRect(int k) {
-    final s = View.of(context).physicalSize / View.of(context).devicePixelRatio;
-    const top = kToolbarHeight;
-    final body = Rect.fromLTWH(0, top, s.width, s.height - top);
+    final body = _mapSplitBodyRect();
     // 境界線をドラッグで動かせるので、 比率から矩形を計算する。
     final rx = _mapSplitRatioX;
     final ry = _mapSplitRatioY;
@@ -79222,6 +79439,10 @@ class _MindMapScreenState extends State<MindMapScreen>
       // ので、 上で記憶した後に呼ぶ必要がある。
       _toggleMapSplitFromHeader();
     }
+    // ★ 2⇄4 / 左右⇄上下 でもセルの大きさが変わるので寄せ直す
+    //   (= ユーザー報告: 分割しても中央が来ない)。 上の
+    //   _toggleMapSplitFromHeader も呼ぶが、 1 フレームに 1 回へまとめられる。
+    _afterMapSplitChanged();
   }
 
   /// 分割用のページ表示名 (種類の絵文字付き)。 マインドマップにも
@@ -80630,14 +80851,34 @@ class _MindMapScreenState extends State<MindMapScreen>
   ///
   /// ★ レイアウトの最中に呼ばれるので、 行列の書き換えは次のフレームへ
   ///   回す (レイアウト中に代入すると組み直しになる)。
-  void _scheduleShelfViewportFit() {
-    if (!mounted || _shelfViewportFitScheduled) return;
+  /// 明示的な合図で寄せ直す時の印 (ガードを一部飛ばす)。
+  bool _shelfViewportFitForced = false;
+
+  void _scheduleShelfViewportFit({bool force = false}) {
+    if (!mounted) return;
+    if (force) _shelfViewportFitForced = true;
+    if (_shelfViewportFitScheduled) return;
     _shelfViewportFitScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _shelfViewportFitScheduled = false;
-      _fitShelfToViewport();
+      final forced = _shelfViewportFitForced;
+      _shelfViewportFitForced = false;
+      _fitShelfToViewport(force: forced);
     });
   }
+
+  /// 本当に何かを掴んでいる最中か (= 寄せ直すと手から物が飛ぶ操作)。
+  ///
+  /// ★ _pauseViewer との違いは _splitPanelHover を見ないこと。 あれは
+  ///   PDF / WebView が onExit を取りこぼすと立ちっぱなしになるので、
+  ///   パネルの上にマウスが載っているだけで寄せ直しが効かなくなる。
+  bool get _shelfFitBlockedByGesture =>
+      _moveModeNodeId != null ||
+      _rangeStart != null ||
+      _rangeDragging ||
+      _canvasLongPressActive ||
+      _shelfHandleDragging ||
+      _draggingDecoration;
 
   /// ギャラリーを、 今の「見えている大きさ」 に合わせ直す。
   ///
@@ -80647,14 +80888,16 @@ class _MindMapScreenState extends State<MindMapScreen>
   ///   一度動かすまで中央にならなかった (= ユーザー報告: 直ぐには
   ///   切り替わらない)。 呼ぶ所を数えるのをやめ、 結果 (= 箱の大きさが
   ///   変わった) の方を見る。
-  void _fitShelfToViewport() {
+  void _fitShelfToViewport({bool force = false}) {
     if (!mounted || _clampingShelf) return;
     // ★ 操作中は触らない (= 掴んでいる物が手から飛ぶ)。 見送っても、
     //   指を離した後の _onTransformChanged → _clampBookshelfPan が拾う。
-    if (_pauseViewer || _shelfHandleDragging || _isCanvasTextEditing) return;
-    // ★ ペインをアクティブにした直後も触らない (わざと位置を引き継いで
-    //   いるので、 ここで寄せ直すと「変な方向に動く」 が再発する)。
-    if (_justActivatedSplitPane) return;
+    if (_shelfFitBlockedByGesture || _isCanvasTextEditing) return;
+    // ★ ペインをアクティブにした直後も、 ふだんは触らない (わざと位置を
+    //   引き継いでいるので、 寄せ直すと「変な方向に動く」 が再発する)。
+    //   分割そのものが変わった時 (force) だけは、 見えている大きさが
+    //   変わっているので寄せ直す。
+    if (!force && (_pauseViewer || _justActivatedSplitPane)) return;
     final provider = context.read<MindMapProvider>();
     if (provider.pages.isEmpty) return;
     final page = provider.currentPage;
@@ -80679,7 +80922,65 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// 明示的に寄せ直したい所 (分割を閉じた直後など) のための入口。
   /// ふだんの合図は _buildCanvas の SizeChangedLayoutNotifier が出す。
-  void _recenterBookshelfIfNeeded() => _scheduleShelfViewportFit();
+  /// 分割レイアウトが変わった後の後始末。
+  ///
+  /// ★ = ユーザー報告 (3 度目)「画面分割されてもギャラリーページの中央が
+  ///   画面の中央に即座に来ない」。 b405 は _buildCanvas を
+  ///   SizeChangedLayoutNotifier で包んで「箱の大きさが変わった」 を見て
+  ///   いたが、 分割を開くと _buildMapSplitLayout という**別の widget 木**へ
+  ///   差し替わるので、 新しい notifier の**初回**レイアウトになる。
+  ///   Flutter は初回は知らせない仕様なので、 開いた時も閉じた時も合図が
+  ///   一切出ていなかった (= だから一度動かすまで中央にならない)。
+  ///   開閉は数えられるので、 ここから明示的に呼ぶ。 notifier は境界線の
+  ///   ドラッグ / 外側パネル / 窓の大きさ変更 (= 木が生き残る場合) の控え。
+  void _afterMapSplitChanged() {
+    if (!mounted) return;
+    _scheduleShelfViewportFit(force: true); // 編集セル
+    _schedulePaneShelfFit(); // 閲覧ペイン
+  }
+
+  /// 閲覧ペインに出ているギャラリーを、 そのセルの真ん中へ寄せ直す。
+  /// 編集セルは _fitShelfToViewport が見るので、 ここは閲覧セル専用。
+  void _schedulePaneShelfFit() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_mapSplitOpen) return;
+      final provider = context.read<MindMapProvider>();
+      if (provider.pages.isEmpty) return;
+      for (final k in _visibleSplitSlots()) {
+        if (k == _mapSplitEditorSlot) continue;
+        if (_mapSplitCellWeb.containsKey(k)) continue;
+        if (_mapSplitCellTool.containsKey(k)) continue;
+        final page = _resolveSplitCellPage(provider, k);
+        if (page == null || page.pageType != 'bookshelf') continue;
+        _centerBookshelfPane(provider, page, k, _ctrlFor('split_${page.id}'));
+      }
+    });
+  }
+
+  /// ペインのギャラリーを、 そのセルの真ん中に置く。
+  ///
+  /// ★ ペイン用のコントローラには _onTransformChanged を付けていない
+  ///   (= 他のペインを動かすと編集側のバーまで出るため) ので、 編集側の
+  ///   寄せ直しはペインには一切届かない。 だから自前で寄せる。
+  void _centerBookshelfPane(MindMapProvider provider, MindMapPage page,
+      int slot, TransformationController paneCtrl) {
+    if (page.pageType != 'bookshelf') return;
+    // 収める四角は編集側と同じ物差し (_bookshelfContentBounds)。
+    final b = _bookshelfContentBounds(provider, pageOverride: page);
+    if (b == null) return;
+    final view = _splitCellGlobalRect(slot).size;
+    if (!view.width.isFinite || view.width <= 1) return;
+    final raw = paneCtrl.value.getMaxScaleOnAxis();
+    final sc = raw <= 0 ? _kDefaultScale : raw;
+    // (p.dx+80, p.dy+28) を真ん中に置くので、 中心を補正。
+    final q = b.center - const Offset(80, 28);
+    paneCtrl.value = Matrix4.identity()
+      ..translate(view.width / 2 - (q.dx + 80) * sc,
+          view.height / 2 - (q.dy + 28) * sc)
+      ..scale(sc);
+  }
+
+  void _recenterBookshelfIfNeeded() => _afterMapSplitChanged();
 
   /// この数を超えたら「見えている範囲だけ描く」 に切り替える
   /// (= ユーザー報告: 大量のファイルを読み込むとカクついて動かなくなる)。
@@ -139499,7 +139800,18 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
           _askAiToWrite();
           break;
         case 'page':
-          _mdHost?._showPageSwitchContextMenu(origin, provider);
+          // ★ = ユーザー報告「マークダウンページ上でページ切り替えボタンを
+          //   押すと、 再度別の表記のページ切り替えボタンが出現する」。
+          //   ここで本体の右クリックのメニューを出し直していたので、 同じ
+          //   「ページ切り替え」 が二段になり、 表示の仕方 / AI / ヘッダーの
+          //   項目まで二重に並んでいた。 このメニューは本体のメニューの
+          //   **代わり**に出している物なので、 ページを選ぶ窓を直に出す。
+          final host = _mdHost;
+          if (host != null) {
+            // 窓は押した所の近くに出す (今までと同じ基準)。
+            host._lastGlobalPointerPos = origin;
+            unawaited(host._showQuickPageSwitcher(provider));
+          }
           break;
       }
     }));
@@ -175381,14 +175693,24 @@ class _DrawerFileDragData {
   final String name;
 }
 
-enum _DrawerFlatItemKind { folder, page }
+/// ★ file を足した (= ユーザー報告「shift+クリックが ctrl+クリックと同じ
+///   挙動になっている、 間のファイルがまとめて選択されていない」)。
+///   範囲選択はこの一覧の番号で数えるので、 ファイルが載っていないと
+///   ファイルの行は範囲に入りようが無かった。
+enum _DrawerFlatItemKind { folder, page, file }
 
 /// drawer のフラット化されたアイテム1件。
-/// kind=folder ならフォルダー、kind=page ならページを表す。
+/// kind=folder ならフォルダー、kind=page ならページ、kind=file ならディスクの
+/// ファイル (id はそのパス) を表す。
 class _DrawerFlatItem {
   final _DrawerFlatItemKind kind;
   final String id;
-  const _DrawerFlatItem({required this.kind, required this.id});
+
+  /// ディスクの**フォルダー**の行か。 画面には出ているが選べないので、
+  /// 番号だけ占めて範囲の中身には入れない。
+  final bool isDir;
+  const _DrawerFlatItem(
+      {required this.kind, required this.id, this.isDir = false});
 }
 
 /// ページタイルを上下方向の D&D 並び替え対応にラップする。
@@ -175397,6 +175719,118 @@ class _DrawerFlatItem {
 /// `provider.reorderPages` を呼び出す。
 /// 同時に既存の「フォルダー間移動」「ルート移動」の DragTarget は
 /// それぞれ別レイヤーで動作するので、こちらでは並び替えのみを担当する。
+/// 一覧の行の「押し続けたら掴む」。
+///
+/// ★ = ユーザー報告「ページの順番を入れ替えられない」 (b405 の退行)。
+///   Flutter の LongPressDraggable は、 待っている間にポインタが
+///   **ほんの少しでも動くと自分から降りる**
+///   (_DelayedPointerState.checkForResolutionAfterMove →
+///    resolve(GestureDisposition.rejected))。
+///   その「少し」 はマウスだと kPrecisePointerHitSlop = **1px**。
+///   待ち時間を 80ms から 400ms へ延ばしたので、 押してすぐ動かす普通の
+///   操作では 400ms の間にほぼ必ず 1px を超え、 掴みが一度も始まらなく
+///   なっていた (= 並べ替えできない正体)。
+///
+///   ここでは**待つのは同じ、 待っている間に動いても降りない**。
+///   一覧の転がし (Scrollable) と競っても、 あちらが勝った時点で審判
+///   (GestureArena) がこちらを降ろすので、 携帯の指の転がしは今までどおり。
+///   マウスだけは 12px も動かせば待たずに掴み始める (パソコンの一覧は
+///   マウスの引きずりでは転がらない = 競う相手が居ない。 クリックの震え
+///   1〜2px では始まらない)。
+class _PatientDelayedPointerState extends MultiDragPointerState {
+  _PatientDelayedPointerState(super.initialPosition, Duration delay,
+      super.kind, super.gestureSettings) {
+    _timer = Timer(delay, _delayPassed);
+  }
+
+  /// マウスで「待たずに掴み始める」 距離。 クリックの震えより十分大きく。
+  static const double _kMouseInstantDragSlop = 12.0;
+
+  Timer? _timer;
+  GestureMultiDragStartCallback? _starter;
+
+  void _delayPassed() {
+    _timer = null;
+    if (_starter != null) {
+      _starter!(initialPosition);
+      _starter = null;
+    } else {
+      resolve(GestureDisposition.accepted);
+    }
+  }
+
+  @override
+  void accepted(GestureMultiDragStartCallback starter) {
+    if (_timer == null) {
+      starter(initialPosition);
+    } else {
+      _starter = starter;
+    }
+  }
+
+  /// ★ ここが肝。 本家は動いた時に自分から降りていた。
+  @override
+  void checkForResolutionAfterMove() {
+    if (_timer == null) return;
+    if (kind != PointerDeviceKind.mouse) return; // 指は審判に任せる
+    if ((pendingDelta ?? Offset.zero).distance > _kMouseInstantDragSlop) {
+      _timer!.cancel();
+      _timer = null;
+      resolve(GestureDisposition.accepted);
+    }
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _timer = null;
+    super.dispose();
+  }
+}
+
+class _PatientDelayedMultiDrag extends MultiDragGestureRecognizer {
+  _PatientDelayedMultiDrag(
+      {required this.delay, super.debugOwner, super.allowedButtonsFilter});
+
+  final Duration delay;
+
+  @override
+  MultiDragPointerState createNewPointerState(PointerDownEvent event) =>
+      _PatientDelayedPointerState(
+          event.position, delay, event.kind, gestureSettings);
+
+  @override
+  String get debugDescription => 'patient delayed multidrag';
+}
+
+/// 一覧の行用の Draggable。 待ち方だけ差し替えた物で、 浮き札も受け渡しも
+/// 本家と同じ。
+class _DrawerRowDraggable<T extends Object> extends Draggable<T> {
+  const _DrawerRowDraggable({
+    super.key,
+    required super.child,
+    required super.feedback,
+    required this.delay,
+    super.data,
+    super.childWhenDragging,
+    super.dragAnchorStrategy,
+    super.onDragStarted,
+    super.onDragEnd,
+    super.onDraggableCanceled,
+  });
+
+  final Duration delay;
+
+  @override
+  MultiDragGestureRecognizer createRecognizer(
+          GestureMultiDragStartCallback onStart) =>
+      _PatientDelayedMultiDrag(
+          delay: delay,
+          debugOwner: this,
+          allowedButtonsFilter: allowedButtonsFilter)
+        ..onStart = onStart;
+}
+
 class _ReorderDropZone extends StatefulWidget {
   final String targetPageId;
   final MindMapProvider provider;
@@ -175431,7 +175865,9 @@ class _ReorderDropZoneState extends State<_ReorderDropZone> {
         final box = context.findRenderObject() as RenderBox?;
         if (box == null) return;
         final localY = box.globalToLocal(details.offset).dy;
-        final ratio = (localY + 24) / box.size.height;
+        // ★ つまみを消し、 カーソルそのものが来るようになったので、
+        //   掴んだ場所ぶんの下駄 (+24) は要らない。
+        final ratio = localY / box.size.height;
         final above = ratio < 0.5;
         if (_insertAbove != above) {
           setState(() => _insertAbove = above);
