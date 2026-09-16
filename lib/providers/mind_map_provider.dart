@@ -665,6 +665,15 @@ class MapDecoration {
   /// (= ユーザー要望: 節点の沢山ついた折れ曲がった直線)
   List<Offset> points;
 
+  /// `aroundNodes` で作った囲みが追従するノード ID。
+  ///
+  /// 座標だけを保存すると、自動整列後に囲みだけが元の位置へ残るため、
+  /// 対象との関係も永続化する。空なら従来どおりの自由配置図形。
+  List<String> aroundNodeIds;
+
+  /// [aroundNodeIds] の外接矩形に足す余白。
+  double aroundNodePadding;
+
   /// 中を塗るか (= ユーザー要望: 星や♡の中も塗れるように。 図形は 1 種類に
   /// まとめ、 中空にするかはこの札で決める)。
   ///
@@ -688,6 +697,8 @@ class MapDecoration {
     this.textAnchorY = 0.5,
     this.layer = 3,
     this.points = const <Offset>[],
+    this.aroundNodeIds = const <String>[],
+    this.aroundNodePadding = 28.0,
     this.filled,
   });
 
@@ -722,6 +733,9 @@ class MapDecoration {
           'points': points
               .map((p) => {'x': p.dx, 'y': p.dy})
               .toList(growable: false),
+        if (aroundNodeIds.isNotEmpty) 'aroundNodeIds': aroundNodeIds,
+        if (aroundNodeIds.isNotEmpty && aroundNodePadding != 28.0)
+          'aroundNodePadding': aroundNodePadding,
       };
 
   factory MapDecoration.fromJson(Map<String, dynamic> json) {
@@ -752,6 +766,13 @@ class MapDecoration {
                   (m['y'] as num?)?.toDouble() ?? 0))
               .toList(growable: false) ??
           const <Offset>[],
+      aroundNodeIds: (json['aroundNodeIds'] as List<dynamic>?)
+              ?.whereType<String>()
+              .where((id) => id.isNotEmpty)
+              .toList(growable: false) ??
+          const <String>[],
+      aroundNodePadding:
+          (json['aroundNodePadding'] as num?)?.toDouble() ?? 28.0,
     );
   }
 
@@ -770,6 +791,8 @@ class MapDecoration {
     double? textAnchorY,
     int? layer,
     List<Offset>? points,
+    List<String>? aroundNodeIds,
+    double? aroundNodePadding,
     Object? filled = noChange,
   }) {
     return MapDecoration(
@@ -797,6 +820,8 @@ class MapDecoration {
       textAnchorY: textAnchorY ?? this.textAnchorY,
       layer: layer ?? this.layer,
       points: points ?? this.points,
+      aroundNodeIds: aroundNodeIds ?? this.aroundNodeIds,
+      aroundNodePadding: aroundNodePadding ?? this.aroundNodePadding,
     );
   }
 
@@ -77810,6 +77835,16 @@ class MindMapProvider extends ChangeNotifier {
     } catch (_) {}
   }
 
+  /// 開発者モードのアップロード試験を最初からやり直す。
+  /// 実ファイルの使用量は変えず、月次アップロード量だけを 0 に戻す。
+  Future<void> resetDevSelfUploadUsage() async {
+    if (!_developerMode) return;
+    _resetMonthlyIfNeeded();
+    _monthlyUploadBytes = 0;
+    await _persistMonthlyUsage();
+    notifyListeners();
+  }
+
   /// 何らかの上限を自分で掛けているか (= 「無制限」 と出さないための判定)。
   bool get uploadCapped => _uploadCapBytes > 0 || devSelfUploadCapActive;
 
@@ -78102,20 +78137,14 @@ class MindMapProvider extends ChangeNotifier {
   /// PC 内 AI (CLI) とアプリの中のターミナルを使えるか
   /// (= ユーザー要望: CLI を利用する機能は Pro 以上の特権に)。
   ///
-  /// ★ アプリ側の門はここだけ。 実際に動かすには、 これに加えて
-  ///   ChatGPT / Gemini / Claude いずれかの**有料プランに加入した
-  ///   アカウント**で CLI にログインしている必要がある (CLI 側の話なので
-  ///   アプリからは確かめられない。 画面でその旨を案内する)。
-  ///
-  /// ★ = ユーザー要望「ログインなしで API キーを自前で用意して CLI は
-  ///   使う想定ではない為、 CLI はログインなしで利用できないように」。
-  ///   プランはアカウントに紐づくので、 ログインしていない端末で
-  ///   使えてしまうのは筋が通らない。
-  bool get canUseCliAi => isProUnlocked && googleSignedIn;
+  /// アプリ側ではプランだけを見る。Codex / Gemini / Claude の認証は、一覧の
+  /// 各 CLI がそれぞれ自分のプロバイダーへ行うため、HisatorNotebook 自体への
+  /// Google ログインは要求しない。
+  bool get canUseCliAi => isProUnlocked;
 
   /// プランは足りているのに、 ログインしていないだけか。
   /// 画面側が「加入して」 と「ログインして」 を書き分けるために使う。
-  bool get cliNeedsSignIn => isProUnlocked && !googleSignedIn;
+  bool get cliNeedsSignIn => false;
 
   /// サブモニターの回り込み (ルーティング) を、 **アプリを開いている間**
   /// 使えるか。
@@ -86446,6 +86475,9 @@ $cleanQ
     final d = currentPage.decorations[idx];
     d.start = d.start + startDelta;
     d.end = d.end + endDelta;
+    // 手で位置や大きさを変えた後まで aroundNodes の自動追従を残すと、
+    // 次の整列で利用者の配置が元へ戻る。直接編集した時点で自由配置にする。
+    d.aroundNodeIds = const <String>[];
     notifyListeners();
   }
 
@@ -93272,7 +93304,12 @@ $cleanQ
             remoteSawBase: sawBase);
       }
       final changed = merged != mine;
-      if (changed) await prefs.setString(key, merged);
+      if (changed) {
+        await prefs.setString(key, merged);
+        if (page.pageType == 'markdown') {
+          _mcpMarkdownWriteThrough[page.id] = merged;
+        }
+      }
       // ★ 代表以外の入れ物 (文書ページの文章など) も当てる。
       final extraChanged = await _liveApplyBodyExtra(page, got.extra);
       _liveLastExtra = got.extra;
@@ -93312,7 +93349,12 @@ $cleanQ
         body = await _liveLocalizePaintImages(body);
       }
       final prefs = await _prefsWithRetry();
-      if (body.isNotEmpty) await prefs.setString(key, body);
+      if (body.isNotEmpty) {
+        await prefs.setString(key, body);
+        if (page.pageType == 'markdown') {
+          _mcpMarkdownWriteThrough[page.id] = body;
+        }
+      }
       // 代表以外 (文書ページの文章など) も一緒に入れる。
       final extraChanged = await _liveApplyBodyExtra(page, got.extra);
       _liveLastExtra = got.extra;
@@ -98229,6 +98271,18 @@ $cleanQ
     _mcpPageTicks[pageId] = (_mcpPageTicks[pageId] ?? 0) + 1;
   }
 
+  /// MCP が保存した Markdown の write-through キャッシュ。
+  ///
+  /// SharedPreferences と編集画面の遅延保存が同時に動いた直後でも、成功応答後の
+  /// read_markdown が必ず今書いた本文を返すための、同一プロセス内の正本。
+  final Map<String, String> _mcpMarkdownWriteThrough = {};
+
+  /// 編集画面がその後に保存した時は、キャッシュも同じ本文へ進める。
+  void syncMarkdownBodyCacheFromUi(String pageId, String encodedBody) {
+    if (!_mcpMarkdownWriteThrough.containsKey(pageId)) return;
+    _mcpMarkdownWriteThrough[pageId] = encodedBody;
+  }
+
   /// prefs 側に中身を持つページ (フリーノート/文書/動画編集) を MCP が
   /// 書き換えた回数。 画面はこれを ValueKey に混ぜて読み直す
   /// (中身はページ JSON に乗らないので notifyListeners だけでは反映されない)。
@@ -98559,6 +98613,34 @@ $cleanQ
     _spreadLooseNodes(page);
   }
 
+  /// `aroundNodes` 由来の装飾を、現在の対象ノードの外接矩形へ合わせ直す。
+  /// 存在しなくなった ID は無視し、対象が全て消えた時だけ現在位置を保つ。
+  void _reflowNodeBoundDecorations(MindMapPage page) {
+    for (final decoration in page.decorations) {
+      if (decoration.aroundNodeIds.isEmpty) continue;
+      double? left;
+      double? top;
+      double? right;
+      double? bottom;
+      for (final id in decoration.aroundNodeIds) {
+        final node = page.nodes[id];
+        if (node == null) continue;
+        left = left == null ? node.position.dx : math.min(left, node.position.dx);
+        top = top == null ? node.position.dy : math.min(top, node.position.dy);
+        final nodeRight = node.position.dx + node.width;
+        final nodeBottom = node.position.dy + node.visualHeight;
+        right = right == null ? nodeRight : math.max(right, nodeRight);
+        bottom = bottom == null ? nodeBottom : math.max(bottom, nodeBottom);
+      }
+      if (left == null || top == null || right == null || bottom == null) {
+        continue;
+      }
+      final padding = decoration.aroundNodePadding.clamp(0.0, 1000.0);
+      decoration.start = Offset(left - padding, top - padding);
+      decoration.end = Offset(right + padding, bottom + padding);
+    }
+  }
+
   void mcpTidyPage(String pageId) {
     final idx = _pages.indexWhere((e) => e.id == pageId);
     if (idx < 0) return;
@@ -98583,6 +98665,13 @@ $cleanQ
     // 表や画像のように線で繋がっていない物は木に含まれないので、
     //   別に並べ直して重なりを防ぐ (= ユーザー報告)。
     _spreadLooseNodes(page);
+    // aroundNodes で作った囲みは、最終的なノード位置から作り直す。
+    // autoLayoutTree 内でも更新するが、上の MCP 専用補正がその後に動くため
+    // ここでもう一度合わせる。
+    _reflowNodeBoundDecorations(page);
+    page.lastModifiedAt = DateTime.now();
+    _saveToStorage();
+    notifyListeners();
     _requestMcpFocus(pageId);
   }
 
@@ -100790,7 +100879,8 @@ $cleanQ
     if (page == null || page.pageType != 'markdown') return null;
     try {
       final prefs = await _prefsWithRetry();
-      final raw = prefs.getString('markdown_${page.id}');
+      final raw = _mcpMarkdownWriteThrough[page.id] ??
+          prefs.getString('markdown_${page.id}');
       if (raw == null || raw.trim().isEmpty) {
         return {'pageId': page.id, 'selected': 0, 'tabs': const []};
       }
@@ -100997,7 +101087,7 @@ $cleanQ
       final key = 'markdown_$id';
       final tabs = <Map<String, dynamic>>[];
       var sel = 0;
-      final raw = prefs.getString(key);
+      final raw = _mcpMarkdownWriteThrough[id] ?? prefs.getString(key);
       if (raw != null && raw.trim().isNotEmpty) {
         if (raw.trimLeft().startsWith('{')) {
           try {
@@ -101046,7 +101136,11 @@ $cleanQ
       final cur = '${tabs[sel]['text'] ?? ''}'.trimRight();
       tabs[sel]['text'] =
           append ? (cur.isEmpty ? body : '$cur\n\n$body') : body;
-      await prefs.setString(key, jsonEncode({'v': 2, 'sel': sel, 'tabs': tabs}));
+      final encoded = jsonEncode({'v': 2, 'sel': sel, 'tabs': tabs});
+      await prefs.setString(key, encoded);
+      // 成功を返す前にメモリ側も更新し、直後の read が古い遅延保存や
+      // SharedPreferences の可視化タイミングに左右されないようにする。
+      _mcpMarkdownWriteThrough[id] = encoded;
       _bumpPageTick(id);
       _mcpContentTick++;
       // ★ 本文はページ JSON の外にあるので、 時刻は自分で進める
@@ -102145,12 +102239,15 @@ $cleanQ
     if (k == MapDecorationKind.polyline) return null;
     Offset? start;
     Offset? end;
+    final resolvedAroundIds = <String>[];
+    const aroundPadding = 28.0;
     if (aroundNodeIds != null && aroundNodeIds.isNotEmpty) {
       double? l, t, r, b;
       for (final key in aroundNodeIds) {
         final id = _resolveNodeIdIn(page, key);
         final n = id == null ? null : page.nodes[id];
         if (n == null) continue;
+        if (!resolvedAroundIds.contains(n.id)) resolvedAroundIds.add(n.id);
         final nl = n.position.dx;
         final nt = n.position.dy;
         final nr = nl + n.width;
@@ -102161,7 +102258,7 @@ $cleanQ
         b = b == null ? nb : math.max(b, nb);
       }
       if (l != null && t != null && r != null && b != null) {
-        const m = 28.0; // 囲みの余白
+        const m = aroundPadding; // 囲みの余白
         start = Offset(l - m, t - m);
         end = Offset(r + m, b + m);
       }
@@ -102193,6 +102290,8 @@ $cleanQ
       text: (text ?? '').trim(),
       filled: filled ?? false,
       layer: (layer ?? activeLayerOf(pageId)).clamp(1, 5),
+      aroundNodeIds: List<String>.unmodifiable(resolvedAroundIds),
+      aroundNodePadding: aroundPadding,
     );
     _pushUndoForPage(pageId, coalesceKey: 'mcpDeco:$pageId');
     page.decorations.add(deco);
@@ -103186,7 +103285,9 @@ $cleanQ
       if (node == null) return;
       final nodeY = y + (slotH - node.visualHeight) / 2;
       nodeMap[id] = node.copyWith(
-        position: Offset(x.clamp(0.0, 20000.0), nodeY.clamp(0.0, 20000.0)),
+        // ここで各ノードを 0 に丸めると、大きなツリーの上側にある別々の
+        // 枝がすべて y=0 へ潰れる。配置中は負座標を許し、全体を後で一括移動。
+        position: Offset(x, nodeY),
         // ★ 既定では接続点の決め方を変えない (= 調査報告 BUG-23)。
         anchorMode: normalizeAnchors ? NodeAnchorMode.fourWay : null,
       );
@@ -103227,10 +103328,7 @@ $cleanQ
           final kn = nodeMap[kids[i]];
           if (kn == null) continue;
           nodeMap[kids[i]] = kn.copyWith(
-            position: Offset(
-              col1X.clamp(0.0, 20000.0),
-              curY.clamp(0.0, 20000.0),
-            ),
+            position: Offset(col1X, curY),
             anchorMode: normalizeAnchors ? NodeAnchorMode.fourWay : null,
           );
           curY += kn.visualHeight;
@@ -103244,10 +103342,7 @@ $cleanQ
           final kn = nodeMap[kids[i]];
           if (kn == null) continue;
           nodeMap[kids[i]] = kn.copyWith(
-            position: Offset(
-              col2X.clamp(0.0, 20000.0),
-              curY.clamp(0.0, 20000.0),
-            ),
+            position: Offset(col2X, curY),
             anchorMode: normalizeAnchors ? NodeAnchorMode.fourWay : null,
           );
           curY += kn.visualHeight;
@@ -103320,16 +103415,34 @@ $cleanQ
     for (final node in nodeMap.values.toList()) {
       if (!laidOut.contains(node.id)) {
         nodeMap[node.id] = node.copyWith(
-          position: Offset(
-            orphanX.clamp(0.0, 20000.0),
-            orphanY.clamp(0.0, 20000.0),
-          ),
+          position: Offset(orphanX, orphanY),
         );
         orphanX += node.width + hGap;
         if (orphanX > orphanEndX) {
           orphanX = orphanStartX;
           orphanY += 60;
         }
+      }
+    }
+
+    // 大きなツリーが基準点より上/左へ広がっても、個々の座標を切り詰めず、
+    // レイアウト全体を同じ量だけキャンバス内へ移す。相対位置が保たれるため
+    // 250 ノード級でも y=0 など同一座標への大量重複が発生しない。
+    double minLayoutX = double.infinity;
+    double minLayoutY = double.infinity;
+    for (final node in nodeMap.values) {
+      minLayoutX = math.min(minLayoutX, node.position.dx);
+      minLayoutY = math.min(minLayoutY, node.position.dy);
+    }
+    const layoutMargin = 40.0;
+    final shift = Offset(
+      minLayoutX < layoutMargin ? layoutMargin - minLayoutX : 0,
+      minLayoutY < layoutMargin ? layoutMargin - minLayoutY : 0,
+    );
+    if (shift != Offset.zero) {
+      for (final entry in nodeMap.entries.toList()) {
+        nodeMap[entry.key] =
+            entry.value.copyWith(position: entry.value.position + shift);
       }
     }
 
@@ -103357,6 +103470,9 @@ $cleanQ
     //   ユーザー要望: ノード同士が完全に重なって見えなくなることがないよう、
     //   ほぼ完全に被っているペアだけを最小限ずらす (部分的な重なりは温存)。
     _separateBuriedNodes();
+
+    // ノード位置が確定した後、aroundNodes で作られた囲みも追従させる。
+    _reflowNodeBoundDecorations(currentPage);
 
     _saveToStorage();
     notifyListeners();
@@ -111589,6 +111705,7 @@ $example
         startNodeAnchor: null,
         endNodeId: null,
         endNodeAnchor: null,
+        aroundNodeIds: const <String>[],
       );
     }
     currentPage.lastModifiedAt = DateTime.now();

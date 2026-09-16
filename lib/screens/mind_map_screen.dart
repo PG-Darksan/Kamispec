@@ -36861,6 +36861,60 @@ class _MindMapScreenState extends State<MindMapScreen>
     );
   }
 
+  /// 移送中のノードを画面全体の最前面にも描く。
+  ///
+  /// 各ペインは ClipRect で切られているため、元の NodeWidget だけでは境界へ
+  /// 半分掛かった時点で隣ペインの下へ隠れる。操作中だけ同じノードのゴーストを
+  /// ルート Stack に出し、境界線や隣ペインを上から跨いで見えるようにする。
+  Widget _buildSplitTransferNodeOverlay() {
+    if (!_splitTransferMode ||
+        !_mapSplitOpen ||
+        _moveModeNodeId == null ||
+        _movingPos == null ||
+        _nodeDragGlobal == null ||
+        _moveDragAnchor == null) {
+      return const SizedBox.shrink();
+    }
+    final provider = context.read<MindMapProvider>();
+    final node = provider.nodes[_moveModeNodeId!];
+    if (node == null) return const SizedBox.shrink();
+    final scale = _ctrlFor(provider.currentPage.id)
+        .value
+        .getMaxScaleOnAxis()
+        .clamp(0.05, 8.0)
+        .toDouble();
+    final anchor = _moveDragAnchor!;
+    final topLeft = _nodeDragGlobal! - Offset(anchor.dx * scale, anchor.dy * scale);
+    return Positioned(
+      left: topLeft.dx,
+      top: topLeft.dy,
+      child: IgnorePointer(
+        child: Transform.scale(
+          scale: scale,
+          alignment: Alignment.topLeft,
+          child: SizedBox(
+            width: node.width,
+            height: node.visualHeight,
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                NodeWidget(
+                  key: ValueKey('split_transfer_${node.id}'),
+                  node: node,
+                  positionOverride: Offset.zero,
+                  forceDragging: true,
+                  isSelected: true,
+                  isDarkMode: provider.isDarkMode,
+                  onTap: () {},
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   /// 隣のペイン [slot] へ、 今掴んでいる要素を渡す。 渡せたら true。
   ///
   /// ★ = ユーザー要望「画面分割した画面からデータを他の分割画面に
@@ -45233,20 +45287,23 @@ class _MindMapScreenState extends State<MindMapScreen>
       'legacy': true,
     },
     {
-      // 電源モード (= ユーザー要望:「バッテリーのモードを省電力モードに
-      //   切り替えたりできるボタン」)。 押すたびに
-      //   省電力 → バランス → 最高性能 → … と回る。
-      //   触るのはタスクバーのスライダーと同じ「重ねる設定」 だけで、
-      //   電源プランそのものは書き換えない (= 利用者が組んだ設定を壊さない)。
+      // 分割の境界を飛び越えて要素を渡すモードの入切
+      // (= ユーザー要望: カーソルが分割境界に来た時に追跡するのか、
+      //   境界を飛び越えてデータを転送するのか)。
+      //   入れている間は、 隣のペインの上で手を離すとそのページへ移る。
       'id': 'splitTransfer',
       'labelKey': 'hdr.splitTransfer',
       'icon': Icons.swap_horiz_rounded,
       'color': Color(0xFF7CD992),
     },
     {
-      // 分割の境界を飛び越えてデータを渡すモードの入切は 1 つ上
-      // (= ユーザー要望: カーソルが分割境界に来た時に追跡するのか、
-      //   境界を飛び越えてデータを転送するのか)。
+      // 電源モード (= ユーザー要望:「バッテリーのモードを省電力モードに
+      //   切り替えたりできるボタン」)。
+      //   ★ 押すたび 1 段回る形はやめた (= ユーザー要望: どのモードに
+      //     切り替えるのかの項目が出るように)。 押すと「電源と画面」 の窓が出て、
+      //     モード / 消灯時間 / スクリーンセーバー をそこで決める。
+      //   触るのはタスクバーのスライダーと同じ「重ねる設定」 だけで、
+      //   電源プランそのものは書き換えない。
       'id': 'powerMode',
       'labelKey': 'hdr.powerMode',
       'icon': Icons.battery_saver_rounded,
@@ -62675,8 +62732,10 @@ class _MindMapScreenState extends State<MindMapScreen>
               },
             ),
             // ★ 渡し先のペインを光らせる印 (= 境界を飛び越えて渡すモード)。
-            //   Stack は後ろの子ほど手前なので、 必ず一番最後に置く。
             _buildSplitTransferHint(),
+            // ペインの ClipRect より上でドラッグ中ノードを描く。
+            // Stack は後ろの子ほど手前なので必ず最後に置く。
+            _buildSplitTransferNodeOverlay(),
 ]),
         ),
       );
@@ -79789,6 +79848,25 @@ class _MindMapScreenState extends State<MindMapScreen>
           onPressed: () {
             setState(() => _hidePaneHeaders = !_hidePaneHeaders);
             unawaited(_persistHidePaneHeaders());
+          },
+        ),
+      // 境界を越えるデータ移送は、右上の分割ボタン群のすぐ左に固定する。
+      if (_mapSplitOpen)
+        IconButton(
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+          tooltip: provider.t(
+              _splitTransferMode ? 'split.transferOn' : 'split.transferOff'),
+          icon: Icon(Icons.drive_file_move_outline,
+              size: 16,
+              color: _splitTransferMode
+                  ? const Color(0xFF7CD992)
+                  : Colors.white70),
+          onPressed: () async {
+            await _setSplitTransferMode(!_splitTransferMode);
+            if (!mounted) return;
+            _showLockToast(provider.t(
+                _splitTransferMode ? 'split.transferOn' : 'split.transferOff'));
           },
         ),
       // モバイルは画面が小さく 4 分割は実用的でないので出さない
@@ -100346,6 +100424,20 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 開発者モードのメイン画面
   void _showDeveloperModeScreen(BuildContext ctx, MindMapProvider provider) {
     final emailCtrl = TextEditingController(text: provider.inquiryEmail);
+    String compactNumber(double value) => value == value.roundToDouble()
+        ? value.toStringAsFixed(0)
+        : value.toStringAsFixed(3).replaceFirst(RegExp(r'0+$'), '');
+    final uploadCapMbCtrl = TextEditingController(
+      text: provider.devSelfUploadCapBytes <= 0
+          ? ''
+          : compactNumber(
+              provider.devSelfUploadCapBytes / (1024.0 * 1024.0)),
+    );
+    final aiCapUsdCtrl = TextEditingController(
+      text: provider.devSelfCapUsd <= 0
+          ? ''
+          : compactNumber(provider.devSelfCapUsd),
+    );
 
     final Widget Function(BuildContext) buildDeveloperContent = (BuildContext
             dctx) =>
@@ -100531,34 +100623,99 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     fontWeight: FontWeight.w600),
                               ),
                               const SizedBox(height: 8),
-                              // 押すたびに 1 段上がる (1MB → … → 1GB → なし)。
-                              ElevatedButton.icon(
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor:
-                                      provider.devSelfUploadCapBytes > 0
-                                          ? const Color(0xFF4FC3F7)
-                                          : const Color(0xFF1A2030),
-                                  foregroundColor:
-                                      provider.devSelfUploadCapBytes > 0
-                                          ? Colors.black87
-                                          : Colors.white70,
-                                  side: BorderSide(
-                                      color:
-                                          provider.devSelfUploadCapBytes > 0
-                                              ? const Color(0xFF4FC3F7)
-                                              : Colors.white24),
-                                  padding: const EdgeInsets.symmetric(
-                                      vertical: 10),
-                                  minimumSize: const Size(double.infinity, 38),
+                              TextField(
+                                controller: uploadCapMbCtrl,
+                                keyboardType: const TextInputType.numberWithOptions(
+                                    decimal: true),
+                                inputFormatters: [
+                                  FilteringTextInputFormatter.allow(
+                                      RegExp(r'^\d*\.?\d{0,3}$')),
+                                ],
+                                style: const TextStyle(
+                                    color: Colors.white, fontSize: 13),
+                                decoration: InputDecoration(
+                                  labelText: '上限を数値で指定',
+                                  suffixText: 'MB',
+                                  hintText: '例: 50',
+                                  filled: true,
+                                  fillColor:
+                                      Colors.white.withValues(alpha: 0.05),
+                                  border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                      borderSide: BorderSide.none),
+                                  contentPadding: const EdgeInsets.symmetric(
+                                      horizontal: 12, vertical: 10),
                                 ),
-                                icon: const Icon(Icons.add_rounded, size: 16),
-                                onPressed: () async {
-                                  await provider.stepDevSelfUploadCap();
-                                  if (!sctx.mounted) return;
-                                  setD(() {});
-                                },
-                                label: const Text('上限を 1 段上げる',
-                                    style: TextStyle(fontSize: 12)),
+                              ),
+                              const SizedBox(height: 8),
+                              Row(children: [
+                                Expanded(
+                                  child: ElevatedButton.icon(
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor:
+                                          const Color(0xFF4FC3F7),
+                                      foregroundColor: Colors.black87,
+                                      padding: const EdgeInsets.symmetric(
+                                          vertical: 10),
+                                      minimumSize: const Size(0, 38),
+                                    ),
+                                    icon: const Icon(Icons.save_rounded,
+                                        size: 16),
+                                    onPressed: () async {
+                                      final mb = double.tryParse(
+                                          uploadCapMbCtrl.text.trim());
+                                      if (mb == null || mb <= 0) {
+                                        _appSnack(
+                                            sctx,
+                                            const SnackBar(
+                                                content: Text(
+                                                    '0 より大きい MB 数を入力してください')));
+                                        return;
+                                      }
+                                      await provider.setDevSelfUploadCapBytes(
+                                          (mb * 1024 * 1024).round());
+                                      if (!sctx.mounted) return;
+                                      setD(() {});
+                                    },
+                                    label: const Text('設定',
+                                        style: TextStyle(fontSize: 12)),
+                                  ),
+                                ),
+                                const SizedBox(width: 6),
+                                OutlinedButton(
+                                  style: OutlinedButton.styleFrom(
+                                    foregroundColor: Colors.white70,
+                                    side: const BorderSide(
+                                        color: Colors.white24),
+                                    minimumSize: const Size(0, 38),
+                                  ),
+                                  onPressed: () async {
+                                    await provider
+                                        .setDevSelfUploadCapBytes(0);
+                                    uploadCapMbCtrl.clear();
+                                    if (!sctx.mounted) return;
+                                    setD(() {});
+                                  },
+                                  child: const Text('上限なし',
+                                      style: TextStyle(fontSize: 12)),
+                                ),
+                              ]),
+                              Align(
+                                alignment: Alignment.centerLeft,
+                                child: TextButton.icon(
+                                  onPressed: () async {
+                                    await provider
+                                        .resetDevSelfUploadUsage();
+                                    if (!sctx.mounted) return;
+                                    setD(() {});
+                                  },
+                                  icon: const Icon(Icons.refresh_rounded,
+                                      size: 14, color: Color(0xFF4FC3F7)),
+                                  label: const Text('今月上げた分を 0 に戻す',
+                                      style: TextStyle(
+                                          color: Color(0xFF4FC3F7),
+                                          fontSize: 11)),
+                                ),
                               ),
                             ],
                           ),
@@ -100597,46 +100754,63 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     fontWeight: FontWeight.w600),
                               ),
                               const SizedBox(height: 8),
+                              TextField(
+                                controller: aiCapUsdCtrl,
+                                keyboardType: const TextInputType.numberWithOptions(
+                                    decimal: true),
+                                inputFormatters: [
+                                  FilteringTextInputFormatter.allow(
+                                      RegExp(r'^\d*\.?\d{0,4}$')),
+                                ],
+                                style: const TextStyle(
+                                    color: Colors.white, fontSize: 13),
+                                decoration: InputDecoration(
+                                  labelText: '上限を数値で指定',
+                                  prefixText: r'$ ',
+                                  hintText: '例: 2.5',
+                                  filled: true,
+                                  fillColor:
+                                      Colors.white.withValues(alpha: 0.05),
+                                  border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                      borderSide: BorderSide.none),
+                                  contentPadding: const EdgeInsets.symmetric(
+                                      horizontal: 12, vertical: 10),
+                                ),
+                              ),
+                              const SizedBox(height: 8),
                               Row(children: [
-                                // 押すたびに増える (= ユーザー要望: 1 ドル
-                                //   までしか掛けられないのは小さ過ぎる)。
-                                //   0.05 → 0.1 → 0.25 → 0.5 → 1 → 2.5 → 5
-                                //   → 10 → 25 → 50 → 100 → なし に戻る。
                                 Expanded(
                                   child: ElevatedButton.icon(
                                     style: ElevatedButton.styleFrom(
                                       backgroundColor:
-                                          provider.devSelfCapUsd > 0
-                                              ? const Color(0xFFFFB347)
-                                              : const Color(0xFF1A2030),
-                                      foregroundColor:
-                                          provider.devSelfCapUsd > 0
-                                              ? Colors.black87
-                                              : Colors.white70,
-                                      side: BorderSide(
-                                          color: provider.devSelfCapUsd > 0
-                                              ? const Color(0xFFFFB347)
-                                              : Colors.white24),
+                                          const Color(0xFFFFB347),
+                                      foregroundColor: Colors.black87,
                                       padding: const EdgeInsets.symmetric(
                                           vertical: 10),
                                       minimumSize: const Size(0, 38),
                                     ),
-                                    icon: const Icon(Icons.add_rounded,
+                                    icon: const Icon(Icons.save_rounded,
                                         size: 16),
                                     onPressed: () async {
-                                      await provider.stepDevSelfCapUsd();
+                                      final usd = double.tryParse(
+                                          aiCapUsdCtrl.text.trim());
+                                      if (usd == null || usd <= 0) {
+                                        _appSnack(
+                                            sctx,
+                                            const SnackBar(
+                                                content: Text(
+                                                    '0 より大きい金額を入力してください')));
+                                        return;
+                                      }
+                                      await provider.setDevSelfCapUsd(usd);
                                       if (!sctx.mounted) return;
                                       setD(() {});
                                     },
-                                    label: Text(
-                                      provider.devSelfCapUsd <= 0
-                                          ? '上限を掛ける'
-                                          : '上限 \$'
-                                              '${provider.devSelfCapUsd.toStringAsFixed(2)}',
-                                      style: const TextStyle(
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.w700),
-                                    ),
+                                    label: const Text('設定',
+                                        style: TextStyle(
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w700)),
                                   ),
                                 ),
                                 const SizedBox(width: 6),
@@ -100651,10 +100825,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   ),
                                   onPressed: () async {
                                     await provider.setDevSelfCapUsd(0);
+                                    aiCapUsdCtrl.clear();
                                     if (!sctx.mounted) return;
                                     setD(() {});
                                   },
-                                  child: const Text('なし',
+                                  child: const Text('上限なし',
                                       style: TextStyle(fontSize: 12)),
                                 ),
                               ]),
@@ -100947,6 +101122,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     unawaited(developerFuture.whenComplete(() {
       provider.removeListener(closeIfDeveloperModeWasRevoked);
       emailCtrl.dispose();
+      uploadCapMbCtrl.dispose();
+      aiCapUsdCtrl.dispose();
     }));
   }
 
@@ -140806,7 +140983,9 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
       final blob = encodeMarkdownDoc(_tabs, _sel);
       // ignore: discarded_futures
       SharedPreferences.getInstance()
-          .then((sp) => sp.setString(_prefsKey, blob));
+          .then((sp) => sp.setString(_prefsKey, blob))
+          .then((_) => widget.provider
+              .syncMarkdownBodyCacheFromUi(widget.pageId, blob));
     }
     if (_fileMode && _tabs.isNotEmpty) {
       // ファイル = 1 枚目のタブ、 という約束で書き戻す。
@@ -141055,7 +141234,9 @@ graph TD
     try {
       _syncCurrentTab();
       final sp = await SharedPreferences.getInstance();
-      await sp.setString(_prefsKey, encodeMarkdownDoc(_tabs, _sel));
+      final encoded = encodeMarkdownDoc(_tabs, _sel);
+      await sp.setString(_prefsKey, encoded);
+      widget.provider.syncMarkdownBodyCacheFromUi(widget.pageId, encoded);
       // 添付ファイルモード: 1 枚目のタブをファイルへも書き戻す
       // (= ユーザー要望。 タブ束そのものは prefs が持つ)。
       if (_fileMode && _tabs.isNotEmpty) {
@@ -251138,11 +251319,12 @@ $currentText
                 color: fg.withValues(alpha: 0.7)),
             onPressed: () => setState(() => _headerVisible = false),
           ),
-          // ── このアプリの設定 ──
-          // ★ = ユーザー要望「一番右端は閉じるボタン、 二番目に設定ボタン」。
-          //   この画面は本体の**上に重ねて**開くので、 引き出しにも本体の
-          //   ヘッダーにも手が届かない。 分割ペインの中 (compactHost) は
-          //   本物のヘッダーが見えているので出さない (二重になる)。
+                      ]),
+                    ),
+                  ),
+          ),
+          // 設定と閉じるはスクロールする中央の道具列へ入れず、常に右端へ固定。
+          // 分割ペイン内は本物のヘッダーが見えるので設定を重ねない。
           if (!widget.compactHost)
             IconButton(
               tooltip: context.read<MindMapProvider>().t('menu.settings'),
@@ -251150,8 +251332,6 @@ $currentText
                   color: fg.withValues(alpha: 0.75)),
               onPressed: () => openSettingsFromAnywhere?.call(context),
             ),
-          // Builder で × ボタン自身の context を取り、 未保存確認をその
-          // すぐ近くに出す (= ユーザー要望: × の近くに出るように)。
           Builder(
             builder: (btnCtx) => IconButton(
               tooltip: context.read<MindMapProvider>().t('btn.close'),
@@ -251162,10 +251342,6 @@ $currentText
                 }
               },
             ),
-          ),
-                      ]),
-                    ),
-                  ),
           ),
         ],
       ),
