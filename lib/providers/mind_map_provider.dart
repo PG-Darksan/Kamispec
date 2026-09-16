@@ -14409,6 +14409,98 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Não foi possível trocar de área de trabalho',
       'ru': 'Не удалось переключить рабочий стол',
     },
+    // ★ = ユーザー報告「デスクトップの切り替えが動作していない」。
+    //   隣にデスクトップが無ければ何も起きないので、 その事を伝える。
+    'desktop.noRight': {
+      'ja': '右にデスクトップがありません',
+      'en': 'There is no desktop to the right',
+      'zh': '右侧没有桌面',
+      'ko': '오른쪽에 데스크톱이 없습니다',
+      'es': 'No hay escritorio a la derecha',
+      'fr': 'Aucun bureau à droite',
+      'de': 'Rechts gibt es keinen Desktop',
+      'pt': 'Não há área de trabalho à direita',
+      'ru': 'Справа нет рабочего стола',
+    },
+    'desktop.noLeft': {
+      'ja': '左にデスクトップがありません',
+      'en': 'There is no desktop to the left',
+      'zh': '左侧没有桌面',
+      'ko': '왼쪽에 데스크톱이 없습니다',
+      'es': 'No hay escritorio a la izquierda',
+      'fr': 'Aucun bureau à gauche',
+      'de': 'Links gibt es keinen Desktop',
+      'pt': 'Não há área de trabalho à esquerda',
+      'ru': 'Слева нет рабочего стола',
+    },
+    'desktop.add': {
+      'ja': '追加',
+      'en': 'Add one',
+      'zh': '新建',
+      'ko': '추가',
+      'es': 'Añadir',
+      'fr': 'Ajouter',
+      'de': 'Hinzufügen',
+      'pt': 'Adicionar',
+      'ru': 'Добавить',
+    },
+    'desktop.newDesktop': {
+      'ja': '新しいデスクトップ',
+      'en': 'New desktop',
+      'zh': '新桌面',
+      'ko': '새 데스크톱',
+      'es': 'Nuevo escritorio',
+      'fr': 'Nouveau bureau',
+      'de': 'Neuer Desktop',
+      'pt': 'Nova área de trabalho',
+      'ru': 'Новый рабочий стол',
+    },
+    // ★ = ユーザー要望「電源モード、 ディスプレイの消灯時間や
+    //   スクリーンセーバーの時間設定は項目としてまとめて欲しい」。
+    'pcPower.groupTitle': {
+      'ja': '電源と画面',
+      'en': 'Power & screen',
+      'zh': '电源与屏幕',
+      'ko': '전원 및 화면',
+      'es': 'Energía y pantalla',
+      'fr': 'Énergie et écran',
+      'de': 'Energie und Bildschirm',
+      'pt': 'Energia e tela',
+      'ru': 'Питание и экран',
+    },
+    'pcPower.modeTitle': {
+      'ja': '電源モード',
+      'en': 'Power mode',
+      'zh': '电源模式',
+      'ko': '전원 모드',
+      'es': 'Modo de energía',
+      'fr': "Mode d'alimentation",
+      'de': 'Energiemodus',
+      'pt': 'Modo de energia',
+      'ru': 'Режим питания',
+    },
+    'pcPower.modeHint': {
+      'ja': 'タスクバーの電源のつまみと同じ層です。 電源プランは書き換えません。',
+      'en': 'Same layer as the taskbar power slider. Your power plan is left untouched.',
+      'zh': '与任务栏电源滑块同一层，不修改电源计划。',
+      'ko': '작업 표시줄 전원 슬라이더와 같은 계층입니다. 전원 관리 계획은 그대로 둡니다.',
+      'es': 'Misma capa que el control de energía de la barra de tareas. No cambia tu plan de energía.',
+      'fr': "Même couche que le curseur d'alimentation de la barre des tâches. Votre mode de gestion reste intact.",
+      'de': 'Gleiche Ebene wie der Energieregler in der Taskleiste. Ihr Energiesparplan bleibt unverändert.',
+      'pt': 'Mesma camada do controle de energia da barra de tarefas. O plano de energia não é alterado.',
+      'ru': 'Тот же слой, что и ползунок питания на панели задач. Схема питания не меняется.',
+    },
+    'pcPower.desktopTitle': {
+      'ja': '仮想デスクトップ',
+      'en': 'Virtual desktops',
+      'zh': '虚拟桌面',
+      'ko': '가상 데스크톱',
+      'es': 'Escritorios virtuales',
+      'fr': 'Bureaux virtuels',
+      'de': 'Virtuelle Desktops',
+      'pt': 'Áreas de trabalho virtuais',
+      'ru': 'Виртуальные рабочие столы',
+    },
     'desktop.prev': {
       'ja': '左のデスクトップへ',
       'en': 'Previous desktop',
@@ -14419,6 +14511,17 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Vorheriger Desktop',
       'pt': 'Área de trabalho anterior',
       'ru': 'Предыдущий рабочий стол',
+    },
+    'desktop.next': {
+      'ja': '右のデスクトップへ',
+      'en': 'Next desktop',
+      'zh': '下一个桌面',
+      'ko': '다음 데스크톱',
+      'es': 'Escritorio siguiente',
+      'fr': 'Bureau suivant',
+      'de': 'Nächster Desktop',
+      'pt': 'Área de trabalho seguinte',
+      'ru': 'Следующий рабочий стол',
     },
     'hdr.silentCamera': {
       'ja': '無音カメラ',
@@ -98493,11 +98596,17 @@ $cleanQ
   ///
   /// 戻り値は保存したファイルのパス。 失敗したら例外を投げる
   /// (呼び出し側で理由をそのまま画面に出せるように)。
+  /// [placeOnSheet] を true にすると、 フリーノート / 文書のページでは
+  /// **紙いっぱいの背景ではなく、 普通の大きさの絵として手前に置く**
+  /// (= ユーザー要望「フリーノートを開いている状態で AI に〜を描画する指示を
+  /// 出した場合、 そのノート上に描画を行うようにして欲しい」)。
+  /// マップやギャラリーのページでは今までどおり背景になる。
   Future<String> mcpGeneratePageBackground(
     String pageId,
     String prompt, {
     int? opacityPercent,
     String? fit,
+    bool placeOnSheet = false,
   }) async {
     final page = mcpPageById(pageId);
     if (page == null) throw Exception('page not found');
@@ -98512,19 +98621,27 @@ $cleanQ
     //   紙に貼った時に潰れて見える)。
     final toPaper =
         page.pageType == 'paint' || page.pageType == 'document';
+    // 紙の上に置く時は「背景」 ではなく**絵**なので、 薄く描かせない
+    // (= ユーザー要望: ノートの上に描いて欲しい)。
+    final onSheet = placeOnSheet && toPaper;
     // 背景として使う前提を足す。 文字が入ると読みにくくなるので入れさせない。
-    final full = '$p\n\n'
-        '${toPaper ? 'Portrait A4 paper background (taller than wide).' : 'Wide 16:9 desktop wallpaper.'} '
-        'No text, no letters, no watermark, '
-        'no logo. Keep the composition calm and low-contrast so that notes '
-        'and lines drawn on top stay readable.';
+    final full = onSheet
+        ? '$p\n\n'
+            'A single clear subject on a plain background. '
+            'No text, no letters, no watermark, no logo.'
+        : '$p\n\n'
+            '${toPaper ? 'Portrait A4 paper background (taller than wide).' : 'Wide 16:9 desktop wallpaper.'} '
+            'No text, no letters, no watermark, '
+            'no logo. Keep the composition calm and low-contrast so that notes '
+            'and lines drawn on top stay readable.';
     // ★ 設定 (絵を描き起こす / Web から取る) に従う (= ユーザー要望: どこから
     //   来た絵かをはっきりさせる)。 出どころは _lastImageSource に残る。
     final bytes = await makeSlideImage(prompt: full, query: p);
     // 保存先を用意する。
-    final dir = await getApplicationDocumentsDirectory();
-    final bgDir = Directory('${dir.path}/backgrounds');
-    if (!await bgDir.exists()) await bgDir.create(recursive: true);
+    // ★ = ユーザー要望「今開いているフォルダー外に新規ファイルやフォルダーを
+    //   作成しない」。 以前はここで書類フォルダーの下に backgrounds/ を
+    //   勝手に作っていた。
+    final bgDir = await aiNewFileDir('backgrounds');
     final path = '${bgDir.path}/bg_${DateTime.now().millisecondsSinceEpoch}.png';
     await File(path).writeAsBytes(bytes);
     // ★ フリーノートは page.backgroundImagePath を読まない。 紙 (シート) の
@@ -98532,7 +98649,11 @@ $cleanQ
     if (toPaper) {
       // ★ 背景ではなく、 奥のレイヤーの画像要素として置く (= ユーザー要望:
       //   後から選んで動かしたり消したりできるように)。
-      final ok = await mcpInsertPaintBackLayerImage(page.id, path);
+      // ★ 「このノートに〜を描いて」 の時は、 紙いっぱいの奥ではなく
+      //   **普通の大きさで手前**に置く (= ユーザー要望)。
+      final ok = onSheet
+          ? await mcpPlacePaintImage(page.id, path)
+          : await mcpInsertPaintBackLayerImage(page.id, path);
       if (!ok) {
         throw Exception('could not place the picture on the free-note paper');
       }
@@ -99526,6 +99647,119 @@ $cleanQ
 
   /// 絵を「背景」 ではなく、 いちばん奥のレイヤーの画像要素として紙に置く
   /// (= ユーザー要望: 背景という概念は変。 奥に置いた絵なら後から選べる)。
+  /// そのページはフリーノート (または文書) の紙か。
+  ///
+  /// = 絵を「要素」 として置けるページかどうかの判定。
+  bool mcpPageIsPaintSheet(String pageId) {
+    final p = mcpPageById(pageId);
+    return p != null && (p.pageType == 'paint' || p.pageType == 'document');
+  }
+
+  /// フリーノートの紙の**上**に絵を置く。
+  ///
+  /// ★ = ユーザー要望「フリーノートを開いている状態で AI に〜を
+  ///   描画する指示を出した場合、 そのノート上に描画を行うように」。
+  ///   これまでは、 フリーノートに向けて絵を頒むと、 見えない要素
+  ///   (マップ用の添付ノード) が作られるだけで**紙には何も出なかった**。
+  ///
+  /// 紙の幅の 55% ほどの大きさで、 真ん中より少し上に置く。
+  /// 後から選んで動かせる・消せる (普通の画像要素と同じ)。
+  /// [linkUrl] を渡すと、 その絵を押した時に飛ぶ先を持たせる
+  /// (= ユーザー要望: サムネイルを押すと動画へ飛べる)。
+  /// [slot] が 0 以上の時は、 左上から順にずらして置く
+  /// (まとめて送った時に重ならないように)。
+  Future<bool> mcpPlacePaintImage(String pageId, String imagePath,
+      {String? linkUrl, int slot = -1}) async {
+    final page = mcpPageById(pageId);
+    if (page == null) return false;
+    if (page.pageType != 'paint' && page.pageType != 'document') return false;
+    final ip = imagePath.trim();
+    if (ip.isEmpty || !File(ip).existsSync()) return false;
+    try {
+      final prefs = await _prefsWithRetry();
+      final key = 'paint_${page.id}';
+      dynamic decoded;
+      final raw = prefs.getString(key);
+      if (raw != null && raw.trim().isNotEmpty) {
+        try {
+          decoded = jsonDecode(raw);
+        } catch (_) {}
+      }
+      if (decoded != null && _mcpPaintSheetOf(decoded).sheet.isEmpty) {
+        return false;
+      }
+      final sheet = _mcpPaintSheetOf(decoded);
+      decoded = sheet.doc;
+      final s = sheet.sheet;
+      final sz = (s['sz'] ?? 'a4p').toString();
+      double pw, ph;
+      if (sz == 'custom') {
+        pw = (s['cw'] as num?)?.toDouble() ?? 1000;
+        ph = (s['ch'] as num?)?.toDouble() ?? 1000;
+      } else {
+        final d = _kMcpPaperSizes[sz] ?? _kMcpPaperSizes.values.first;
+        pw = d.$1;
+        ph = d.$2;
+      }
+      // 絵の形に合わせて大きさを決める (読めなければ正方形扱い)。
+      final aspect = await _imageAspectOfFile(ip) ?? 1.0;
+      var w = pw * 0.55;
+      var h = w / (aspect <= 0 ? 1.0 : aspect);
+      // 紙からはみ出さない。
+      final maxH = ph * 0.62;
+      if (h > maxH) {
+        h = maxH;
+        w = h * aspect;
+      }
+      double left, top;
+      if (slot >= 0) {
+        // まとめて送られた時は、 左上から順に、 少しずつずらして置く。
+        left = (pw * 0.08 + slot * 26).clamp(0.0, (pw - w).clamp(0.0, pw));
+        top = (ph * 0.08 + slot * 26).clamp(0.0, (ph - h).clamp(0.0, ph));
+      } else {
+        left = ((pw - w) / 2).clamp(0.0, pw);
+        top = ((ph - h) / 2 * 0.8).clamp(0.0, ph);
+      }
+      // 一番手前へ置く (描いてある線の下に隠れないように)。
+      var maxZ = 0;
+      for (final k in const ['s', 't', 'sh', 'im']) {
+        final l = s[k];
+        if (l is List) {
+          for (final e in l) {
+            if (e is Map) {
+              final z = (e['z'] as num?)?.toInt() ?? 0;
+              if (z > maxZ) maxZ = z;
+            }
+          }
+        }
+      }
+      final im = (s['im'] is List) ? (s['im'] as List) : <dynamic>[];
+      im.add({
+        'id': 'p${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}ai',
+        'p': ip,
+        'l': left,
+        't': top,
+        'w': w,
+        'h': h,
+        'z': maxZ + 1,
+        if (linkUrl != null && linkUrl.trim().isNotEmpty) 'u': linkUrl.trim(),
+      });
+      s['im'] = im;
+      await prefs.setString(key, jsonEncode(decoded));
+      _paintReloadTick++;
+      _mcpContentTick++;
+      _bumpPaintBodyTick(page.id);
+      markLiveBodyDirty(page.id);
+      _touchPageBody(page.id);
+      notifyListeners();
+      _requestMcpFocus(page.id);
+      return true;
+    } catch (e) {
+      debugPrint('mcpPlacePaintImage failed: $e');
+      return false;
+    }
+  }
+
   Future<bool> mcpInsertPaintBackLayerImage(
       String pageId, String imagePath) async {
     final page = mcpPageById(pageId);
@@ -100756,6 +100990,43 @@ $cleanQ
       Future<Map<String, dynamic>?> Function(Map<String, dynamic> spec)
           builder) {
     _mcpFileBuilder = builder;
+  }
+
+  // ── AI が新しく作る物の置き場 ─────────────────────────
+  //
+  // ★ = ユーザー要望「作成するファイルのパスを明示しない場合等を除き、
+  //   今開いているフォルダー外に新規ファイルやフォルダーを作成しないで欲しい」。
+  //   文書ファイル (create_document_file) は既に開いているフォルダーへ
+  //   入っていたが、 **絵** (背景の生成・add_image_node の base64) だけが
+  //   書類フォルダーの backgrounds / mcp_images を勝手に作ってそこへ
+  //   置いていた。 置き場の決め方は画面側 (_newFileDir) が知っているので、
+  //   その係を預かってここから呼ぶ。
+
+  Future<Directory> Function(String fallbackName)? _aiNewFileDir;
+
+  void registerAiNewFileDir(
+      Future<Directory> Function(String fallbackName) resolver) {
+    _aiNewFileDir = resolver;
+  }
+
+  /// AI が新しく作る物の置き場。
+  ///
+  /// 一覧で開いているフォルダーの連動先 → アプリの保存先 の順。
+  /// どちらも無い時だけ、 今までどおり書類フォルダーの
+  /// [fallbackName] の中へ逃がす (それ以外に置ける所が無いため)。
+  Future<Directory> aiNewFileDir(String fallbackName) async {
+    final f = _aiNewFileDir;
+    if (f != null) {
+      try {
+        return await f(fallbackName);
+      } catch (_) {
+        // 下の既定の置き場へ落とす。
+      }
+    }
+    final d = await getApplicationDocumentsDirectory();
+    final dir = Directory('${d.path}${Platform.pathSeparator}$fallbackName');
+    if (!await dir.exists()) await dir.create(recursive: true);
+    return dir;
   }
 
   /// 文書ファイルを作って保存し、 {path, fileName, replaced, nodeId} を返す。
@@ -111336,12 +111607,216 @@ $example
     notifyListeners();
   }
 
+  /// YouTube の絵 (サムネイル) を保存してそのパスを返す。
+  static String? _youtubeIdOf(String url) {
+    for (final p in [
+      RegExp(r'youtu\.be/([a-zA-Z0-9_-]{11})'),
+      RegExp(r'youtube\.com/watch\?.*v=([a-zA-Z0-9_-]{11})'),
+      RegExp(r'youtube\.com/embed/([a-zA-Z0-9_-]{11})'),
+      RegExp(r'youtube-nocookie\.com/embed/([a-zA-Z0-9_-]{11})'),
+      RegExp(r'youtube\.com/shorts/([a-zA-Z0-9_-]{11})'),
+    ]) {
+      final m = p.firstMatch(url);
+      if (m != null) return m.group(1);
+    }
+    return null;
+  }
+
+  Future<String?> _saveYoutubeThumbFile(String videoId) async {
+    try {
+      final dir = await aiNewFileDir('attachments');
+      final f = File('${dir.path}${Platform.pathSeparator}yt_$videoId.jpg');
+      if (await f.exists() && await f.length() > 1000) return f.path;
+      for (final name in const ['maxresdefault.jpg', 'hqdefault.jpg']) {
+        try {
+          final r = await http
+              .get(Uri.parse('https://img.youtube.com/vi/$videoId/$name'))
+              .timeout(const Duration(seconds: 12));
+          if (r.statusCode == 200 && r.bodyBytes.length > 1000) {
+            await f.writeAsBytes(r.bodyBytes, flush: true);
+            return f.path;
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// サムネイルに ▶ の印を焼き込んだ絵を作る。
+  ///
+  /// ★ 絵だけを貼ると、 見た目はただの写真なので「押せる」 と分からない
+  ///   (= ユーザー要望: 押すと動画へ飛べる札)。 印を絵自体に入れておけば、
+  ///   紙の上でも、 書き出した PDF の中でも同じように見える。
+  Future<String?> _withPlayBadgeFile(String srcPath) async {
+    try {
+      final bytes = await File(srcPath).readAsBytes();
+      final completer = Completer<ui.Image>();
+      ui.decodeImageFromList(bytes, completer.complete);
+      final img = await completer.future.timeout(const Duration(seconds: 10));
+      if (img.width <= 0 || img.height <= 0) return null;
+      final w = img.width.toDouble();
+      final h = img.height.toDouble();
+      final rec = ui.PictureRecorder();
+      final c = Canvas(rec, Rect.fromLTWH(0, 0, w, h));
+      c.drawImage(img, Offset.zero, Paint());
+      final r = math.min(w, h) * 0.16;
+      final cx = w / 2;
+      final cy = h / 2;
+      c.drawCircle(Offset(cx, cy), r, Paint()..color = const Color(0xCCE53935));
+      final tri = Path()
+        ..moveTo(cx - r * 0.30, cy - r * 0.48)
+        ..lineTo(cx - r * 0.30, cy + r * 0.48)
+        ..lineTo(cx + r * 0.52, cy)
+        ..close();
+      c.drawPath(tri, Paint()..color = Colors.white);
+      final out = await rec.endRecording().toImage(img.width, img.height);
+      final data = await out.toByteData(format: ui.ImageByteFormat.png);
+      if (data == null) return null;
+      final dir = await aiNewFileDir('attachments');
+      final f = File('${dir.path}${Platform.pathSeparator}'
+          'play_${DateTime.now().microsecondsSinceEpoch}.png');
+      await f.writeAsBytes(data.buffer.asUint8List(), flush: true);
+      return f.path;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 絵が無い時の代わりの札を描き起こす (黒い札 + ▶ + 見出し)。
+  /// [play] が false なら ▶ を描かない (= 飛ぶ先の無い要素の札)。
+  Future<String?> _makeVideoCardImage(String title, {bool play = true}) async {
+    try {
+      const w = 480.0, h = 270.0;
+      final rec = ui.PictureRecorder();
+      final c = Canvas(rec, const Rect.fromLTWH(0, 0, w, h));
+      final bg = Paint()..color = const Color(0xFF1B1B2A);
+      c.drawRRect(
+          RRect.fromRectAndRadius(
+              const Rect.fromLTWH(0, 0, w, h), const Radius.circular(14)),
+          bg);
+      // ▶ の丸。
+      if (play) {
+        final circle = Paint()..color = const Color(0xFFE53935);
+        c.drawCircle(const Offset(w / 2, h / 2 - 12), 34, circle);
+        final tri = Path()
+          ..moveTo(w / 2 - 11, h / 2 - 30)
+          ..lineTo(w / 2 - 11, h / 2 + 6)
+          ..lineTo(w / 2 + 19, h / 2 - 12)
+          ..close();
+        c.drawPath(tri, Paint()..color = Colors.white);
+      }
+      final t = title.trim();
+      if (t.isNotEmpty) {
+        final tp = TextPainter(
+          text: TextSpan(
+              text: t,
+              style: const TextStyle(color: Colors.white, fontSize: 20)),
+          textDirection: TextDirection.ltr,
+          maxLines: 2,
+          ellipsis: '\u2026',
+        )..layout(maxWidth: w - 40);
+        tp.paint(c, Offset((w - tp.width) / 2, h - 66));
+      }
+      final img = await rec.endRecording().toImage(w.toInt(), h.toInt());
+      final data = await img.toByteData(format: ui.ImageByteFormat.png);
+      if (data == null) return null;
+      final dir = await aiNewFileDir('attachments');
+      final f = File('${dir.path}${Platform.pathSeparator}'
+          'card_${DateTime.now().millisecondsSinceEpoch}.png');
+      await f.writeAsBytes(data.buffer.asUint8List(), flush: true);
+      return f.path;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 要素をフリーノート (紙) のページへ送る。
+  ///
+  /// ★ = ユーザー報告「フリーノートに動画を転送できるものの、
+  ///   フリーノート側で何も表示されない」。 紙のページは要素 (ノード) を
+  ///   描かないので、 運び込んでも見えなかった。 サムネイルの札に変えて
+  ///   紙に貼り、 押すとその動画へ飛べるようにする。
+  Future<int> _moveNodesToPaintSheet(
+      Set<String> ids, MindMapPage source, MindMapPage target) async {
+    var placed = 0;
+    var slot = 0;
+    final done = <String>{};
+    for (final id in ids) {
+      final node = source.nodes[id];
+      if (node == null) continue;
+      final yt = (node.youtubeUrl ?? '').trim();
+      final att = (node.attachmentPath ?? '').trim();
+      final link = (node.linkUrl ?? '').trim();
+      String? thumb;
+      String? url;
+      if (yt.isNotEmpty) {
+        url = yt;
+        final t = (node.videoThumbnailPath ?? '').trim();
+        if (t.isNotEmpty && File(t).existsSync()) {
+          thumb = t;
+        } else {
+          final vid = _youtubeIdOf(yt);
+          if (vid != null) thumb = await _saveYoutubeThumbFile(vid);
+          // ネット上でない動画 (手元の mp4 など) は代わりの札。
+        }
+      } else if (att.isNotEmpty) {
+        url = att;
+        final lower = att.toLowerCase();
+        final isImage = lower.endsWith('.png') ||
+            lower.endsWith('.jpg') ||
+            lower.endsWith('.jpeg') ||
+            lower.endsWith('.gif') ||
+            lower.endsWith('.webp') ||
+            lower.endsWith('.bmp');
+        if (isImage && File(att).existsSync()) {
+          thumb = att;
+          url = null; // 絵はそのまま貼る (飛ぶ先は無い)
+        } else {
+          final t = (node.videoThumbnailPath ?? '').trim();
+          if (t.isNotEmpty && File(t).existsSync()) thumb = t;
+        }
+      } else if (link.isNotEmpty) {
+        url = link;
+      }
+      // 本物のサムネイルが取れた時は、 押せると分かるよう ▶ を焼き込む。
+      if (thumb != null && url != null) {
+        thumb = await _withPlayBadgeFile(thumb) ?? thumb;
+      }
+      thumb ??= await _makeVideoCardImage(node.title, play: url != null);
+      if (thumb == null) continue;
+      final ok =
+          await mcpPlacePaintImage(target.id, thumb, linkUrl: url, slot: slot);
+      if (!ok) continue;
+      placed++;
+      slot++;
+      done.add(id);
+    }
+    if (done.isEmpty) return 0;
+    // 送れた分だけ元のページから消す (= 転送は移動)。
+    for (final id in done) {
+      source.nodes.remove(id);
+      source.connections
+          .removeWhere((c) => c.fromId == id || c.toId == id);
+    }
+    _saveToStorage();
+    notifyListeners();
+    return placed;
+  }
+
   void moveNodesToPage(Set<String> ids, int targetPageIndex) {
     if (ids.isEmpty) return;
     if (targetPageIndex < 0 || targetPageIndex >= _pages.length) return;
     if (targetPageIndex == currentPageIndex) return; // 同一ページへの転送は無意味
     final source = currentPage;
     final target = _pages[targetPageIndex];
+    // ★ = ユーザー報告「フリーノートに動画を転送できるものの、
+    //   フリーノート側で何も表示されない」。 紙のページは要素を描かないので、
+    //   要素をそのまま運ぶのではなく、 紙の上の物 (サムネイルの札) に変える。
+    if (target.pageType == 'paint' || target.pageType == 'document') {
+      if (!ids.any((id) => source.nodes.containsKey(id))) return;
+      unawaited(_moveNodesToPaintSheet({...ids}, source, target));
+      return;
+    }
     // ★ 何も動かない時は控えを取らない (= 点検で判明: 消えた要素の id を
     //   渡すと、 中身の変わらない控えが残り、 次の Ctrl+Z がそれに食われて
     //   「戻らない」 うえ、 両ページの redo まで消えていた)。

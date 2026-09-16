@@ -47,6 +47,10 @@ typedef _GetOverlayDart = int Function(ffi.Pointer<_Guid>);
 typedef _SendInputNative = ffi.Uint32 Function(
     ffi.Uint32, ffi.Pointer<ffi.Uint8>, ffi.Int32);
 typedef _SendInputDart = int Function(int, ffi.Pointer<ffi.Uint8>, int);
+typedef _MapVkNative = ffi.Uint32 Function(ffi.Uint32, ffi.Uint32);
+typedef _MapVkDart = int Function(int, int);
+typedef _HwndNative = ffi.IntPtr Function();
+typedef _HwndDart = int Function();
 
 /// GUID (16 バイト)。
 final class _Guid extends ffi.Struct {
@@ -58,6 +62,21 @@ final class _Guid extends ffi.Struct {
   external int d3;
   @ffi.Array<ffi.Uint8>(8)
   external ffi.Array<ffi.Uint8> d4;
+}
+
+/// デスクトップの切り替えを頼んだ結果。
+enum DesktopSwitchResult {
+  /// 切り替わった。
+  ok,
+
+  /// 隣にデスクトップが無かった (= 何も起きない)。
+  noNeighbor,
+
+  /// キーを送れなかった。
+  failed,
+
+  /// Windows 以外。
+  unsupported,
 }
 
 class OsQuickToggles {
@@ -189,13 +208,59 @@ class OsQuickToggles {
   static _SendInputDart get _sendInput => _sendInputFn ??= _user32
       .lookupFunction<_SendInputNative, _SendInputDart>('SendInput');
 
+  /// この仮想キーは「拡張キー (E0 付き)」 か。
+  ///
+  /// ★ ここが b407 まで抜けていて、 デスクトップの切り替えが効かない
+  ///   原因だった。 矢印キーの走査コード (MapVirtualKey) は **テンキーの
+  ///   4 / 6 と同じ 0x4B / 0x4D** で、 本物の矢印キーはそこに E0 が付く。
+  ///   拡張の印を立てずに送ると Windows 側は「テンキーの 4」 として扱うので、
+  ///   シェルの Ctrl+Win+←/→ の組み合わせに当たらず、 SendInput は
+  ///   成功を返すのに何も起きない。 Win キー自体も拡張キー。
+  static bool _isExtended(int vk) =>
+      vk == _kVkLeft ||
+      vk == _kVkRight ||
+      vk == _kVkLWin ||
+      vk == 0x26 || // ↑
+      vk == 0x28; // ↓
+
+  static _MapVkDart? _mapVkFn;
+  static _MapVkDart get _mapVk => _mapVkFn ??=
+      _user32.lookupFunction<_MapVkNative, _MapVkDart>('MapVirtualKeyW');
+
+  /// 走査コード (MAPVK_VK_TO_VSC = 0)。 取れなければ 0 のまま
+  /// (Windows が仮想キーから補う)。
+  static int _scanOf(int vk) {
+    try {
+      return _mapVk(vk, 0);
+    } catch (_) {
+      return 0;
+    }
+  }
+
   static void _writeKey(ByteData d, int base, int vk, {required bool up}) {
+    const kExtended = 0x0001;
+    final ext = _isExtended(vk);
+    var flags = up ? _kKeyUp : 0;
+    if (ext) flags |= kExtended;
     d.setUint32(base + 0, _kInputKeyboard, Endian.little);
     d.setUint16(base + 8, vk, Endian.little);
-    d.setUint16(base + 10, 0, Endian.little);
-    d.setUint32(base + 12, up ? _kKeyUp : 0, Endian.little);
+    d.setUint16(base + 10, _scanOf(vk), Endian.little);
+    d.setUint32(base + 12, flags, Endian.little);
     d.setUint32(base + 16, 0, Endian.little);
     d.setUint64(base + 24, 0, Endian.little);
+  }
+
+  static _HwndDart? _foregroundFn;
+  static _HwndDart get _foreground => _foregroundFn ??=
+      _user32.lookupFunction<_HwndNative, _HwndDart>('GetForegroundWindow');
+
+  /// 今いちばん手前の窓。 取れなければ 0。
+  static int _foregroundWindow() {
+    try {
+      return _foreground();
+    } catch (_) {
+      return 0;
+    }
   }
 
   /// Ctrl+Win+[key] を送る。
@@ -224,6 +289,29 @@ class OsQuickToggles {
     } finally {
       if (buf != null) pkgffi.calloc.free(buf);
     }
+  }
+
+  /// 仮想デスクトップを切り替えて、 **本当に動いたか**まで確かめる。
+  ///
+  /// ★ = ユーザー報告「デスクトップの切り替えが動作していない」。
+  ///   SendInput は「送れたか」 しか返さないので、 **隣にデスクトップが
+  ///   無い**時も成功を返す (何も起きないのに知らせようが無かった)。
+  ///   切り替わると自分の窓は別のデスクトップに取り残されるので、
+  ///   「いちばん手前の窓が自分でなくなったか」 で動いたかどうかが分かる。
+  static Future<DesktopSwitchResult> switchDesktop(
+      {required bool forward}) async {
+    if (!isSupported) return DesktopSwitchResult.unsupported;
+    final before = _foregroundWindow();
+    final sent = forward ? nextDesktop() : prevDesktop();
+    if (!sent) return DesktopSwitchResult.failed;
+    // 切り替えの見た目が終わるまで少し待つ (だいたい 300ms ほど)。
+    for (var i = 0; i < 8; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 160));
+      final now = _foregroundWindow();
+      if (now != before) return DesktopSwitchResult.ok;
+    }
+    // 手前の窓が変わらない = 隣にデスクトップが無かった。
+    return DesktopSwitchResult.noNeighbor;
   }
 
   /// 右のデスクトップへ (Ctrl+Win+→)。

@@ -23,6 +23,9 @@ import os
 import sys
 import zipfile
 
+# ★ 利用者のアプリが走っていて exe を掋んでいる時は、 別の binary dir へ
+#   組むことがある ([[windows-build-gotchas]])。 その時は 3 つ目の引数で
+#   成果物の場所を渡す (定数を書き換えると戻し忘れて前の回の zip を潰す)。
 BUILD = os.path.join('build', 'windows', 'x64', 'runner', 'Release')
 ROOT = 'HisatorNotebook'
 
@@ -40,6 +43,9 @@ def main():
             '使い方: python tool/pack_windows_zip.py <出し先フォルダ> <ビルド番号>')
     out_dir = sys.argv[1]
     build_no = sys.argv[2]
+    global BUILD
+    if len(sys.argv) > 3:
+        BUILD = sys.argv[3]
     out_zip = os.path.join(out_dir, 'HisatorNotebook-%s-windows.zip' % build_no)
 
     if not os.path.isdir(BUILD):

@@ -734,6 +734,13 @@ class McpServer {
         '(free, via set_page_background) would do, then generate. '
         'Optionally set opacityPercent (0-100, default 70) and '
         'fit (cover/contain/tile, default cover). '
+        'SET "placeOnSheet": true WHEN THE USER ASKS YOU TO DRAW SOMETHING '
+        'ON AN OPEN FREE NOTE ("このノートに猫を描いて" / "draw a cat here"). '
+        'The picture is then placed on the sheet at a normal size IN FRONT '
+        'of what is already drawn, instead of covering the whole paper from '
+        'behind - which is what someone asking for a drawing expects. '
+        'Leave it out for an actual BACKGROUND. It is ignored on mind map, '
+        'gallery and other page types. '
         'WHICH PAGE: unless the user named another one, this means the page '
         'they are looking at RIGHT NOW - the one list_pages marks '
         'isCurrent:true - NOT a page you happened to create earlier in this '
@@ -755,6 +762,8 @@ class McpServer {
             'type': 'string',
             'enum': ['cover', 'contain', 'tile']
           },
+          // ★ フリーノートの紙の**上**に普通の大きさで置く。
+          'placeOnSheet': {'type': 'boolean'},
         },
         // pageId は省ける (= 省いたら「今開いているページ」)。
         ['prompt']),
@@ -2474,6 +2483,9 @@ class McpServer {
               a['prompt'] as String? ?? '',
               opacityPercent: genOpacity,
               fit: a['fit'] as String?,
+              // ★ = ユーザー要望「フリーノートを開いている状態で AI に〜を
+              //   描画する指示を出した場合、 そのノート上に描画を行う」。
+              placeOnSheet: a['placeOnSheet'] == true,
             );
             final genPage = _provider.mcpPageById(genPageId);
             // 絵の出どころ (= ユーザー要望: チャットに出典を出す)。
@@ -2739,9 +2751,10 @@ class McpServer {
           // base64 をアプリ書類フォルダへ保存してから添付ノード化する。
           try {
             final bytes = base64Decode(b64);
-            final docs = await getApplicationDocumentsDirectory();
-            final dir = Directory('${docs.path}/mcp_images');
-            await dir.create(recursive: true);
+            // ★ = ユーザー要望「今開いているフォルダー外に新規ファイルや
+            //   フォルダーを作成しない」。 以前は書類フォルダーの下に
+            //   mcp_images/ を勝手に作っていた。
+            final dir = await _provider.aiNewFileDir('mcp_images');
             var fname = (a['fileName'] as String? ?? 'image.png')
                 .replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
             if (!fname.contains('.')) fname = '$fname.png';
@@ -2764,8 +2777,25 @@ class McpServer {
           return _err('imagePath rejected: $imgWhy: $path '
               '- no node was created.');
         }
+        // ★ = ユーザー報告「フリーノートに向けて絵を頼んでも、 ノートには
+        //   何も出ない」。 フリーノート / 文書のページは要素 (ノード) を
+        //   描かないので、 これまでは**見えないタイル**が出来るだけだった。
+        //   紙の上に置く (= 選んで動かせる普通の画像要素)。
+        final imgPageId = _pageIdOrCurrent(pageId);
+        if (_provider.mcpPageIsPaintSheet(imgPageId)) {
+          final placed = await _provider.mcpPlacePaintImage(imgPageId, path);
+          return placed
+              ? _ok({
+                  'pageId': imgPageId,
+                  'placedOn': 'free-note sheet',
+                  'note': 'The picture was placed ON THE NOTE itself (it can '
+                      'be moved, resized or deleted with the select tool). '
+                      'Free-note pages hold no node tiles.',
+                })
+              : _err('could not place the picture on that free note');
+        }
         final id = _provider.mcpAddImageNode(
-          pageId,
+          imgPageId,
           filePath: path,
           title: a['title'] as String?,
           x: numOf('x'),

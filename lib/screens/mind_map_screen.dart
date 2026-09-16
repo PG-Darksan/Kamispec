@@ -8335,8 +8335,15 @@ class _MindMapScreenState extends State<MindMapScreen>
   }
 
   /// デフォルトの拡大率
-  /// PC: 100% = scale 0.75 / モバイル: 100% = scale 0.50
-  static double get _baseScale => _isDesktop ? 0.9375 : 0.50;
+  /// PC: 100% = scale 0.84375 / モバイル: 100% = scale 0.50
+  ///
+  /// ★ = ユーザー要望「今の拡大率 90% が、 画面分割した際にギャラリー
+  ///   ページの掛みと 5 ブロック全てが入って見栓えが良いため、 これを
+  ///   100% (デフォルト値) にして欲しい」。
+  ///   目盛りを振り直すだけ (0.9375 × 0.9 = 0.84375) なので、
+  ///   見た目はこれまでの 90% と同じ。 今まで 100% と出ていた大きさは
+  ///   111% に当たる。 携帯は分割を使わないので変えない。
+  static double get _baseScale => _isDesktop ? 0.84375 : 0.50;
   static double get _kDefaultScale => _baseScale; // 100%
 
   /// %表示値 → 実際のスケール値
@@ -36636,7 +36643,15 @@ class _MindMapScreenState extends State<MindMapScreen>
   }
 
   /// 仮想デスクトップを切り替える (= ユーザー要望)。
-  void _switchDesktop(MindMapProvider provider, {required bool forward}) {
+  ///
+  /// ★ = ユーザー報告「デスクトップの切り替えが動作していない」。
+  ///   原因は 2 つあった。 (1) 矢印キーに拡張キーの印を立てずに送っていたので
+  ///   Windows が**テンキーの 4 / 6** として受け取り、 シェルの組み合わせに
+  ///   当たらなかった (os_quick_toggles 側で修正)。 (2) そもそも隣に
+  ///   デスクトップが無い時も「送れた」 = 成功として黙っていた。
+  ///   ここでは動いたかどうかまで見て、 動かなかった理由を伝える。
+  Future<void> _switchDesktop(MindMapProvider provider,
+      {required bool forward}) async {
     if (!OsQuickToggles.isSupported) {
       _appSnack(
           context,
@@ -36645,15 +36660,30 @@ class _MindMapScreenState extends State<MindMapScreen>
               content: Text(provider.t('power.windowsOnly'))));
       return;
     }
-    final ok =
-        forward ? OsQuickToggles.nextDesktop() : OsQuickToggles.prevDesktop();
-    if (!ok) {
-      _appSnack(
-          context,
-          SnackBar(
-              backgroundColor: const Color(0xFFE57373),
-              content: Text(provider.t('desktop.failed'))));
-    }
+    final r = await OsQuickToggles.switchDesktop(forward: forward);
+    if (!mounted || r == DesktopSwitchResult.ok) return;
+    // 切り替わった時は、 もう別のデスクトップに居るので何も出さない
+    // (こちらの窓は見えていない)。
+    final msg = r == DesktopSwitchResult.noNeighbor
+        ? provider.t(forward ? 'desktop.noRight' : 'desktop.noLeft')
+        : provider.t('desktop.failed');
+    _appSnack(
+        context,
+        SnackBar(
+            backgroundColor: const Color(0xFFE57373),
+            duration: const Duration(seconds: 4),
+            content: Text(msg),
+            action: r == DesktopSwitchResult.noNeighbor
+                ? SnackBarAction(
+                    label: provider.t('desktop.add'),
+                    textColor: Colors.white,
+                    onPressed: () {
+                      // Ctrl+Win+D = 新しいデスクトップを作る。 作ると
+                      // そちらへ移るので、 これ以上は何も出さない。
+                      OsQuickToggles.newDesktop();
+                    },
+                  )
+                : null));
   }
 
   void _showSubscriptionManagerDialog() {
@@ -48246,7 +48276,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         break;
       case 'switchDesktop':
         // 右隣のデスクトップへ (= ユーザー要望)。
-        _switchDesktop(provider, forward: true);
+        unawaited(_switchDesktop(provider, forward: true));
         break;
       case 'silentCamera':
         // 無音カメラ (= ユーザー要望)。 撮影して写真をマップに追加。
@@ -65535,6 +65565,12 @@ class _MindMapScreenState extends State<MindMapScreen>
       (id) => _executeHeaderCommand(id, provider),
     );
     provider.registerMcpFileBuilder(_buildMcpFile);
+    // ★ = ユーザー要望「作成するファイルのパスを明示しない場合等を除き、
+    //   今開いているフォルダー外に新規ファイルやフォルダーを作成しない」。
+    //   AI が作る絵 (背景・base64 の画像) の置き場も、 文書ファイルと同じ
+    //   「一覧で開いているフォルダー」 にそろえる。
+    provider.registerAiNewFileDir(
+        (name) => _newFileDir(provider, fallbackName: name));
     // 画面分割を AI から組めるようにする (= ユーザー報告: 「4 画面分割に
     //   して」 と頼んだのに「2 画面分割しかできない」 と断られた)。
     provider.registerMcpSplitView(_setSplitViewForMcp);
@@ -72174,8 +72210,15 @@ class _MindMapScreenState extends State<MindMapScreen>
       //   (= ユーザー報告: 開いているページから Ctrl で 2 つ目を選ぶと、
       //   開いていた方が選ばれないまま始まる)。 一覧で押していなくても、
       //   利用者から見れば「今選んでいるページ」 はそれなので。
-      seed ??= provider.currentPage.id;
-      if (seed != pageId) _drawerSelectedPageIds.add(seed);
+      //
+      // ★ ただし **Shift の時はしない** (= ユーザー要望「shift キーを
+      //   押しながら複数ページ選択した際に、 今開いているページが自動的に
+      //   選択された状態で扱われてしまうのを防いで欲しい」)。
+      //   Ctrl は「押した物を 1 つずつ足す」 なので開いているページを
+      //   起点にするのは理にかなうが、 Shift は「ここからここまで」 なので、
+      //   一覧で押した覚えの無いページを範囲に入れてはいけない。
+      if (!hasShift) seed ??= provider.currentPage.id;
+      if (seed != null && seed != pageId) _drawerSelectedPageIds.add(seed);
     }
     // ── Shift クリック: 範囲選択 ──
     // 直前のアンカー位置から今回タップしたタイルまでの範囲を全て選択する。
@@ -78893,6 +78936,28 @@ class _MindMapScreenState extends State<MindMapScreen>
         ]),
       );
 
+  /// 見出しの中の小見出し (= ユーザー要望: 電源まわりを
+  /// ひとつにまとめる)。 見出しより一段弱く、 横棒は引かない。
+  Widget _pcSubLabel(String text) => Padding(
+        padding: const EdgeInsets.fromLTRB(6, 12, 4, 4),
+        child: Row(children: [
+          Container(
+            width: 3,
+            height: 12,
+            decoration: BoxDecoration(
+              color: Colors.white24,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(width: 7),
+          Text(text,
+              style: const TextStyle(
+                  color: Colors.white60,
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w700)),
+        ]),
+      );
+
   /// 「マウス設定」 タブの中身 (= ユーザー要望: PC設定を 2 タブに分ける)。
   ///
   /// マウスそのものの動き (速さ・加速・ホイール・ダブルクリック)、
@@ -79090,14 +79155,18 @@ class _MindMapScreenState extends State<MindMapScreen>
         _pcSectionLabel(provider.t('osTheme.title')),
         _OsThemeInline(provider: provider),
 
-        // ── スクリーンセーバー (= ユーザー要望) ──
-        _pcSectionLabel(provider.t('saver.title')),
-        _ScreenSaverInline(provider: provider),
-
-        // ── スリープと電源 (= ユーザー要望: バッテリー駆動 / 充電中で
-        //    別々に決められるように) ──
-        _pcSectionLabel(provider.t('power.title')),
+        // ── 電源と画面 ──
+        // ★ = ユーザー要望「電源モード、 ディスプレイの消灯時間や
+        //   スクリーンセーバーの時間設定は項目としてまとめて欲しい」。
+        //   これまでは電源モードとデスクトップ切替がヘッダーのボタンにしか
+        //   無く、 消灯時間とセーバーは別々の見出しに分かれていた。
+        //   同じ「電源と画面」 の下に 4 つ並べる。
+        _pcSectionLabel(provider.t('pcPower.groupTitle')),
+        _PowerModeInline(provider: provider),
+        _pcSubLabel(provider.t('power.title')),
         _PowerTimeoutInline(provider: provider),
+        _pcSubLabel(provider.t('saver.title')),
+        _ScreenSaverInline(provider: provider),
 
         // ── 音声の出力先 ──
         _pcSectionLabel(provider.t('audioOut.title')),
@@ -108521,6 +108590,182 @@ class _ScreenSaverInlineState extends State<_ScreenSaverInline> {
 
 // ── スリープと電源 ─────────────────────────────────────────────────────
 
+// ── 電源モード と 仮想デスクトップ ───────────────────────
+
+/// ★ = ユーザー要望「電源モード、 ディスプレイの消灯時間や
+/// スクリーンセーバーの時間設定は項目としてまとめて欲しい」。
+///
+/// これまで 電源モード / デスクトップ切替 は**ヘッダーのボタンだけ**で、
+/// 設定の中からは触れなかった。 消灯時間 / セーバーと同じ見出しの下に置く。
+class _PowerModeInline extends StatefulWidget {
+  final MindMapProvider provider;
+  const _PowerModeInline({required this.provider});
+
+  @override
+  State<_PowerModeInline> createState() => _PowerModeInlineState();
+}
+
+class _PowerModeInlineState extends State<_PowerModeInline> {
+  PowerMode? _mode;
+
+  /// 直前の結果を一言で出す (ここはダイアログの中なので、
+  /// SnackBar だと裏に隠れて気付かれない)。
+  String? _note;
+  bool _busy = false;
+
+  MindMapProvider get p => widget.provider;
+
+  @override
+  void initState() {
+    super.initState();
+    _mode = OsQuickToggles.currentPowerMode();
+  }
+
+  String _modeLabel(PowerMode m) => p.t(switch (m) {
+        PowerMode.saver => 'power.saver',
+        PowerMode.balanced => 'power.balanced',
+        PowerMode.performance => 'power.performance',
+      });
+
+  IconData _modeIcon(PowerMode m) => switch (m) {
+        PowerMode.saver => Icons.battery_saver_rounded,
+        PowerMode.balanced => Icons.balance_rounded,
+        PowerMode.performance => Icons.rocket_launch_rounded,
+      };
+
+  void _apply(PowerMode m) {
+    final ok = OsQuickToggles.setPowerMode(m);
+    setState(() {
+      _mode = ok ? m : OsQuickToggles.currentPowerMode();
+      _note = ok ? null : p.t('power.failed');
+    });
+  }
+
+  Future<void> _go({required bool forward}) async {
+    if (_busy) return;
+    setState(() {
+      _busy = true;
+      _note = null;
+    });
+    final r = await OsQuickToggles.switchDesktop(forward: forward);
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      // 切り替わった時は別のデスクトップに居るので、 何も出さない。
+      _note = switch (r) {
+        DesktopSwitchResult.ok => null,
+        DesktopSwitchResult.noNeighbor =>
+          p.t(forward ? 'desktop.noRight' : 'desktop.noLeft'),
+        _ => p.t('desktop.failed'),
+      };
+    });
+  }
+
+  Widget _chip(
+      {required IconData icon,
+      required String label,
+      required bool on,
+      required VoidCallback? onTap,
+      Color accent = const Color(0xFF7CD992)}) {
+    // ★ M3 の Chip は背景色を無視して白飛びするので自前で描く
+    //   ([[m3-chip-whiteout]])。
+    return InkWell(
+      borderRadius: BorderRadius.circular(9),
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+        decoration: BoxDecoration(
+          color: on ? accent.withValues(alpha: 0.20) : Colors.white10,
+          borderRadius: BorderRadius.circular(9),
+          border: Border.all(
+              color: on ? accent : Colors.white24, width: on ? 1.4 : 1),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(icon, size: 16, color: on ? accent : Colors.white60),
+          const SizedBox(width: 6),
+          Text(label,
+              style: TextStyle(
+                  color: on ? Colors.white : Colors.white70,
+                  fontSize: 12,
+                  fontWeight: on ? FontWeight.w700 : FontWeight.w500)),
+        ]),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!OsQuickToggles.isSupported) return const SizedBox.shrink();
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(6, 2, 6, 0),
+        child: Text(p.t('pcPower.modeTitle'),
+            style: const TextStyle(color: Colors.white70, fontSize: 12.5)),
+      ),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(6, 6, 6, 0),
+        child: Wrap(spacing: 8, runSpacing: 8, children: [
+          for (final m in PowerMode.values)
+            _chip(
+              icon: _modeIcon(m),
+              label: _modeLabel(m),
+              on: _mode == m,
+              onTap: () => _apply(m),
+            ),
+        ]),
+      ),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(6, 5, 6, 0),
+        child: Text(p.t('pcPower.modeHint'),
+            style: const TextStyle(color: Colors.white38, fontSize: 10.5)),
+      ),
+      // ── 仮想デスクトップ ──
+      Padding(
+        padding: const EdgeInsets.fromLTRB(6, 14, 6, 0),
+        child: Text(p.t('pcPower.desktopTitle'),
+            style: const TextStyle(color: Colors.white70, fontSize: 12.5)),
+      ),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(6, 6, 6, 0),
+        child: Wrap(spacing: 8, runSpacing: 8, children: [
+          _chip(
+            icon: Icons.chevron_left_rounded,
+            label: p.t('desktop.prev'),
+            on: false,
+            accent: const Color(0xFF64B5F6),
+            onTap: _busy ? null : () => unawaited(_go(forward: false)),
+          ),
+          _chip(
+            icon: Icons.chevron_right_rounded,
+            label: p.t('desktop.next'),
+            on: false,
+            accent: const Color(0xFF64B5F6),
+            onTap: _busy ? null : () => unawaited(_go(forward: true)),
+          ),
+          _chip(
+            icon: Icons.add_rounded,
+            label: p.t('desktop.newDesktop'),
+            on: false,
+            accent: const Color(0xFF64B5F6),
+            onTap: _busy
+                ? null
+                : () {
+                    OsQuickToggles.newDesktop();
+                    setState(() => _note = null);
+                  },
+          ),
+        ]),
+      ),
+      if (_note != null)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(6, 7, 6, 0),
+          child: Text(_note!,
+              style: const TextStyle(color: Color(0xFFFFB347), fontSize: 11)),
+        ),
+    ]);
+  }
+}
+
 class _PowerTimeoutInline extends StatefulWidget {
   final MindMapProvider provider;
   const _PowerTimeoutInline({required this.provider});
@@ -131683,13 +131928,20 @@ class _PaintImageItem {
   /// 共同編集で共有の置き場へ上げた先の URL ('' = まだ)。 保存し直しても
   /// 落とさない (= 落とすと線を引くたびに全画像を上げ直していた)。
   String lu;
+
+  /// 押すと飛ぶ先 ('' = ただの絵)。
+  ///
+  /// ★ = ユーザー要望「フリーノートに動画を転送したら、 サムネイルが
+  ///   貼り付けられ、 そこをクリックすると動画に飛べるように」。
+  String url;
   _PaintImageItem(this.path, this.rect,
       {this.z = 0,
       this.g = 0,
       this.lyr = 0,
       this.rot = 0,
       String? id,
-      this.lu = ''})
+      this.lu = '',
+      this.url = ''})
       : id = id ?? _newPaintItemId();
 
   Map<String, dynamic> toJson() => {
@@ -131704,6 +131956,7 @@ class _PaintImageItem {
         if (g != 0) 'g': g,
         if (lyr != 0) 'ly': lyr,
         if (lu.isNotEmpty) 'lu': lu,
+        if (url.isNotEmpty) 'u': url,
       };
 
   factory _PaintImageItem.fromJson(Map m) => _PaintImageItem(
@@ -131720,6 +131973,7 @@ class _PaintImageItem {
         lyr: (m['ly'] as num?)?.toInt() ?? 0,
         id: _paintIdFromJson(m),
         lu: (m['lu'] ?? '').toString(),
+        url: (m['u'] ?? '').toString(),
       );
 }
 
@@ -146796,7 +147050,15 @@ class _PaintPageViewState extends State<_PaintPageView> {
       // ★ 回した角度も写す。 落とすと Ctrl+Z のたびに紙の中の全部の画像が
       //   0 度に戻る (= 点検で判明)。 重なり順と層も同じ理由。
       _PaintImageItem(it.path, it.rect,
-          rot: it.rot, z: it.z, g: it.g, lyr: it.lyr, id: it.id, lu: it.lu);
+          rot: it.rot,
+          z: it.z,
+          g: it.g,
+          lyr: it.lyr,
+          id: it.id,
+          lu: it.lu,
+          // ★ 押したら飛ぶ先も写す (落とすと、 取り消しのたびに動画の
+          //   札がただの絵に戻る)。
+          url: it.url);
 
   /// 現在の選択内容をペイント内クリップボードへコピーする。
   /// コピーできた時 true (= キーイベントを消費する)。
@@ -146855,7 +147117,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
         } else if (it is _PaintImageItem) {
           _sheet.images
               .add(_PaintImageItem(it.path, it.rect.shift(d),
-                  rot: it.rot, g: it.g, lu: it.lu)
+                  rot: it.rot, g: it.g, lu: it.lu, url: it.url)
                 ..z = _nextPaintZ()
                 ..lyr = _activeLayer);
           _selImgSet.add(_sheet.images.length - 1);
@@ -148842,6 +149104,27 @@ class _PaintPageViewState extends State<_PaintPageView> {
 
   void _onSelectTap(Offset p, double fit) {
     final hit = _selectHitTopmost(p, fit);
+    // ── 飛ぶ先を持った絵 (= 送られてきた動画の札) を押した ──
+    // ★ = ユーザー要望「サムネイルをクリックすると動画に飛べる」。
+    //   動かしたり消したりしたい時は Ctrl (または Shift) を押しながら押すと
+  //   これまでどおり選べる (つかんで引けばそのまま動かせる)。
+    if (hit != null && hit.$1 == 'image') {
+      final i = hit.$2;
+      if (i >= 0 && i < _sheet.images.length) {
+        final link = _sheet.images[i].url.trim();
+        final keys = HardwareKeyboard.instance.logicalKeysPressed;
+        final holding = keys.contains(LogicalKeyboardKey.controlLeft) ||
+            keys.contains(LogicalKeyboardKey.controlRight) ||
+            keys.contains(LogicalKeyboardKey.metaLeft) ||
+            keys.contains(LogicalKeyboardKey.metaRight) ||
+            keys.contains(LogicalKeyboardKey.shiftLeft) ||
+            keys.contains(LogicalKeyboardKey.shiftRight);
+        if (link.isNotEmpty && !holding) {
+          _openPaintImageLink(link);
+          return;
+        }
+      }
+    }
     // ── 選択済みテキストを再タップしたら編集を開始 (= ユーザー要望: 選択モード
     //    でオブジェクトを指定しても編集できない → できるように) ──
     if (hit != null &&
@@ -148873,6 +149156,27 @@ class _PaintPageViewState extends State<_PaintPageView> {
       _clearSelSets();
       if (hit != null) _addSel(hit);
     });
+  }
+
+  /// 紙に貼った札の飛ぶ先を開く (動画 / リンク / 手元のファイル)。
+  void _openPaintImageLink(String link) {
+    final v = link.trim();
+    if (v.isEmpty) return;
+    final lower = v.toLowerCase();
+    if (lower.startsWith('http://') || lower.startsWith('https://')) {
+      final open = openUrlInAppFromAnywhere;
+      if (open != null) {
+        open(v);
+      } else {
+        unawaited(launchUrl(Uri.parse(v),
+            mode: LaunchMode.externalApplication));
+      }
+      return;
+    }
+    // 手元のファイル (動画や PDF) は OS に任せる。
+    try {
+      unawaited(OpenFilex.open(v));
+    } catch (_) {}
   }
 
   /// 選択要素のドラッグが分割ペインの上で離されたら、 そのページへ移動する
@@ -148993,7 +149297,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
       }
       for (final im in images) {
         dst.images.add(_PaintImageItem(im.path, im.rect.shift(d),
-            rot: im.rot, z: z++, g: im.g, lyr: im.lyr));
+            rot: im.rot, z: z++, g: im.g, lyr: im.lyr, url: im.url));
         dst.undo.add('image');
       }
       // ── 削除 (元ページ) ── index 降順で取り除く。
