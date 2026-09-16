@@ -14360,38 +14360,29 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Passar entre painéis',
       'ru': 'Передача между панелями',
     },
+    // ★ = ユーザー要望「「隣で手を離すと〜」 みたいな文章も要らない」。
+    //   入切の知らせは短い一言だけにする。
     'split.transferOn': {
-      'ja': '→ 境界を越えて渡す (隣で手を離すとそのページへ)',
-      'en': '→ Hand over across panes (drop on the other pane to move it)',
-      'zh': '→ 跨分割传递（在另一侧松开即移动）',
-      'ko': '→ 경계를 넘어 전달 (옆 패인에서 놓으면 이동)',
-      'es': '→ Pasar entre paneles (suéltalo en el otro panel)',
-      'fr': '→ Transférer entre volets (lâchez sur l’autre volet)',
-      'de': '→ Über Bereiche hinweg übergeben (im anderen Bereich loslassen)',
-      'pt': '→ Passar entre painéis (solte no outro painel)',
-      'ru': '→ Передача между панелями (отпустите на соседней)',
+      'ja': '→ 境界を越えて渡す',
+      'en': '→ Hand over across panes',
+      'zh': '→ 跨分割传递',
+      'ko': '→ 경계를 넘어 전달',
+      'es': '→ Pasar entre paneles',
+      'fr': '→ Transférer entre volets',
+      'de': '→ Über Bereiche hinweg übergeben',
+      'pt': '→ Passar entre painéis',
+      'ru': '→ Передача между панелями',
     },
     'split.transferOff': {
-      'ja': '→ 境界を越えても渡さない (今までどおり追跡)',
-      'en': '→ Off: dragging across a pane just follows the cursor',
-      'zh': '→ 已关闭：跨过分割线仅跟随光标',
-      'ko': '→ 끔: 경계를 넘어도 커서를 따라갈 뿐입니다',
-      'es': '→ Desactivado: cruzar el borde solo sigue al cursor',
-      'fr': '→ Désactivé : franchir la limite suit simplement le curseur',
-      'de': '→ Aus: Über die Grenze ziehen folgt nur dem Cursor',
-      'pt': '→ Desligado: cruzar a borda apenas segue o cursor',
-      'ru': '→ Выкл.: пересечение границы просто следует за курсором',
-    },
-    'split.transferHere': {
-      'ja': 'ここで離すと 「{name}」 へ渡ります',
-      'en': 'Drop here to move it to "{name}"',
-      'zh': '在此松开即移到“{name}”',
-      'ko': '여기서 놓으면 「{name}」で(으)로 이동합니다',
-      'es': 'Suéltalo aquí para moverlo a "{name}"',
-      'fr': 'Lâchez ici pour déplacer vers « {name} »',
-      'de': 'Hier loslassen, um nach „{name}“ zu verschieben',
-      'pt': 'Solte aqui para mover para "{name}"',
-      'ru': 'Отпустите здесь, чтобы перенести в «{name}»',
+      'ja': '→ 境界を越えても渡さない',
+      'en': '→ Do not hand over across panes',
+      'zh': '→ 不跨分割传递',
+      'ko': '→ 경계를 넘어도 전달하지 않음',
+      'es': '→ No pasar entre paneles',
+      'fr': '→ Ne pas transférer entre volets',
+      'de': '→ Nicht über Bereiche hinweg übergeben',
+      'pt': '→ Não passar entre painéis',
+      'ru': '→ Не передавать между панелями',
     },
     'split.transferred': {
       'ja': '{n} 個を 「{name}」 へ渡しました',
@@ -105504,8 +105495,8 @@ $cleanQ
   /// row-major で最初の空きセルを探す (cols 列で折り返し、 占有セルはスキップ)。
   /// [occ] に既存の占有セル ("col,row") を渡すと差分計算を省ける。
   List<int>? _nextFreeShelfCell(Set<String> occ,
-      {int fromCol = 0, int fromRow = 0}) {
-    final cols = _shelfGridCols();
+      {int fromCol = 0, int fromRow = 0, int? gridCols}) {
+    final cols = gridCols ?? _shelfGridCols();
     int col = fromCol < 0 ? 0 : (fromCol >= cols ? 0 : fromCol);
     int row = fromRow < 0 ? 0 : fromRow;
     if (row >= kShelfMaxGridRows) return null;
@@ -106202,6 +106193,81 @@ $cleanQ
       }
     }
     return best;
+  }
+
+  /// [pageId] のギャラリーで、 キャンバス座標 [canvasPos] に一番近い
+  /// 空きセル (= 「+ボックス」) を返す。 空きが無ければ null。
+  ///
+  /// ★ = ユーザー報告「境界を跨いで転送すると、 ギャラリーページで
+  ///   要素が +ボックスの枠にはまって配置されない」。 渡す前の格子で
+  ///   注ぐ先を決め、 渡した後に [placeShelfItemsAtCell] でその枠へ入れる。
+  ///   現在ページでなくても動く (= 分割の向こう側のページ)。
+  List<int>? shelfNearestFreeCellFor(String pageId, Offset canvasPos) {
+    final idx = _pages.indexWhere((p) => p.id == pageId);
+    if (idx < 0) return null;
+    final page = _pages[idx];
+    if (page.pageType != 'bookshelf') return null;
+    final grid = _shelfGridFor(page);
+    final cells = bookshelfFrontierCells(pageOverride: page);
+    List<int>? best;
+    double bestD = double.infinity;
+    for (final c in cells) {
+      final d =
+          (_shelfCellRect2(grid, c[0], c[1]).center - canvasPos).distanceSquared;
+      if (d < bestD) {
+        bestD = d;
+        best = c;
+      }
+    }
+    return best == null ? null : [best[0], best[1]];
+  }
+
+  /// 渡って来た要素 [ids] を、 [pageId] のギャラリーの (col,row) から
+  /// 行優先で空いている枠へ順に収める。
+  ///
+  /// `moveNodesToPage` は左上から順に枠を振るだけなので、 「落とした所」へ
+  /// 置き直すのがここ。 画面側がやっていた「ピクセル量だけ平行移動」は、
+  /// 格子を無視するのでタイルが枠から外れていた。
+  void placeShelfItemsAtCell(String pageId, Set<String> ids, int col, int row) {
+    final idx = _pages.indexWhere((p) => p.id == pageId);
+    if (idx < 0) return;
+    final page = _pages[idx];
+    if (page.pageType != 'bookshelf') return;
+    // 実際にそのページに居て、 表紙に隠れていない物だけが枠を占有する。
+    final targets = <String>[];
+    for (final id in ids) {
+      final n = page.nodes[id];
+      if (n != null && n.hiddenInContainer == null) targets.add(id);
+    }
+    if (targets.isEmpty) return;
+    // 渡って来た物を除いた占有状況。
+    final occ = <String>{};
+    for (final e in page.nodes.entries) {
+      if (ids.contains(e.key)) continue;
+      if (e.value.hiddenInContainer != null) continue;
+      final c = _shelfCells[e.key];
+      if (c != null && c.length >= 2) occ.add('${c[0]},${c[1]}');
+    }
+    final cols = _shelfGridCols(page);
+    var cx = col.clamp(0, kShelfMaxGridCols - 1).toInt();
+    var cy = row.clamp(0, kShelfMaxGridRows - 1).toInt();
+    for (final id in targets) {
+      final free =
+          _nextFreeShelfCell(occ, fromCol: cx, fromRow: cy, gridCols: cols);
+      if (free == null) break;
+      _shelfCells[id] = [free[0], free[1]];
+      occ.add('${free[0]},${free[1]}');
+      cx = free[0] + 1;
+      cy = free[1];
+      if (cx >= cols) {
+        cx = 0;
+        cy++;
+      }
+    }
+    _arrangeAsBookshelfBody(page);
+    _saveShelfCells();
+    _saveToStorage();
+    notifyListeners();
   }
 
   void snapNodeToShelfCell(String nodeId, Offset droppedPos) {
@@ -112437,15 +112503,20 @@ $example
         final c = _shelfCells[id];
         if (c != null) occ.add('${c[0]},${c[1]}');
       }
+      // ★ 列数は**渡し先のページ**で数える。 引数無しだと今開いている
+      //   ページの列数で折り返すので、 幅の違うギャラリーへ渡すと果ての
+      //   方の列へはみ出していた。
+      final targetCols = _shelfGridCols(target);
       var col = 0, row = 0;
       for (final id in moved) {
-        final free = _nextFreeShelfCell(occ, fromCol: col, fromRow: row);
+        final free = _nextFreeShelfCell(occ,
+            fromCol: col, fromRow: row, gridCols: targetCols);
         if (free == null) break;
         _shelfCells[id] = [free[0], free[1]];
         occ.add('${free[0]},${free[1]}');
         col = free[0] + 1;
         row = free[1];
-        if (col >= _shelfGridCols()) {
+        if (col >= targetCols) {
           col = 0;
           row++;
         }

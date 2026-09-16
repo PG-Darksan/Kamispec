@@ -9641,12 +9641,27 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// [globalPos] が、 今編集しているペイン**以外**のペインに入っているなら
   /// その番号。 入っていなければ -1。
+  ///
+  /// ★ 渡せない相手 (Web を埋め込んだセル / 道具のセル / ファイルのセル /
+  ///   ページを載せていないセル) は数えない。 数えていた頃は、 渡せない
+  ///   ペインでも枠が光り、 手を離すと何も起きずに元の画面へ戻っていた。
   int _splitCellAt(Offset globalPos) {
     if (!_mapSplitOpen) return -1;
-    final n = _mapSplitQuad ? 4 : 2;
-    for (var k = 0; k < n; k++) {
+    for (final k in _visibleSplitSlots()) {
       if (k == _mapSplitEditorSlot) continue;
-      if (_splitCellGlobalRect(k).contains(globalPos)) return k;
+      if (!_splitCellGlobalRect(k).contains(globalPos)) continue;
+      if (_mapSplitCellWeb.containsKey(k) ||
+          _mapSplitCellTool.containsKey(k) ||
+          _mapSplitCellFile.containsKey(k)) {
+        return -1;
+      }
+      final pid = _mapSplitCells[k] ?? '';
+      if (pid.isEmpty) return -1;
+      // 同じページを映しているセルへは渡せない (= 渡し先が自分自身)。
+      try {
+        if (pid == context.read<MindMapProvider>().currentPage.id) return -1;
+      } catch (_) {}
+      return k;
     }
     return -1;
   }
@@ -9692,16 +9707,19 @@ class _MindMapScreenState extends State<MindMapScreen>
         ? provider.shelfSwapTargetAt(_moveModeNodeId!, clampedPos)
         : null;
 
-    // ★ = ユーザー報告「境界を跨いで他のページへ転送しようとした時、
-    //   配置が完了するまで元あった画面にもデータが動き続ける」。
-    //   隣のペインの上に指がある間は、 元の画面での位置を**止める**
-    //   (見えているのは最前面の写しの方だけになる)。 元の画面の座標に
-    //   無理やり当てはめた位置なので、 動かし続けても意味が無い。
-    final overOther = _splitTransferMode &&
-        _mapSplitOpen &&
-        _splitCellAt(globalPos) >= 0;
+    // ★ = ユーザー報告「右から左に要素を跨がせる時、 掴んでいる要素が
+    //   ずれて 2 つになる」。
+    //
+    //   隣のペインの上に居る間は、 最前面に同じ要素の写しを指の真下へ
+    //   描く。 元の要素も**同じ所**に置いておけば、 写しの下にぴったり
+    //   隠れて 1 つに見える。 ところが元の要素だけ 0 で clamp していたため、
+    //   左向きに跨いだ時 (= 座標が負になる) だけ元の要素が端で止まり、
+    //   写しと 2 つに見えていた。 跨いでいる間は clamp しない
+    //   (置き直しは渡した先 / 手を離した所でやる)。
+    final overOther =
+        _splitTransferMode && _mapSplitOpen && _splitTransferTarget >= 0;
     setState(() {
-      if (!overOther) _movingPos = sibPos ?? clampedPos;
+      _movingPos = overOther ? newPos : (sibPos ?? clampedPos);
       _currentSnap = overOther ? null : snap;
       _siblingGuideParentId = overOther ? null : sibParent;
       _siblingGuidePos = overOther ? null : sibPos;
@@ -9830,6 +9848,18 @@ class _MindMapScreenState extends State<MindMapScreen>
         // 図形の移動ドラッグ中も追尾対象 (= ユーザー要望)。
         !_draggingDecoration) {
       _stopEdgeScroll();
+      return;
+    }
+
+    // ★ = ユーザー報告「掋んでいる要素がずれて 2 つになる」。
+    //   境界を越えて渡すモードで隣のペインの上に指がある間は、 元の
+    //   画面は追いかけない。 指は常に「見えている範囲の外」にいるので、
+    //   これが無いと元のペインが延々とスクロールし続け、 その度に _movingPos
+    //   を補正するので元の要素だけが勝手に滑っていっていた。
+    if (_splitTransferMode &&
+        _mapSplitOpen &&
+        _moveModeNodeId != null &&
+        _splitCellAt(pos) >= 0) {
       return;
     }
 
@@ -10145,7 +10175,13 @@ class _MindMapScreenState extends State<MindMapScreen>
       setState(() => _splitTransferTarget = -1);
     }
     final nodeId = _moveModeNodeId;
-    final pos = _movingPos;
+    // ★ 境界を跨いでいる間は clamp を外しているので、 渡せなかった時
+    //   (= 渡せないペインの上で手を離した) はここで丸めてから置く。
+    //   丸めないと負の座標に置かれて画面の外へ消える。
+    final rawPos = _movingPos;
+    final pos = rawPos == null
+        ? null
+        : Offset(rawPos.dx.clamp(0.0, 20000.0), rawPos.dy.clamp(0.0, 20000.0));
     final snap = _currentSnap;
     final sibParent = _siblingGuideParentId;
     final sibPos = _siblingGuidePos;
@@ -36846,7 +36882,9 @@ class _MindMapScreenState extends State<MindMapScreen>
             color: const Color(0x1A7CD992),
           ),
           alignment: Alignment.topCenter,
-          child: Padding(
+          child: name.isEmpty
+              ? const SizedBox.shrink()
+              : Padding(
             padding: const EdgeInsets.only(top: 10),
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
@@ -36855,10 +36893,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                 borderRadius: BorderRadius.circular(14),
                 border: Border.all(color: const Color(0xFF7CD992)),
               ),
-              child: Text(
-                  provider
-                      .t('split.transferHere')
-                      .replaceAll('{name}', name),
+              // ★ = ユーザー要望「「隣で手を離すと〜」 みたいな文章は要らない」。
+              //   渡し先のページ名だけを出す。
+              child: Text(name,
                   style: const TextStyle(
                       color: Colors.white, fontSize: 11.5)),
             ),
@@ -36874,8 +36911,12 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 半分掛かった時点で隣ペインの下へ隠れる。操作中だけ同じノードのゴーストを
   /// ルート Stack に出し、境界線や隣ペインを上から跨いで見えるようにする。
   Widget _buildSplitTransferNodeOverlay() {
+    // ★ 隣のペインの上に居る時だけ描く。 自分のペインの中に居る間まで
+    //   描くと、 吸着 (兄弟スナップ) や端の丸めで元の要素と写しの位置が
+    //   食い違い、 同じ要素が 2 つ見えてしまう (= ユーザー報告)。
     if (!_splitTransferMode ||
         !_mapSplitOpen ||
+        _splitTransferTarget < 0 ||
         _moveModeNodeId == null ||
         _movingPos == null ||
         _nodeDragGlobal == null ||
@@ -36908,6 +36949,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                 NodeWidget(
                   key: ValueKey('split_transfer_${node.id}'),
                   node: node,
+                  // ★ ギャラリーのタイルは見た目が違うので、 写しにも同じ札を
+                  //   立てる。 立てないと元の要素と別物に見える。
+                  isShelf: provider.currentPage.pageType == 'bookshelf',
                   positionOverride: Offset.zero,
                   forceDragging: true,
                   isSelected: true,
@@ -36956,17 +37000,27 @@ class _MindMapScreenState extends State<MindMapScreen>
     // 選んでいる物があればまとめて、 無ければ掴んでいる 1 つ。
     final ids = <String>{nodeId, ..._groupDragIds};
     if (_rangeSelectedIds.contains(nodeId)) ids.addAll(_rangeSelectedIds);
-    final name = provider.pages[targetIdx].name;
-    // 落とした所へ置くために、 掴んでいた要素の「今の位置」 と
-    // 「置きたい位置」 の差を先に求めておく (移した後にまとめてずらす)。
-    Offset? shift;
+    final targetPage = provider.pages[targetIdx];
+    final name = targetPage.name;
+    final bool targetIsShelf = targetPage.pageType == 'bookshelf';
     final dropAt = dropGlobal == null
         ? null
         : _splitPaneCanvasPos(slot, targetPageId, dropGlobal);
-    if (dropAt != null) {
+    // ★ = ユーザー報告「ギャラリーページで要素が +ボックスの枠にはまって
+    //   配置されてくれない」。 ギャラリーは自由配置ではなく格子なので、
+    //   ピクセル量だけずらすと必ず枠から外れる。 渡す**前**の格子で
+    //   「落とした所に一番近い空き枠」 を控えておき、 渡した後にその枠へ入れる。
+    List<int>? shelfCell;
+    if (targetIsShelf && dropAt != null) {
+      shelfCell = provider.shelfNearestFreeCellFor(targetPageId, dropAt);
+    }
+    // 普通のマップは自由配置なので、 掴んでいた要素の「今の位置」 と
+    // 「置きたい位置」 の差を先に求めておく (移した後にまとめてずらす)。
+    Offset? shift;
+    if (!targetIsShelf && dropAt != null) {
       final held = provider.nodes[nodeId];
       if (held != null) {
-        // 指の下が要素の真ん中になるよう、 半分だけ左上へらずらす。
+        // 指の下が要素の真ん中になるよう、 半分だけ左上へずらす。
         final want = Offset(
           (dropAt.dx - held.width / 2).clamp(0.0, 20000.0),
           (dropAt.dy - held.visualHeight / 2).clamp(0.0, 20000.0),
@@ -36975,9 +37029,15 @@ class _MindMapScreenState extends State<MindMapScreen>
       }
     }
     provider.moveNodesToPage(ids, targetIdx);
-    // ★ moveNodesToPage は座標をそのまま運ぶので、 移した先でずらす。
-    //   相対位置は保ったままなので、 まとめて渡しても形が崩れない。
-    if (shift != null && (shift.dx.abs() > 0.5 || shift.dy.abs() > 0.5)) {
+    if (targetIsShelf) {
+      if (shelfCell != null) {
+        provider.placeShelfItemsAtCell(
+            targetPageId, ids, shelfCell[0], shelfCell[1]);
+      }
+    } else if (shift != null &&
+        (shift.dx.abs() > 0.5 || shift.dy.abs() > 0.5)) {
+      // ★ moveNodesToPage は座標をそのまま運ぶので、 移した先でずらす。
+      //   相対位置は保ったままなので、 まとめて渡しても形が崩れない。
       provider.moveNodesOnPage(targetPageId, ids, shift);
     }
     if (mounted) {
@@ -44742,6 +44802,10 @@ class _MindMapScreenState extends State<MindMapScreen>
     'openClaude',
     'openDeepSeek',
     'openGrok',
+    // ── 「境界を越えて渡す」 は右上の分割ボタン群にいつも並んでいるので、
+    //    カスタムボタンとしては置かない (= ユーザー要望: 2 つは要らない)。
+    //    配置済みのものもここで消える。
+    'splitTransfer',
   };
 
   /// パソコンでは、 AI アシスタントの入口は右上に常設してあるので、
