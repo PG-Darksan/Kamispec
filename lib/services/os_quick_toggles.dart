@@ -27,6 +27,7 @@ import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart' as pkgffi;
 import 'package:flutter/foundation.dart';
+import 'package:win32/win32.dart' as w32;
 
 /// 電源モード (タスクバーのスライダーと同じ 3 段)。
 enum PowerMode {
@@ -62,6 +63,40 @@ final class _Guid extends ffi.Struct {
   external int d3;
   @ffi.Array<ffi.Uint8>(8)
   external ffi.Array<ffi.Uint8> d4;
+}
+
+/// 起動中のアプリの窓 1 つぶん (= 仮想デスクトップへ移す相手)。
+class DesktopWindowInfo {
+  /// 窓のハンドル。
+  final int hwnd;
+
+  /// 題名バーの文字 (一覧に出す名前)。
+  final String title;
+
+  /// 今見えているデスクトップに居るか。
+  final bool onCurrentDesktop;
+
+  /// このアプリ自身の窓か。
+  final bool isSelf;
+
+  const DesktopWindowInfo({
+    required this.hwnd,
+    required this.title,
+    required this.onCurrentDesktop,
+    required this.isSelf,
+  });
+}
+
+/// 窓を移した結果。
+enum MoveWindowResult {
+  /// 移せた。
+  ok,
+
+  /// Windows に断られた (= 他のアプリの窓は移せない事がある)。
+  denied,
+
+  /// 仕組みが使えない / 窓が見つからない。
+  failed,
 }
 
 /// デスクトップの切り替えを頼んだ結果。
@@ -324,5 +359,141 @@ class OsQuickToggles {
   static bool newDesktop() => _ctrlWin(_kVkD);
 
   /// 今のデスクトップを閉じる (Ctrl+Win+F4)。
+  ///
+  /// ★ Windows の仕様で、 閉じてもそのデスクトップにあった窓は消えず、
+  ///   隣のデスクトップへ移る (仕事を失わない)。
   static bool closeDesktop() => _ctrlWin(_kVkF4);
+
+  // ── 他のアプリの窓を移す ────────────────────────────
+  //
+  // ★ = ユーザー要望「切り替えに加えて、 作成 / 削除に他の起動中の
+  //   アプリ window の転送なども行えるように」。
+  //
+  //   使うのは公開されている IVirtualDesktopManager だけ
+  //   (内部 COM は Windows の版が上がるたびに壊れるので使わない)。
+  //   ただし MoveWindowToDesktop は、 相手のアプリによっては Windows 側が
+  //   断る (E_ACCESSDENIED)。 断られた時はその事をそのまま伝える。
+
+  static const int _kGwlExStyle = -20;
+  static const int _kWsExToolWindow = 0x00000080;
+  static const int _kWsExAppWindow = 0x00040000;
+
+  /// 今開いているアプリの窓を並べる (題名の無い物・道具窓は除く)。
+  ///
+  /// 他のデスクトップにある窓も含む (そちらから呼び寄せるため)。
+  static List<DesktopWindowInfo> listAppWindows({int max = 60}) {
+    if (!isSupported) return const [];
+    final out = <DesktopWindowInfo>[];
+    final init = w32.CoInitializeEx(ffi.nullptr, w32.COINIT_APARTMENTTHREADED);
+    final needUninit = init == w32.S_OK || init == w32.S_FALSE;
+    ffi.Pointer<w32.COMObject>? mgr;
+    final buf = pkgffi.calloc<ffi.Uint16>(512).cast<pkgffi.Utf16>();
+    final onCur = pkgffi.calloc<ffi.Int32>();
+    final pidBuf = pkgffi.calloc<ffi.Uint32>();
+    try {
+      try {
+        mgr = w32.COMObject.createFromID(
+            w32.CLSID_VirtualDesktopManager, w32.IID_IVirtualDesktopManager);
+      } catch (_) {
+        mgr = null;
+      }
+      final vdm = mgr == null ? null : w32.IVirtualDesktopManager(mgr);
+      final selfPid = w32.GetCurrentProcessId();
+      var h = 0;
+      while (out.length < max) {
+        h = w32.FindWindowEx(0, h, ffi.nullptr, ffi.nullptr);
+        if (h == 0) break;
+        if (w32.IsWindowVisible(h) == 0) continue;
+        // 道具窓 (ツールバーの小窓など) は一覧に出さない。
+        final ex = w32.GetWindowLongPtr(h, _kGwlExStyle);
+        if ((ex & _kWsExToolWindow) != 0 && (ex & _kWsExAppWindow) == 0) {
+          continue;
+        }
+        final len = w32.GetWindowTextLength(h);
+        if (len <= 0) continue;
+        w32.GetWindowText(h, buf, 511);
+        final title = buf.toDartString().trim();
+        if (title.isEmpty) continue;
+        var cur = true;
+        if (vdm != null) {
+          onCur.value = 0;
+          final hr = vdm.isWindowOnCurrentVirtualDesktop(h, onCur);
+          if (hr == w32.S_OK) cur = onCur.value != 0;
+        }
+        pidBuf.value = 0;
+        w32.GetWindowThreadProcessId(h, pidBuf);
+        out.add(DesktopWindowInfo(
+          hwnd: h,
+          title: title,
+          onCurrentDesktop: cur,
+          isSelf: pidBuf.value == selfPid,
+        ));
+      }
+    } catch (_) {
+      // 途中まで集めた分だけ返す。
+    } finally {
+      try {
+        if (mgr != null) {
+          w32.IUnknown(mgr).release();
+          pkgffi.calloc.free(mgr);
+        }
+      } catch (_) {}
+      pkgffi.calloc.free(buf.cast<ffi.Uint16>());
+      pkgffi.calloc.free(onCur);
+      pkgffi.calloc.free(pidBuf);
+      if (needUninit) w32.CoUninitialize();
+    }
+    return out;
+  }
+
+  /// [hwnd] の窓を、 今見ているデスクトップへ呼び寄せる。
+  ///
+  /// 今のデスクトップの id は、 自分の窓が居るデスクトップから取る
+  /// (自分の窓は必ず見えている = 今のデスクトップに居る)。
+  static MoveWindowResult moveWindowToThisDesktop(int hwnd) {
+    if (!isSupported || hwnd == 0) return MoveWindowResult.failed;
+    final init = w32.CoInitializeEx(ffi.nullptr, w32.COINIT_APARTMENTTHREADED);
+    final needUninit = init == w32.S_OK || init == w32.S_FALSE;
+    ffi.Pointer<w32.COMObject>? mgr;
+    final guid = pkgffi.calloc<w32.GUID>();
+    try {
+      mgr = w32.COMObject.createFromID(
+          w32.CLSID_VirtualDesktopManager, w32.IID_IVirtualDesktopManager);
+      final vdm = w32.IVirtualDesktopManager(mgr);
+      // 自分の窓 (= 今のデスクトップ) の id を取る。
+      var me = w32.GetActiveWindow();
+      if (me == 0) me = w32.GetForegroundWindow();
+      if (me == 0) return MoveWindowResult.failed;
+      if (vdm.getWindowDesktopId(me, guid) != w32.S_OK) {
+        return MoveWindowResult.failed;
+      }
+      final hr = vdm.moveWindowToDesktop(hwnd, guid);
+      if (hr == w32.S_OK) return MoveWindowResult.ok;
+      // E_ACCESSDENIED (0x80070005) = 他のアプリの窓を拒まれた。
+      return hr == -2147024891
+          ? MoveWindowResult.denied
+          : MoveWindowResult.failed;
+    } catch (_) {
+      return MoveWindowResult.failed;
+    } finally {
+      try {
+        if (mgr != null) {
+          w32.IUnknown(mgr).release();
+          pkgffi.calloc.free(mgr);
+        }
+      } catch (_) {}
+      pkgffi.calloc.free(guid);
+      if (needUninit) w32.CoUninitialize();
+    }
+  }
+
+  /// [hwnd] を手前へ出す (呼び寄せた後に使う)。
+  static void focusWindow(int hwnd) {
+    if (!isSupported || hwnd == 0) return;
+    try {
+      const swRestore = 9;
+      if (w32.IsIconic(hwnd) != 0) w32.ShowWindow(hwnd, swRestore);
+      w32.SetForegroundWindow(hwnd);
+    } catch (_) {}
+  }
 }

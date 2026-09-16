@@ -121,6 +121,14 @@ class AgentTerminalState extends State<AgentTerminal> {
   final _queueFocus = FocusNode(debugLabel: 'agent_cli_queue');
   bool _queueOpen = false;
 
+  // ── 時刻を指定して投げる (= ユーザー要望) ────────────────
+  final _timerCtrl = TextEditingController();
+  final _timerFocus = FocusNode(debugLabel: 'agent_cli_timer');
+  bool _timerOpen = false;
+
+  /// 予約する時刻 (未指定なら今日 / 明日の同じ時刻を後で決める)。
+  TimeOfDay? _timerAt;
+
   /// いまの会話で投げた指示の一覧を出しているか (= ユーザー要望)。
   bool _histOpen = false;
 
@@ -284,6 +292,8 @@ class AgentTerminalState extends State<AgentTerminal> {
     _inputFocus.dispose();
     _queueCtrl.dispose();
     _queueFocus.dispose();
+    _timerCtrl.dispose();
+    _timerFocus.dispose();
     _termController.dispose();
     _termFocus.dispose();
     super.dispose();
@@ -621,6 +631,37 @@ class AgentTerminalState extends State<AgentTerminal> {
     _grabInput();
   }
 
+  /// 帯を開け閉めするボタン (キュー / 予約)。
+  /// 送るのではなく自分の帯を出すので、 _cmdButton とは別。
+  Widget _panelButton({
+    required String label,
+    required IconData icon,
+    required String tip,
+    required bool open,
+    required Color color,
+    required bool enabled,
+    required VoidCallback onTap,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(right: 6),
+      child: Tooltip(
+        message: open ? '$tip / もう一度押すと閉じます' : tip,
+        child: TextButton.icon(
+          style: TextButton.styleFrom(
+            foregroundColor: open ? color : Colors.white70,
+            visualDensity: VisualDensity.compact,
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            minimumSize: const Size(0, 28),
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+          icon: Icon(open ? Icons.close_rounded : icon, size: 14),
+          label: Text(label, style: const TextStyle(fontSize: 11)),
+          onPressed: enabled ? onTap : null,
+        ),
+      ),
+    );
+  }
+
   Widget _cmdButton({
     required String label,
     required IconData icon,
@@ -650,13 +691,55 @@ class AgentTerminalState extends State<AgentTerminal> {
   }
 
   /// 順番待ちに 1 件足す。
+  ///
+  /// ★ = ユーザー要望「5 件まで貯めておけるように」。 満杯の時は
+  ///   黙って捨てず、 入れられなかったと分かるように残す。
   void _addQueued() {
     final t = _queueCtrl.text.trim();
     if (t.isEmpty) return;
-    _s.enqueue(t);
+    if (!_s.enqueue(t)) {
+      setState(() {});
+      return;
+    }
     _queueCtrl.clear();
     setState(() {});
   }
+
+  /// 時刻を選んでから予約する。
+  Future<void> _pickTimerAt() async {
+    final now = TimeOfDay.now();
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: _timerAt ?? now,
+      helpText: 'この時刻に投げる',
+    );
+    if (picked == null || !mounted) return;
+    setState(() => _timerAt = picked);
+  }
+
+  /// 指定した時刻の「次に来る日時」。
+  ///
+  /// ★ 今より先なら今日、 過ぎているなら明日。
+  ///   (プランの上限は深夜に戻る事が多いので、 この決め方が自然)。
+  DateTime _nextOccurrence(TimeOfDay t) {
+    final now = DateTime.now();
+    var at = DateTime(now.year, now.month, now.day, t.hour, t.minute);
+    if (!at.isAfter(now)) at = at.add(const Duration(days: 1));
+    return at;
+  }
+
+  void _addTimer() {
+    final t = _timerCtrl.text.trim();
+    final at = _timerAt;
+    if (t.isEmpty || at == null) return;
+    _s.schedule(_nextOccurrence(at), t);
+    _timerCtrl.clear();
+    setState(() {});
+  }
+
+  static String _two(int v) => v.toString().padLeft(2, '0');
+
+  static String _clock(DateTime d) => '${_two(d.hour)}:${_two(d.minute)}';
 
   /// 入力欄 (日本語も必ず打てる) と、 送った指示の一覧。
   Widget _buildBar({
@@ -834,8 +917,16 @@ class AgentTerminalState extends State<AgentTerminal> {
     final q = _s.queued;
     return _buildBar(
       icon: Icons.playlist_add_rounded,
-      color: const Color(0xFFFFB347),
-      note: '処理が終わって落ち着いたら、 ここに入れた指示を順番に渡します',
+      color: _s.queueFull
+          ? const Color(0xFFE57373)
+          : const Color(0xFFFFB347),
+      // ★ 何件まで入れられるかを常に出す (= ユーザー要望: 5 件まで)。
+      //   満杯の時は「入らない」 と分かる色と文言にする。
+      note: _s.queueFull
+          ? 'これ以上は溜められません '
+              '(${AgentCliSession.kMaxQueued} 件まで)。 渡し終えるか、 下の × で減らしてください'
+          : '処理が終わって落ち着いたら、 ここに入れた指示を順番に渡します '
+              '(${q.length}/${AgentCliSession.kMaxQueued})',
       ctrl: _queueCtrl,
       focus: _queueFocus,
       hint: '次に渡す指示 (Ctrl+Enter で確定 / Enter は改行)',
@@ -878,16 +969,113 @@ class AgentTerminalState extends State<AgentTerminal> {
     );
   }
 
+  /// 時刻を指定して投げる帯。
+  Widget _buildTimerBar() {
+    final list = _s.scheduled;
+    final at = _timerAt;
+    return _buildBar(
+      icon: Icons.schedule_send_rounded,
+      color: const Color(0xFF80CBC4),
+      note: '指定した時刻になったら、 ここに入れた指示を投げます',
+      ctrl: _timerCtrl,
+      focus: _timerFocus,
+      hint: 'その時刻に渡す指示 (Ctrl+Enter で確定 / Enter は改行)',
+      buttonLabel: '予約',
+      onSubmit: _addTimer,
+      onClose: () {
+        setState(() => _timerOpen = false);
+        _grabInput();
+      },
+      extra: [
+        const SizedBox(height: 5),
+        Row(children: [
+          InkWell(
+            borderRadius: BorderRadius.circular(6),
+            onTap: () => unawaited(_pickTimerAt()),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+              decoration: BoxDecoration(
+                color: Colors.white10,
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: Colors.white24),
+              ),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                const Icon(Icons.access_time_rounded,
+                    size: 13, color: Color(0xFF80CBC4)),
+                const SizedBox(width: 5),
+                Text(
+                    at == null
+                        ? '時刻を選ぶ'
+                        : '${_two(at.hour)}:${_two(at.minute)}',
+                    style: const TextStyle(
+                        color: Colors.white70, fontSize: 11.5)),
+              ]),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+                at == null
+                    ? 'まず時刻を選んでください'
+                    : '次の ${_clock(_nextOccurrence(at))} '
+                        '(${_nextOccurrence(at).day == DateTime.now().day ? "今日" : "明日"})'
+                        ' に投げます',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white38, fontSize: 10.5)),
+          ),
+        ]),
+        // ★ 端末を閉じると予約も消える。 先に伝えておく。
+        const Padding(
+          padding: EdgeInsets.only(top: 4),
+          child: Text(
+              '※ この端末を閉じると予約も消えます (アプリは開けたままに)',
+              style: TextStyle(color: Colors.white24, fontSize: 10)),
+        ),
+        if (list.isNotEmpty) ...[
+          const SizedBox(height: 5),
+          for (var i = 0; i < list.length; i++)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 3),
+              child: Row(children: [
+                Text(_clock(list[i].at),
+                    style: const TextStyle(
+                        color: Color(0xFF80CBC4), fontSize: 10.5)),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(list[i].text,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          color: Colors.white60, fontSize: 10.5)),
+                ),
+                InkWell(
+                  onTap: () => setState(() => _s.cancelScheduled(i)),
+                  child: const Padding(
+                    padding: EdgeInsets.all(3),
+                    child: Icon(Icons.close_rounded,
+                        size: 12, color: Colors.white38),
+                  ),
+                ),
+              ]),
+            ),
+        ],
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final running = _s.running;
     final slash = _s.supportsSlashCommands;
-    // ★ 順番待ちは Claude Code にだけ出す。
-    //   Codex は Tab、 Gemini CLI は Enter / Tab で自前の順番待ちを持って
-    //   いる (調べた結果)。 Claude Code も溜めてはくれるが、 溜めた物を
-    //   **道具の切れ目で今の返事に割り込ませる**ので、 「処理が終わった後に
-    //   渡す」 にはならない (= ユーザー要望はこちら)。
-    final wantQueue = slash && _s.cliKey == 'claude';
+    // ★ 順番待ちは Claude Code と Gemini CLI に出す
+    //   (= ユーザー要望「ClaudeCode や GeminiCLI においてはキューで処理後に
+    //   投げる処理を貯めておくことができない」)。
+    //   Codex は Tab で自前の順番待ちを持っているので出さない。
+    //   Claude Code も溜めてはくれるが、 溜めた物を**道具の切れ目で今の
+    //   返事に割り込ませる**ので、 「処理が終わった後に渡す」 にはならない。
+    final wantQueue =
+        slash && (_s.cliKey == 'claude' || _s.cliKey == 'gemini');
     // ★ この端末のどこかが押されたら、 また打てるように戻す
     //   (= ユーザー報告: 画面を動かしたり他の要素を編集すると
     //   プロンプト欄に入れられなくなる)。
@@ -1161,6 +1349,8 @@ class AgentTerminalState extends State<AgentTerminal> {
       if (_histOpen && running) _buildHistoryPanel(),
       // ── 順番待ちの欄 (= ユーザー要望: キュー) ──
       if (_queueOpen && running) _buildQueueBar(),
+      // ── 時刻を指定して投げる欄 (= ユーザー要望) ──
+      if (_timerOpen && running) _buildTimerBar(),
       // ── 下の帯 ──
       Container(
         padding: const EdgeInsets.fromLTRB(8, 5, 8, 6),
@@ -1180,13 +1370,16 @@ class AgentTerminalState extends State<AgentTerminal> {
                       tip: 'モデルを選び直す (/model)',
                       command: '/model',
                       enabled: running),
-                  _cmdButton(
-                      label: '推論',
-                      icon: Icons.psychology_alt_rounded,
-                      tip: '考える深さを変える (/effort)。 走っている最中でも'
-                          ' すぐ受け付けて、 次のひと押しから効きます',
-                      command: '/effort',
-                      enabled: running),
+                  // ★ = ユーザー要望「codexCLI ではモデル選択後に推論レベルの
+                  //   設定項目が出てくるから推論って項目は要らない」。
+                  if (_s.cliKey != 'codex')
+                    _cmdButton(
+                        label: '推論',
+                        icon: Icons.psychology_alt_rounded,
+                        tip: '考える深さを変える (/effort)。 走っている最中でも'
+                            ' すぐ受け付けて、 次のひと押しから効きます',
+                        command: '/effort',
+                        enabled: running),
                   // ★ 並びは 左から モデル → 推論 → 履歴 → 使用量
                   //   (= ユーザー要望)。 よく使う物を左に寄せる。
                   //   いまの会話で投げた指示の一覧 (別のセッションではなく、
@@ -1223,6 +1416,45 @@ class AgentTerminalState extends State<AgentTerminal> {
                       tip: 'プランの使用量と残りを出す (/usage)',
                       command: '/usage',
                       enabled: running),
+                  // ── 順番待ち (= ユーザー要望: 5 件まで貯めておける) ──
+                  if (wantQueue)
+                    _panelButton(
+                      label: _s.queued.isEmpty
+                          ? 'キュー'
+                          : 'キュー ${_s.queued.length}',
+                      icon: Icons.playlist_add_rounded,
+                      tip: '処理が終わってから渡す指示を溜めておく '
+                          '(${AgentCliSession.kMaxQueued} 件まで)',
+                      open: _queueOpen,
+                      color: const Color(0xFFFFB347),
+                      enabled: running,
+                      onTap: () {
+                        setState(() {
+                          _queueOpen = !_queueOpen;
+                          if (_queueOpen) _timerOpen = false;
+                        });
+                        if (!_queueOpen) _grabInput();
+                      },
+                    ),
+                  // ── 時刻を指定して投げる (= ユーザー要望: プラン上限が
+                  //    戻る時刻に続きを始めたい) ──
+                  _panelButton(
+                    label: _s.scheduled.isEmpty
+                        ? '予約'
+                        : '予約 ${_s.scheduled.length}',
+                    icon: Icons.schedule_send_rounded,
+                    tip: '時刻を指定して指示を投げる',
+                    open: _timerOpen,
+                    color: const Color(0xFF80CBC4),
+                    enabled: running,
+                    onTap: () {
+                      setState(() {
+                        _timerOpen = !_timerOpen;
+                        if (_timerOpen) _queueOpen = false;
+                      });
+                      if (!_timerOpen) _grabInput();
+                    },
+                  ),
                 ],
               ]),
             ),

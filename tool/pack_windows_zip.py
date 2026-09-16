@@ -69,7 +69,17 @@ def main():
     for rel in skipped:
         print('のけました   : %s' % rel)
 
-    bad = [r for _, r in files if r.endswith('kernel_blob.bin')]
+    # ★ kernel_blob.bin だけでは取りこぼす (= b409 で実際に混ざった)。
+    #   型検査の `flutter build bundle` は debug 用の雪ダルマを
+    #   build/flutter_assets へ書くので、 その後の INSTALL で Release へ
+    #   一緒に写される。 release の束には本来入らない物を全部見る。
+    _debris = (
+        'kernel_blob.bin',
+        'vm_snapshot_data',
+        'isolate_snapshot_data',
+        '.last_build_id',
+    )
+    bad = [r for _, r in files if r.split('/')[-1] in _debris]
     if bad:
         raise SystemExit(
             'デバッグ成果物が混ざっています: %s\n'

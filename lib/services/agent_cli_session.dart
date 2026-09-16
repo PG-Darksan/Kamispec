@@ -171,13 +171,77 @@ class AgentCliSession extends ChangeNotifier {
   List<String> get queued => List<String>.unmodifiable(_queued);
   Timer? _queueTimer;
 
-  /// 順番待ちに足す。
-  void enqueue(String text) {
+  /// 溜めておける件数の上限 (= ユーザー要望: 5 件まで)。
+  ///
+  /// ★ いくらでも溜められると、 渡す頃には前提が変わっていて
+  ///   無駄に走らせるだけになるので、 意図的に少なくしてある。
+  static const int kMaxQueued = 5;
+
+  /// 溜めておける枠がもう無いか。
+  bool get queueFull => _queued.length >= kMaxQueued;
+
+  /// 順番待ちに足す。 入れられたら true。
+  ///
+  /// [force] は時刻指定の予約用 (上限を越えても入れる)。
+  /// 予約した時刻に「溜まっていて入らない」 で消えるのは困るため。
+  bool enqueue(String text, {bool force = false}) {
     final t = text.trim();
-    if (t.isEmpty) return;
+    if (t.isEmpty) return false;
+    if (!force && queueFull) return false;
     _queued.add(t);
     _startQueueTimer();
     notifyListeners();
+    return true;
+  }
+
+  // ── 時刻を指定して投げる ─────────────────────────────
+  //
+  // ★ = ユーザー要望「プラン上限が来た時にその時刻になったら処理を
+  //   投げれるようにしたい」。 上限は決まった時刻に戻るので、 その時刻を
+  //   指定しておけば、 寝ている間でも続きを始められる。
+  //
+  // ★ アプリが起きていて、 この CLI が走っている間だけ投げられる
+  //   (端末を閉じたら消える)。 その事は画面側が伝える。
+
+  final List<({DateTime at, String text})> _scheduled = [];
+  List<({DateTime at, String text})> get scheduled =>
+      List<({DateTime at, String text})>.unmodifiable(_scheduled);
+  Timer? _scheduleTimer;
+
+  /// 予約を 1 件足す。 早い順に並べる。
+  void schedule(DateTime at, String text) {
+    final t = text.trim();
+    if (t.isEmpty) return;
+    _scheduled.add((at: at, text: t));
+    _scheduled.sort((a, b) => a.at.compareTo(b.at));
+    _scheduleTimer ??=
+        Timer.periodic(const Duration(seconds: 10), (_) => _pumpSchedule());
+    notifyListeners();
+  }
+
+  void cancelScheduled(int index) {
+    if (index < 0 || index >= _scheduled.length) return;
+    _scheduled.removeAt(index);
+    notifyListeners();
+  }
+
+  void _pumpSchedule() {
+    if (_scheduled.isEmpty || !_running) {
+      if (_scheduled.isEmpty) {
+        _scheduleTimer?.cancel();
+        _scheduleTimer = null;
+      }
+      return;
+    }
+    final now = DateTime.now();
+    var sent = false;
+    while (_scheduled.isNotEmpty && !_scheduled.first.at.isAfter(now)) {
+      final job = _scheduled.removeAt(0);
+      // 順番待ちへ入れる (落ち着いてから渡る)。 上限は越えても良い。
+      enqueue(job.text, force: true);
+      sent = true;
+    }
+    if (sent) notifyListeners();
   }
 
   void cancelQueued(int index) {
@@ -322,6 +386,10 @@ class AgentCliSession extends ChangeNotifier {
     _busyTimer?.cancel();
     _busyTimer = null;
     _queued.clear();
+    // ★ 端末が閉じたら予約も捨てる (投げる先が無いため)。
+    _scheduled.clear();
+    _scheduleTimer?.cancel();
+    _scheduleTimer = null;
     unawaited(_sub?.cancel());
     _sub = null;
     terminal.onOutput = null;

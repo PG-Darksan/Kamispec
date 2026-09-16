@@ -14321,6 +14321,64 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Modo de energia',
       'ru': 'Режим питания',
     },
+    // ★ = ユーザー要望「画面分割した画面からデータを他の分割画面に
+    //   転送できるモードを作って欲しくて、 カーソルが分割境界に来た時に
+    //   追跡するのか、 境界を飛び越えてデータを転送するのか」。
+    'hdr.splitTransfer': {
+      'ja': '境界を越えて渡す',
+      'en': 'Hand over across panes',
+      'zh': '跨分割传递',
+      'ko': '경계를 넘어 전달',
+      'es': 'Pasar entre paneles',
+      'fr': 'Transférer entre volets',
+      'de': 'Über Bereiche hinweg übergeben',
+      'pt': 'Passar entre painéis',
+      'ru': 'Передача между панелями',
+    },
+    'split.transferOn': {
+      'ja': '→ 境界を越えて渡す (隣で手を離すとそのページへ)',
+      'en': '→ Hand over across panes (drop on the other pane to move it)',
+      'zh': '→ 跨分割传递（在另一侧松开即移动）',
+      'ko': '→ 경계를 넘어 전달 (옆 패인에서 놓으면 이동)',
+      'es': '→ Pasar entre paneles (suéltalo en el otro panel)',
+      'fr': '→ Transférer entre volets (lâchez sur l’autre volet)',
+      'de': '→ Über Bereiche hinweg übergeben (im anderen Bereich loslassen)',
+      'pt': '→ Passar entre painéis (solte no outro painel)',
+      'ru': '→ Передача между панелями (отпустите на соседней)',
+    },
+    'split.transferOff': {
+      'ja': '→ 境界を越えても渡さない (今までどおり追跡)',
+      'en': '→ Off: dragging across a pane just follows the cursor',
+      'zh': '→ 已关闭：跨过分割线仅跟随光标',
+      'ko': '→ 끔: 경계를 넘어도 커서를 따라갈 뿐입니다',
+      'es': '→ Desactivado: cruzar el borde solo sigue al cursor',
+      'fr': '→ Désactivé : franchir la limite suit simplement le curseur',
+      'de': '→ Aus: Über die Grenze ziehen folgt nur dem Cursor',
+      'pt': '→ Desligado: cruzar a borda apenas segue o cursor',
+      'ru': '→ Выкл.: пересечение границы просто следует за курсором',
+    },
+    'split.transferHere': {
+      'ja': 'ここで離すと 「{name}」 へ渡ります',
+      'en': 'Drop here to move it to "{name}"',
+      'zh': '在此松开即移到“{name}”',
+      'ko': '여기서 놓으면 「{name}」で(으)로 이동합니다',
+      'es': 'Suéltalo aquí para moverlo a "{name}"',
+      'fr': 'Lâchez ici pour déplacer vers « {name} »',
+      'de': 'Hier loslassen, um nach „{name}“ zu verschieben',
+      'pt': 'Solte aqui para mover para "{name}"',
+      'ru': 'Отпустите здесь, чтобы перенести в «{name}»',
+    },
+    'split.transferred': {
+      'ja': '{n} 個を 「{name}」 へ渡しました',
+      'en': 'Moved {n} item(s) to "{name}"',
+      'zh': '已将 {n} 项移到“{name}”',
+      'ko': '{n}개를 「{name}」で(으)로 옮겼습니다',
+      'es': 'Se movieron {n} elemento(s) a "{name}"',
+      'fr': '{n} élément(s) déplacé(s) vers « {name} »',
+      'de': '{n} Element(e) nach „{name}“ verschoben',
+      'pt': '{n} item(ns) movido(s) para "{name}"',
+      'ru': 'Перенесено элементов: {n} → «{name}»',
+    },
     'hdr.switchDesktop': {
       'ja': 'デスクトップ切り替え',
       'en': 'Switch desktop',
@@ -14500,6 +14558,118 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Virtuelle Desktops',
       'pt': 'Áreas de trabalho virtuais',
       'ru': 'Виртуальные рабочие столы',
+    },
+    // ★ = ユーザー要望「切り替えに加えて作成 / 削除に他の起動中の
+    //   アプリ window の転送なども行えるように」。
+    'vdesk.close': {
+      'ja': 'このデスクトップを閉じる',
+      'en': 'Close this desktop',
+      'zh': '关闭此桌面',
+      'ko': '이 데스크톱 닫기',
+      'es': 'Cerrar este escritorio',
+      'fr': 'Fermer ce bureau',
+      'de': 'Diesen Desktop schließen',
+      'pt': 'Fechar esta área de trabalho',
+      'ru': 'Закрыть этот рабочий стол',
+    },
+    'vdesk.closeTitle': {
+      'ja': 'このデスクトップを閉じますか',
+      'en': 'Close this desktop?',
+      'zh': '要关闭此桌面吗？',
+      'ko': '이 데스크톱을 닫을까요?',
+      'es': '¿Cerrar este escritorio?',
+      'fr': 'Fermer ce bureau ?',
+      'de': 'Diesen Desktop schließen?',
+      'pt': 'Fechar esta área de trabalho?',
+      'ru': 'Закрыть этот рабочий стол?',
+    },
+    'vdesk.closeBody': {
+      'ja': '開いている窓は消えず、 隣のデスクトップへ移ります。',
+      'en': 'Open windows are not closed — they move to the next desktop.',
+      'zh': '已打开的窗口不会关闭，而是移到相邻桌面。',
+      'ko': '열려 있는 창은 닫히지 않고 옆 데스크톱으로 옵김니다.',
+      'es': 'Las ventanas abiertas no se cierran: pasan al escritorio contiguo.',
+      'fr': "Les fenêtres ouvertes ne sont pas fermées : elles passent au bureau voisin.",
+      'de': 'Geöffnete Fenster werden nicht geschlossen, sondern auf den Nachbardesktop verschoben.',
+      'pt': 'As janelas abertas não são fechadas: vão para a área de trabalho vizinha.',
+      'ru': 'Открытые окна не закроются — они перейдут на соседний рабочий стол.',
+    },
+    'vdesk.windowsTitle': {
+      'ja': '他のデスクトップにある窓',
+      'en': 'Windows on other desktops',
+      'zh': '其他桌面上的窗口',
+      'ko': '다른 데스크톱의 창',
+      'es': 'Ventanas en otros escritorios',
+      'fr': "Fenêtres sur d'autres bureaux",
+      'de': 'Fenster auf anderen Desktops',
+      'pt': 'Janelas em outras áreas de trabalho',
+      'ru': 'Окна на других рабочих столах',
+    },
+    'vdesk.windowsHint': {
+      'ja': '押すと、 今見ているデスクトップへ呼び寄せます。',
+      'en': 'Brings the window to the desktop you are looking at.',
+      'zh': '点击后会把窗口移到当前桌面。',
+      'ko': '누르면 현재 보고 있는 데스크톱으로 가져옵니다.',
+      'es': 'Trae la ventana al escritorio que estás viendo.',
+      'fr': 'Amène la fenêtre sur le bureau que vous regardez.',
+      'de': 'Holt das Fenster auf den Desktop, den Sie gerade sehen.',
+      'pt': 'Traz a janela para a área de trabalho atual.',
+      'ru': 'Переносит окно на текущий рабочий стол.',
+    },
+    'vdesk.bringHere': {
+      'ja': 'ここへ',
+      'en': 'Bring here',
+      'zh': '移到这里',
+      'ko': '여기로',
+      'es': 'Traer aquí',
+      'fr': 'Amener ici',
+      'de': 'Hierher holen',
+      'pt': 'Trazer aqui',
+      'ru': 'Сюда',
+    },
+    'vdesk.moved': {
+      'ja': '「{name}」 をこちらへ移しました',
+      'en': 'Moved "{name}" to this desktop',
+      'zh': '已将“{name}”移到此桌面',
+      'ko': '「{name}」を(를) 이 데스크톱으로 옮겼습니다',
+      'es': 'Se movió "{name}" a este escritorio',
+      'fr': '« {name} » a été amenée sur ce bureau',
+      'de': '„{name}“ wurde auf diesen Desktop verschoben',
+      'pt': '"{name}" foi movida para esta área de trabalho',
+      'ru': 'Окно «{name}» перенесено сюда',
+    },
+    'vdesk.moveDenied': {
+      'ja': 'Windows がこの窓の移動を断りました。 Win+Tab の画面で引っ張ると移せます。',
+      'en': 'Windows refused to move that window. Drag it in the Win+Tab view instead.',
+      'zh': 'Windows 拒绝移动该窗口。请在 Win+Tab 视图中拖动。',
+      'ko': 'Windows가 이 창의 이동을 거부했습니다. Win+Tab 화면에서 끌어 옵기세요.',
+      'es': 'Windows rechazó mover esa ventana. Arrástrala en la vista Win+Tab.',
+      'fr': "Windows a refusé de déplacer cette fenêtre. Faites-la glisser dans la vue Win+Tab.",
+      'de': 'Windows hat das Verschieben abgelehnt. Ziehen Sie das Fenster in der Win+Tab-Ansicht.',
+      'pt': 'O Windows recusou mover essa janela. Arraste-a na visão Win+Tab.',
+      'ru': 'Windows отказался переместить это окно. Перетащите его в режиме Win+Tab.',
+    },
+    'vdesk.moveFailed': {
+      'ja': '窓を移せませんでした',
+      'en': 'Could not move the window',
+      'zh': '无法移动窗口',
+      'ko': '창을 옴길 수 없었습니다',
+      'es': 'No se pudo mover la ventana',
+      'fr': 'Impossible de déplacer la fenêtre',
+      'de': 'Fenster konnte nicht verschoben werden',
+      'pt': 'Não foi possível mover a janela',
+      'ru': 'Не удалось переместить окно',
+    },
+    'vdesk.noOtherWindows': {
+      'ja': '他のデスクトップに窓はありません。',
+      'en': 'No windows on other desktops.',
+      'zh': '其他桌面上没有窗口。',
+      'ko': '다른 데스크톱에 창이 없습니다.',
+      'es': 'No hay ventanas en otros escritorios.',
+      'fr': "Aucune fenêtre sur d'autres bureaux.",
+      'de': 'Keine Fenster auf anderen Desktops.',
+      'pt': 'Nenhuma janela em outras áreas de trabalho.',
+      'ru': 'На других рабочих столах окон нет.',
     },
     'desktop.prev': {
       'ja': '左のデスクトップへ',
@@ -24776,6 +24946,29 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Ordner wechseln',
       'pt': 'Trocar de fichário',
       'ru': 'Сменить папка',
+    },
+    // ★ = ユーザー要望「右クリックした際の項目としてタブを切り替えられる項目を」。
+    'paint.switchTab': {
+      'ja': 'タブを切り替え',
+      'en': 'Switch tab',
+      'zh': '切换标签',
+      'ko': '탭 전환',
+      'es': 'Cambiar de pestaña',
+      'fr': "Changer d'onglet",
+      'de': 'Tab wechseln',
+      'pt': 'Trocar de aba',
+      'ru': 'Сменить вкладку',
+    },
+    'paint.pageN': {
+      'ja': 'ページ {n}',
+      'en': 'Page {n}',
+      'zh': '第 {n} 页',
+      'ko': '페이지 {n}',
+      'es': 'Página {n}',
+      'fr': 'Page {n}',
+      'de': 'Seite {n}',
+      'pt': 'Página {n}',
+      'ru': 'Страница {n}',
     },
     'paint.noteName': {
       'ja': 'バインダー名を変更',
@@ -51445,6 +51638,35 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Requer o plano Pro ou superior.',
       'ru': 'Trebuetsya plan Pro ili vyshe.',
     },
+    // ★ = ユーザー要望「CLI はログインなしで利用できないように」。
+    'cli.signInRequired': {
+      'ja': 'ログインが必要です',
+      'en': 'Sign-in required',
+      'zh': '需要登录',
+      'ko': '로그인이 필요합니다',
+      'es': 'Se requiere iniciar sesión',
+      'fr': 'Connexion requise',
+      'de': 'Anmeldung erforderlich',
+      'pt': 'É necessário entrar',
+      'ru': 'Требуется вход',
+    },
+    'cli.signInRequiredBody': {
+      'ja': 'CLI は、 ご自分のアカウントでログインしてからご利用いただけます。 '
+          'プランはアカウントに紐づいているためです。',
+      'en': 'The CLI is available after you sign in with your account, '
+          'because your plan is tied to that account.',
+      'zh': '请先登录您的账户再使用 CLI（套餐与账户绑定）。',
+      'ko': 'CLI는 계정으로 로그인한 다음 사용할 수 있습니다. 요금제가 계정에 연결되어 있기 때문입니다.',
+      'es': 'La CLI está disponible después de iniciar sesión, '
+          'ya que tu plan está vinculado a la cuenta.',
+      'fr': "La CLI est disponible après connexion à votre compte, "
+          "car votre offre y est rattachée.",
+      'de': 'Die CLI steht nach der Anmeldung mit Ihrem Konto bereit, '
+          'da Ihr Tarif an dieses Konto gebunden ist.',
+      'pt': 'A CLI fica disponível após entrar na sua conta, '
+          'pois o plano está vinculado a ela.',
+      'ru': 'CLI доступен после входа в аккаунт: тариф привязан к нему.',
+    },
     'cli.proRequiredBody': {
       'ja': '加えて、 お使いの ChatGPT / Gemini / Claude の有料プランに'
           '加入しているアカウントが必要です。',
@@ -67474,6 +67696,18 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Импортировать все .json из папки сразу',
     },
     // ── 追加メニューの対応形式ヒント (= 多言語対応漏れの修正) ──
+    // ★ = ユーザー要望「フォルダーを開くの所に上の階層を開くを」。
+    'drawer.openParentFolder': {
+      'ja': '上の階層を開く',
+      'en': 'Open parent folder',
+      'zh': '打开上级文件夹',
+      'ko': '상위 폴더 열기',
+      'es': 'Abrir la carpeta superior',
+      'fr': 'Ouvrir le dossier parent',
+      'de': 'Übergeordneten Ordner öffnen',
+      'pt': 'Abrir a pasta acima',
+      'ru': 'Открыть папку выше',
+    },
     'drawer.openFolderFormats': {
       'ja': 'フォルダー内の .json / .html',
       'en': '.json / .html in the folder',
@@ -77872,7 +78106,16 @@ class MindMapProvider extends ChangeNotifier {
   ///   ChatGPT / Gemini / Claude いずれかの**有料プランに加入した
   ///   アカウント**で CLI にログインしている必要がある (CLI 側の話なので
   ///   アプリからは確かめられない。 画面でその旨を案内する)。
-  bool get canUseCliAi => isProUnlocked;
+  ///
+  /// ★ = ユーザー要望「ログインなしで API キーを自前で用意して CLI は
+  ///   使う想定ではない為、 CLI はログインなしで利用できないように」。
+  ///   プランはアカウントに紐づくので、 ログインしていない端末で
+  ///   使えてしまうのは筋が通らない。
+  bool get canUseCliAi => isProUnlocked && googleSignedIn;
+
+  /// プランは足りているのに、 ログインしていないだけか。
+  /// 画面側が「加入して」 と「ログインして」 を書き分けるために使う。
+  bool get cliNeedsSignIn => isProUnlocked && !googleSignedIn;
 
   /// サブモニターの回り込み (ルーティング) を、 **アプリを開いている間**
   /// 使えるか。
@@ -99647,6 +99890,19 @@ $cleanQ
 
   /// 絵を「背景」 ではなく、 いちばん奥のレイヤーの画像要素として紙に置く
   /// (= ユーザー要望: 背景という概念は変。 奥に置いた絵なら後から選べる)。
+  /// フリーノートで今選ばれているレイヤー (画面側が教える)。
+  ///
+  /// ★ = ユーザー要望「フリーノートや pptx ファイルに画像を生成する際は
+  ///   レイヤーを調節して全ての要素を選択して触れられる形で生成するように」。
+  ///   AI が置く絵はこれまで必ずレイヤー 1 (番号 0) に入っていたので、
+  ///   別のレイヤーで描いている人は消しゴムも届かず、 層の一覧でも
+  ///   別の所に出ていた。 今見ている層に置けば、 自分で描いた物と
+  ///   同じように選べる・動かせる・消せる。
+  ///
+  ///   値を入れるのはペイントの画面 (_PaintPageViewState)。 見ていない時は
+  ///   最後に見ていた値が残るが、 0 に落ちても困らないので確かめない。
+  int paintActiveLayerHint = 0;
+
   /// そのページはフリーノート (または文書) の紙か。
   ///
   /// = 絵を「要素」 として置けるページかどうかの判定。
@@ -99742,6 +99998,8 @@ $cleanQ
         'w': w,
         'h': h,
         'z': maxZ + 1,
+        // ★ 今見ている層に置く (= 自分で描いた物と同じように触れる)。
+        if (paintActiveLayerHint > 0) 'ly': paintActiveLayerHint,
         if (linkUrl != null && linkUrl.trim().isNotEmpty) 'u': linkUrl.trim(),
       });
       s['im'] = im;
@@ -99814,6 +100072,9 @@ $cleanQ
         'w': w,
         'h': h,
         'z': minZ - 1,
+        // ★ 奥に置く絵も、 層だけは今見ている所に揃える
+        //   (= 別の層で描いている人から触れなくならないように)。
+        if (paintActiveLayerHint > 0) 'ly': paintActiveLayerHint,
       });
       s['im'] = im;
       await prefs.setString(key, jsonEncode(decoded));

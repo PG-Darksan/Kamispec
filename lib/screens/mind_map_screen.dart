@@ -6026,6 +6026,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     context.read<MindMapProvider>().onCreditShort = _onCreditShort;
     // ignore: discarded_futures
     _loadMiniMapPref();
+    // 境界を飛び越えて渡すモード (= ユーザー要望)。
+    // ignore: discarded_futures
+    _loadSplitTransferMode();
     // ── 「プログラムから開く」 で渡されたファイルを処理する (= ユーザー要望)。
     //    最初のフレームが出てから聞く (起動直後だとダイアログを出せない)。
     if (pendingOpenFilePaths.isNotEmpty) {
@@ -9600,8 +9603,64 @@ class _MindMapScreenState extends State<MindMapScreen>
   }
 
   /// 長押しドラッグ中：位置とスナップ更新
+  // ── 分割の境界を越えて渡す ────────────────────────────
+  //
+  // ★ = ユーザー要望「画面分割した画面からデータを他の分割画面に
+  //   転送できるモードを作って欲しくて、 カーソルが分割境界に来た時に
+  //   追跡するのか、 境界を飛び越えてデータを転送するのかモードを切り替えられる
+  //   ようにして欲しい」。
+  //
+  //   切っている間 (既定) は今までどおり、 境界を越えても要素はついて来る
+  //   だけ (= 追跡)。 入れると、 隣のペインの上で手を離した時に
+  //   **そのページへ移す**。
+  bool _splitTransferMode = false;
+  static const String _kSplitTransferKey = 'splitTransferMode';
+
+  Future<void> _loadSplitTransferMode() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final v = prefs.getBool(_kSplitTransferKey) ?? false;
+      if (v && mounted) setState(() => _splitTransferMode = true);
+    } catch (_) {}
+  }
+
+  Future<void> _setSplitTransferMode(bool v) async {
+    setState(() => _splitTransferMode = v);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_kSplitTransferKey, v);
+    } catch (_) {}
+  }
+
+  /// 要素を掴んでいる間の指の位置 (画面全体の座標)。
+  /// 離した所がどのペインかを見るためだけに控える。
+  Offset? _nodeDragGlobal;
+
+  /// 渡し先のペイン (未定なら -1)。 描画で枠を光らせるのに使う。
+  int _splitTransferTarget = -1;
+
+  /// [globalPos] が、 今編集しているペイン**以外**のペインに入っているなら
+  /// その番号。 入っていなければ -1。
+  int _splitCellAt(Offset globalPos) {
+    if (!_mapSplitOpen) return -1;
+    final n = _mapSplitQuad ? 4 : 2;
+    for (var k = 0; k < n; k++) {
+      if (k == _mapSplitEditorSlot) continue;
+      if (_splitCellGlobalRect(k).contains(globalPos)) return k;
+    }
+    return -1;
+  }
+
   void _onLongPressNodeMove(Offset globalPos, TransformationController ctrl) {
     if (_moveModeNodeId == null || _moveDragAnchor == null) return;
+    // 境界を越えて渡すモードの時だけ、 今どのペインの上に居るかを見る。
+    if (_splitTransferMode && _mapSplitOpen) {
+      _nodeDragGlobal = globalPos;
+      final k = _splitCellAt(globalPos);
+      if (k != _splitTransferTarget) {
+        setState(() => _splitTransferTarget = k);
+      }
+    }
     final canvasPos = _globalToCanvas(globalPos, ctrl);
     final newPos = canvasPos - _moveDragAnchor!;
     final clampedPos = Offset(
@@ -10049,6 +10108,34 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 長押しドラッグ終了：ノード位置確定・接続処理
   void _onLongPressNodeEnd() {
     _stopEdgeScroll();
+    // ── 境界を飛び越えて渡す (= ユーザー要望) ──
+    //    隣のペインの上で離したなら、 そのページへ移す。
+    //    付箋のお仲間も一緒に連れて行く。
+    if (_splitTransferMode && _mapSplitOpen && _moveModeNodeId != null) {
+      final at = _nodeDragGlobal;
+      final slot = at == null ? -1 : _splitCellAt(at);
+      if (slot >= 0 && _handleSplitTransferDrop(slot)) {
+        _nodeDragGlobal = null;
+        setState(() {
+          _moveModeNodeId = null;
+          _movingPos = null;
+          _currentSnap = null;
+          _moveDragAnchor = null;
+          _movingPointerId = null;
+          _siblingGuideParentId = null;
+          _siblingGuidePos = null;
+          _shelfSwapTargetId = null;
+          _groupDragIds.clear();
+          _groupDragStartPos = null;
+          _splitTransferTarget = -1;
+        });
+        return;
+      }
+    }
+    _nodeDragGlobal = null;
+    if (_splitTransferTarget >= 0) {
+      setState(() => _splitTransferTarget = -1);
+    }
     final nodeId = _moveModeNodeId;
     final pos = _movingPos;
     final snap = _currentSnap;
@@ -36609,6 +36696,11 @@ class _MindMapScreenState extends State<MindMapScreen>
   ///
   /// ★ 触るのはタスクバーのスライダーと同じ「重ねる設定」 だけ。 電源
   ///   プランそのものは書き換えない (利用者が組んだ設定を壊さないため)。
+  /// ★ = ユーザー要望「電源プランもいきなりモードが切り替わるのではなく、
+  ///   どのモードに切り替えるのかの項目が出るようにして欲しくて、 ここに
+  ///   スクリーンセーバーや他のスリープモードになるまでの時間項目なども
+  ///   出して欲しい」。 押すたび 1 段回る形をやめ、 押した所の近くに
+  ///   「電源と画面」 の窓を出す (中身は設定の同じ項目)。
   void _cyclePowerMode(MindMapProvider provider) {
     if (!OsQuickToggles.isSupported) {
       _appSnack(
@@ -36618,28 +36710,49 @@ class _MindMapScreenState extends State<MindMapScreen>
               content: Text(provider.t('power.windowsOnly'))));
       return;
     }
-    final next = OsQuickToggles.cyclePowerMode();
-    if (next == null) {
-      _appSnack(
-          context,
-          SnackBar(
-              backgroundColor: const Color(0xFFE57373),
-              content: Text(provider.t('power.failed'))));
-      return;
-    }
-    final label = provider.t(switch (next) {
-      PowerMode.saver => 'power.saver',
-      PowerMode.balanced => 'power.balanced',
-      PowerMode.performance => 'power.performance',
-    });
-    _appSnack(
-        context,
-        SnackBar(
-            backgroundColor: const Color(0xFF43B97F),
-            duration: const Duration(seconds: 2),
-            content: Text(
-                provider.t('power.switched').replaceFirst('{mode}', label))));
-    setState(() {}); // ボタンの絵を今のモードに合わせ直す
+    unawaited(_showNearDialogMain<void>(
+      width: 460,
+      height: 560,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        contentPadding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+        title: Row(children: [
+          const Icon(Icons.battery_saver_rounded,
+              color: Color(0xFF7CD992), size: 20),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(provider.t('pcPower.groupTitle'),
+                style: const TextStyle(color: Colors.white, fontSize: 15)),
+          ),
+        ]),
+        content: SizedBox(
+          width: 420,
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _PowerModeInline(provider: provider),
+                _pcSubLabel(provider.t('power.title')),
+                _PowerTimeoutInline(provider: provider),
+                _pcSubLabel(provider.t('saver.title')),
+                _ScreenSaverInline(provider: provider),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx),
+            child: Text(provider.t('btn.close'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+        ],
+      ),
+    ).then((_) {
+      // 閉じた後にボタンの絵を今のモードに合わせ直す。
+      if (mounted) setState(() {});
+    }));
   }
 
   /// 仮想デスクトップを切り替える (= ユーザー要望)。
@@ -36650,8 +36763,10 @@ class _MindMapScreenState extends State<MindMapScreen>
   ///   当たらなかった (os_quick_toggles 側で修正)。 (2) そもそも隣に
   ///   デスクトップが無い時も「送れた」 = 成功として黙っていた。
   ///   ここでは動いたかどうかまで見て、 動かなかった理由を伝える。
-  Future<void> _switchDesktop(MindMapProvider provider,
-      {required bool forward}) async {
+  /// ★ = ユーザー要望「デスクトップの切り替えではなく仮想デスクトップって
+  ///   項目にして、 切り替えに加えて作成 / 削除に他の起動中のアプリ window の
+  ///   転送なども行えるように」。 ヘッダーのボタンはこの窓を出す。
+  void _showVirtualDesktopPanel(MindMapProvider provider) {
     if (!OsQuickToggles.isSupported) {
       _appSnack(
           context,
@@ -36660,30 +36775,125 @@ class _MindMapScreenState extends State<MindMapScreen>
               content: Text(provider.t('power.windowsOnly'))));
       return;
     }
-    final r = await OsQuickToggles.switchDesktop(forward: forward);
-    if (!mounted || r == DesktopSwitchResult.ok) return;
-    // 切り替わった時は、 もう別のデスクトップに居るので何も出さない
-    // (こちらの窓は見えていない)。
-    final msg = r == DesktopSwitchResult.noNeighbor
-        ? provider.t(forward ? 'desktop.noRight' : 'desktop.noLeft')
-        : provider.t('desktop.failed');
-    _appSnack(
+    unawaited(_showNearDialogMain<void>(
+      width: 460,
+      height: 520,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        contentPadding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+        title: Row(children: [
+          const Icon(Icons.desktop_windows_rounded,
+              color: Color(0xFF64B5F6), size: 20),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(provider.t('pcPower.desktopTitle'),
+                style: const TextStyle(color: Colors.white, fontSize: 15)),
+          ),
+        ]),
+        content: SizedBox(
+          width: 420,
+          child: SingleChildScrollView(
+            child: _VirtualDesktopInline(provider: provider),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx),
+            child: Text(provider.t('btn.close'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+        ],
+      ),
+    ));
+  }
+
+  /// 渡し先のペインを光らせる印。
+  ///
+  /// ★ = ユーザー要望「境界を飛び越えてデータを転送」。 どこへ渡るのかが
+  ///   見えないと「消えた」 としか見えないので、 指が乗っているペインの
+  ///   枠を光らせる。 押下の取り合いには参加させない。
+  Widget _buildSplitTransferHint() {
+    final k = _splitTransferTarget;
+    if (!_splitTransferMode || !_mapSplitOpen || k < 0) {
+      return const SizedBox.shrink();
+    }
+    final r = _splitCellGlobalRect(k);
+    if (r.width <= 0 || r.height <= 0) return const SizedBox.shrink();
+    final provider = context.read<MindMapProvider>();
+    final name = (_mapSplitCells[k] ?? '').isEmpty
+        ? ''
+        : provider.pages
+                .where((p) => p.id == _mapSplitCells[k])
+                .map((p) => p.name)
+                .firstOrNull ??
+            '';
+    return Positioned(
+      left: r.left,
+      top: r.top,
+      width: r.width,
+      height: r.height,
+      child: IgnorePointer(
+        child: Container(
+          decoration: BoxDecoration(
+            border: Border.all(color: const Color(0xFF7CD992), width: 3),
+            color: const Color(0x1A7CD992),
+          ),
+          alignment: Alignment.topCenter,
+          child: Padding(
+            padding: const EdgeInsets.only(top: 10),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color: const Color(0xEE1E3A2A),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: const Color(0xFF7CD992)),
+              ),
+              child: Text(
+                  provider
+                      .t('split.transferHere')
+                      .replaceAll('{name}', name),
+                  style: const TextStyle(
+                      color: Colors.white, fontSize: 11.5)),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 隣のペイン [slot] へ、 今掴んでいる要素を渡す。 渡せたら true。
+  ///
+  /// ★ = ユーザー要望「画面分割した画面からデータを他の分割画面に
+  ///   転送できるモード」。 選んでいる物があればそれを、 無ければ掴んでいる
+  ///   1 つだけを渡す。 中身は moveNodesToPage なので、 相手がフリーノートの
+  ///   時はサムネイルの札になって紙に貼る (b408 で入れた道)。
+  bool _handleSplitTransferDrop(int slot) {
+    final provider = context.read<MindMapProvider>();
+    final nodeId = _moveModeNodeId;
+    if (nodeId == null) return false;
+    final targetPageId = _mapSplitCells[slot] ?? '';
+    if (targetPageId.isEmpty) return false;
+    final targetIdx = provider.pages.indexWhere((p) => p.id == targetPageId);
+    if (targetIdx < 0 || targetIdx == provider.currentPageIndex) return false;
+    // 選んでいる物があればまとめて、 無ければ掴んでいる 1 つ。
+    final ids = <String>{nodeId, ..._groupDragIds};
+    if (_rangeSelectedIds.contains(nodeId)) ids.addAll(_rangeSelectedIds);
+    final name = provider.pages[targetIdx].name;
+    provider.moveNodesToPage(ids, targetIdx);
+    if (mounted) {
+      _appSnack(
         context,
         SnackBar(
-            backgroundColor: const Color(0xFFE57373),
-            duration: const Duration(seconds: 4),
-            content: Text(msg),
-            action: r == DesktopSwitchResult.noNeighbor
-                ? SnackBarAction(
-                    label: provider.t('desktop.add'),
-                    textColor: Colors.white,
-                    onPressed: () {
-                      // Ctrl+Win+D = 新しいデスクトップを作る。 作ると
-                      // そちらへ移るので、 これ以上は何も出さない。
-                      OsQuickToggles.newDesktop();
-                    },
-                  )
-                : null));
+          duration: const Duration(seconds: 2),
+          backgroundColor: const Color(0xFF2A2A3E),
+          content: Text(provider
+              .t('split.transferred')
+              .replaceAll('{n}', '${ids.length}')
+              .replaceAll('{name}', name)),
+        ),
+      );
+    }
+    return true;
   }
 
   void _showSubscriptionManagerDialog() {
@@ -40505,15 +40715,15 @@ class _MindMapScreenState extends State<MindMapScreen>
               : const Color(0xFFBA68C8);
           return Dialog(
             backgroundColor: panelColor,
-            // ★ = ユーザー要望「設定は画面右端に配置して欲しい」。
-            //   ページ一覧を左端のサイドメニューにしたのと対になるよう、
-            //   設定は右端へ寄せる (幅や高さは今までどおり)。
-            alignment: Alignment.centerRight,
+            // ★ = ユーザー要望「設定項目自体は画面中央に出るようにして、
+            //   設定を開く為のボタンが右端に来るように」。
+            //   b407 で窓ごと右端へ寄せていたのを、 真ん中へ戻す
+            //   (右端に来るのは**開くボタン**の方)。
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(18),
             ),
             insetPadding:
-                const EdgeInsets.symmetric(horizontal: 12, vertical: 24),
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
             // Space キーで設定シートを閉じるためのフォーカス。
             // ダイアログ表示中はメインキャンバスのキーハンドラまで Space が
             // 届かないので、ダイアログ内部でキャッチして自分で閉じる必要がある。
@@ -45028,6 +45238,15 @@ class _MindMapScreenState extends State<MindMapScreen>
       //   省電力 → バランス → 最高性能 → … と回る。
       //   触るのはタスクバーのスライダーと同じ「重ねる設定」 だけで、
       //   電源プランそのものは書き換えない (= 利用者が組んだ設定を壊さない)。
+      'id': 'splitTransfer',
+      'labelKey': 'hdr.splitTransfer',
+      'icon': Icons.swap_horiz_rounded,
+      'color': Color(0xFF7CD992),
+    },
+    {
+      // 分割の境界を飛び越えてデータを渡すモードの入切は 1 つ上
+      // (= ユーザー要望: カーソルが分割境界に来た時に追跡するのか、
+      //   境界を飛び越えてデータを転送するのか)。
       'id': 'powerMode',
       'labelKey': 'hdr.powerMode',
       'icon': Icons.battery_saver_rounded,
@@ -48269,6 +48488,16 @@ class _MindMapScreenState extends State<MindMapScreen>
       case 'subscriptionManager':
         _showSubscriptionManagerDialog();
         break;
+      case 'splitTransfer':
+        // ★ 切っている間 (既定) は今までどおり、 境界を越えても要素は
+        //   ついて来るだけ (= 追跡)。 入れると、 隣のペインの上で手を
+        //   離した時にそのページへ移す。
+        unawaited(_setSplitTransferMode(!_splitTransferMode));
+        // ★ _setSplitTransferMode の setState は先に走るので、 ここで読むのは
+        //   **切り替えた後**の状態。
+        _showLockToast(provider
+            .t(_splitTransferMode ? 'split.transferOn' : 'split.transferOff'));
+        break;
       case 'powerMode':
         // 電源モードを 1 段回す (= ユーザー要望)。 何になったかを必ず出す
         //   (見た目が変わらないので、 出さないと効いたか分からない)。
@@ -48276,7 +48505,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         break;
       case 'switchDesktop':
         // 右隣のデスクトップへ (= ユーザー要望)。
-        unawaited(_switchDesktop(provider, forward: true));
+        _showVirtualDesktopPanel(provider);
         break;
       case 'silentCamera':
         // 無音カメラ (= ユーザー要望)。 撮影して写真をマップに追加。
@@ -62445,7 +62674,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                 );
               },
             ),
-          ]),
+            // ★ 渡し先のペインを光らせる印 (= 境界を飛び越えて渡すモード)。
+            //   Stack は後ろの子ほど手前なので、 必ず一番最後に置く。
+            _buildSplitTransferHint(),
+]),
         ),
       );
     });
@@ -73061,6 +73293,16 @@ class _MindMapScreenState extends State<MindMapScreen>
             formatHint: _openedDrawerFolder(provider) != null
                 ? provider.t('drawer.openFolderSwitchHint')
                 : provider.t('drawer.openFolderFormats')),
+        // ★ = ユーザー要望「フォルダーを開くの所に上の階層を開くを付けて」。
+        //   上へ戻るには毎回選び直すしか無かった。 連動先を持つフォルダーを
+        //   開いていて、 その上が実在する時だけ出す。
+        if (_parentDirOfOpenFolder(provider) != null)
+          _menuItem<_AddMenuAction>(
+              value: _AddMenuAction.openParentFolder,
+              icon: Icons.drive_folder_upload_rounded,
+              iconColor: const Color(0xFF4FC3F7),
+              label: provider.t('drawer.openParentFolder'),
+              formatHint: _baseNameOf(_parentDirOfOpenFolder(provider)!)),
         if (dir != null) ...[
           const PopupMenuDivider(),
           _menuItem<_AddMenuAction>(
@@ -73144,6 +73386,14 @@ class _MindMapScreenState extends State<MindMapScreen>
           break;
         case _AddMenuAction.importJson:
           _importJsonFile(ctx, provider);
+          break;
+        case _AddMenuAction.openParentFolder:
+          {
+            final up = _parentDirOfOpenFolder(provider);
+            if (up != null) {
+              unawaited(_openDirectoryAsFolder(ctx, provider, up));
+            }
+          }
           break;
         case _AddMenuAction.openFolder:
           _importJsonFromDirectory(ctx, provider);
@@ -73783,6 +74033,22 @@ class _MindMapScreenState extends State<MindMapScreen>
         // (= ユーザー要望: アイコンの色も変えられるように)。
         final curColor = provider.pageIconColorIndexFor(page.id, page.pageType);
         final color = pageIconColorFor(provider, page);
+        // ★ = ユーザー要望「アイコンを変えるの項目の表示領域をもっと縦に広げて、
+        //   window が全画面の時はスクロールせずに済むように」。
+        //   高さ 260px の決め打ちだったのを、 画面の大きさから決める。
+        //   幅も広げて横に並ぶ数を増やすと、 その分だけ縦が短くなる。
+        final screen = MediaQuery.sizeOf(dctx);
+        final contentW =
+            (screen.width - 120).clamp(300.0, 760.0).toDouble();
+        final cols = contentW >= 620 ? 10 : (contentW >= 500 ? 8 : 7);
+        final rows = (kPageIconChoices.length + cols - 1) ~/ cols;
+        // マスは正方形 (GridView の既定の比)。
+        final cell = (contentW - 6 * (cols - 1)) / cols;
+        final needed = rows * cell + (rows - 1) * 6;
+        // 見出し・範囲の切替・色の並び・ボタンでおよそ 340px 使う。
+        final room = (screen.height - 340).clamp(180.0, 1200.0).toDouble();
+        final allIconsFit = needed <= room;
+        final gridH = allIconsFit ? needed : room;
         return AlertDialog(
           backgroundColor: const Color(0xFF1E1E32),
           shape:
@@ -73799,7 +74065,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             ),
           ]),
           content: SizedBox(
-            width: 420,
+            width: contentW,
             child: Column(mainAxisSize: MainAxisSize.min, children: [
               // 適用する範囲。
               Row(children: [
@@ -73836,11 +74102,14 @@ class _MindMapScreenState extends State<MindMapScreen>
               ]),
               const SizedBox(height: 10),
               SizedBox(
-                height: 260,
+                height: gridH,
                 child: GridView.builder(
-                  gridDelegate:
-                      const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 7,
+                  // 巻物にしなくて済む時は、 中で動かさない。
+                  physics: allIconsFit
+                      ? const NeverScrollableScrollPhysics()
+                      : const ClampingScrollPhysics(),
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: cols,
                     mainAxisSpacing: 6,
                     crossAxisSpacing: 6,
                   ),
@@ -79167,6 +79436,8 @@ class _MindMapScreenState extends State<MindMapScreen>
         _PowerTimeoutInline(provider: provider),
         _pcSubLabel(provider.t('saver.title')),
         _ScreenSaverInline(provider: provider),
+        _pcSubLabel(provider.t('pcPower.desktopTitle')),
+        _VirtualDesktopInline(provider: provider),
 
         // ── 音声の出力先 ──
         _pcSectionLabel(provider.t('audioOut.title')),
@@ -90871,8 +91142,13 @@ class _MindMapScreenState extends State<MindMapScreen>
         provider.liveAccess.isNotEmpty) {
       permission = provider.liveAccess;
     }
-    await showDialog<void>(
-      context: ctx,
+    // ★ = ユーザー要望「共同編集できるようにするの項目が画面中央ではなく、
+    //   ボタン近辺に出るように」。 一覧の項目から開くので、 分割ペインは
+    //   基準にしない (inPane: false)。
+    await _showNearDialogMain<void>(
+      width: 480,
+      height: 560,
+      inPane: false,
       builder: (dctx) => StatefulBuilder(builder: (dctx2, setD) {
         // ブラウザ向けリンクは廃止 (= ユーザー要望: 共同編集はあくまで
         // アプリ内の機能)。 「共有済みか」 は登録時刻の有無で判定する。
@@ -90956,9 +91232,11 @@ class _MindMapScreenState extends State<MindMapScreen>
           backgroundColor: const Color(0xFF1E1E32),
           // ── 中身が縦に長いので、 あふれた分はスクロールさせる
           //    (= ユーザー報告: モバイルで「公開を停止 / 閉じる」 の
-          //    ボタンがリアルタイム共同編集の欄に重なる)。 scrollable を
-          //    付けないと Column が下へはみ出し、 ボタンの下に潜っていた。 ──
-          scrollable: true,
+          //    ボタンがリアルタイム共同編集の欄に重なる)。 ──
+          // ★ この窓はボタンの近くに出す形 (_showNearDialogMain) に変えた。
+          //   あちらが既に巻物にしているので、 ここで scrollable を付けると
+          //   **高さが無限の中に巻物を入れる**事になって例外になる。
+          scrollable: false,
           shape:
               RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
           title: Row(children: [
@@ -93528,6 +93806,34 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
     if (dirPath == null || !context.mounted) return; // キャンセル
     await _openDirectoryAsFolder(context, provider, dirPath);
+  }
+
+  /// 道箋から最後の名前だけ取り出す。
+  static String _baseNameOf(String path) {
+    final t = path.replaceAll('\\', '/');
+    final parts = t.split('/').where((e) => e.isNotEmpty).toList();
+    return parts.isEmpty ? path : parts.last;
+  }
+
+  /// 今開いているフォルダーの **1 つ上** の道箋 (無ければ null)。
+  ///
+  /// ★ = ユーザー要望「ページ一覧のフォルダーを開くの所に
+  ///   上の階層を開くを付けて欲しい」。
+  ///   ドライブの根 (C:\\ など) を開いている時は上が無いので null。
+  String? _parentDirOfOpenFolder(MindMapProvider provider) {
+    final open = _openedDrawerFolder(provider);
+    final cur = (open?.linkedDirPath ?? '').trim();
+    if (cur.isEmpty) return null;
+    try {
+      final parent = Directory(cur).parent.path;
+      // 同じ所を指す (= 根) なら上は無い。
+      if (parent.isEmpty || MindMapProvider.mcpSamePath(parent, cur)) {
+        return null;
+      }
+      return Directory(parent).existsSync() ? parent : null;
+    } catch (_) {
+      return null;
+    }
   }
 
   /// 指定したフォルダーを開く (= 「フォルダーを開く」 の本体)。
@@ -108597,6 +108903,246 @@ class _ScreenSaverInlineState extends State<_ScreenSaverInline> {
 ///
 /// これまで 電源モード / デスクトップ切替 は**ヘッダーのボタンだけ**で、
 /// 設定の中からは触れなかった。 消灯時間 / セーバーと同じ見出しの下に置く。
+// ── 仮想デスクトップ ──────────────────────────────────
+
+/// ★ = ユーザー要望「デスクトップの切り替えではなく仮想デスクトップって
+/// 項目にして、 切り替えに加えて作成 / 削除に他の起動中のアプリ window の
+/// 転送なども行えるように」。
+///
+/// 窓の移動に使うのは公開されている IVirtualDesktopManager だけ
+/// (内部 COM は Windows の版が上がるたびに壊れる)。 相手のアプリによっては
+/// Windows 側が移動を断るので、 断られた時はその事をそのまま伝える。
+class _VirtualDesktopInline extends StatefulWidget {
+  final MindMapProvider provider;
+  const _VirtualDesktopInline({required this.provider});
+
+  @override
+  State<_VirtualDesktopInline> createState() => _VirtualDesktopInlineState();
+}
+
+class _VirtualDesktopInlineState extends State<_VirtualDesktopInline> {
+  String? _note;
+  bool _busy = false;
+
+  /// 他のアプリの窓の一覧 (開いた時と「更新」で読み直す)。
+  List<DesktopWindowInfo> _windows = const [];
+  bool _windowsLoaded = false;
+
+  MindMapProvider get p => widget.provider;
+
+  @override
+  void initState() {
+    super.initState();
+    _reloadWindows();
+  }
+
+  void _reloadWindows() {
+    // 一覧の取得は短い (窓の数だけ)。 その場で読む。
+    final list = OsQuickToggles.listAppWindows();
+    if (!mounted) return;
+    setState(() {
+      _windows = [
+        for (final w in list)
+          if (!w.isSelf) w,
+      ];
+      _windowsLoaded = true;
+    });
+  }
+
+  Future<void> _go({required bool forward}) async {
+    if (_busy) return;
+    setState(() {
+      _busy = true;
+      _note = null;
+    });
+    final r = await OsQuickToggles.switchDesktop(forward: forward);
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      // 切り替わった時は別のデスクトップに居るので、 何も出さない。
+      _note = switch (r) {
+        DesktopSwitchResult.ok => null,
+        DesktopSwitchResult.noNeighbor =>
+          p.t(forward ? 'desktop.noRight' : 'desktop.noLeft'),
+        _ => p.t('desktop.failed'),
+      };
+    });
+  }
+
+  void _move(DesktopWindowInfo w) {
+    final r = OsQuickToggles.moveWindowToThisDesktop(w.hwnd);
+    if (!mounted) return;
+    setState(() {
+      _note = switch (r) {
+        MoveWindowResult.ok =>
+          p.t('vdesk.moved').replaceFirst('{name}', w.title),
+        MoveWindowResult.denied => p.t('vdesk.moveDenied'),
+        MoveWindowResult.failed => p.t('vdesk.moveFailed'),
+      };
+    });
+    if (r == MoveWindowResult.ok) {
+      OsQuickToggles.focusWindow(w.hwnd);
+      _reloadWindows();
+    }
+  }
+
+  Widget _chip(
+      {required IconData icon,
+      required String label,
+      required VoidCallback? onTap,
+      Color accent = const Color(0xFF64B5F6)}) {
+    // ★ M3 の Chip は背景色を無視して白飛びするので自前で描く。
+    return InkWell(
+      borderRadius: BorderRadius.circular(9),
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+        decoration: BoxDecoration(
+          color: Colors.white10,
+          borderRadius: BorderRadius.circular(9),
+          border: Border.all(color: Colors.white24),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(icon, size: 16, color: onTap == null ? Colors.white24 : accent),
+          const SizedBox(width: 6),
+          Text(label,
+              style: TextStyle(
+                  color: onTap == null ? Colors.white24 : Colors.white70,
+                  fontSize: 12)),
+        ]),
+      ),
+    );
+  }
+
+  /// 今のデスクトップを閉じる前に一度たずねる。
+  Future<void> _confirmClose() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF24243A),
+        title: Text(p.t('vdesk.closeTitle'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
+        content: Text(p.t('vdesk.closeBody'),
+            style: const TextStyle(color: Colors.white70, fontSize: 13)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, false),
+            child: Text(p.t('btn.cancel'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, true),
+            child: Text(p.t('vdesk.close'),
+                style: const TextStyle(color: Color(0xFFFF6B6B))),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    OsQuickToggles.closeDesktop();
+    setState(() => _note = null);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!OsQuickToggles.isSupported) return const SizedBox.shrink();
+    final others = [
+      for (final w in _windows)
+        if (!w.onCurrentDesktop) w,
+    ];
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(6, 2, 6, 0),
+        child: Wrap(spacing: 8, runSpacing: 8, children: [
+          _chip(
+            icon: Icons.chevron_left_rounded,
+            label: p.t('desktop.prev'),
+            onTap: _busy ? null : () => unawaited(_go(forward: false)),
+          ),
+          _chip(
+            icon: Icons.chevron_right_rounded,
+            label: p.t('desktop.next'),
+            onTap: _busy ? null : () => unawaited(_go(forward: true)),
+          ),
+          _chip(
+            icon: Icons.add_rounded,
+            label: p.t('desktop.newDesktop'),
+            onTap: _busy
+                ? null
+                : () {
+                    OsQuickToggles.newDesktop();
+                    setState(() => _note = null);
+                  },
+          ),
+          _chip(
+            icon: Icons.close_rounded,
+            label: p.t('vdesk.close'),
+            accent: const Color(0xFFE57373),
+            onTap: _busy ? null : () => unawaited(_confirmClose()),
+          ),
+        ]),
+      ),
+      // ── 他のアプリの窓をこちらへ呼ぶ ──
+      Padding(
+        padding: const EdgeInsets.fromLTRB(6, 14, 6, 0),
+        child: Row(children: [
+          Expanded(
+            child: Text(p.t('vdesk.windowsTitle'),
+                style: const TextStyle(color: Colors.white70, fontSize: 12.5)),
+          ),
+          IconButton(
+            tooltip: p.t('btn.refresh'),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+            icon: const Icon(Icons.refresh_rounded,
+                size: 16, color: Colors.white54),
+            onPressed: _reloadWindows,
+          ),
+        ]),
+      ),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(6, 2, 6, 0),
+        child: Text(p.t('vdesk.windowsHint'),
+            style: const TextStyle(color: Colors.white38, fontSize: 10.5)),
+      ),
+      if (_windowsLoaded && others.isEmpty)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(6, 8, 6, 0),
+          child: Text(p.t('vdesk.noOtherWindows'),
+              style: const TextStyle(color: Colors.white38, fontSize: 11.5)),
+        ),
+      for (final w in others)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(6, 6, 6, 0),
+          child: Row(children: [
+            const Icon(Icons.web_asset_rounded,
+                size: 15, color: Colors.white38),
+            const SizedBox(width: 7),
+            Expanded(
+              child: Text(w.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style:
+                      const TextStyle(color: Colors.white70, fontSize: 12)),
+            ),
+            const SizedBox(width: 8),
+            _chip(
+              icon: Icons.download_rounded,
+              label: p.t('vdesk.bringHere'),
+              onTap: () => _move(w),
+            ),
+          ]),
+        ),
+      if (_note != null)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(6, 9, 6, 0),
+          child: Text(_note!,
+              style: const TextStyle(color: Color(0xFFFFB347), fontSize: 11)),
+        ),
+    ]);
+  }
+}
+
 class _PowerModeInline extends StatefulWidget {
   final MindMapProvider provider;
   const _PowerModeInline({required this.provider});
@@ -108611,7 +109157,6 @@ class _PowerModeInlineState extends State<_PowerModeInline> {
   /// 直前の結果を一言で出す (ここはダイアログの中なので、
   /// SnackBar だと裏に隠れて気付かれない)。
   String? _note;
-  bool _busy = false;
 
   MindMapProvider get p => widget.provider;
 
@@ -108638,26 +109183,6 @@ class _PowerModeInlineState extends State<_PowerModeInline> {
     setState(() {
       _mode = ok ? m : OsQuickToggles.currentPowerMode();
       _note = ok ? null : p.t('power.failed');
-    });
-  }
-
-  Future<void> _go({required bool forward}) async {
-    if (_busy) return;
-    setState(() {
-      _busy = true;
-      _note = null;
-    });
-    final r = await OsQuickToggles.switchDesktop(forward: forward);
-    if (!mounted) return;
-    setState(() {
-      _busy = false;
-      // 切り替わった時は別のデスクトップに居るので、 何も出さない。
-      _note = switch (r) {
-        DesktopSwitchResult.ok => null,
-        DesktopSwitchResult.noNeighbor =>
-          p.t(forward ? 'desktop.noRight' : 'desktop.noLeft'),
-        _ => p.t('desktop.failed'),
-      };
     });
   }
 
@@ -108718,43 +109243,6 @@ class _PowerModeInlineState extends State<_PowerModeInline> {
         padding: const EdgeInsets.fromLTRB(6, 5, 6, 0),
         child: Text(p.t('pcPower.modeHint'),
             style: const TextStyle(color: Colors.white38, fontSize: 10.5)),
-      ),
-      // ── 仮想デスクトップ ──
-      Padding(
-        padding: const EdgeInsets.fromLTRB(6, 14, 6, 0),
-        child: Text(p.t('pcPower.desktopTitle'),
-            style: const TextStyle(color: Colors.white70, fontSize: 12.5)),
-      ),
-      Padding(
-        padding: const EdgeInsets.fromLTRB(6, 6, 6, 0),
-        child: Wrap(spacing: 8, runSpacing: 8, children: [
-          _chip(
-            icon: Icons.chevron_left_rounded,
-            label: p.t('desktop.prev'),
-            on: false,
-            accent: const Color(0xFF64B5F6),
-            onTap: _busy ? null : () => unawaited(_go(forward: false)),
-          ),
-          _chip(
-            icon: Icons.chevron_right_rounded,
-            label: p.t('desktop.next'),
-            on: false,
-            accent: const Color(0xFF64B5F6),
-            onTap: _busy ? null : () => unawaited(_go(forward: true)),
-          ),
-          _chip(
-            icon: Icons.add_rounded,
-            label: p.t('desktop.newDesktop'),
-            on: false,
-            accent: const Color(0xFF64B5F6),
-            onTap: _busy
-                ? null
-                : () {
-                    OsQuickToggles.newDesktop();
-                    setState(() => _note = null);
-                  },
-          ),
-        ]),
       ),
       if (_note != null)
         Padding(
@@ -146966,10 +147454,14 @@ class _PaintPageViewState extends State<_PaintPageView> {
       //   ページの裏に見えないノードが作られてしまうため。
       return KeyEventResult.handled;
     }
-    // ── 矢印キー: ページタブ列にマウスが乗っている時だけページ切替 ──
-    //   (= ユーザー報告: フリーノートで上下カーソルを押すとページが遷移して
-    //   しまう)。 ホバーしていない時は消費だけして、 背後 (マップ側のパンや
-    //   フォーカス移動によるスクロール) へ流さない。
+    // ── 矢印キー: 何もしない (背後へも流さない) ──
+    //
+    // ★ = ユーザー要望「カーソルの上下入力でフリーノートのタブが
+    //   切り替わらないようにして欲しい、 その代わりに右クリックした際の
+    //   項目としてタブを切り替えられる項目を付けて欲しい」。
+    //   タブの列にマウスが乗っている間だけ切り替えていたが、 その判定は
+    //   見えないので「勝手に遷移した」 としか見えない。 切替は右クリックへ。
+    //   消費だけは続ける (背後のマップへ流すと、 紙の裏で画面が動く)。
     if (k == LogicalKeyboardKey.arrowUp ||
         k == LogicalKeyboardKey.arrowDown ||
         k == LogicalKeyboardKey.arrowLeft ||
@@ -146982,13 +147474,6 @@ class _PaintPageViewState extends State<_PaintPageView> {
       if (host != null &&
           (host._splitPanelHover || host._splitLeftPanelHover)) {
         return KeyEventResult.ignored;
-      }
-      if (event is KeyDownEvent && _pointerOverPageTabs()) {
-        final next = (k == LogicalKeyboardKey.arrowDown ||
-                k == LogicalKeyboardKey.arrowRight)
-            ? _sel + 1
-            : _sel - 1;
-        if (next >= 0 && next < _sheets.length) _selectPage(next);
       }
       return KeyEventResult.handled;
     }
@@ -147030,13 +147515,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
         (host._splitPanelHover || host._splitLeftPanelHover)) {
       return false;
     }
-    if (_pointerOverPageTabs()) {
-      final next =
-          (k == LogicalKeyboardKey.arrowDown || k == LogicalKeyboardKey.arrowRight)
-              ? _sel + 1
-              : _sel - 1;
-      if (next >= 0 && next < _sheets.length) _selectPage(next);
-    }
+    // ★ タブの切替はしない (= ユーザー要望)。 消費だけする。
     return true;
   }
 
@@ -147510,6 +147989,15 @@ class _PaintPageViewState extends State<_PaintPageView> {
   //    レイヤーの数はページ (シート) ごとに覚える。
   int _activeLayer = 0;
 
+  /// 今見ている層を provider へ伝える。
+  ///
+  /// ★ = ユーザー要望「画像を生成する際はレイヤーを調節して全ての
+  ///   要素を選択して触れられる形で」。 AI は prefs を直に書くので、
+  ///   画面側が持っている「今の層」 を知らない。 ここで預けておく。
+  void _tellActiveLayer() {
+    widget.provider.paintActiveLayerHint = _activeLayer;
+  }
+
   /// このページで使っているレイヤーの数 (最低 1)。 実際に使われている
   /// 一番大きい番号 + 1 と、 利用者が増やした数の大きい方。
   int _layerCountPref = 1;
@@ -147537,6 +148025,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
       _layerCountPref = _layerCount + 1;
       _activeLayer = _layerCountPref - 1;
     });
+    _tellActiveLayer();
     _snack(widget.provider
         .t('paint.layerAdded')
         .replaceFirst('{n}', '${_activeLayer + 1}'));
@@ -147686,6 +148175,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
     switch (v) {
       case 'select':
         setState(() => _activeLayer = layer);
+        _tellActiveLayer();
         break;
       case 'add':
         _addPaintLayer();
@@ -149527,6 +150017,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
     //   画面に伝わらない (読み直しは中身が同じだと諦め、 見ていたタブを
     //   id で復元し直すため)。
     widget.provider.registerPaintSelectHandler(_mcpSelectBinderTab);
+    // ★ 開いた時点の層を伝えておく (= AI が置く絵の行き先)。
+    _tellActiveLayer();
     _load();
     _loadTextPresets();
     _loadTemplates();
@@ -154717,6 +155209,26 @@ class _PaintPageViewState extends State<_PaintPageView> {
         if (_sheets.length > 1)
           item('page:del', Icons.delete_outline_rounded,
               p.t('paint.deletePage')),
+        // ── タブ (ページ) の切替 ──
+        // ★ = ユーザー要望「カーソルの上下入力でタブが切り替わらないようにして、
+        //   その代わりに右クリックした際の項目としてタブを切り替えられる項目を」。
+        if (_sheets.length > 1) ...[
+          PopupMenuItem<String>(
+            enabled: false,
+            height: 24,
+            child: Text(p.t('paint.switchTab'),
+                style:
+                    const TextStyle(color: Colors.white38, fontSize: 10.5)),
+          ),
+          for (var i = 0; i < _sheets.length; i++)
+            item(
+                'page:sel:$i',
+                Icons.tab_rounded,
+                _sheets[i].name.trim().isEmpty
+                    ? p.t('paint.pageN').replaceFirst('{n}', '${i + 1}')
+                    : _sheets[i].name,
+                on: i == _sel),
+        ],
         if (_notes.length > 1) ...[
           PopupMenuItem<String>(
             enabled: false,
@@ -154761,6 +155273,11 @@ class _PaintPageViewState extends State<_PaintPageView> {
     }
     if (v == 'page:del') {
       await _deletePageAt(_sel);
+      return;
+    }
+    if (v.startsWith('page:sel:')) {
+      final i = int.tryParse(v.substring(9));
+      if (i != null && i >= 0 && i < _sheets.length) _selectPage(i);
       return;
     }
     if (v.startsWith('note:sel:')) {
@@ -175973,6 +176490,9 @@ enum _AddMenuAction {
   newFolder,
   importJson,
   openFolder,
+
+  /// 今開いているフォルダーの **1 つ上**を開く (= ユーザー要望)。
+  openParentFolder,
 
   /// 開いているフォルダーの中に空のファイルを作る (開かない)
   newFileHere,
@@ -250611,10 +251131,18 @@ $currentText
               }
             },
           ),
-          // ── このアプリの設定 (= ユーザー要望: ヘッダーの右端に) ──
-          //    この画面は本体の**上に重ねて**開くので、 引き出しにも本体の
-          //    ヘッダーにも手が届かない。 分割ペインの中 (compactHost) は
-          //    本物のヘッダーが見えているので出さない (二重になる)。
+          // ── ヘッダーを隠す ──
+          IconButton(
+            tooltip: context.read<MindMapProvider>().t('text.hideHeader'),
+            icon: Icon(Icons.keyboard_double_arrow_up_rounded,
+                color: fg.withValues(alpha: 0.7)),
+            onPressed: () => setState(() => _headerVisible = false),
+          ),
+          // ── このアプリの設定 ──
+          // ★ = ユーザー要望「一番右端は閉じるボタン、 二番目に設定ボタン」。
+          //   この画面は本体の**上に重ねて**開くので、 引き出しにも本体の
+          //   ヘッダーにも手が届かない。 分割ペインの中 (compactHost) は
+          //   本物のヘッダーが見えているので出さない (二重になる)。
           if (!widget.compactHost)
             IconButton(
               tooltip: context.read<MindMapProvider>().t('menu.settings'),
@@ -250622,13 +251150,6 @@ $currentText
                   color: fg.withValues(alpha: 0.75)),
               onPressed: () => openSettingsFromAnywhere?.call(context),
             ),
-          // ── ヘッダーを隠す (= ユーザー要望: 閉じるボタンの隣に配置) ──
-          IconButton(
-            tooltip: context.read<MindMapProvider>().t('text.hideHeader'),
-            icon: Icon(Icons.keyboard_double_arrow_up_rounded,
-                color: fg.withValues(alpha: 0.7)),
-            onPressed: () => setState(() => _headerVisible = false),
-          ),
           // Builder で × ボタン自身の context を取り、 未保存確認をその
           // すぐ近くに出す (= ユーザー要望: × の近くに出るように)。
           Builder(
@@ -256790,11 +257311,18 @@ class _OfficeFileTemplate {
           '<p:spTree>'
           '<p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>'
           '<p:grpSpPr/>'
-          // 全面の絵 (= 背景) → 飾りの図形 → 帯 → 見出し → 罫 → 本文 →
-          //   挿し絵 の順。
+          // 全面の絵 (= 背景) → 飾りの図形 → 帯 → 挿し絵 → 見出し →
+          //   罫 → 本文 の順。
+          // ★ = ユーザー要望「画像を生成する際は層を調節して、 全ての要素を
+          //   選択して触れられる形で」。 挿し絵を**一番最後** (= 一番手前) に
+          //   出していたのを、 文字の物より前へ移した。 絵は紙の半分を
+          //   占めるので、 手前にいると見出しや本文の枠を押した時に
+          //   絵の方を拾ってしまう事があった (重なりのある配置の時)。
+          //   見た目は変わらない (場所が別なので重ならない)。
           '$backdrop'
           '$deco'
           '$topBand'
+          '$overlayPic'
           // 見出し (紙の上に直接置く)。 id は 2 のまま = 動きの指定が
           //   そのまま効く。
           '<p:sp><p:nvSpPr><p:cNvPr id="2" name="Title"/>'
@@ -256823,7 +257351,6 @@ class _OfficeFileTemplate {
           '<p:txBody><a:bodyPr wrap="square" '
           'lIns="0" rIns="91440" tIns="45720" bIns="45720">'
           '<a:normAutofit/></a:bodyPr><a:lstStyle/>$body</p:txBody></p:sp>'
-          '$overlayPic'
           '</p:spTree></p:cSld>'
           // ── 動き (= ユーザー要望: AI にアニメーション付きの資料を作らせる)。
           //    見出し (id 2) → 本文 (id 3) → 挿し絵 (id 4) の順に、
@@ -273377,6 +273904,10 @@ class _McpChatDialogState extends State<_McpChatDialog>
   /// Pro 以上でない時に、 ボタンの代わりに出す案内
   /// (= ユーザー要望: 入れて画面を開いたら、 契約が要る旨を出す)。
   Widget _buildCliProRequired(MindMapProvider provider) {
+    // ★ = ユーザー要望「CLI はログインなしで利用できないように」。
+    //   プランは足りていてログインだけが無い時は、 加入の案内ではなく
+    //   ログインの案内を出す (違う事を言われても直しようが無い)。
+    if (provider.cliNeedsSignIn) return _buildCliSignInRequired(provider);
     return Container(
       width: double.infinity,
       margin: const EdgeInsets.symmetric(vertical: 6),
@@ -273403,6 +273934,78 @@ class _McpChatDialogState extends State<_McpChatDialog>
         Text(provider.t('cli.proRequiredBody'),
             style: const TextStyle(
                 color: Colors.white70, fontSize: 11.5, height: 1.6)),
+      ]),
+    );
+  }
+
+  /// その場でログインする (CLI の案内の板から)。
+  ///
+  /// ブラウザが開くので、 開いた事と結果を短く伝える。
+  Future<void> _signInWithGoogleFromSettings(MindMapProvider provider) async {
+    if (!mounted) return;
+    showTopToast(context, provider.t('account.openingBrowser'),
+        const Color(0xFF4FC3F7));
+    try {
+      final who = await provider.signInWithGoogle();
+      if (!mounted) return;
+      showTopToast(
+          context,
+          who == null
+              ? provider.t('account.cancelled')
+              : provider.t('account.signedInAs').replaceFirst('{who}', who),
+          who == null ? const Color(0xFFFFB347) : const Color(0xFF43B97F));
+      setState(() {});
+    } catch (e) {
+      if (!mounted) return;
+      showTopToast(context, '$e', const Color(0xFFE53935));
+    }
+  }
+
+  /// CLI を使うにはログインが要る、 と伝える板。
+  ///
+  /// ★ = ユーザー要望「ログインなしで API キーを自前で用意して CLI は
+  ///   使う想定ではない」。 その場でログインへ行けるようにしておく。
+  Widget _buildCliSignInRequired(MindMapProvider provider) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF4FC3F7).withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(10),
+        border:
+            Border.all(color: const Color(0xFF4FC3F7).withValues(alpha: 0.5)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          const Icon(Icons.login_rounded, size: 16, color: Color(0xFF4FC3F7)),
+          const SizedBox(width: 7),
+          Expanded(
+            child: Text(provider.t('cli.signInRequired'),
+                style: const TextStyle(
+                    color: Color(0xFF4FC3F7),
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w700)),
+          ),
+        ]),
+        const SizedBox(height: 7),
+        Text(provider.t('cli.signInRequiredBody'),
+            style: const TextStyle(
+                color: Colors.white70, fontSize: 11.5, height: 1.6)),
+        const SizedBox(height: 8),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(
+            style: TextButton.styleFrom(
+              foregroundColor: const Color(0xFF4FC3F7),
+              visualDensity: VisualDensity.compact,
+            ),
+            icon: const Icon(Icons.account_circle_rounded, size: 16),
+            label: Text(provider.t('account.signIn'),
+                style: const TextStyle(fontSize: 12)),
+            onPressed: () => unawaited(_signInWithGoogleFromSettings(provider)),
+          ),
+        ),
       ]),
     );
   }
