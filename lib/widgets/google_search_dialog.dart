@@ -1106,7 +1106,13 @@ class GoogleSearchAutomationHost extends StatelessWidget {
     super.key,
     required this.onRequestClose,
     this.hostHasCloseButton = false,
+    this.storageKey = '',
   });
+
+  /// 手順の置き場。 空なら道具として開いた時と同じ共通の置き場を使う。
+  /// ページとして開く時は、 そのページ専用の鍵を渡す
+  /// (= ユーザー要望: 自動操作をページとして設定できるように)。
+  final String storageKey;
 
   /// 「閉じる」 が押された時の処理。 Overlay / 別プロセス窓には pop すべき
   /// route が無いので必須 (Navigator.pop の誤爆防止)。
@@ -1128,6 +1134,7 @@ class GoogleSearchAutomationHost extends StatelessWidget {
         onAddNode: (title, memo, linkUrl) {},
         openAutomation: true,
         automationOnly: true,
+        automationStorageKey: storageKey,
         hostHasCloseButton: hostHasCloseButton,
         onRequestClose: onRequestClose,
         windowWidth: cns.maxWidth.isFinite ? cns.maxWidth : null,
@@ -1207,6 +1214,10 @@ class _GoogleSearchPage extends StatefulWidget {
   /// 自動操作の窓だけを見せるか (= ユーザー要望)。
   final bool automationOnly;
 
+  /// 自動操作の手順の置き場 (空 = 道具として開いた時の共通の置き場)。
+  /// ページとして開いた時だけ、 そのページ専用の鍵が入る。
+  final String automationStorageKey;
+
   /// 外側の帯がすでに閉じるを持っているか (= × の重複を避ける)。
   final bool hostHasCloseButton;
 
@@ -1228,6 +1239,7 @@ class _GoogleSearchPage extends StatefulWidget {
     this.minimalMode = false,
     this.openAutomation = false,
     this.automationOnly = false,
+    this.automationStorageKey = '',
     this.hostHasCloseButton = false,
     this.onExpandToCompact,
     this.onRequestClose,
@@ -5618,6 +5630,9 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
               Expanded(
                 child: WebAutomationPanel(
                   key: _autoPanelKey,
+                  // ページとして開いている時は、 そのページ専用の置き場
+                  // (= ユーザー要望: 自動操作をページとして設定できるように)。
+                  storageKey: widget.automationStorageKey,
                   // 外側の帯を出さない時は、 見出しの端に閉じるを出す。
                   // ただし、 包んでいる側 (浮遊窓の帯など) がもう閉じるを
                   // 持っているなら出さない (= ユーザー要望: × が 2 つあるのを

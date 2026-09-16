@@ -16,6 +16,13 @@ class RecStopHotkey {
   RecStopHotkey._();
   static final RecStopHotkey instance = RecStopHotkey._();
 
+  /// もう 1 つ別に立てる (= ユーザー要望で足したオートクリッカーの停止キー)。
+  ///
+  /// RegisterHotKey の id は「登録したスレッドごと」 に見るので、 同じ id の
+  /// まま別の isolate で立ててもぶつからない。 録画の停止キーと同時に
+  /// 待ち受けられる。
+  factory RecStopHotkey.separate() => RecStopHotkey._();
+
   Isolate? _iso;
   ReceivePort? _rp;
   int _threadId = 0;

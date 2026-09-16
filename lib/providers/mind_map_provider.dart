@@ -2120,6 +2120,9 @@ class MindMapProvider extends ChangeNotifier {
   static bool isMergeablePageType(String pageType) =>
       pageType != 'videoEditor' &&
       pageType != 'document' &&
+      // 自動操作のページは中身が「手順」 なので、 ノードをまとめる統合には
+      // 乗らない (= ユーザー要望で足した種別)。
+      pageType != 'automation' &&
       pageType != 'aiStudio';
 
   /// リアルタイム共同編集できるページ種別か (= ユーザー要望: 動画編集
@@ -2127,7 +2130,9 @@ class MindMapProvider extends ChangeNotifier {
   /// 動画編集の中身 (タイムライン) は prefs にしか無く、 共同編集の
   /// 経路では運べない。 入口を全部ここで揃える。
   static bool isLiveSharablePageType(String pageType) =>
-      pageType != 'videoEditor';
+      pageType != 'videoEditor' &&
+      // 自動操作の手順も prefs にしか無いので、 共同編集では運べない。
+      pageType != 'automation';
 
   final List<MindMapPage> _pages = [];
 
@@ -39733,6 +39738,368 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Новый видеоредактор',
       'fa': 'ویرایشگر ویدیو جدید',
     },
+    // ── 自動操作のページ / オートクリッカー (= ユーザー要望) ──
+    'drawer.newAutomationPage': {
+      'ja': '新規自動操作',
+      'en': 'New automation',
+      'zh': '新建自动操作',
+      'ko': '새 자동 조작',
+      'es': 'Nueva automatización',
+      'fr': 'Nouvelle automatisation',
+      'de': 'Neue Automatisierung',
+      'pt': 'Nova automação',
+      'ru': 'Новая автоматизация',
+    },
+    'page.automationUnavailable': {
+      'ja': '自動操作のページはパソコン版だけです',
+      'en': 'Automation pages are desktop only',
+      'zh': '自动操作页面仅限桌面版',
+      'ko': '자동 조작 페이지는 PC판 전용입니다',
+      'es': 'Las páginas de automatización solo están en el escritorio',
+      'fr': 'Les pages d\u2019automatisation sont réservées au bureau',
+      'de': 'Automatisierungsseiten gibt es nur am Desktop',
+      'pt': 'Páginas de automação são apenas para desktop',
+      'ru': 'Страницы автоматизации доступны только на компьютере',
+    },
+    'hdr.autoClicker': {
+      'ja': 'オートクリッカー',
+      'en': 'Auto clicker',
+      'zh': '连点器',
+      'ko': '오토 클리커',
+      'es': 'Auto clicker',
+      'fr': 'Clicker automatique',
+      'de': 'Auto-Klicker',
+      'pt': 'Auto clicker',
+      'ru': 'Автокликер',
+    },
+    'autoClicker.whereTitle': {
+      'ja': 'どこを押すか',
+      'en': 'Where to click',
+      'zh': '点击位置',
+      'ko': '어디를 누를지',
+      'es': 'Dónde hacer clic',
+      'fr': 'Où cliquer',
+      'de': 'Wohin klicken',
+      'pt': 'Onde clicar',
+      'ru': 'Куда нажимать',
+    },
+    'autoClicker.howTitle': {
+      'ja': 'どう押すか',
+      'en': 'How to click',
+      'zh': '点击方式',
+      'ko': '어떻게 누를지',
+      'es': 'Cómo hacer clic',
+      'fr': 'Comment cliquer',
+      'de': 'Wie klicken',
+      'pt': 'Como clicar',
+      'ru': 'Как нажимать',
+    },
+    'autoClicker.targetPoint': {
+      'ja': '覚えた場所',
+      'en': 'A saved point',
+      'zh': '记住的位置',
+      'ko': '기억한 위치',
+      'es': 'Un punto guardado',
+      'fr': 'Un point enregistré',
+      'de': 'Gemerkter Punkt',
+      'pt': 'Um ponto guardado',
+      'ru': 'Запомненная точка',
+    },
+    'autoClicker.targetCursor': {
+      'ja': '今カーソルがある所',
+      'en': 'Wherever the cursor is',
+      'zh': '当前光标处',
+      'ko': '지금 커서가 있는 곳',
+      'es': 'Donde esté el cursor',
+      'fr': 'Où se trouve le curseur',
+      'de': 'Wo der Zeiger gerade ist',
+      'pt': 'Onde o cursor estiver',
+      'ru': 'Там, где курсор',
+    },
+    'autoClicker.pick': {
+      'ja': '位置を覚える',
+      'en': 'Save a point',
+      'zh': '记住位置',
+      'ko': '위치 기억',
+      'es': 'Guardar un punto',
+      'fr': 'Enregistrer un point',
+      'de': 'Punkt merken',
+      'pt': 'Guardar um ponto',
+      'ru': 'Запомнить точку',
+    },
+    'autoClicker.pickHint': {
+      'ja': '押したい所へカーソルを動かしてください ({n})',
+      'en': 'Move the cursor where you want to click ({n})',
+      'zh': '请将光标移到要点击的位置 ({n})',
+      'ko': '누르고 싶은 곳으로 커서를 옮기세요 ({n})',
+      'es': 'Mueve el cursor donde quieras hacer clic ({n})',
+      'fr': 'Placez le curseur où cliquer ({n})',
+      'de': 'Zeiger dorthin bewegen, wo geklickt werden soll ({n})',
+      'pt': 'Mova o cursor para onde quer clicar ({n})',
+      'ru': 'Наведите курсор туда, куда нажимать ({n})',
+    },
+    'autoClicker.picked': {
+      'ja': '覚えました: ({x}, {y})',
+      'en': 'Saved: ({x}, {y})',
+      'zh': '已记住: ({x}, {y})',
+      'ko': '기억했습니다: ({x}, {y})',
+      'es': 'Guardado: ({x}, {y})',
+      'fr': 'Enregistré : ({x}, {y})',
+      'de': 'Gemerkt: ({x}, {y})',
+      'pt': 'Guardado: ({x}, {y})',
+      'ru': 'Запомнено: ({x}, {y})',
+    },
+    'autoClicker.pickFailed': {
+      'ja': 'カーソルの位置が取れませんでした',
+      'en': 'Could not read the cursor position',
+      'zh': '无法获取光标位置',
+      'ko': '커서 위치를 읽지 못했습니다',
+      'es': 'No se pudo leer la posición del cursor',
+      'fr': 'Impossible de lire la position du curseur',
+      'de': 'Zeigerposition konnte nicht gelesen werden',
+      'pt': 'Não foi possível ler a posição do cursor',
+      'ru': 'Не удалось получить положение курсора',
+    },
+    'autoClicker.btnLeft': {
+      'ja': '左',
+      'en': 'Left',
+      'zh': '左键',
+      'ko': '왼쪽',
+      'es': 'Izquierdo',
+      'fr': 'Gauche',
+      'de': 'Links',
+      'pt': 'Esquerdo',
+      'ru': 'Левая',
+    },
+    'autoClicker.btnRight': {
+      'ja': '右',
+      'en': 'Right',
+      'zh': '右键',
+      'ko': '오른쪽',
+      'es': 'Derecho',
+      'fr': 'Droit',
+      'de': 'Rechts',
+      'pt': 'Direito',
+      'ru': 'Правая',
+    },
+    'autoClicker.btnMiddle': {
+      'ja': '中',
+      'en': 'Middle',
+      'zh': '中键',
+      'ko': '가운데',
+      'es': 'Central',
+      'fr': 'Milieu',
+      'de': 'Mitte',
+      'pt': 'Meio',
+      'ru': 'Средняя',
+    },
+    'autoClicker.doubleClick': {
+      'ja': '2 回押し',
+      'en': 'Double click',
+      'zh': '双击',
+      'ko': '두 번 누르기',
+      'es': 'Doble clic',
+      'fr': 'Double clic',
+      'de': 'Doppelklick',
+      'pt': 'Duplo clique',
+      'ru': 'Двойное нажатие',
+    },
+    'autoClicker.interval': {
+      'ja': '間隔',
+      'en': 'Interval',
+      'zh': '间隔',
+      'ko': '간격',
+      'es': 'Intervalo',
+      'fr': 'Intervalle',
+      'de': 'Abstand',
+      'pt': 'Intervalo',
+      'ru': 'Интервал',
+    },
+    'autoClicker.repeat': {
+      'ja': '回数',
+      'en': 'How many',
+      'zh': '次数',
+      'ko': '횟수',
+      'es': 'Cuántas veces',
+      'fr': 'Combien de fois',
+      'de': 'Anzahl',
+      'pt': 'Quantas vezes',
+      'ru': 'Сколько раз',
+    },
+    'autoClicker.repeatZero': {
+      'ja': '0 = 止めるまでずっと',
+      'en': '0 = until you stop it',
+      'zh': '0 = 直到手动停止',
+      'ko': '0 = 멈출 때까지 계속',
+      'es': '0 = hasta que lo detengas',
+      'fr': '0 = jusqu\u2019à l\u2019arrêt',
+      'de': '0 = bis zum Stoppen',
+      'pt': '0 = até você parar',
+      'ru': '0 = пока не остановите',
+    },
+    'autoClicker.startDelay': {
+      'ja': '始めるまで',
+      'en': 'Start after',
+      'zh': '开始前等待',
+      'ko': '시작까지',
+      'es': 'Empezar tras',
+      'fr': 'Démarrer après',
+      'de': 'Start nach',
+      'pt': 'Começar após',
+      'ru': 'Начать через',
+    },
+    'autoClicker.secUnit': {
+      'ja': '秒',
+      'en': 'sec',
+      'zh': '秒',
+      'ko': '초',
+      'es': 's',
+      'fr': 's',
+      'de': 'Sek.',
+      'pt': 's',
+      'ru': 'с',
+    },
+    'autoClicker.timesUnit': {
+      'ja': '回',
+      'en': 'times',
+      'zh': '次',
+      'ko': '회',
+      'es': 'veces',
+      'fr': 'fois',
+      'de': 'mal',
+      'pt': 'vezes',
+      'ru': 'раз',
+    },
+    'autoClicker.start': {
+      'ja': '始める',
+      'en': 'Start',
+      'zh': '开始',
+      'ko': '시작',
+      'es': 'Iniciar',
+      'fr': 'Démarrer',
+      'de': 'Starten',
+      'pt': 'Iniciar',
+      'ru': 'Старт',
+    },
+    'autoClicker.stop': {
+      'ja': '止める',
+      'en': 'Stop',
+      'zh': '停止',
+      'ko': '정지',
+      'es': 'Detener',
+      'fr': 'Arrêter',
+      'de': 'Stoppen',
+      'pt': 'Parar',
+      'ru': 'Стоп',
+    },
+    'autoClicker.startingIn': {
+      'ja': '{n} 秒後に始めます',
+      'en': 'Starting in {n} s',
+      'zh': '{n} 秒后开始',
+      'ko': '{n}초 후 시작합니다',
+      'es': 'Empieza en {n} s',
+      'fr': 'Démarrage dans {n} s',
+      'de': 'Start in {n} s',
+      'pt': 'Começa em {n} s',
+      'ru': 'Старт через {n} с',
+    },
+    'autoClicker.running': {
+      'ja': '押しています (F9 で止まります)',
+      'en': 'Clicking (press F9 to stop)',
+      'zh': '点击中 (按 F9 停止)',
+      'ko': '누르는 중 (F9 로 정지)',
+      'es': 'Haciendo clic (pulsa F9 para parar)',
+      'fr': 'Clics en cours (F9 pour arrêter)',
+      'de': 'Klickt (F9 zum Stoppen)',
+      'pt': 'Clicando (pressione F9 para parar)',
+      'ru': 'Нажимает (F9 — стоп)',
+    },
+    'autoClicker.counter': {
+      'ja': '{n} 回押しました',
+      'en': '{n} clicks so far',
+      'zh': '已点击 {n} 次',
+      'ko': '{n}회 눌렀습니다',
+      'es': '{n} clics hasta ahora',
+      'fr': '{n} clics jusqu\u2019ici',
+      'de': 'Bisher {n} Klicks',
+      'pt': '{n} cliques até agora',
+      'ru': 'Нажатий: {n}',
+    },
+    'autoClicker.stopped': {
+      'ja': '止めました ({n} 回)',
+      'en': 'Stopped ({n} clicks)',
+      'zh': '已停止 ({n} 次)',
+      'ko': '멈췄습니다 ({n}회)',
+      'es': 'Detenido ({n} clics)',
+      'fr': 'Arrêté ({n} clics)',
+      'de': 'Gestoppt ({n} Klicks)',
+      'pt': 'Parado ({n} cliques)',
+      'ru': 'Остановлено ({n})',
+    },
+    'autoClicker.stoppedByKey': {
+      'ja': 'F9 で止めました',
+      'en': 'Stopped with F9',
+      'zh': '已用 F9 停止',
+      'ko': 'F9 로 멈췄습니다',
+      'es': 'Detenido con F9',
+      'fr': 'Arrêté avec F9',
+      'de': 'Mit F9 gestoppt',
+      'pt': 'Parado com F9',
+      'ru': 'Остановлено клавишей F9',
+    },
+    'autoClicker.done': {
+      'ja': '終わりました ({n} 回)',
+      'en': 'Finished ({n} clicks)',
+      'zh': '已完成 ({n} 次)',
+      'ko': '끝났습니다 ({n}회)',
+      'es': 'Terminado ({n} clics)',
+      'fr': 'Terminé ({n} clics)',
+      'de': 'Fertig ({n} Klicks)',
+      'pt': 'Concluído ({n} cliques)',
+      'ru': 'Готово ({n})',
+    },
+    'autoClicker.failed': {
+      'ja': '押せませんでした',
+      'en': 'The click did not go through',
+      'zh': '点击未成功',
+      'ko': '누르지 못했습니다',
+      'es': 'El clic no se envió',
+      'fr': 'Le clic n\u2019est pas passé',
+      'de': 'Der Klick ging nicht durch',
+      'pt': 'O clique não passou',
+      'ru': 'Нажатие не прошло',
+    },
+    'autoClicker.windowsOnly': {
+      'ja': 'オートクリッカーは Windows 版だけです',
+      'en': 'The auto clicker is Windows only',
+      'zh': '连点器仅限 Windows 版',
+      'ko': '오토 클리커는 Windows 판 전용입니다',
+      'es': 'El auto clicker es solo para Windows',
+      'fr': 'Le clicker automatique est réservé à Windows',
+      'de': 'Den Auto-Klicker gibt es nur für Windows',
+      'pt': 'O auto clicker é apenas para Windows',
+      'ru': 'Автокликер только для Windows',
+    },
+    'autoClicker.note': {
+      'ja': '押すのはパソコンの画面そのものです。 この窓を閉じると必ず止まります。 '
+          '手順を組み合わせたい時 (文字を打つ・待つ・撮る…) は自動操作の方をどうぞ。',
+      'en': 'This clicks the real desktop. Closing this window always stops it. '
+          'For longer sequences (typing, waiting, screenshots) use the automation panel.',
+      'zh': '点击的是电脑桌面本身。关闭此窗口即会停止。'
+          '需要组合步骤 (输入、等待、截图) 时请用自动操作。',
+      'ko': '누르는 대상은 PC 화면 자체입니다. 이 창을 닫으면 반드시 멈춥니다. '
+          '여러 단계를 엮으려면 자동 조작을 사용하세요.',
+      'es': 'Esto hace clic en el escritorio real. Al cerrar la ventana siempre se detiene. '
+          'Para secuencias más largas usa el panel de automatización.',
+      'fr': 'Ceci clique sur le bureau réel. Fermer la fenêtre l\u2019arrête toujours. '
+          'Pour des séquences plus longues, utilisez le panneau d\u2019automatisation.',
+      'de': 'Das klickt auf den echten Desktop. Fenster schließen stoppt es immer. '
+          'Für längere Abläufe das Automatisierungs-Panel nutzen.',
+      'pt': 'Isto clica na área de trabalho real. Fechar a janela sempre para. '
+          'Para sequências maiores use o painel de automação.',
+      'ru': 'Нажимает по реальному рабочему столу. Закрытие окна всегда останавливает. '
+          'Для длинных сценариев используйте панель автоматизации.',
+    },
     // ★ ストア提出版で取り残された動画編集ページを開いた時の案内。
     'page.videoEditorUnavailable': {
       'ja': 'この版では動画編集を開けません',
@@ -51611,12 +51978,12 @@ class MindMapProvider extends ChangeNotifier {
     'cli.autonomyAutoHint': {
       'ja': 'たずねずに進めます。 書き換えるのは作業フォルダーの中だけなので、'
           'ほかの場所は触りません。\n'
-          '※ Codex は確認を一切しません。 Claude Code と Gemini CLI は'
+          '※ Codex は確認を一切しません。 Claude Code は'
           'ファイルの書き換えだけ自動で、 その他の命令は都度たずねます。',
       'en': 'Runs without asking. It can only change files inside its work '
           'folder, so nothing else is touched.\n'
-          'Note: Codex never asks here. Claude Code and Gemini CLI '
-          'auto-approve file edits only; other commands are still confirmed.',
+          'Note: Codex never asks here. Claude Code auto-approves file '
+          'edits only; other commands are still confirmed.',
       'zh': '不询问直接执行。只能修改工作文件夹内的文件，不会动其他地方。',
       'ko': '묻지 않고 진행합니다. 작업 폴더 안만 고칠 수 있어 다른 곳은 건드리지 않습니다.',
       'es': 'Avanza sin preguntar. Solo puede cambiar archivos de su carpeta '
@@ -52013,19 +52380,6 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Gib den hier gezeigten Code auf einem anderen Gerat oder Browser ein. Es wird kein lokaler Port geoffnet.',
       'pt': 'Digite o codigo mostrado aqui em outro dispositivo ou navegador. Nenhuma porta local e aberta.',
       'ru': 'Vvedite kod s ekrana na drugom ustroystve ili v brauzere. Lokalnyy port ne otkryvaetsya.',
-    },
-    'cli.geminiKeyHint': {
-      'ja': '設定で Gemini の API キーを入れておくと、 ログインなしで使えます '
-          '(ブラウザも待ち受けも使わないので、 セキュリティソフトに止められません)。',
-      'en': 'Put a Gemini API key in Settings and it works with no sign-in at all '
-          '(no browser, no local listener, nothing for security software to block).',
-      'zh': '在设置中填入 Gemini API 密钥即可免登录使用（不用浏览器也不开本地端口）。',
-      'ko': '설정에 Gemini API 키를 넣으면 로그인 없이 사용할 수 있습니다 (브라우저도 대기 포트도 쓰지 않습니다).',
-      'es': 'Pon una clave API de Gemini en Ajustes y funciona sin iniciar sesion (sin navegador ni puerto local).',
-      'fr': 'Mettez une cle API Gemini dans les reglages : aucune connexion n’est necessaire (ni navigateur ni port local).',
-      'de': 'Trage einen Gemini-API-Schlussel in den Einstellungen ein, dann ist keine Anmeldung notig (kein Browser, kein lokaler Port).',
-      'pt': 'Coloque uma chave de API do Gemini nas configuracoes e funciona sem login (sem navegador nem porta local).',
-      'ru': 'Ukazhite klyuch Gemini API v nastroykah — vhod ne nuzhen (bez brauzera i lokalnogo porta).',
     },
     'cli.hintLogin': {
       'ja':
@@ -72019,10 +72373,50 @@ class MindMapProvider extends ChangeNotifier {
   /// 使った分を 0 に戻す (= もう一度上限まで試せるように)。
   Future<void> resetDevSelfSpent() async {
     _devSelfSpentUsd = 0;
+    _devSelfCalls = 0;
     notifyListeners();
     try {
       final prefs = await _prefsWithRetry();
       await prefs.setDouble('dev_self_spent_usd', 0);
+      await prefs.setInt('dev_self_calls', 0);
+    } catch (_) {}
+  }
+
+  // ── AI の「呼び出し回数」 の上限 (= ユーザー要望: MCP から上限を決めて
+  //    試せるように)。 金額の上限だけだと、 1 回が安いモデルでは何十回
+  //    呼んでも止まらず、 「上限に当たった時の見え方」 を確かめづらい。
+  //    0 = 掛けていない。 開発者モードの間だけ効く。 ──
+  int _devSelfCapCalls = 0;
+  int _devSelfCalls = 0;
+
+  /// 自分に掛けている呼び出し回数の上限。 0 = 掛けていない。
+  int get devSelfCapCalls => _devSelfCapCalls;
+
+  /// その上限に対して今まで何回呼んだか。
+  int get devSelfCalls => _devSelfCalls;
+
+  bool get devSelfCallCapActive => _developerMode && _devSelfCapCalls > 0;
+
+  bool get devSelfCallCapReached =>
+      devSelfCallCapActive && _devSelfCalls >= _devSelfCapCalls;
+
+  Future<void> setDevSelfCapCalls(int calls) async {
+    if (!_developerMode) return;
+    _devSelfCapCalls = calls < 0 ? 0 : calls;
+    notifyListeners();
+    try {
+      final prefs = await _prefsWithRetry();
+      await prefs.setInt('dev_self_cap_calls', _devSelfCapCalls);
+    } catch (_) {}
+  }
+
+  Future<void> _addDevSelfCall() async {
+    if (!devSelfCallCapActive) return;
+    _devSelfCalls += 1;
+    notifyListeners();
+    try {
+      final prefs = await _prefsWithRetry();
+      await prefs.setInt('dev_self_calls', _devSelfCalls);
     } catch (_) {}
   }
 
@@ -72039,6 +72433,15 @@ class MindMapProvider extends ChangeNotifier {
   /// 代行を呼ぶ前の関所。 上限に達していたら、 サーバーが返すのと同じ
   /// 文言で止める (= 利用者に出る見え方をそのまま確かめられる)。
   void _guardDevSelfCap() {
+    // ★ 回数の上限 (= ユーザー要望)。 金額と同じく、 利用者に出るのと
+    //   そっくり同じ文言で止める。
+    if (devSelfCallCapReached) {
+      _notifyCreditShort();
+      throw Exception(t('credit.insufficient'));
+    }
+    // ここを通ったら 1 回ぶん数える (通らなかった呼び出しは数えない)。
+    // ignore: discarded_futures
+    _addDevSelfCall();
     if (devSelfCapReached) {
       // ★ 文言も利用者とそっくり同じにする (= ユーザー要望: 実際のユーザーが
       //   使う画面のテストがしたい)。 開発者向けの言い回しにすると、
@@ -78379,6 +78782,8 @@ class MindMapProvider extends ChangeNotifier {
     _devSelfUploadCapBytes = prefs.getInt('dev_self_upload_cap_bytes') ?? 0;
     _uploadCapBytes = prefs.getInt('uploadCapBytes') ?? 0;
     _devSelfSpentUsd = prefs.getDouble('dev_self_spent_usd') ?? 0;
+    _devSelfCapCalls = prefs.getInt('dev_self_cap_calls') ?? 0;
+    _devSelfCalls = prefs.getInt('dev_self_calls') ?? 0;
     _devImpersonatePlan = planStr == null
         ? SubscriptionPlan.dev
         : SubscriptionPlan.values.firstWhere(
@@ -82097,25 +82502,22 @@ class MindMapProvider extends ChangeNotifier {
     } catch (_) {}
   }
 
-  /// PC の CLI に渡す環境変数。
+  /// PC の CLI に渡す環境変数 (今は空)。
   ///
-  /// ★ = ユーザー報告「gemini CLI にログインしようとするとセキュリティソフト
-  ///   にブロックされてしまう」。 Gemini CLI の Google ログインは、 CLI が
-  ///   自分で **127.0.0.1 の待ち受けを立ててブラウザからの戻りを受ける**形。
-  ///   画面のあるアプリの子が勝手に待ち受けを立てる形は、 セキュリティソフト
-  ///   が真っ先に止める。 アプリが既に預かっている API キーを環境変数で渡せば、
-  ///   ブラウザも待ち受けも要らない (= ログインの手順そのものを回避する)。
-  ///   キーを入れていない時は何も渡さないので、 今までどおりの動き。
+  /// ★ 昔はここで Gemini の API キーを渡していた。 = ユーザー報告
+  ///   「gemini CLI にログインしようとするとセキュリティソフトにブロック
+  ///   されてしまう」 への迂回で、 Gemini CLI の Google ログインは CLI 自身が
+  ///   127.0.0.1 の待ち受けを立てる形なので必ず止められていたため。
+  ///   その後 Gemini CLI は一覧から外した (= API キーでしか使えないなら、
+  ///   「契約しているぶんを使う」 というこの画面の前提に合わない) ので、
+  ///   渡す物は無くなった。 呼び口は残してあるので、 必要になったら足す。
   Map<String, String> cliAiEnvironment() {
-    final out = <String, String>{};
-    final g = (_geminiApiKey ?? '').trim();
-    if (g.isNotEmpty) {
-      out['GEMINI_API_KEY'] = g;
-      // 認証の種類を聞かれずに済ませる (知らない版では黙って無視される)。
-      out['GEMINI_DEFAULT_AUTH_TYPE'] = 'gemini-api-key';
-      out['GOOGLE_GENAI_USE_VERTEXAI'] = 'false';
-    }
-    return out;
+    // ★ Gemini CLI を一覧から外したので、 ここで渡す物はもう無い
+    //   (= ユーザー判断: API キーでしか使えないなら置かない)。
+    //   相手は Claude Code と Codex だけになったため、 利用者の Gemini の
+    //   鍵を関係の無い子プロセスへ渡さない。 CLI が増えて渡す物が出来たら、
+    //   ここへ足す。
+    return const <String, String>{};
   }
 
   /// 1 回聞く相手の名前 (「PC内AI (Claude Code)」 の括弧の中)。
@@ -96126,6 +96528,9 @@ $cleanQ
         return ja ? 'ギャラリー ' : 'Gallery ';
       case 'memberSchedule':
         return ja ? '予定表 ' : 'Schedule ';
+      // ★ = ユーザー要望「自動操作はページとして設定できるように」。
+      case 'automation':
+        return ja ? '自動操作 ' : 'Automation ';
       default:
         return _defaultPageNamePrefixFor(lang);
     }
@@ -96324,6 +96729,29 @@ $cleanQ
       autoSavePageIfLinked(page.id);
     }
   }
+
+  /// 自動操作のページを作る (= ユーザー要望: 自動操作はページとして設定
+  /// できるように)。 pageType='automation'。 手順はノードとは独立に prefs
+  /// (webAutomationSteps_v1_<pageId>) へ保存する。
+  ///
+  /// ★ パソコン版だけ。 アプリの外のブラウザやパソコンそのものを動かす
+  ///   仕組みなので、 スマホには置き場が無い。
+  void addAutomationPage({String? name, String? folderId}) {
+    if (!canUseAutomationPage) return;
+    final page = _addDefaultPage(
+        name: name, folderId: folderId, pageType: 'automation');
+    if (page == null) return;
+    _currentPageIndex = _pages.length - 1;
+    _selectedNodeId = null;
+    _saveToStorage();
+    notifyListeners();
+  }
+
+  /// 自動操作のページを置ける環境か (= パソコン版 + Pro 以上)。
+  bool get canUseAutomationPage =>
+      !kIsWeb &&
+      (Platform.isWindows || Platform.isMacOS || Platform.isLinux) &&
+      canUseWebAutomation;
 
   void addDocumentPage({String? name, String? folderId}) {
     final page =
@@ -99556,6 +99984,69 @@ $cleanQ
     final total = _pages.length;
     final shown = mcpNearbyPages(max: max).length;
     return total - shown < 0 ? 0 : total - shown;
+  }
+
+  // ─── 開発者モードの上限いじり (= ユーザー要望: MCP から上限を決めて、
+  //     上限に当たった時の見え方を試せるように) ────────────────────────
+  //
+  // ★ 開発者の枠は実質無制限なので、 これが無いと「上限に当たって止まる」
+  //   場面を手元で作れない。 画面のボタン (1 段ずつ上げる) と同じ値を、
+  //   AI からまとめて決められるようにする。 開発者モードの間だけ効く。
+
+  /// 今の上限と使った量 (読むだけ)。
+  Map<String, dynamic> mcpDevLimits() {
+    double mb(int b) => b / 1024 / 1024;
+    return {
+      'developerMode': _developerMode,
+      'plan': currentPlan.name,
+      'upload': {
+        // 自分に掛けている上限 (0 = 掛けていない)
+        'capMb': mb(_devSelfUploadCapBytes),
+        'active': devSelfUploadCapActive,
+        'usedMb': mb(monthlyUploadBytes),
+        // 実際に効いている上限 (プランの枠と、 掛けた上限の小さい方)
+        'effectiveMb': mb(monthlyUploadLimit),
+        'remainingMb': mb(monthlyUploadRemaining),
+      },
+      'ai': {
+        'capUsd': _devSelfCapUsd,
+        'spentUsd': _devSelfSpentUsd,
+        'capReached': devSelfCapReached,
+        'capCalls': _devSelfCapCalls,
+        'calls': _devSelfCalls,
+        'callCapReached': devSelfCallCapReached,
+      },
+    };
+  }
+
+  /// 上限をまとめて決める。 渡さなかった物は変えない。
+  /// 0 を渡すと「掛けない」 に戻る。 戻り値は断り文句 (成功なら null)。
+  Future<String?> mcpSetDevLimits({
+    double? uploadMb,
+    double? aiUsd,
+    int? aiCalls,
+    bool resetUploadUsage = false,
+    bool resetAiUsage = false,
+  }) async {
+    if (!_developerMode) {
+      return 'developer mode is off - these limits only exist for testing '
+          'and can only be changed while developer mode is on.';
+    }
+    if (uploadMb != null) {
+      if (uploadMb < 0) return 'uploadMb must be 0 or more (0 = no cap)';
+      await setDevSelfUploadCapBytes((uploadMb * 1024 * 1024).round());
+    }
+    if (aiUsd != null) {
+      if (aiUsd < 0) return 'aiUsd must be 0 or more (0 = no cap)';
+      await setDevSelfCapUsd(aiUsd);
+    }
+    if (aiCalls != null) {
+      if (aiCalls < 0) return 'aiCalls must be 0 or more (0 = no cap)';
+      await setDevSelfCapCalls(aiCalls);
+    }
+    if (resetUploadUsage) await resetDevSelfUploadUsage();
+    if (resetAiUsage) await resetDevSelfSpent();
+    return null;
   }
 
   List<Map<String, dynamic>> mcpListPages() => [

@@ -573,6 +573,14 @@ class WebAutomationPanel extends StatefulWidget {
   /// 見出しの端に「閉じる」 を出すか (= ユーザー要望: 窓いっぱいに
   /// 広げた時は、 外側の帯を出さずこの見出しだけにする)。
   final bool showCloseButton;
+
+  /// 組み立て中の手順の置き場。 空なら今までどおり 1 つを共有する。
+  ///
+  /// ★ = ユーザー要望「自動操作はページとして設定できるように」。
+  ///   ページごとに手順を持たせたいので、 置き場を外から差せるようにする。
+  ///   道具として開いた時 (ヘッダーのボタン・浮遊窓・外の窓) は空のまま
+  ///   なので、 今までと同じ 1 つの置き場を使う。
+  final String storageKey;
   const WebAutomationPanel({
     super.key,
     required this.exec,
@@ -587,6 +595,7 @@ class WebAutomationPanel extends StatefulWidget {
     this.onRunningChanged,
     this.onRecordingChanged,
     this.showCloseButton = false,
+    this.storageKey = '',
   });
 
   @override
@@ -594,7 +603,11 @@ class WebAutomationPanel extends StatefulWidget {
 }
 
 class WebAutomationPanelState extends State<WebAutomationPanel> {
-  static const _prefsKey = 'webAutomationSteps_v1';
+  static const _kDefaultPrefsKey = 'webAutomationSteps_v1';
+
+  /// この画面の手順の置き場 (ページごとに分かれる。 道具として開いた時は共通)。
+  String get _prefsKey =>
+      widget.storageKey.isEmpty ? _kDefaultPrefsKey : widget.storageKey;
 
   /// 中身を広げる上限。
   ///

@@ -54,6 +54,19 @@ class McpServer {
     'generate_page_background',
     // ★ 利用者のクラウドの枠を使う (月の上限が減る)。 外部からは既定で出さない。
     'cloud_sync',
+    // ★ 開発者モードの上限いじり。 中身を試すための物なので、 外の
+    //   プログラムからは既定で見せない (開発者モードでない時は、 呼んでも
+    //   断られる)。
+    'get_dev_limits',
+    'set_dev_limits',
+  };
+
+  /// 開発者モードの間だけ使える道具。 中身を試すための物なので、 ふだんは
+  /// 一覧にも出さない (= ユーザー要望: 開発者モードであれば設定してテスト
+  /// できるように)。
+  static const Set<String> kDevOnlyTools = {
+    'get_dev_limits',
+    'set_dev_limits',
   };
 
   final MindMapProvider _provider;
@@ -262,13 +275,16 @@ class McpServer {
       case 'tools/list':
         // 外部へは、 許していない道具をそもそも見せない
         //   (見えると AI が使おうとして失敗し続ける)。
+        // ★ 開発者モードの上限いじりも同じ理由で、 開発者モードでない間は
+        //   出さない (= ユーザー要望: 開発者モードの時だけ試せるように)。
         return {
-          'tools': allowPowerfulTools
-              ? toolDefs
-              : [
-                  for (final t in toolDefs)
-                    if (!kPowerfulTools.contains(t['name'])) t,
-                ],
+          'tools': [
+            for (final t in toolDefs)
+              if ((allowPowerfulTools || !kPowerfulTools.contains(t['name'])) &&
+                  (_provider.developerMode ||
+                      !kDevOnlyTools.contains(t['name'])))
+                t,
+          ],
         };
       case 'tools/call':
         final name = params['name'] as String? ?? '';
@@ -318,6 +334,7 @@ class McpServer {
     'read_paint_items',
     'list_video_editor_items',
     'list_orphan_files',
+    'get_dev_limits',
   };
 
   static Map<String, dynamic> _tool(
@@ -371,6 +388,51 @@ class McpServer {
     // ★ isCurrent を必ず説明に書く (= ユーザー報告: 「このページ消して」 で
     //   全ページを消しにいった)。 どれが「今のページ」 かを知る手立てが
     //   説明に無いと、 AI は当てずっぽうで全部に手を出す。
+    // ── 開発者モードの上限いじり (= ユーザー要望: MCP で開発者モードなら
+    //    ファイルの上げられる量や AI の呼び出し上限を決めて試せるように) ──
+    _tool(
+        'get_dev_limits',
+        'Read the developer-mode test limits and how much has been used: '
+        'the self-imposed upload cap (MB) with the MB uploaded this month, '
+        'and the self-imposed AI caps (US dollars spent, and number of AI '
+        'calls made). Also returns developerMode and the acting plan. These '
+        'caps exist so the developer can see what a normal user sees when a '
+        'limit is hit - a developer account is otherwise effectively '
+        'unlimited. Read-only.',
+        {}),
+    _tool(
+        'set_dev_limits',
+        'Set the developer-mode test limits, so you can check what happens '
+        'when a limit is reached. Only works while developer mode is on; '
+        'otherwise it refuses and changes nothing. Pass only the ones you '
+        'want to change - anything you leave out stays as it is, and 0 means '
+        '"no cap". uploadMb caps how much can be uploaded to the cloud this '
+        'month. aiUsd caps how many US dollars of AI the app will spend. '
+        'aiCalls caps how many AI calls can be made. Use resetUploadUsage / '
+        'resetAiUsage to put the used amounts back to 0 so the same limit can '
+        'be tested again. Call get_dev_limits afterwards to confirm.',
+        {
+          'uploadMb': {
+            'type': 'number',
+            'description': 'Upload cap in MB for this month. 0 = no cap.'
+          },
+          'aiUsd': {
+            'type': 'number',
+            'description': 'AI spending cap in US dollars. 0 = no cap.'
+          },
+          'aiCalls': {
+            'type': 'integer',
+            'description': 'How many AI calls are allowed. 0 = no cap.'
+          },
+          'resetUploadUsage': {
+            'type': 'boolean',
+            'description': 'Put the amount uploaded this month back to 0.'
+          },
+          'resetAiUsage': {
+            'type': 'boolean',
+            'description': 'Put the spent dollars and call count back to 0.'
+          },
+        }),
     _tool('list_pages',
         'List all pages (id, name, type: normal/bookshelf/paint/..., node '
         'count, isCurrent, lastModified). isCurrent is true for the one page '
@@ -2063,6 +2125,30 @@ class McpServer {
           return _ok('自動操作に渡しました: $text\n'
               '実行の様子と結果は自動操作の画面に出ます。 '
               '利用者の許可設定によっては確認を求めるか、 断ることがあります。');
+        }
+      // ── 開発者モードの上限いじり (= ユーザー要望) ──
+      case 'get_dev_limits':
+      case 'set_dev_limits':
+        {
+          // 一覧に出していなくても名前さえ知っていれば呼べるので、 ここでも見る。
+          if (!_provider.developerMode) {
+            return _err('developer mode is off - these test limits can only '
+                'be read or changed while developer mode is on.');
+          }
+          if (name == 'get_dev_limits') return _ok(_provider.mcpDevLimits());
+          final uploadMb = numOf('uploadMb');
+          final aiUsd = numOf('aiUsd');
+          final aiCalls = intOf('aiCalls');
+          if (intErr != null) return _err(intErr!);
+          final err = await _provider.mcpSetDevLimits(
+            uploadMb: uploadMb,
+            aiUsd: aiUsd,
+            aiCalls: aiCalls,
+            resetUploadUsage: a['resetUploadUsage'] == true,
+            resetAiUsage: a['resetAiUsage'] == true,
+          );
+          if (err != null) return _err(err);
+          return _ok(_provider.mcpDevLimits());
         }
       case 'list_pages':
         {

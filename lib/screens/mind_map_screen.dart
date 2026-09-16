@@ -64,6 +64,7 @@ import '../widgets/agent_terminal.dart';
 import '../widgets/connection_painter.dart';
 import '../widgets/node_widget.dart';
 import '../widgets/google_search_dialog.dart';
+import '../widgets/auto_clicker.dart';
 import '../widgets/paywall_hook.dart';
 import '../widgets/read_aloud.dart';
 import '../widgets/pdf_draw_layer.dart';
@@ -11475,6 +11476,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     'inquiry',
     // 自動操作も左右分割で (= ユーザー要望)。
     'webAutomation',
+    // オートクリッカーも同じ (= ユーザー要望で足した道具)。
+    'autoClicker',
   };
 
   /// 開き方を選べるボタンか (= URL を開くボタン + 上の道具ボタン)。
@@ -11484,7 +11487,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       // = ユーザー要望: Google 検索と自動化も左右分割 / フローティングで
       //   開けるように。
       commandId == 'googleSearch' ||
-      commandId == 'webAutomation';
+      commandId == 'webAutomation' ||
+      commandId == 'autoClicker';
 
   /// そのボタンで選べる開き方の一覧。 道具ボタンは全画面とフローティングだけ。
   List<String> _openStylesFor(String commandId) {
@@ -11512,7 +11516,8 @@ class _MindMapScreenState extends State<MindMapScreen>
         commandId == 'inquiry' ||
         // 面接練習も左右分割 / フローティングで開ける (= ユーザー要望)。
         _isTalkPracticeCommand(commandId) ||
-        commandId == 'webAutomation') {
+        commandId == 'webAutomation' ||
+        commandId == 'autoClicker') {
       return const ['full', 'floating', 'splitLeft', 'splitRight'];
     }
     return _floatableToolCommands.contains(commandId)
@@ -45359,6 +45364,16 @@ class _MindMapScreenState extends State<MindMapScreen>
       'color': Color(0xFF80CBC4),
     },
     {
+      // オートクリッカー (= ユーザー要望:「画面タップなどの操作は
+      //   オートクリッカーって名前でボタン項目として別で作って欲しい」)。
+      //   自動操作の中の「画面を押す手順」 だけを切り出した小さな道具。
+      //   自動操作の方でも今までどおり押す手順は使える。
+      'id': 'autoClicker',
+      'labelKey': 'hdr.autoClicker',
+      'icon': Icons.ads_click_rounded,
+      'color': Color(0xFF4DD0E1),
+    },
+    {
       // ファイルを作成 (= ユーザー要望: モバイルはキャンバス右クリックが
       //   使えず「ファイルを生成」 に辿り着けないので、 ボタンとして出す)。
       //   押すと形式と名前を聞いて、 画面の中央にファイルノードを作る。
@@ -45646,6 +45661,8 @@ class _MindMapScreenState extends State<MindMapScreen>
         'googleSearch',
         // 自動化 (= ユーザー要望)。
         'webAutomation',
+        // オートクリッカー (= ユーザー要望: 別のボタン項目として)。
+        'autoClicker',
         // 'sharePageLan' (LAN 共有) は廃止 (= ユーザー要望)。
         'openGmail',
         'openYoutube',
@@ -48470,6 +48487,41 @@ class _MindMapScreenState extends State<MindMapScreen>
         }
         _openGoogleSearchDialog(context, provider,
             openAutomation: true, automationOnly: true);
+        break;
+      // ── オートクリッカー (= ユーザー要望: 画面を押す操作だけを別の
+      //    ボタンとして) ──
+      case 'autoClicker':
+        if (!autoClickerSupported) {
+          _showLockToast(provider.t('autoClicker.windowsOnly'));
+          break;
+        }
+        // 開き方 (全画面 / 浮かせる / 左右分割) は他の道具と同じ作法。
+        unawaited(_openToolCommandStyled(
+          'autoClicker',
+          width: 480,
+          height: 560,
+          floating: (_) => AutoClickerView(
+            provider: provider,
+            onRequestClose: () => _closeFloatingPanelByKey('autoClicker'),
+          ),
+        ).then((handled) async {
+          if (handled || !mounted) return;
+          await _showNearDialogMain<void>(
+            width: 480,
+            height: 560,
+            builder: (dctx) => Dialog(
+              backgroundColor: Colors.transparent,
+              insetPadding: const EdgeInsets.all(12),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: AutoClickerView(
+                  provider: provider,
+                  onRequestClose: () => Navigator.pop(dctx),
+                ),
+              ),
+            ),
+          );
+        }));
         break;
       // 'sharePageLan' (LAN 共有) は廃止 (= ユーザー要望)。 配置済みでも
       //   何も起きない。
@@ -62402,8 +62454,15 @@ class _MindMapScreenState extends State<MindMapScreen>
                                                     provider: provider,
                                                     pageId: provider
                                                         .currentPage.id)))
-                                            : _buildCanvas(
-                                                context, provider, ctrl),
+                                            // ★ = ユーザー要望「自動操作は
+                                            //   ページとして設定できるように」。
+                                            //   手順はページごとに持つ。
+                                            : provider.currentPage.pageType ==
+                                                    'automation'
+                                                ? _buildAutomationPageView(
+                                                    provider)
+                                                : _buildCanvas(
+                                                    context, provider, ctrl),
                               ),
                               // ── アップロード進捗インジケーター (= ユーザー要望) ──
                               // バックグラウンドのファイルアップロードが進行中か分かるよう、 画面の
@@ -73430,6 +73489,14 @@ class _MindMapScreenState extends State<MindMapScreen>
               iconColor: const Color(0xFFFF7043),
               label: provider.t('drawer.newVideoEditorPage'),
               shortcut: _getCommandShortcut('newVideoEditorPage')),
+        // ── 自動操作のページ (= ユーザー要望: 自動操作はページとして設定
+        //    できるように)。 パソコン版だけ。 ──
+        if (provider.canUseAutomationPage)
+          _menuItem<_AddMenuAction>(
+              value: _AddMenuAction.newAutomationPage,
+              icon: Icons.smart_toy_rounded,
+              iconColor: const Color(0xFF4DB6AC),
+              label: provider.t('drawer.newAutomationPage')),
         _menuItem<_AddMenuAction>(
             value: _AddMenuAction.newFolder,
             icon: Icons.create_new_folder_outlined,
@@ -73542,6 +73609,9 @@ class _MindMapScreenState extends State<MindMapScreen>
           break;
         case _AddMenuAction.newVideoEditorPage:
           if (!kStoreBuild) _addVideoEditorPageDialog(ctx, provider);
+          break;
+        case _AddMenuAction.newAutomationPage:
+          _addAutomationPageDialog(ctx, provider);
           break;
         case _AddMenuAction.newFolder:
           _addFolderDialog(ctx, provider);
@@ -76742,6 +76812,13 @@ class _MindMapScreenState extends State<MindMapScreen>
           key: ValueKey('pane_tool_${slot}_$id'),
           onRequestClose: close,
         );
+      // オートクリッカー (= ユーザー要望で足した道具)。
+      case 'autoClicker':
+        return AutoClickerView(
+          key: ValueKey('pane_tool_${slot}_$id'),
+          provider: provider,
+          onRequestClose: close,
+        );
       // カレンダー (= ユーザー要望: 分割でも開けるように)。
       case 'calendar':
         return _buildCalendarView(context, provider);
@@ -78152,7 +78229,11 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// (フリーノートも開ける = ユーザー要望: フリーノートとマップ /
   /// ギャラリーを同時に開けるように)。
   bool _splitEligiblePage(MindMapPage p) =>
-      p.pageType != 'document' && p.pageType != 'videoEditor';
+      p.pageType != 'document' &&
+      p.pageType != 'videoEditor' &&
+      // 自動操作のページは中にブラウザを抱えていて、 ペインの中では
+      // 動かせない (= ユーザー要望で足した種別)。
+      p.pageType != 'automation';
 
   /// 範囲選択が意味を持つ (= キャンバスを描く) ページか。
   ///
@@ -78165,7 +78246,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       p.pageType != 'markdown' &&
       p.pageType != 'document' &&
       p.pageType != 'paint' &&
-      p.pageType != 'videoEditor';
+      p.pageType != 'videoEditor' &&
+      p.pageType != 'automation';
 
   /// 分割に向かないページ (文書 / ビデオエディター) を開いたら、 分割を
   /// **本当に**畳む (= ユーザー報告: ビデオエディターへ行くと分割は消える
@@ -94584,6 +94666,54 @@ class _MindMapScreenState extends State<MindMapScreen>
           ]),
         ),
       );
+
+  /// 自動操作のページ (= ユーザー要望: 自動操作はページとして設定できるように)。
+  ///
+  /// 中身は道具として開く自動操作と同じ物。 違うのは**手順の置き場**だけで、
+  /// ページごとに分けてあるので、 ページを分ければ別の自動操作を持てる。
+  Widget _buildAutomationPageView(MindMapProvider provider) {
+    if (!provider.canUseAutomationPage) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            const Icon(Icons.smart_toy_outlined,
+                size: 40, color: Color(0xFF4DB6AC)),
+            const SizedBox(height: 12),
+            Text(provider.t('page.automationUnavailable'),
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.white, fontSize: 15)),
+          ]),
+        ),
+      );
+    }
+    final pageId = provider.currentPage.id;
+    return _wrapPageSwitchContextMenu(
+      provider,
+      GoogleSearchAutomationHost(
+        key: ValueKey('automation_page_$pageId'),
+        storageKey: 'webAutomationSteps_v1_$pageId',
+        // ページなので「閉じる」 は要らない (閉じる先が無い)。 帯の×を
+        // 出さないために、 包み側が持っている事にしておく。
+        hostHasCloseButton: true,
+        onRequestClose: () {},
+      ),
+    );
+  }
+
+  /// 自動操作のページを作る (= ユーザー要望)。
+  void _addAutomationPageDialog(BuildContext context, MindMapProvider provider) {
+    if (!provider.canUseAutomationPage) {
+      _showPaywallDialog(provider);
+      return;
+    }
+    if (!provider.canCreatePageType('automation')) {
+      _showPaywallDialog(provider);
+      return;
+    }
+    provider.addAutomationPage(
+        name: null, folderId: _targetFolderForNewPage(provider));
+  }
 
   void _addBookshelfPageDialog(BuildContext context, MindMapProvider provider) {
     // = ユーザー要望: 名前を聞かず既定名で即作成。
@@ -176799,6 +176929,9 @@ enum _AddMenuAction {
   /// Markdown / Mermaid ページ (= ユーザー要望)
   newMarkdownPage,
   newVideoEditorPage,
+
+  /// 自動操作のページ (= ユーザー要望: ページとして設定できるように)
+  newAutomationPage,
   newFolder,
   importJson,
   openFolder,
@@ -274577,17 +274710,6 @@ class _McpChatDialogState extends State<_McpChatDialog>
                               deviceLogin: true)),
                         ),
                       ),
-                    ],
-                    // Gemini は API キーを渡せばログイン自体が要らない。
-                    if (f.installed &&
-                        f.spec.kind == AgentCliKind.gemini &&
-                        !provider.hasGeminiKey) ...[
-                      const SizedBox(height: 2),
-                      Text(provider.t('cli.geminiKeyHint'),
-                          style: const TextStyle(
-                              color: Color(0xFF9CCC65),
-                              fontSize: 10.5,
-                              height: 1.4)),
                     ],
                     const SizedBox(height: 5),
                     SelectableText(

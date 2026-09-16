@@ -52,6 +52,13 @@ List<_UnpackedFile> _unpackTgz(List<int> bytes) {
 }
 
 /// 相手にする CLI。
+///
+/// ★ gemini は一覧から外した (= ユーザー判断)。 Gemini CLI の Google
+///   ログインは CLI 自身が 127.0.0.1 の待ち受けを立てる形で、 この環境では
+///   セキュリティソフトに必ず止められる。 残る道は API キーを渡す事だけで、
+///   それは「契約しているぶんを使うので AI の残高は減りません」 という
+///   この画面の前提と食い違う (API キーは使った分だけ課金される)。
+///   種別そのものは、 控えの読み書き等で参照が残っているので消さない。
 enum AgentCliKind { claude, codex, gemini }
 
 /// 1 つの CLI の呼び方。
@@ -102,16 +109,23 @@ class AgentCliSpec {
       installHint: 'npm i -g @openai/codex',
       loginArgs: ['login'],
     ),
-    AgentCliSpec(
-      kind: AgentCliKind.gemini,
-      label: 'Gemini CLI',
-      exeNames: ['gemini.cmd', 'gemini.exe', 'gemini.ps1', 'gemini'],
-      installHint: 'npm i -g @google/gemini-cli',
-    ),
+    // ★ Gemini CLI は出さない (理由は AgentCliKind の覚書)。
   ];
 
-  static AgentCliSpec of(AgentCliKind k) =>
-      all.firstWhere((e) => e.kind == k);
+  /// ★ 一覧に無い種別 (= 出さなくなった Gemini) を渡されても落ちないよう、
+  ///   その場で最低限の姿を作って返す。 `firstWhere` のままだと、 控えに
+  ///   残っている種別を読んだだけで例外になる。
+  static AgentCliSpec of(AgentCliKind k) {
+    for (final e in all) {
+      if (e.kind == k) return e;
+    }
+    return AgentCliSpec(
+      kind: k,
+      label: k.name,
+      exeNames: <String>['${k.name}.cmd', '${k.name}.exe', k.name],
+      installHint: '',
+    );
+  }
 }
 
 /// 見つかった CLI の情報。
@@ -834,7 +848,6 @@ class AgentCli {
     for (final k in const [
       AgentCliKind.claude,
       AgentCliKind.codex,
-      AgentCliKind.gemini,
     ]) {
       for (final f in found) {
         if (f.spec.kind != k) continue;
