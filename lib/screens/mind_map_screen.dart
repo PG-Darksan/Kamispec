@@ -28157,116 +28157,166 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 押した所の近くに出し、 選ぶとそのページへ移る。
   Future<void> _showQuickPageSwitcher(MindMapProvider provider) async {
     final ctrl = TextEditingController();
-    await _showNearDialogMain<void>(
-      width: 340,
-      height: 460,
-      builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
-        final q = ctrl.text.trim().toLowerCase();
-        // ★ 候補は「いま開いているフォルダーの中」 だけ (= ユーザー要望)。
-        //   Ctrl+1〜9 も一覧 (ドロワー) も既にそうなっているので、 ここだけ
-        //   全ページを並べていて基準がちぐはぐだった。
-        //   フォルダーを開いていない時は、 いま見ているページと同じ
-        //   フォルダー → 一覧の直下、 の順 (= 新規ページの行き先と同じ)。
-        // ★ ただし**探している時は全ページから**。 そうしないと、 別の
-        //   フォルダーのページへここから移る手立てが無くなる。
-        final fid = _targetFolderForNewPage(provider);
-        final scope = q.isEmpty
-            ? provider
-                .pagesInFolder(fid)
-                .where((p) => !provider.isPageHidden(p.id))
-            : provider.pages.where((p) =>
-                p.name.toLowerCase().contains(q) &&
-                !provider.isPageHidden(p.id));
-        final pages = [
-          // ★ index は `provider.pages` の中での位置でなければならない
-          //   (switchPage がそれを受け取るため)。 絞った並びの位置を
-          //   渡すと、 まったく別のページへ飛ぶ。
-          for (final p in scope)
-            if (provider.pages.indexWhere((x) => x.id == p.id) >= 0)
-              (i: provider.pages.indexWhere((x) => x.id == p.id), p: p),
-        ];
-        return AlertDialog(
-          backgroundColor: const Color(0xFF1E1E32),
-          contentPadding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-          title: Text(provider.t('ctx.switchPage'),
-              style: const TextStyle(color: Colors.white, fontSize: 15)),
-          content: SizedBox(
-            width: math.min(320.0, MediaQuery.sizeOf(dctx).width - 48),
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              TextField(
-                controller: ctrl,
-                autofocus: true,
-                style: const TextStyle(color: Colors.white, fontSize: 13),
-                decoration: InputDecoration(
-                  isDense: true,
-                  prefixIcon: const Icon(Icons.search_rounded,
-                      size: 18, color: Colors.white38),
-                  hintText: provider.t('ctx.switchPageHint'),
-                  hintStyle: const TextStyle(color: Colors.white24),
-                ),
-                onChanged: (_) => setD(() {}),
-              ),
-              // どこの中から選んでいるのかを出す (= 探すと全ページに広がる
-              //   ので、 今どちらなのかが分かるように)。
-              if (q.isEmpty && fid != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 4),
-                  child: Row(children: [
-                    const Icon(Icons.folder_rounded,
-                        size: 13, color: Color(0xFF9CCC65)),
-                    const SizedBox(width: 5),
-                    Expanded(
-                      child: Text(
-                        provider.folders
-                                .where((f) => f.id == fid)
-                                .map((f) => f.name)
-                                .firstOrNull ??
-                            '',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            color: Color(0xFF9CCC65), fontSize: 11),
+    // ★ = ユーザー要望「マークダウンページ等のページ切り替えは、 ページ一覧が
+    //   サイドメニューで出てくる形にして欲しい」。 以前は押した所の近くに出る
+    //   小さな窓だったが、 本体の引き出しと同じく画面の左端から出る縦長の
+    //   サイドメニューにする。 ファイルを重ねて開いている間は本物の引き出しを
+    //   開けない (重ねた画面の裏で開いて見えない) ので、 ここで一番上に出す。
+    await showGeneralDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: provider.t('ctx.switchPage'),
+      barrierColor: Colors.black54,
+      transitionDuration: const Duration(milliseconds: 170),
+      transitionBuilder: (ctx, anim, sec, child) => SlideTransition(
+        position: Tween<Offset>(begin: const Offset(-1, 0), end: Offset.zero)
+            .animate(
+                CurvedAnimation(parent: anim, curve: Curves.easeOutCubic)),
+        child: child,
+      ),
+      pageBuilder: (dctx, _, __) {
+        final screen = MediaQuery.sizeOf(dctx);
+        final w = math.min(340.0, math.max(240.0, screen.width * 0.82));
+        return Align(
+          alignment: Alignment.centerLeft,
+          child: SizedBox(
+            width: w,
+            height: double.infinity,
+            child: Material(
+              color: const Color(0xFF1E1E32),
+              elevation: 12,
+              child: SafeArea(
+                child: StatefulBuilder(builder: (dctx, setD) {
+                  final q = ctrl.text.trim().toLowerCase();
+                  // ★ 候補は「いま開いているフォルダーの中」 だけ
+                  //   (= ユーザー要望)。 Ctrl+1〜9 も一覧 (ドロワー) も既に
+                  //   そうなっているので、 ここだけ全ページを並べていると
+                  //   基準がちぐはぐになる。 フォルダーを開いていない時は、
+                  //   いま見ているページと同じフォルダー → 一覧の直下、 の順
+                  //   (= 新規ページの行き先と同じ)。
+                  // ★ ただし**探している時は全ページから**。 そうしないと、
+                  //   別のフォルダーのページへここから移る手立てが無くなる。
+                  final fid = _targetFolderForNewPage(provider);
+                  final scope = q.isEmpty
+                      ? provider
+                          .pagesInFolder(fid)
+                          .where((p) => !provider.isPageHidden(p.id))
+                      : provider.pages.where((p) =>
+                          p.name.toLowerCase().contains(q) &&
+                          !provider.isPageHidden(p.id));
+                  final pages = [
+                    // ★ index は `provider.pages` の中での位置でなければ
+                    //   ならない (switchPage がそれを受け取るため)。 絞った
+                    //   並びの位置を渡すと、 まったく別のページへ飛ぶ。
+                    for (final p in scope)
+                      if (provider.pages.indexWhere((x) => x.id == p.id) >= 0)
+                        (i: provider.pages.indexWhere((x) => x.id == p.id),
+                            p: p),
+                  ];
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      // ── 見出し (= どのサイドメニューかが分かるように) ──
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(14, 12, 6, 6),
+                        child: Row(children: [
+                          const Icon(Icons.menu_book_rounded,
+                              size: 18, color: Color(0xFFBA68C8)),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(provider.t('ctx.switchPage'),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w700)),
+                          ),
+                          IconButton(
+                            tooltip: provider.t('btn.close'),
+                            icon: const Icon(Icons.close_rounded,
+                                size: 18, color: Colors.white54),
+                            onPressed: () => Navigator.pop(dctx),
+                          ),
+                        ]),
                       ),
-                    ),
-                  ]),
-                ),
-              const SizedBox(height: 6),
-              ConstrainedBox(
-                constraints: const BoxConstraints(maxHeight: 330),
-                child: ListView(shrinkWrap: true, children: [
-                  for (final e in pages)
-                    ListTile(
-                      dense: true,
-                      selected: e.p.id == provider.currentPage.id,
-                      selectedTileColor: Colors.white10,
-                      leading: Icon(_pageTypeIcon(e.p.pageType),
-                          size: 18,
-                          color: e.p.id == provider.currentPage.id
-                              ? const Color(0xFFBA68C8)
-                              : Colors.white54),
-                      title: Text(e.p.name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        child: TextField(
+                          controller: ctrl,
+                          autofocus: true,
                           style: const TextStyle(
-                              color: Colors.white, fontSize: 13)),
-                      onTap: () {
-                        Navigator.pop(dctx);
-                        provider.switchPage(e.i);
-                      },
-                    ),
-                ]),
+                              color: Colors.white, fontSize: 13),
+                          decoration: InputDecoration(
+                            isDense: true,
+                            prefixIcon: const Icon(Icons.search_rounded,
+                                size: 18, color: Colors.white38),
+                            hintText: provider.t('ctx.switchPageHint'),
+                            hintStyle: const TextStyle(color: Colors.white24),
+                          ),
+                          onChanged: (_) => setD(() {}),
+                        ),
+                      ),
+                      // どこの中から選んでいるのかを出す (= 探すと全ページに
+                      //   広がるので、 今どちらなのかが分かるように)。
+                      if (q.isEmpty && fid != null)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(14, 6, 12, 0),
+                          child: Row(children: [
+                            const Icon(Icons.folder_rounded,
+                                size: 13, color: Color(0xFF9CCC65)),
+                            const SizedBox(width: 5),
+                            Expanded(
+                              child: Text(
+                                provider.folders
+                                        .where((f) => f.id == fid)
+                                        .map((f) => f.name)
+                                        .firstOrNull ??
+                                    '',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                    color: Color(0xFF9CCC65), fontSize: 11),
+                              ),
+                            ),
+                          ]),
+                        ),
+                      const SizedBox(height: 6),
+                      Expanded(
+                        child: ListView(
+                          padding: const EdgeInsets.only(bottom: 12),
+                          children: [
+                            for (final e in pages)
+                              ListTile(
+                                dense: true,
+                                selected: e.p.id == provider.currentPage.id,
+                                selectedTileColor: Colors.white10,
+                                leading: Icon(_pageTypeIcon(e.p.pageType),
+                                    size: 18,
+                                    color: e.p.id == provider.currentPage.id
+                                        ? const Color(0xFFBA68C8)
+                                        : Colors.white54),
+                                title: Text(e.p.name,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                        color: Colors.white, fontSize: 13)),
+                                onTap: () {
+                                  Navigator.pop(dctx);
+                                  provider.switchPage(e.i);
+                                },
+                              ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  );
+                }),
               ),
-            ]),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dctx),
-              child: Text(provider.t('btn.close'),
-                  style: const TextStyle(color: Colors.white54)),
             ),
-          ],
+          ),
         );
-      }),
+      },
     );
     ctrl.dispose();
   }
@@ -40425,11 +40475,15 @@ class _MindMapScreenState extends State<MindMapScreen>
               : const Color(0xFFBA68C8);
           return Dialog(
             backgroundColor: panelColor,
+            // ★ = ユーザー要望「設定は画面右端に配置して欲しい」。
+            //   ページ一覧を左端のサイドメニューにしたのと対になるよう、
+            //   設定は右端へ寄せる (幅や高さは今までどおり)。
+            alignment: Alignment.centerRight,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(18),
             ),
             insetPadding:
-                const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 24),
             // Space キーで設定シートを閉じるためのフォーカス。
             // ダイアログ表示中はメインキャンバスのキーハンドラまで Space が
             // 届かないので、ダイアログ内部でキャッチして自分で閉じる必要がある。
@@ -71275,8 +71329,13 @@ class _MindMapScreenState extends State<MindMapScreen>
     final shown = list.take(6).map(nameOf).join('\n');
     final more = list.length > 6 ? '\n… +${list.length - 6}' : '';
     final toBin = RecycleBin.isSupported;
-    final ok = await showDialog<bool>(
-      context: context,
+    // ★ 画面の真ん中ではなく、 押した削除ボタンのすぐ近くに出す
+    //   (= ユーザー要望: ページ一覧からまとめて選んで消す時の確認が、
+    //   押した所から遠い)。 ドロワーから開くので分割ペインは基準にしない。
+    final ok = await _showNearDialogMain<bool>(
+      width: 420,
+      height: 230,
+      inPane: false,
       builder: (dctx) => AlertDialog(
         backgroundColor: const Color(0xFF24243A),
         title: Text(
@@ -71307,8 +71366,10 @@ class _MindMapScreenState extends State<MindMapScreen>
       done = r == RecycleResult.recycled;
       if (r == RecycleResult.failed && mounted) {
         // ごみ箱へ入らなかった。 完全に消してよいか、 改めてたずねる。
-        final hard = await showDialog<bool>(
-          context: context,
+        final hard = await _showNearDialogMain<bool>(
+          width: 420,
+          height: 200,
+          inPane: false,
           builder: (dctx) => AlertDialog(
             backgroundColor: const Color(0xFF24243A),
             title: Text(provider.t('disk.binFailedTitle'),
@@ -262033,7 +262094,7 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
 ///   - 90度ごとの回転 (= mode='view' 時)
 ///   - 端末へのダウンロード
 ///   - ✂️ トリミング (= mode='crop'、 ドラッグ可能な選択枠 + 適用)
-///   - ✏️ 注釈 (= mode='annotate'、 自由描画 + 保存)
+///   - ✏️ 編集 (= mode='annotate'、 自由描画 + 保存)
 class _ImageEditorDialog extends StatefulWidget {
   final String filePath;
   final String fileName;
@@ -262257,6 +262318,83 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
     open(widget.filePath, widget.fileName, isLeftPanel: isLeftPanel);
   }
 
+  /// ヘッダーの編集の道具を真ん中にそろえて並べる
+  /// (= ユーザー要望「編集時のヘッダーの編集項目はヘッダー中央に配置される
+  /// ようにして欲しい」)。
+  ///
+  /// 入り切らない時は今までどおり横に流せる (= スマホの幅で保存ボタンが
+  /// 切れていた件の対策をそのまま残す)。 入り切る時だけ中央寄せになる。
+  Widget _centeredHeaderTools(List<Widget> children) {
+    return LayoutBuilder(
+      builder: (ctx, c) => SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(minWidth: c.maxWidth),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: children,
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 編集モードの「キャンセル」。
+  ///
+  /// ★ = ユーザー要望「編集モード中にキャンセルボタンを押すと確認もなしに
+  ///   編集内容がなくなるのが良くないから、 編集内容がある場合は確認が
+  ///   出るように」。 書き込みが無い時は今までどおり黙って通常表示へ戻る。
+  Future<void> _cancelEditGuarded() async {
+    if (_hasUnsavedEdits) {
+      final provider = context.read<MindMapProvider>();
+      final choice = await showDialog<String>(
+        context: context,
+        useRootNavigator: widget.useRootNavigator,
+        barrierDismissible: false,
+        builder: (dctx) => AlertDialog(
+          backgroundColor: const Color(0xFF24243A),
+          title: Text(provider.t('img.cancelEditTitle'),
+              style: const TextStyle(color: Colors.white, fontSize: 15)),
+          content: Text(provider.t('img.cancelEditBody'),
+              style: const TextStyle(color: Colors.white70, fontSize: 13)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dctx, 'keep'),
+              child: Text(provider.t('img.keepEditing'),
+                  style: const TextStyle(color: Colors.white54)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(dctx, 'discard'),
+              child: Text(provider.t('img.discardEdits'),
+                  style: const TextStyle(color: Color(0xFFFF6B6B))),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(dctx, 'save'),
+              child: Text(provider.t('btn.save'),
+                  style: const TextStyle(color: Color(0xFF43B97F))),
+            ),
+          ],
+        ),
+      );
+      if (!mounted || choice == null || choice == 'keep') return;
+      if (choice == 'save') {
+        // 焼き込むと中身は空になり、 通常表示へ戻る (= 保存ボタンと同じ)。
+        await _applyAnnotation();
+        return;
+      }
+    }
+    setState(() {
+      _mode = 'view';
+      _annotStrokes.clear();
+      _annotShapes.clear();
+      _shapeDraft = null;
+      _curStroke = [];
+      _texts.clear();
+      _annotSel.clear();
+    });
+  }
+
   /// 閉じる前の確認 (= ユーザー要望: 編集内容がある時は Esc でいきなり
   /// 落とさず、 保存するか聞いてほしい)。
   ///
@@ -262372,7 +262510,7 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
         title: Text(context.read<MindMapProvider>().t('img.resetEdit'),
             style: TextStyle(color: Colors.white, fontSize: 16)),
         content: const Text(
-            'この画像への編集 (トリミング / 注釈 / 文字) をすべて取り消して、'
+            'この画像への編集 (トリミング / 描き込み / 文字) をすべて取り消して、'
             '編集前の状態に戻します。 よろしいですか?',
             style: TextStyle(color: Colors.white70, fontSize: 13)),
         actions: [
@@ -262926,7 +263064,7 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
       final boundary = _captureKey.currentContext?.findRenderObject()
           as RenderRepaintBoundary?;
       if (boundary == null) {
-        _showSnack('注釈保存失敗 (boundary なし)');
+        _showSnack('編集の保存に失敗 (boundary なし)');
         return;
       }
       // ★ 選んでいる印 (青い枠) は画像に焼かない。 文字の操作ボタンと同じく、
@@ -262963,9 +263101,9 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
         _imgUndo.clear();
         _imgRedo.clear();
       });
-      _showSnack('✏️ 注釈を保存しました');
+      _showSnack('✏️ 編集を保存しました');
     } catch (e) {
-      _showSnack('注釈保存失敗: $e');
+      _showSnack('編集の保存に失敗: $e');
     } finally {
       if (hidTextHandles && mounted) {
         setState(() => _hideTextEditHandlesForCapture = false);
@@ -263801,59 +263939,71 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
             ),
           ),
           child: Row(children: [
-            Icon(
-              isCropMode
-                  ? Icons.crop_rounded
+            Tooltip(
+              // 見出しに出していた説明は、 編集中はここへ移す。
+              message: isCropMode
+                  ? 'トリミング: 枠をドラッグして範囲を選択'
                   : isCutoutMode
-                      ? Icons.content_cut_rounded
+                      ? context.read<MindMapProvider>().t('imgCut.hint')
                       : isAnnotMode
-                          ? Icons.edit_rounded
-                          : Icons.image_rounded,
-              color: isCropMode
-                  ? const Color(0xFF4FC3F7)
-                  : isCutoutMode
-                      ? const Color(0xFFEC407A)
-                      : isAnnotMode
-                          ? _annotColor
-                          : const Color(0xFF4FC3F7),
-              size: 20,
+                          ? '編集: ドラッグで描画 / 「文字」で文字追加'
+                          : widget.fileName,
+              child: Icon(
+                isCropMode
+                    ? Icons.crop_rounded
+                    : isCutoutMode
+                        ? Icons.content_cut_rounded
+                        : isAnnotMode
+                            ? Icons.edit_rounded
+                            : Icons.image_rounded,
+                color: isCropMode
+                    ? const Color(0xFF4FC3F7)
+                    : isCutoutMode
+                        ? const Color(0xFFEC407A)
+                        : isAnnotMode
+                            ? _annotColor
+                            : const Color(0xFF4FC3F7),
+                size: 20,
+              ),
             ),
             const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                isCropMode
-                    ? 'トリミング: 枠をドラッグして範囲を選択'
-                    : isCutoutMode
-                        ? context.read<MindMapProvider>().t('imgCut.hint')
-                        : isAnnotMode
-                            ? '注釈: ドラッグで描画 / 「文字」で文字追加'
-                            // スワイプ切替がある時は「n / N」 を併記
-                            // (= ユーザー要望: ページ内の他の画像へ切替)。
-                            : (widget.galleryCount != null &&
-                                    widget.galleryCount! > 1
-                                ? '${widget.fileName}  '
-                                    '(${(widget.galleryIndex ?? 0) + 1} / ${widget.galleryCount})'
-                                : widget.fileName),
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600),
+            // ★ = ユーザー要望「編集時のヘッダーの編集項目はヘッダー中央に
+            //   配置されるように」。 見出しを左に伸ばしたままだと、 道具の列が
+            //   右へ寄って中央にならないので、 編集中は見出しを出さない
+            //   (何をする所かは左の絵柄の説明で分かる)。
+            if (_mode == 'view')
+              Expanded(
+                child: Text(
+                  // スワイプ切替がある時は「n / N」 を併記
+                  // (= ユーザー要望: ページ内の他の画像へ切替)。
+                  widget.galleryCount != null && widget.galleryCount! > 1
+                      ? '${widget.fileName}  '
+                          '(${(widget.galleryIndex ?? 0) + 1} / ${widget.galleryCount})'
+                      : widget.fileName,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600),
+                ),
               ),
-            ),
             // モード別のツールバー
             if (isCropMode) ...[
-              TextButton.icon(
-                icon: const Icon(Icons.check_rounded,
-                    color: Color(0xFF43B97F), size: 18),
-                label: Text(context.read<MindMapProvider>().t('btn.apply'),
-                    style: const TextStyle(color: Color(0xFF43B97F))),
-                onPressed: _applyCrop,
-              ),
-              TextButton(
-                child: Text(context.read<MindMapProvider>().t('btn.cancel'),
-                    style: const TextStyle(color: Colors.white54)),
-                onPressed: () => setState(() => _mode = 'view'),
+              Expanded(
+                child: _centeredHeaderTools([
+                  TextButton.icon(
+                    icon: const Icon(Icons.check_rounded,
+                        color: Color(0xFF43B97F), size: 18),
+                    label: Text(context.read<MindMapProvider>().t('btn.apply'),
+                        style: const TextStyle(color: Color(0xFF43B97F))),
+                    onPressed: _applyCrop,
+                  ),
+                  TextButton(
+                    child: Text(context.read<MindMapProvider>().t('btn.cancel'),
+                        style: const TextStyle(color: Colors.white54)),
+                    onPressed: () => setState(() => _mode = 'view'),
+                  ),
+                ]),
               ),
             ] else if (isCutoutMode) ...[
               // ★ = ユーザー要望「モバイルでレイアウトが崩れている所」。
@@ -263861,10 +264011,7 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
               //   切り抜きモードだけ素の Row のままで、 412px の画面では
               //   キャンセルや保存がはみ出して押せなかった。 同じ形にする。
               Expanded(
-                flex: 3,
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                child: _centeredHeaderTools([
                     // ── なげなわ切り抜き (= ユーザー要望: 人物や物体を切り取って
                     //    クリップボードへ) ──
                     // 切り抜き方の選択: 四角ブロック / フリーハンド (= ユーザー要望)。
@@ -263939,7 +264086,6 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
                       }),
                     ),
                   ]),
-                ),
               ),
             ] else if (isAnnotMode) ...[
               // ── 注釈ツールバー ──
@@ -263947,10 +264093,7 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
               //   (= ユーザー報告)。 横スクロールできる領域に収め、 色数も
               //   増やす (= ユーザー要望: カラーバリエーションを増やす)。
               Expanded(
-                flex: 3,
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                child: _centeredHeaderTools([
                     // ペン色選択 (12 色)
                     ...[
                       const Color(0xFFFF6B6B), // 赤
@@ -264275,17 +264418,12 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
                       child: Text(
                           context.read<MindMapProvider>().t('btn.cancel'),
                           style: const TextStyle(color: Colors.white54)),
-                      onPressed: () => setState(() {
-                        _mode = 'view';
-                        _annotStrokes.clear();
-                        _annotShapes.clear();
-                        _shapeDraft = null;
-                        _curStroke = [];
-                        _texts.clear();
-                      }),
+                      // ★ = ユーザー要望「編集モード中にキャンセルを押すと
+                      //   確認もなしに編集内容がなくなるのが良くない」。
+                      //   描いた物が残っている時だけ聞く (空なら今までどおり即戻る)。
+                      onPressed: () => unawaited(_cancelEditGuarded()),
                     ),
                   ]),
-                ),
               ),
               // ── 保存はスクロールの外に固定 (= 必ず見える) ──
               TextButton.icon(
