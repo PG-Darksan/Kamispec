@@ -9692,12 +9692,20 @@ class _MindMapScreenState extends State<MindMapScreen>
         ? provider.shelfSwapTargetAt(_moveModeNodeId!, clampedPos)
         : null;
 
+    // ★ = ユーザー報告「境界を跨いで他のページへ転送しようとした時、
+    //   配置が完了するまで元あった画面にもデータが動き続ける」。
+    //   隣のペインの上に指がある間は、 元の画面での位置を**止める**
+    //   (見えているのは最前面の写しの方だけになる)。 元の画面の座標に
+    //   無理やり当てはめた位置なので、 動かし続けても意味が無い。
+    final overOther = _splitTransferMode &&
+        _mapSplitOpen &&
+        _splitCellAt(globalPos) >= 0;
     setState(() {
-      _movingPos = sibPos ?? clampedPos;
-      _currentSnap = snap;
-      _siblingGuideParentId = sibParent;
-      _siblingGuidePos = sibPos;
-      _shelfSwapTargetId = swapTarget;
+      if (!overOther) _movingPos = sibPos ?? clampedPos;
+      _currentSnap = overOther ? null : snap;
+      _siblingGuideParentId = overOther ? null : sibParent;
+      _siblingGuidePos = overOther ? null : sibPos;
+      _shelfSwapTargetId = overOther ? null : swapTarget;
     });
 
     // 画面端に近づいたらビューポートを自動スクロール
@@ -10114,7 +10122,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (_splitTransferMode && _mapSplitOpen && _moveModeNodeId != null) {
       final at = _nodeDragGlobal;
       final slot = at == null ? -1 : _splitCellAt(at);
-      if (slot >= 0 && _handleSplitTransferDrop(slot)) {
+      if (slot >= 0 && _handleSplitTransferDrop(slot, dropGlobal: at)) {
         _nodeDragGlobal = null;
         setState(() {
           _moveModeNodeId = null;
@@ -36725,10 +36733,10 @@ class _MindMapScreenState extends State<MindMapScreen>
                 style: const TextStyle(color: Colors.white, fontSize: 15)),
           ),
         ]),
+        // ★ 同上。 外側 (_showNearDialogMain) が巻物なので、 ここでは巻かない。
         content: SizedBox(
           width: 420,
-          child: SingleChildScrollView(
-            child: Column(
+          child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -36739,7 +36747,6 @@ class _MindMapScreenState extends State<MindMapScreen>
                 _ScreenSaverInline(provider: provider),
               ],
             ),
-          ),
         ),
         actions: [
           TextButton(
@@ -36790,11 +36797,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                 style: const TextStyle(color: Colors.white, fontSize: 15)),
           ),
         ]),
+        // ★ _showNearDialogMain が既に巻物にしているので、 ここで重ねて
+        //   巻かない (高さが無限の中に巻物を入れると例外になる)。
         content: SizedBox(
           width: 420,
-          child: SingleChildScrollView(
-            child: _VirtualDesktopInline(provider: provider),
-          ),
+          child: _VirtualDesktopInline(provider: provider),
         ),
         actions: [
           TextButton(
@@ -36921,7 +36928,24 @@ class _MindMapScreenState extends State<MindMapScreen>
   ///   転送できるモード」。 選んでいる物があればそれを、 無ければ掴んでいる
   ///   1 つだけを渡す。 中身は moveNodesToPage なので、 相手がフリーノートの
   ///   時はサムネイルの札になって紙に貼る (b408 で入れた道)。
-  bool _handleSplitTransferDrop(int slot) {
+  /// 隣のペインの中の、 手を離した所の**そのページの座標**。
+  ///
+  /// ★ = ユーザー要望「ドロップした場所に配置されるようにして欲しい」。
+  ///   ペインは自分の拡大率と位置を持っているので、 その行列を逆に輿す。
+  Offset? _splitPaneCanvasPos(int slot, String pageId, Offset globalPos) {
+    try {
+      final rect = _splitCellGlobalRect(slot);
+      if (rect.width <= 0 || rect.height <= 0) return null;
+      final ctrl = _ctrlFor('split_$pageId');
+      final local = globalPos - rect.topLeft;
+      return MatrixUtils.transformPoint(
+          Matrix4.inverted(ctrl.value), local);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  bool _handleSplitTransferDrop(int slot, {Offset? dropGlobal}) {
     final provider = context.read<MindMapProvider>();
     final nodeId = _moveModeNodeId;
     if (nodeId == null) return false;
@@ -36933,7 +36957,29 @@ class _MindMapScreenState extends State<MindMapScreen>
     final ids = <String>{nodeId, ..._groupDragIds};
     if (_rangeSelectedIds.contains(nodeId)) ids.addAll(_rangeSelectedIds);
     final name = provider.pages[targetIdx].name;
+    // 落とした所へ置くために、 掴んでいた要素の「今の位置」 と
+    // 「置きたい位置」 の差を先に求めておく (移した後にまとめてずらす)。
+    Offset? shift;
+    final dropAt = dropGlobal == null
+        ? null
+        : _splitPaneCanvasPos(slot, targetPageId, dropGlobal);
+    if (dropAt != null) {
+      final held = provider.nodes[nodeId];
+      if (held != null) {
+        // 指の下が要素の真ん中になるよう、 半分だけ左上へらずらす。
+        final want = Offset(
+          (dropAt.dx - held.width / 2).clamp(0.0, 20000.0),
+          (dropAt.dy - held.visualHeight / 2).clamp(0.0, 20000.0),
+        );
+        shift = want - held.position;
+      }
+    }
     provider.moveNodesToPage(ids, targetIdx);
+    // ★ moveNodesToPage は座標をそのまま運ぶので、 移した先でずらす。
+    //   相対位置は保ったままなので、 まとめて渡しても形が崩れない。
+    if (shift != null && (shift.dx.abs() > 0.5 || shift.dy.abs() > 0.5)) {
+      provider.moveNodesOnPage(targetPageId, ids, shift);
+    }
     if (mounted) {
       _appSnack(
         context,
@@ -45293,7 +45339,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       //   入れている間は、 隣のペインの上で手を離すとそのページへ移る。
       'id': 'splitTransfer',
       'labelKey': 'hdr.splitTransfer',
-      'icon': Icons.swap_horiz_rounded,
+      'icon': Icons.multiple_stop_rounded,
       'color': Color(0xFF7CD992),
     },
     {
@@ -79857,8 +79903,10 @@ class _MindMapScreenState extends State<MindMapScreen>
           constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
           tooltip: provider.t(
               _splitTransferMode ? 'split.transferOn' : 'split.transferOff'),
-          icon: Icon(Icons.drive_file_move_outline,
-              size: 16,
+          // ★ = ユーザー要望「フォルダーアイコンと同じでダサい」。
+          //   線 (= 境界) を矢印が跨ぐ形の印にする。
+          icon: Icon(Icons.multiple_stop_rounded,
+              size: 18,
               color: _splitTransferMode
                   ? const Color(0xFF7CD992)
                   : Colors.white70),
@@ -100723,11 +100771,13 @@ class _MindMapScreenState extends State<MindMapScreen>
 
                         const SizedBox(height: 20),
 
-                        // ── 自分に掛ける AI の上限 (= ユーザー要望:
+                        // ── API 呼び出しの上限 (= ユーザー要望:
                         //    上限に達した時に止まるかを試したい) ──
                         //    サーバー側の上限は開発者本人を素通りさせる
                         //    作りなので、 手元で同じ止まり方を作る。
-                        _devSection('自分に掛ける AI の上限',
+                        //    ★ = ユーザー要望「開発者モードの自分に掛ける AI の上限と
+                        //      いうのは API で呼び出す際の上限だからそう書いて欲しい」。
+                        _devSection('AI を API で呼び出す時の上限',
                             Icons.speed_rounded, const Color(0xFFFFB347)),
                         const SizedBox(height: 8),
                         Container(
@@ -109113,9 +109163,12 @@ class _VirtualDesktopInlineState extends State<_VirtualDesktopInline> {
     _reloadWindows();
   }
 
-  void _reloadWindows() {
-    // 一覧の取得は短い (窓の数だけ)。 その場で読む。
-    final list = OsQuickToggles.listAppWindows();
+  /// ★ = ユーザー報告「仮想デスクトップのボタンを押すとアプリが落ちる」。
+  ///   窓の一覧は COM を使うので、 画面のスレッドで直に呼ばない
+  ///   (別の isolate へ回す)。 待っている間は「調べています」 と出す。
+  Future<void> _reloadWindows() async {
+    setState(() => _windowsLoaded = false);
+    final list = await OsQuickToggles.listAppWindows();
     if (!mounted) return;
     setState(() {
       _windows = [
@@ -109146,8 +109199,8 @@ class _VirtualDesktopInlineState extends State<_VirtualDesktopInline> {
     });
   }
 
-  void _move(DesktopWindowInfo w) {
-    final r = OsQuickToggles.moveWindowToThisDesktop(w.hwnd);
+  Future<void> _move(DesktopWindowInfo w) async {
+    final r = await OsQuickToggles.moveWindowToThisDesktop(w.hwnd);
     if (!mounted) return;
     setState(() {
       _note = switch (r) {
@@ -109159,7 +109212,7 @@ class _VirtualDesktopInlineState extends State<_VirtualDesktopInline> {
     });
     if (r == MoveWindowResult.ok) {
       OsQuickToggles.focusWindow(w.hwnd);
-      _reloadWindows();
+      unawaited(_reloadWindows());
     }
   }
 
@@ -109273,7 +109326,7 @@ class _VirtualDesktopInlineState extends State<_VirtualDesktopInline> {
             constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
             icon: const Icon(Icons.refresh_rounded,
                 size: 16, color: Colors.white54),
-            onPressed: _reloadWindows,
+            onPressed: () => unawaited(_reloadWindows()),
           ),
         ]),
       ),
@@ -109282,6 +109335,20 @@ class _VirtualDesktopInlineState extends State<_VirtualDesktopInline> {
         child: Text(p.t('vdesk.windowsHint'),
             style: const TextStyle(color: Colors.white38, fontSize: 10.5)),
       ),
+      if (!_windowsLoaded)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(6, 8, 6, 0),
+          child: Row(children: [
+            const SizedBox(
+                width: 12,
+                height: 12,
+                child: CircularProgressIndicator(
+                    strokeWidth: 1.6, color: Color(0xFF64B5F6))),
+            const SizedBox(width: 8),
+            Text(p.t('vdesk.checking'),
+                style: const TextStyle(color: Colors.white38, fontSize: 11.5)),
+          ]),
+        ),
       if (_windowsLoaded && others.isEmpty)
         Padding(
           padding: const EdgeInsets.fromLTRB(6, 8, 6, 0),
@@ -109306,7 +109373,7 @@ class _VirtualDesktopInlineState extends State<_VirtualDesktopInline> {
             _chip(
               icon: Icons.download_rounded,
               label: p.t('vdesk.bringHere'),
-              onTap: () => _move(w),
+              onTap: () => unawaited(_move(w)),
             ),
           ]),
         ),
@@ -250904,8 +250971,16 @@ $currentText
           bottom: BorderSide(color: dark ? Colors.white12 : Colors.black12),
         ),
       ),
+      // ★ = ユーザー要望「ヘッダーを隠すボタンはヘッダーの中央に、
+      //   他の項目も何かと右よりだから全体的に中央に寄せて」。
+      //   道具の列は元々 Center していたが、 **左のファイル名が右より太い**
+      //   ので、 残り幅の中央 = ヘッダーの中央にならず右へずれていた。
+      //   左と右に**同じ幅**を持たせれば、 真ん中がヘッダーの真ん中になる。
       child: Row(
         children: [
+          Expanded(
+            flex: 1,
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
           // ── ページ切り替えはヘッダーの**左端** (= ユーザー要望)。
           //    この画面は本体の上に重ねて開くので、 引き出しにも
           //    本体のヘッダーにも手が届かない。 分割ペインの中 (compactHost)
@@ -250986,9 +251061,12 @@ $currentText
                       fontSize: 11,
                       fontWeight: FontWeight.w700)),
             ),
+            ]),
+          ),
           // ── ボタン列はヘッダー中央に置く (= ユーザー要望)。 隠して
           //    いる間はホバー時だけ「表示する」 ボタンを出す。 ──
           Expanded(
+            flex: 2,
             child: !_headerVisible
                 ? Align(
                     alignment: Alignment.centerRight,
@@ -251325,22 +251403,33 @@ $currentText
           ),
           // 設定と閉じるはスクロールする中央の道具列へ入れず、常に右端へ固定。
           // 分割ペイン内は本物のヘッダーが見えるので設定を重ねない。
-          if (!widget.compactHost)
-            IconButton(
-              tooltip: context.read<MindMapProvider>().t('menu.settings'),
-              icon: Icon(Icons.settings_rounded,
-                  color: fg.withValues(alpha: 0.75)),
-              onPressed: () => openSettingsFromAnywhere?.call(context),
-            ),
-          Builder(
-            builder: (btnCtx) => IconButton(
-              tooltip: context.read<MindMapProvider>().t('btn.close'),
-              icon: Icon(Icons.close_rounded, color: fg),
-              onPressed: () async {
-                if (await _confirmDiscard(anchor: btnCtx)) {
-                  if (mounted) Navigator.of(context).pop();
-                }
-              },
+          // ★ 左と同じ幅を取る (= 中央の道具列を本当に真ん中へ置くため)。
+          //   余った分は何も描かないので、 見た目には右端の 2 つだけが見える。
+          Expanded(
+            flex: 1,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (!widget.compactHost)
+                  IconButton(
+                    tooltip: context.read<MindMapProvider>().t('menu.settings'),
+                    icon: Icon(Icons.settings_rounded,
+                        color: fg.withValues(alpha: 0.75)),
+                    onPressed: () => openSettingsFromAnywhere?.call(context),
+                  ),
+                Builder(
+                  builder: (btnCtx) => IconButton(
+                    tooltip: context.read<MindMapProvider>().t('btn.close'),
+                    icon: Icon(Icons.close_rounded, color: fg),
+                    onPressed: () async {
+                      if (await _confirmDiscard(anchor: btnCtx)) {
+                        if (mounted) Navigator.of(context).pop();
+                      }
+                    },
+                  ),
+                ),
+              ],
             ),
           ),
         ],

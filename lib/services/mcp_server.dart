@@ -2913,25 +2913,31 @@ class McpServer {
                 'discarded - this app cannot insert empty lines. Tell the '
                 'user instead of retrying.');
           }
-          var wrote = 0;
-          for (final line in lines) {
-            final ok = await _provider.mcpAddPaintText(
-              pageId,
-              line,
-              // まとめ書きの時は自動で縦に積ませる。
-              x: many.isNotEmpty ? null : numOf('x'),
-              y: many.isNotEmpty ? null : numOf('y'),
-              size: numOf('size'),
-              // ★ add_node と同じ正し方を通す (= 動作確認で判明: 「赤」 の
-              //   つもりの 0xFF0000 は α=0 で透明になり、 文字が見えない
-              //   まま成功と返っていた。 色名の文字列は型エラーで落ちて
-              //   いた)。
-              colorValue: _argbOf(a['color']),
-            );
-            if (ok) wrote++;
-          }
+          // ★ = ユーザー報告「テキスト一括追加で、 成工件数と読み取り件数が
+          //   一致しない場合がある」。 1 行ごとに prefs を読んで書いていたので、
+          //   途中で開いているノートの遅延保存と競合して行が消えていた。
+          //   provider 側で **1 回の読み書き**にまとめる。
+          final wrote = await _provider.mcpAddPaintTexts(
+            pageId,
+            lines,
+            // まとめ書きの時は自動で縦に積ませる。
+            x: many.isNotEmpty ? null : numOf('x'),
+            y: many.isNotEmpty ? null : numOf('y'),
+            size: numOf('size'),
+            // ★ add_node と同じ正し方を通す (= 動作確認で判明: 「赤」 の
+            //   つもりの 0xFF0000 は α=0 で透明になり、 文字が見えない
+            //   まま成功と返っていた)。
+            colorValue: _argbOf(a['color']),
+          );
+          final asked = lines.where((l) => l.trim().isNotEmpty).length;
           return wrote > 0
-              ? _ok({'written': wrote})
+              ? _ok({
+                  'written': wrote,
+                  'asked': asked,
+                  if (wrote != asked)
+                    'note': 'Only $wrote of $asked lines were written. '
+                        'Tell the user the real number.',
+                })
               : _err('not a free-note page, or text empty: $pageId '
                   '- add_paint_text only works on pages whose type is '
                   '"paint"');

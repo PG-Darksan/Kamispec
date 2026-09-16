@@ -23,6 +23,7 @@
 //                  ので、 利用者が普段使うのと同じショートカットを送る。
 import 'dart:ffi' as ffi;
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart' as pkgffi;
@@ -381,13 +382,40 @@ class OsQuickToggles {
   /// 今開いているアプリの窓を並べる (題名の無い物・道具窓は除く)。
   ///
   /// 他のデスクトップにある窓も含む (そちらから呼び寄せるため)。
-  static List<DesktopWindowInfo> listAppWindows({int max = 60}) {
+  ///
+  /// ★ = ユーザー報告「仮想デスクトップのボタンを押して立ち上げようとすると
+  ///   アプリが落ちてしまう」。 COM を**画面のスレッドで直に呼んでいた**のが
+  ///   原因。 Flutter の本スレッドは既に別の都合で COM を抱えていて、
+  ///   そこへ割り込むとプロセスごと落ちる。 別の isolate で回し、
+  ///   時間切れも付ける (このリポジトリの他の COM も同じ作法)。
+  static Future<List<DesktopWindowInfo>> listAppWindows({int max = 60}) async {
     if (!isSupported) return const [];
-    final out = <DesktopWindowInfo>[];
+    try {
+      final rows = await Isolate.run(() => _listWindowsInIsolate(max))
+          .timeout(const Duration(seconds: 6));
+      return [
+        for (final r in rows)
+          DesktopWindowInfo(
+            hwnd: (r['hwnd'] as int?) ?? 0,
+            title: (r['title'] as String?) ?? '',
+            onCurrentDesktop: r['cur'] == true,
+            isSelf: r['self'] == true,
+          ),
+      ];
+    } catch (_) {
+      // 取れなければ空。 画面側が「窓はありません」 と出す。
+      return const [];
+    }
+  }
+
+  /// 別の isolate で回る本体。 戻りは送れる型だけにする。
+  static List<Map<String, Object?>> _listWindowsInIsolate(int max) {
+    final out = <Map<String, Object?>>[];
     final init = w32.CoInitializeEx(ffi.nullptr, w32.COINIT_APARTMENTTHREADED);
     final needUninit = init == w32.S_OK || init == w32.S_FALSE;
     ffi.Pointer<w32.COMObject>? mgr;
     final buf = pkgffi.calloc<ffi.Uint16>(512).cast<pkgffi.Utf16>();
+    final cls = pkgffi.calloc<ffi.Uint16>(256).cast<pkgffi.Utf16>();
     final onCur = pkgffi.calloc<ffi.Int32>();
     final pidBuf = pkgffi.calloc<ffi.Uint32>();
     try {
@@ -399,12 +427,15 @@ class OsQuickToggles {
       }
       final vdm = mgr == null ? null : w32.IVirtualDesktopManager(mgr);
       final selfPid = w32.GetCurrentProcessId();
+      // 同じアプリの同じ題名が何十も並ぶ事がある (ブラウザの裏の窓など)。
+      final seen = <String>{};
       var h = 0;
       while (out.length < max) {
         h = w32.FindWindowEx(0, h, ffi.nullptr, ffi.nullptr);
         if (h == 0) break;
         if (w32.IsWindowVisible(h) == 0) continue;
-        // 道具窓 (ツールバーの小窓など) は一覧に出さない。
+        // 別の窓に飼われている物 (ダイアログなど) は主の窓ではない。
+        if (w32.GetWindow(h, w32.GW_OWNER) != 0) continue;
         final ex = w32.GetWindowLongPtr(h, _kGwlExStyle);
         if ((ex & _kWsExToolWindow) != 0 && (ex & _kWsExAppWindow) == 0) {
           continue;
@@ -414,20 +445,26 @@ class OsQuickToggles {
         w32.GetWindowText(h, buf, 511);
         final title = buf.toDartString().trim();
         if (title.isEmpty) continue;
+        // Windows の中身 (入力エクスペリエンス / ロック画面など) は出さない。
+        w32.GetClassName(h, cls, 255);
+        final klass = cls.toDartString();
+        if (klass == 'Windows.UI.Core.CoreWindow') continue;
+        pidBuf.value = 0;
+        w32.GetWindowThreadProcessId(h, pidBuf);
+        final key = '${pidBuf.value}\u0000$title';
+        if (!seen.add(key)) continue;
         var cur = true;
         if (vdm != null) {
           onCur.value = 0;
           final hr = vdm.isWindowOnCurrentVirtualDesktop(h, onCur);
           if (hr == w32.S_OK) cur = onCur.value != 0;
         }
-        pidBuf.value = 0;
-        w32.GetWindowThreadProcessId(h, pidBuf);
-        out.add(DesktopWindowInfo(
-          hwnd: h,
-          title: title,
-          onCurrentDesktop: cur,
-          isSelf: pidBuf.value == selfPid,
-        ));
+        out.add({
+          'hwnd': h,
+          'title': title,
+          'cur': cur,
+          'self': pidBuf.value == selfPid,
+        });
       }
     } catch (_) {
       // 途中まで集めた分だけ返す。
@@ -439,6 +476,7 @@ class OsQuickToggles {
         }
       } catch (_) {}
       pkgffi.calloc.free(buf.cast<ffi.Uint16>());
+      pkgffi.calloc.free(cls.cast<ffi.Uint16>());
       pkgffi.calloc.free(onCur);
       pkgffi.calloc.free(pidBuf);
       if (needUninit) w32.CoUninitialize();
@@ -450,8 +488,29 @@ class OsQuickToggles {
   ///
   /// 今のデスクトップの id は、 自分の窓が居るデスクトップから取る
   /// (自分の窓は必ず見えている = 今のデスクトップに居る)。
-  static MoveWindowResult moveWindowToThisDesktop(int hwnd) {
+  /// 自分の窓の探し方だけは画面のスレッドで行い (窓はそちらの物)、
+  /// COM は別の isolate へ回す。
+  static Future<MoveWindowResult> moveWindowToThisDesktop(int hwnd) async {
     if (!isSupported || hwnd == 0) return MoveWindowResult.failed;
+    var me = 0;
+    try {
+      me = w32.GetActiveWindow();
+      if (me == 0) me = w32.GetForegroundWindow();
+    } catch (_) {
+      me = 0;
+    }
+    if (me == 0) return MoveWindowResult.failed;
+    try {
+      final code = await Isolate.run(() => _moveWindowInIsolate(hwnd, me))
+          .timeout(const Duration(seconds: 6));
+      return MoveWindowResult.values[code];
+    } catch (_) {
+      return MoveWindowResult.failed;
+    }
+  }
+
+  /// 別の isolate で回る本体。 戻りは [MoveWindowResult] の番号。
+  static int _moveWindowInIsolate(int hwnd, int selfHwnd) {
     final init = w32.CoInitializeEx(ffi.nullptr, w32.COINIT_APARTMENTTHREADED);
     final needUninit = init == w32.S_OK || init == w32.S_FALSE;
     ffi.Pointer<w32.COMObject>? mgr;
@@ -460,21 +519,17 @@ class OsQuickToggles {
       mgr = w32.COMObject.createFromID(
           w32.CLSID_VirtualDesktopManager, w32.IID_IVirtualDesktopManager);
       final vdm = w32.IVirtualDesktopManager(mgr);
-      // 自分の窓 (= 今のデスクトップ) の id を取る。
-      var me = w32.GetActiveWindow();
-      if (me == 0) me = w32.GetForegroundWindow();
-      if (me == 0) return MoveWindowResult.failed;
-      if (vdm.getWindowDesktopId(me, guid) != w32.S_OK) {
-        return MoveWindowResult.failed;
+      if (vdm.getWindowDesktopId(selfHwnd, guid) != w32.S_OK) {
+        return MoveWindowResult.failed.index;
       }
       final hr = vdm.moveWindowToDesktop(hwnd, guid);
-      if (hr == w32.S_OK) return MoveWindowResult.ok;
+      if (hr == w32.S_OK) return MoveWindowResult.ok.index;
       // E_ACCESSDENIED (0x80070005) = 他のアプリの窓を拒まれた。
       return hr == -2147024891
-          ? MoveWindowResult.denied
-          : MoveWindowResult.failed;
+          ? MoveWindowResult.denied.index
+          : MoveWindowResult.failed.index;
     } catch (_) {
-      return MoveWindowResult.failed;
+      return MoveWindowResult.failed.index;
     } finally {
       try {
         if (mgr != null) {

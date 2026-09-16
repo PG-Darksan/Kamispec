@@ -14619,6 +14619,17 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'As janelas abertas não são fechadas: vão para a área de trabalho vizinha.',
       'ru': 'Открытые окна не закроются — они перейдут на соседний рабочий стол.',
     },
+    'vdesk.checking': {
+      'ja': '調べています…',
+      'en': 'Checking…',
+      'zh': '正在查看…',
+      'ko': '확인 중…',
+      'es': 'Comprobando…',
+      'fr': 'Vérification…',
+      'de': 'Wird geprüft…',
+      'pt': 'Verificando…',
+      'ru': 'Проверка…',
+    },
     'vdesk.windowsTitle': {
       'ja': '他のデスクトップにある窓',
       'en': 'Windows on other desktops',
@@ -35774,6 +35785,19 @@ class MindMapProvider extends ChangeNotifier {
       'de': '{name} wird hochgeladen... ({current}/{total})',
       'pt': 'Enviando {name}... ({current}/{total})',
       'ru': 'Загрузка {name}... ({current}/{total})',
+    },
+    // ★ = ユーザー報告「複数件数あるのに (1/1) って表示される」。
+    //   ページではなく**ファイル**を数えている間はこちらを出す。
+    'sync.uploadingFileProgress': {
+      'ja': '{name} を送っています…（{current}/{total}）',
+      'en': 'Sending {name}\u2026 ({current}/{total})',
+      'zh': '正在上传 {name}…（{current}/{total}）',
+      'ko': '{name} 전송 중… ({current}/{total})',
+      'es': 'Enviando {name}\u2026 ({current}/{total})',
+      'fr': 'Envoi de {name}\u2026 ({current}/{total})',
+      'de': '{name} wird gesendet\u2026 ({current}/{total})',
+      'pt': 'Enviando {name}\u2026 ({current}/{total})',
+      'ru': 'Отправка {name}… ({current}/{total})',
     },
     'sync.downloadingPage': {
       'ja': '{name} をダウンロード中...',
@@ -89384,6 +89408,11 @@ $cleanQ
     int totalBytes = jobs.fold(0, (s, j) => s + j.sizeBytes);
     if (totalBytes <= 0) totalBytes = jobs.length; // 全ファイルが 0 byte の保険
     int completedBytes = 0;
+    // ★ = ユーザー報告「ファイルをアップロードする時に複数件数あるのに
+    //   (1/1) って表示される」。 分母にしていたのは**ページの数**なので、
+    //   1 ページに 10 個のファイルがあっても (1/1) になっていた。
+    //   ファイルを送っている間は**ファイルの件数**で数える。
+    var fileNo = 0;
 
     for (final job in jobs) {
       final node = _pages[idx].nodes[job.nodeId];
@@ -89391,6 +89420,11 @@ $cleanQ
         completedBytes += job.sizeBytes;
         continue;
       }
+      fileNo++;
+      _syncStatusText = t('sync.uploadingFileProgress')
+          .replaceFirst('{name}', job.name)
+          .replaceFirst('{current}', '$fileNo')
+          .replaceFirst('{total}', '${jobs.length}');
       _uploading[job.nodeId] = true;
       _uploadProgress[job.nodeId] = 0.0;
       notifyListeners();
@@ -100755,6 +100789,7 @@ $cleanQ
     'b4p': (976, 1378),
   };
 
+  /// 紙に文字を 1 行足す (中身はまとめ書きの 1 行版)。
   Future<bool> mcpAddPaintText(
     String pageId,
     String text, {
@@ -100763,11 +100798,43 @@ $cleanQ
     double? size,
     int? colorValue,
   }) async {
-    if (text.trim().isEmpty) return false;
+    final n = await mcpAddPaintTexts(
+      pageId,
+      [text],
+      x: x,
+      y: y,
+      size: size,
+      colorValue: colorValue,
+    );
+    return n > 0;
+  }
+
+  /// 紙に文字を**まとめて**足す。 書けた行数を返す。
+  ///
+  /// ★ = ユーザー報告「フリーノートのテキスト一括追加で、 成工件数と
+  ///   読み取り件数が一致しない場合がある」。
+  ///   原因は **1 行ごとに prefs を読んで書いていた**事。 書くたびに
+  ///   notifyListeners で開いているノートを揺さぶるので、 あちらの
+  ///   遅延保存が途中の (古い) 中身を書き戻し、 足した行が消えていた。
+  ///   読み書きを **1 回**にまとめれば、 途中の状態が見えないので競合しない。
+  ///   (速さも N 回 → 1 回になる)。
+  Future<int> mcpAddPaintTexts(
+    String pageId,
+    List<String> lines, {
+    double? x,
+    double? y,
+    double? size,
+    int? colorValue,
+  }) async {
+    final wanted = [
+      for (final l in lines)
+        if (l.trim().isNotEmpty) l,
+    ];
+    if (wanted.isEmpty) return 0;
     final page = mcpPageById(pageId);
-    if (page == null) return false;
+    if (page == null) return 0;
     // 種別が違うと書いた物がどこにも出ない (AI は成功したと報告してしまう)。
-    if (page.pageType != 'paint') return false;
+    if (page.pageType != 'paint') return 0;
     try {
       final prefs = await _prefsWithRetry();
       final key = 'paint_$pageId';
@@ -100829,16 +100896,24 @@ $cleanQ
         };
       }
       final texts = (sheet['t'] is List) ? sheet['t'] as List : <dynamic>[];
-      // 位置を指定されなければ、 既にある文字の下に順に積む。
-      final auto = 80.0 + texts.length * 44.0;
-      texts.add({
-        'x': x ?? 80.0,
-        'y': y ?? auto,
-        't': text,
-        'c': colorValue ?? 0xFF000000,
-        's': size ?? 22.0,
-      });
+      var wrote = 0;
+      for (final text in wanted) {
+        // 位置を指定されなければ、 既にある文字の下に順に積む。
+        // まとめ書きの途中でも数え直すので、 行が重ならない。
+        final auto = 80.0 + texts.length * 44.0;
+        texts.add({
+          'x': x ?? 80.0,
+          // ★ 座標を指定されたまとめ書きでも、 同じ所に重ねないよう
+          //   2 行目からは下へずらす。
+          'y': y == null ? auto : y + wrote * 44.0,
+          't': text,
+          'c': colorValue ?? 0xFF000000,
+          's': size ?? 22.0,
+        });
+        wrote++;
+      }
       sheet['t'] = texts;
+      // ★ 書き込みも知らせも **全部足し終わってから 1 回だけ**。
       await prefs.setString(key, jsonEncode(decoded));
       _paintReloadTick++;
       _mcpContentTick++;
@@ -100850,10 +100925,10 @@ $cleanQ
       _touchPageBody(pageId);
       notifyListeners();
       _requestMcpFocus(pageId);
-      return true;
+      return wrote;
     } catch (e) {
-      debugPrint('mcpAddPaintText failed: $e');
-      return false;
+      debugPrint('mcpAddPaintTexts failed: $e');
+      return 0;
     }
   }
 
@@ -111675,6 +111750,33 @@ $example
     for (final id in ids) {
       _carryHiddenDescendants(id, delta, skip: ids);
     }
+    _saveToStorage();
+    notifyListeners();
+  }
+
+  /// 指定した**ページの**要素を delta だけまとめて動かす。
+  ///
+  /// ★ = ユーザー要望「(境界を跨いだ転送で) ドロップした場所に
+  ///   配置されるように」。 渡し先は開いているページでは無いので、
+  ///   currentPage 決め打ちの [moveNodes] では届かない。
+  ///
+  /// 控え (undo) は積まない — 呼ぶ側 (転送) が既に 1 回積んでいるので、
+  /// ここでも積むと Ctrl+Z が 2 回要る。
+  void moveNodesOnPage(String pageId, Set<String> ids, Offset delta) {
+    if (ids.isEmpty || delta == Offset.zero) return;
+    final page = mcpPageById(pageId);
+    if (page == null) return;
+    for (final id in ids) {
+      final node = page.nodes[id];
+      if (node == null) continue;
+      page.nodes[id] = node.copyWith(
+        position: Offset(
+          (node.position.dx + delta.dx).clamp(0.0, 20000.0 - node.width),
+          (node.position.dy + delta.dy).clamp(0.0, 20000.0 - node.height),
+        ),
+      );
+    }
+    page.lastModifiedAt = DateTime.now();
     _saveToStorage();
     notifyListeners();
   }
