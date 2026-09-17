@@ -113453,6 +113453,74 @@ $example
     }
   }
 
+  /// フリーノートから境界を越えて渡された物を [pageId] のノードにする
+  /// (= ユーザー要望: フリーノート側からギャラリーへ**戻す**転送)。
+  ///
+  /// 紙に貼った札 (絵) は添付ノード、 飛ぶ先付きの札は元の動画 / リンク /
+  /// ファイルのノード、 文字は普通のノードにする。 MCP の入口
+  /// (`mcpAddNode` など) と違い、 ページの切り替え (フォーカス要求) は
+  /// しない — 分割の相手側へ置くだけで、 今編集している側はそのまま。
+  /// 位置を決めるのは呼び出し側 (ギャラリーは後で枠へ入れ直す)。
+  /// 戻り値は作ったノードの id (作れなければ null)。
+  String? addTransferredNodeToPage(
+    String pageId, {
+    required String title,
+    String? imagePath,
+    String? url,
+    Offset? at,
+  }) {
+    final page = mcpPageById(pageId);
+    if (page == null || !mcpCanHoldFileNode(pageId)) return null;
+    final link = (url ?? '').trim();
+    final img = (imagePath ?? '').trim();
+    final hasImg = img.isNotEmpty && File(img).existsSync();
+    if (title.isEmpty && link.isEmpty && !hasImg) return null;
+    final node = MindMapNode(
+      id: _uuid.v4(),
+      title: title,
+      position: at ?? mcpReferenceFor(pageId),
+      color: _childColor(),
+      width: title.isEmpty ? 160.0 : nodeWidthForTitle(title),
+    );
+    if (link.isNotEmpty) {
+      final lower = link.toLowerCase();
+      if (_isYoutubeVideoUrl(link)) {
+        // 動画の札 → 元の動画ノードへ戻す (サムネイルは動画 id から取る。
+        //   札の絵は ▶ を焼き込んであるので使い回さない)。
+        node.contentType = NodeContentType.youtube;
+        node.youtubeUrl = link;
+      } else if (lower.startsWith('http://') ||
+          lower.startsWith('https://')) {
+        node.contentType = NodeContentType.link;
+        node.linkUrl = link;
+        if (node.title.isEmpty) {
+          node.title = link;
+          node.width = nodeWidthForTitle(link);
+        }
+      } else {
+        // 手元のファイル (mp4 など) の札 → 添付ノード。 札の絵をサムネイルに。
+        node.contentType = NodeContentType.attachment;
+        node.attachmentPath = link;
+        node.attachmentName = _baseName(link);
+        if (node.title.isEmpty) node.title = _baseName(link);
+        if (hasImg) node.attachmentThumbPath = img;
+      }
+    } else if (hasImg) {
+      node.contentType = NodeContentType.attachment;
+      node.attachmentPath = img;
+      node.attachmentName = _baseName(img);
+    }
+    page.nodes[node.id] = node;
+    if (page.pageType == 'bookshelf') _arrangeAsBookshelfBody(page);
+    _saveToStorage();
+    notifyListeners();
+    if (link.isEmpty && hasImg) {
+      // 絵の縦横比を後から整える (mcpAddImageNode と同じ)。
+      unawaited(_applyImageAspectRatio(pageId, node.id, img));
+    }
+    return node.id;
+  }
+
   /// 要素をフリーノート (紙) のページへ送る。
   ///
   /// ★ = ユーザー報告「フリーノートに動画を転送できるものの、

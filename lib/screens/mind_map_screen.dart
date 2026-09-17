@@ -36912,14 +36912,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
     final r = _splitCellGlobalRect(k);
     if (r.width <= 0 || r.height <= 0) return const SizedBox.shrink();
-    final provider = context.read<MindMapProvider>();
-    final name = (_mapSplitCells[k] ?? '').isEmpty
-        ? ''
-        : provider.pages
-                .where((p) => p.id == _mapSplitCells[k])
-                .map((p) => p.name)
-                .firstOrNull ??
-            '';
+    // ★ = ユーザー要望「転送先のヘッダー中央にページ名は出さなくてよい、
+    //   既に左上に出ている」。 以前はここで渡し先のページ名の札を上の
+    //   真ん中に出していた。 枠を光らせるだけにする。
     return Positioned(
       left: r.left,
       top: r.top,
@@ -36930,25 +36925,6 @@ class _MindMapScreenState extends State<MindMapScreen>
           decoration: BoxDecoration(
             border: Border.all(color: const Color(0xFF7CD992), width: 3),
             color: const Color(0x1A7CD992),
-          ),
-          alignment: Alignment.topCenter,
-          child: name.isEmpty
-              ? const SizedBox.shrink()
-              : Padding(
-            padding: const EdgeInsets.only(top: 10),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-              decoration: BoxDecoration(
-                color: const Color(0xEE1E3A2A),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: const Color(0xFF7CD992)),
-              ),
-              // ★ = ユーザー要望「「隣で手を離すと〜」 みたいな文章は要らない」。
-              //   渡し先のページ名だけを出す。
-              child: Text(name,
-                  style: const TextStyle(
-                      color: Colors.white, fontSize: 11.5)),
-            ),
           ),
         ),
       ),
@@ -37104,6 +37080,156 @@ class _MindMapScreenState extends State<MindMapScreen>
       );
     }
     return true;
+  }
+
+  // ── フリーノートから境界を越えて渡す (= ユーザー要望: フリーノート側から
+  //    ギャラリーへ**戻す**転送) ──────────────────────────────────────
+  //
+  //   紙の上の物 (札 / 文字 / 線) を掴んで、 隣のペインのマップ / ギャラリーの
+  //   上で離すと、 そのページのノードにして置く。 掴む側は
+  //   _PaintPageViewState (紙のジェスチャ)、 相手ペインの判定と置く処理は
+  //   ここ。 ノード → 紙 (_handleSplitTransferDrop) の逆向き。
+
+  /// 分割スロット [k] に載っているページの id。 編集側なら今開いている
+  /// ページ。 Web / 道具 / ファイルを載せたセルは ''。
+  String _splitSlotPageId(int k) {
+    if (_mapSplitCellWeb.containsKey(k) ||
+        _mapSplitCellTool.containsKey(k) ||
+        _mapSplitCellFile.containsKey(k)) {
+      return '';
+    }
+    if (k == _mapSplitEditorSlot) {
+      try {
+        return context.read<MindMapProvider>().currentPage.id;
+      } catch (_) {
+        return '';
+      }
+    }
+    return _mapSplitCells[k] ?? '';
+  }
+
+  /// [globalPos] の下にある、 [sourcePageId] 以外のマップ / ギャラリーの
+  /// ペイン (無ければ -1)。 [_splitCellAt] と違って**編集側のペインも相手に
+  /// なれる** (フリーノートが編集側でない時は、 編集側のギャラリーが渡し先)。
+  int _splitCellAtForSource(String sourcePageId, Offset globalPos) {
+    if (!_mapSplitOpen) return -1;
+    final MindMapProvider provider;
+    try {
+      provider = context.read<MindMapProvider>();
+    } catch (_) {
+      return -1;
+    }
+    for (final k in _visibleSplitSlots()) {
+      if (!_splitCellGlobalRect(k).contains(globalPos)) continue;
+      final pid = _splitSlotPageId(k);
+      if (pid.isEmpty || pid == sourcePageId) return -1;
+      // ノードを置けるページ (マップ / ギャラリー) だけが相手。
+      if (!provider.mcpCanHoldFileNode(pid)) return -1;
+      return k;
+    }
+    return -1;
+  }
+
+  /// フリーノートで掴んで動かしている間、 相手ペインの光りを更新する。
+  /// [globalPos] が null なら消す。
+  void _paintTransferHover(String sourcePageId, Offset? globalPos) {
+    if (!mounted) return;
+    int k = -1;
+    if (_splitTransferMode && _mapSplitOpen && globalPos != null) {
+      k = _splitCellAtForSource(sourcePageId, globalPos);
+    }
+    if (k != _splitTransferTarget) {
+      setState(() => _splitTransferTarget = k);
+    }
+  }
+
+  /// スロット [slot] の画面座標 [globalPos] を、 そのペインが映している
+  /// ページのキャンバス座標にする (編集側も可)。
+  Offset? _slotCanvasPos(int slot, String pageId, Offset globalPos) {
+    if (slot != _mapSplitEditorSlot) {
+      return _splitPaneCanvasPos(slot, pageId, globalPos);
+    }
+    try {
+      return _globalToCanvas(globalPos, _ctrlFor(pageId));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// フリーノートの選択要素を、 スロット [slot] のページのノードにして置く。
+  /// 戻り値は置けた数 (0 = 何も置いていない → 紙の側は何も消さない)。
+  Future<int> _handlePaintTransferDrop({
+    required int slot,
+    required Offset dropGlobal,
+    required List<_PaintTransferItem> items,
+  }) async {
+    if (!mounted || items.isEmpty) return 0;
+    final provider = context.read<MindMapProvider>();
+    final targetPageId = _splitSlotPageId(slot);
+    final targetIdx = provider.pages.indexWhere((p) => p.id == targetPageId);
+    if (targetIdx < 0) return 0;
+    final targetPage = provider.pages[targetIdx];
+    final bool targetIsShelf = targetPage.pageType == 'bookshelf';
+    final dropAt = _slotCanvasPos(slot, targetPageId, dropGlobal);
+    // ギャラリーは格子なので、 置く**前**に「落とした所に一番近い空き枠」 を
+    // 控えておく (_handleSplitTransferDrop と同じ理由)。
+    List<int>? shelfCell;
+    if (targetIsShelf && dropAt != null) {
+      shelfCell = provider.shelfNearestFreeCellFor(targetPageId, dropAt);
+    }
+    // 選んだ物全体の枠 (紙の座標)。 マップでは指の下に真ん中が来るように、
+    // 互いの位置関係を保ったまま置く。 ギャラリーは左上から読む順に枠へ。
+    Rect? all;
+    for (final it in items) {
+      final cur = all;
+      all = cur == null ? it.bounds : cur.expandToInclude(it.bounds);
+    }
+    final whole = all;
+    final sorted = [...items]..sort((a, b) {
+        final dy = a.bounds.top.compareTo(b.bounds.top);
+        return dy != 0 ? dy : a.bounds.left.compareTo(b.bounds.left);
+      });
+    final ids = <String>{};
+    for (final it in sorted) {
+      Offset? at;
+      if (!targetIsShelf && dropAt != null && whole != null) {
+        final rel = it.bounds.topLeft - whole.topLeft;
+        at = Offset(
+          (dropAt.dx - whole.width / 2 + rel.dx).clamp(0.0, 20000.0),
+          (dropAt.dy - whole.height / 2 + rel.dy).clamp(0.0, 20000.0),
+        );
+      }
+      final id = provider.addTransferredNodeToPage(
+        targetPageId,
+        title: it.title,
+        imagePath: it.imagePath,
+        url: it.url,
+        at: at,
+      );
+      if (id != null) ids.add(id);
+    }
+    if (ids.isEmpty) return 0;
+    if (targetIsShelf && shelfCell != null) {
+      provider.placeShelfItemsAtCell(
+          targetPageId, ids, shelfCell[0], shelfCell[1]);
+    }
+    if (mounted) {
+      if (_splitTransferTarget >= 0) {
+        setState(() => _splitTransferTarget = -1);
+      }
+      _appSnack(
+        context,
+        SnackBar(
+          duration: const Duration(seconds: 2),
+          backgroundColor: const Color(0xFF2A2A3E),
+          content: Text(provider
+              .t('split.transferred')
+              .replaceAll('{n}', '${ids.length}')
+              .replaceAll('{name}', targetPage.name)),
+        ),
+      );
+    }
+    return ids.length;
   }
 
   void _showSubscriptionManagerDialog() {
@@ -77431,7 +77557,8 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 分割ペインのホイール操作 (= ユーザー報告: Ctrl を押していないのに
   /// 拡大縮小してしまう)。 Ctrl 併用時だけズーム、 それ以外はスクロール。
   void _handlePaneWheel(PointerSignalEvent event,
-      TransformationController ctrl, MindMapPage page) {
+      TransformationController ctrl, MindMapPage page,
+      {int? slot}) {
     if (event is! PointerScrollEvent) return;
     final ctrlKey = HardwareKeyboard.instance.isControlPressed ||
         HardwareKeyboard.instance.isMetaPressed;
@@ -77458,8 +77585,18 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
     // 通常のホイール: 上下 (Shift 併用で左右) にスクロール。
     final shift = HardwareKeyboard.instance.isShiftPressed;
-    final dx = shift ? -event.scrollDelta.dy : -event.scrollDelta.dx;
+    var dx = shift ? -event.scrollDelta.dy : -event.scrollDelta.dx;
     final dy = shift ? 0.0 : -event.scrollDelta.dy;
+    // ★ このペイン自身の矩形で測る (= 以前は編集側のセルの大きさで
+    //   測っていた)。 横に動かないギャラリーは、 ホイールでも横に動かさない
+    //   (= ユーザー報告: 分割した時にギャラリーが左右に動いてしまう)。
+    final cellRect = _splitCellGlobalRect(slot ?? _mapSplitEditorSlot);
+    if (dx != 0 &&
+        page.pageType == 'bookshelf' &&
+        _shelfHLocked(
+            context.read<MindMapProvider>(), ctrl, page, cellRect.width)) {
+      dx = 0.0;
+    }
     if (dx == 0 && dy == 0) return;
     final t = m.getTranslation();
     final scale = m.getMaxScaleOnAxis();
@@ -77469,7 +77606,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     final margin = _canvasBoundaryMarginForScrollbars(
         context.read<MindMapProvider>(), context,
         pageOverride: page);
-    final view = _splitCellGlobalRect(_mapSplitEditorSlot).size;
+    final view = cellRect.size;
     final minX = view.width - (canvasDim.width + margin.right) * scale;
     final maxX = margin.left * scale;
     final minY = view.height - (canvasDim.height + margin.bottom) * scale;
@@ -80767,7 +80904,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             _markMapScrollActivity(owner: slot);
             // ホイールはこのペインのスクロールとして扱う (= ユーザー報告:
             // Ctrl 無しで拡大縮小してしまう問題)。 Ctrl 併用の時だけズーム。
-            _handlePaneWheel(e, paneCtrl, page);
+            _handlePaneWheel(e, paneCtrl, page, slot: slot);
           },
           onPointerUp: (_) =>
               _mapSplitActivate(provider, page.id, slot: slot),
@@ -80796,6 +80933,16 @@ class _MindMapScreenState extends State<MindMapScreen>
             boundaryMargin: paneShelf
                 ? const EdgeInsets.all(2000)
                 : EdgeInsets.zero,
+            // ★ ギャラリーは横に動かさない (= ユーザー報告: 画面分割した時に
+            //   左右に動かないはずのギャラリーが動いてしまう)。 編集側の
+            //   InteractiveViewer と同じ判定 (_shelfHLocked) を、 このペインの
+            //   幅で行う。 列を増やして端からはみ出した時だけ横も動かせる。
+            //   これまでこのペインには panAxis が無く、 自由に動いていた。
+            panAxis: paneShelf &&
+                    _shelfHLocked(provider, paneCtrl, page,
+                        _splitCellGlobalRect(slot).width)
+                ? PanAxis.vertical
+                : PanAxis.free,
             child: SizedBox(
               width: paneCanvas.width,
               height: paneCanvas.height,
@@ -133073,6 +133220,23 @@ Map<_PaintShapeResizeHandle, Offset> _paintShapeResizeHandleCenters(
   };
 }
 
+/// 境界を越えてマップ / ギャラリーへ渡す 1 つ分 (= ユーザー要望: フリー
+/// ノート側からギャラリーへ戻す転送)。 紙の上の物をノードにするための
+/// 材料だけを持つ。 [bounds] は紙の座標で占めていた範囲 (置く順と
+/// 互いの位置関係に使う)。 [url] は札の飛ぶ先 ('' = 無し)。
+class _PaintTransferItem {
+  final String title;
+  final String? imagePath;
+  final String url;
+  final Rect bounds;
+  const _PaintTransferItem({
+    required this.title,
+    this.imagePath,
+    this.url = '',
+    required this.bounds,
+  });
+}
+
 /// 画像要素 (= ユーザー要望: 画像貼り付け)。 ローカルパス + 配置矩形。
 class _PaintImageItem {
   String path;
@@ -150311,6 +150475,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
         if (d != Offset.zero) _selectionMoveChanged = true;
         _dirty = true;
       });
+      // 境界を越えて渡すモードなら、 相手ペインを光らせる。
+      _hostTransferHover();
     }
   }
 
@@ -150356,6 +150522,19 @@ class _PaintPageViewState extends State<_PaintPageView> {
         _expandPaintSelectionToGroups();
       });
     } else if (_selMoving) {
+      // ── 境界を越えて相手のマップ / ギャラリーへ渡す (= ユーザー要望:
+      //    フリーノート側からギャラリーへ戻す転送)。 画面の分割ペインの上で
+      //    離した時だけで、 紙同士の移動 (_trySplitDropMove) より先に見る。
+      //    渡す処理は非同期 (線を絵にする) なので、 ここでは掴みの状態だけ
+      //    畳んで、 消す / 戻す は向こうで済ませる。 ──
+      if (_tryHostTransferSelection()) {
+        setState(() {
+          _selMoving = false;
+          _selectionMoveBeforeSnapshot = null;
+          _selectionMoveChanged = false;
+        });
+        return;
+      }
       // ── 分割ペインへドロップしたら選択要素をそのページへ移動 ──
       //    (= ユーザー要望: 画面分割した状態で要素を D&D で移動)。
       if (_paintSplit && _trySplitDropMove()) {
@@ -150453,6 +150632,246 @@ class _PaintPageViewState extends State<_PaintPageView> {
     try {
       unawaited(OpenFilex.open(v));
     } catch (_) {}
+  }
+
+  // ── 境界を越えて相手のマップ / ギャラリーへ渡す (= ユーザー要望: フリー
+  //    ノート側からギャラリーへ**戻す**転送) ─────────────────────────────
+  //
+  //   相手ペインの判定と置く処理は画面側 (_MindMapScreenState) が持つ。
+  //   ここは「何を渡すか」 を紙の上の物から組み立て、 置けた分だけ紙から消す。
+  //   ノード → 紙 (provider._moveNodesToPaintSheet) の逆向き。
+
+  _MindMapScreenState? _hostCache;
+
+  /// この紙を載せている画面 (分割の相手ペインを知っている側)。 紙は
+  /// 編集側 / 分割セルのどちらに居ても同じ画面の下にある。
+  _MindMapScreenState? get _host =>
+      _hostCache ??= context.findAncestorStateOfType<_MindMapScreenState>();
+
+  /// 掴んで動かしている最中に、 相手ペインの光りを更新する。
+  void _hostTransferHover() {
+    final h = _host;
+    if (h == null || !h._splitTransferMode || !h._mapSplitOpen) return;
+    h._paintTransferHover(widget.pageId, _selDragGlobal);
+  }
+
+  /// 光りを消す (離した / 渡さなかった時)。
+  void _hostTransferHoverEnd() {
+    _host?._paintTransferHover(widget.pageId, null);
+  }
+
+  /// 選択ツールで掴んでいた物を、 相手ペインの上で離したなら渡す。
+  /// 渡す処理を始めたら true (紙の側の後始末は _transferToHost が済ませる)。
+  bool _tryHostTransferSelection() {
+    final h = _host;
+    final g = _selDragGlobal;
+    if (h == null || g == null) return false;
+    if (!h._splitTransferMode || !h._mapSplitOpen) return false;
+    if (!_isAnySelSet()) {
+      _hostTransferHoverEnd();
+      return false;
+    }
+    final slot = h._splitCellAtForSource(widget.pageId, g);
+    if (slot < 0) {
+      _hostTransferHoverEnd();
+      return false;
+    }
+    final sheet = _sheet;
+    final strokes = <_PaintStroke>[];
+    final shapes = <_PaintShape>[];
+    final texts = <_PaintText>[];
+    final images = <_PaintImageItem>[];
+    for (final i in _selStrokeSet) {
+      if (i < sheet.strokes.length && !sheet.strokes[i].erase) {
+        strokes.add(sheet.strokes[i]);
+      }
+    }
+    for (final i in _selShapeSet) {
+      if (i < sheet.shapes.length) shapes.add(sheet.shapes[i]);
+    }
+    for (final i in _selTextSet) {
+      if (i < sheet.texts.length) texts.add(sheet.texts[i]);
+    }
+    for (final i in _selImgSet) {
+      if (i < sheet.images.length) images.add(sheet.images[i]);
+    }
+    if (strokes.isEmpty && shapes.isEmpty && texts.isEmpty && images.isEmpty) {
+      _hostTransferHoverEnd();
+      return false;
+    }
+    final before = _selectionMoveBeforeSnapshot ?? _makeEraseSnapshot();
+    unawaited(_transferToHost(h, slot, g, sheet,
+        strokes: strokes,
+        shapes: shapes,
+        texts: texts,
+        images: images,
+        before: before,
+        moved: _selectionMoveChanged));
+    return true;
+  }
+
+  /// 画像ツールで掴んでいた絵を、 相手ペインの上で離したなら渡す。
+  bool _tryHostTransferImage() {
+    final h = _host;
+    final g = _selDragGlobal;
+    if (h == null || g == null) return false;
+    if (!h._splitTransferMode || !h._mapSplitOpen) return false;
+    if (_selImage < 0 || _selImage >= _sheet.images.length) return false;
+    final slot = h._splitCellAtForSource(widget.pageId, g);
+    if (slot < 0) {
+      _hostTransferHoverEnd();
+      return false;
+    }
+    final sheet = _sheet;
+    unawaited(_transferToHost(h, slot, g, sheet,
+        images: [sheet.images[_selImage]],
+        before: _makeEraseSnapshot(),
+        moved: true));
+    return true;
+  }
+
+  /// 紙の上の物をノードの材料にして画面側へ渡し、 置けたら紙から消す。
+  /// 線と図形は 1 枚の絵 (PNG) にまとめて渡す。 [before] は掴む前の控え
+  /// (戻すとその位置に戻る)。 [moved] は掴んで動いたか (渡せなかった時に、
+  /// 動いた分を戻せるように控えを積むかの判断)。
+  Future<void> _transferToHost(
+    _MindMapScreenState h,
+    int slot,
+    Offset dropGlobal,
+    _PaintSheet sheet, {
+    List<_PaintStroke> strokes = const [],
+    List<_PaintShape> shapes = const [],
+    List<_PaintText> texts = const [],
+    List<_PaintImageItem> images = const [],
+    required _PaintEraseSnapshot before,
+    required bool moved,
+  }) async {
+    final items = <_PaintTransferItem>[];
+    for (final im in images) {
+      items.add(_PaintTransferItem(
+        title: '',
+        imagePath: im.path,
+        url: im.url,
+        bounds: _paintImageBounds(im),
+      ));
+    }
+    for (final t in texts) {
+      final s = _measureText(t);
+      items.add(_PaintTransferItem(
+        title: t.text,
+        bounds: Rect.fromLTWH(t.pos.dx, t.pos.dy, s.width, s.height),
+      ));
+    }
+    if (strokes.isNotEmpty || shapes.isNotEmpty) {
+      final ink = await _renderInkToPng(sheet, strokes, shapes);
+      if (ink != null) {
+        items.add(_PaintTransferItem(
+            title: '', imagePath: ink.$1, bounds: ink.$2));
+      }
+    }
+    if (!mounted) return;
+    var placed = 0;
+    if (items.isNotEmpty) {
+      placed = await h._handlePaintTransferDrop(
+          slot: slot, dropGlobal: dropGlobal, items: items);
+    }
+    if (!mounted) return;
+    _hostTransferHoverEnd();
+    if (placed <= 0) {
+      // 渡せなかった → 普通に動かし終えた扱い (動いた分は戻せるように)。
+      setState(() {
+        if (moved && identical(sheet, _sheet)) _pushPaintSnapshotEdit(before);
+      });
+      _persist();
+      return;
+    }
+    // 渡せたので紙から消す (= 転送は移動)。 物そのものを探して消す
+    //   (待っている間に並びが変わっても取り違えないように)。
+    setState(() {
+      _redo.clear();
+      for (final s in strokes) {
+        sheet.strokes.remove(s);
+      }
+      for (final s in shapes) {
+        sheet.shapes.remove(s);
+      }
+      for (final t in texts) {
+        sheet.texts.remove(t);
+      }
+      for (final im in images) {
+        sheet.images.remove(im);
+      }
+      _selImage = -1;
+      if (identical(sheet, _sheet)) {
+        _pushPaintSnapshotEdit(before);
+        _resetPaintSelectionState();
+      }
+      _dirty = true;
+    });
+    _persist();
+  }
+
+  /// 選んでいる線と図形だけを 1 枚の PNG に描き出す (= 境界を越えて渡す
+  /// 時の絵)。 戻り値は (ファイルの場所, 紙の上で占めていた範囲)。
+  /// 消しゴムの跡は元の紙の物をそのまま効かせる (清書し直さない)。
+  Future<(String, Rect)?> _renderInkToPng(_PaintSheet src,
+      List<_PaintStroke> strokes, List<_PaintShape> shapes) async {
+    Rect? bounds;
+    void acc(Rect r) {
+      final cur = bounds;
+      bounds = cur == null ? r : cur.expandToInclude(r);
+    }
+
+    for (final s in strokes) {
+      final r = _paintStrokeBounds(s);
+      if (r != null) acc(r);
+    }
+    for (final sh in shapes) {
+      acc(Rect.fromPoints(sh.a, sh.b).inflate(sh.width / 2 + 2));
+    }
+    final b = bounds;
+    if (b == null || b.isEmpty) return null;
+    final region = b.inflate(6);
+    try {
+      final cs = _sizeOf(src);
+      // 選んだ物だけの仮の紙。
+      final tmp = _PaintSheet(
+        name: '',
+        sizeId: src.sizeId,
+        customW: src.customW,
+        customH: src.customH,
+        strokes: [
+          ...strokes.map(_cloneStroke),
+          ...src.strokes.where((e) => e.erase).map(_cloneStroke),
+        ],
+        shapes: shapes.map(_cloneShape).toList(),
+      );
+      const pixelRatio = 2.0;
+      final w = (region.width * pixelRatio).ceil();
+      final hgt = (region.height * pixelRatio).ceil();
+      if (w <= 0 || hgt <= 0) return null;
+      final recorder = ui.PictureRecorder();
+      final canvas = Canvas(recorder);
+      canvas.scale(pixelRatio);
+      canvas.clipRect(Offset.zero & region.size);
+      canvas.translate(-region.left, -region.top);
+      _PaintCanvasPainter(tmp, null, null, 1.0, _imageCache)
+          .paint(canvas, Size(cs.w, cs.h));
+      final pic = recorder.endRecording();
+      final img = await pic.toImage(w, hgt);
+      final bytes = await img.toByteData(format: ui.ImageByteFormat.png);
+      if (bytes == null) return null;
+      final appDir = await getApplicationDocumentsDirectory();
+      final dir = Directory('${appDir.path}/paint_clips');
+      if (!await dir.exists()) await dir.create(recursive: true);
+      final path =
+          '${dir.path}/ink_${DateTime.now().millisecondsSinceEpoch}.png';
+      await File(path).writeAsBytes(bytes.buffer.asUint8List(), flush: true);
+      return (path, region);
+    } catch (e) {
+      debugPrint('paint ink render failed: $e');
+      return null;
+    }
   }
 
   /// 選択要素のドラッグが分割ペインの上で離されたら、 そのページへ移動する
@@ -152689,12 +153108,17 @@ class _PaintPageViewState extends State<_PaintPageView> {
       }
       _dirty = true;
     });
+    // 動かしている時だけ、 境界の向こうのペインを光らせる。
+    if (!_imgRotating && !_imgResizing) _hostTransferHover();
   }
 
   void _onImagePanEnd() {
     if (_imgDragOrig != null) {
+      final moved = !_imgRotating && !_imgResizing;
       _imgDragOrig = null;
       _imgRotating = false;
+      // 境界を越えて相手のマップ / ギャラリーへ渡す (= ユーザー要望)。
+      if (moved && _tryHostTransferImage()) return;
       _persist();
     }
   }
@@ -158798,6 +159222,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
                                     _selDragGlobal = d.globalPosition;
                                     _onSelectPanStart(p, fit);
                                   } else if (isImage) {
+                                    // 境界を越えて渡す判定用に画面座標も。
+                                    _selDragGlobal = d.globalPosition;
                                     _onImagePanStart(p, fit);
                                   } else {
                                     // 塗りつぶしツールもドラッグはここへ:
@@ -158815,6 +159241,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
                                     _selDragGlobal = d.globalPosition;
                                     _onSelectPanUpdate(p);
                                   } else if (isImage) {
+                                    _selDragGlobal = d.globalPosition;
                                     _onImagePanUpdate(p);
                                   } else {
                                     _onPanUpdate(p);
@@ -171256,6 +171683,9 @@ v.addEventListener('play', function() {
       if (saved > 3) seekTo = saved;
     }
     if (seekTo < 0) return;
+    // 今向かっている動画の id (JS へ渡す。 id は英数と _- だけ)。
+    final vidJs = (_currentVideoId ?? '')
+        .replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '');
     // ── JS シーク戦略 (多段防御 + 成功検知) ──
     // YouTube は autoplay で動画を 0 秒から開始するため、 単発の
     // currentTime= 代入では autoplay の初期化に上書きされて 0 に戻る
@@ -171285,10 +171715,24 @@ v.addEventListener('play', function() {
         window.__MM_SEEK_GEN__ = (window.__MM_SEEK_GEN__ || 0) + 1;
         var GEN = window.__MM_SEEK_GEN__;
         var TARGET = $seekTo;
+        var VID = '$vidJs';
         var attached = new WeakSet();
         function stale(){ return window.__MM_SEEK_GEN__ !== GEN; }
+        // ★ YouTube の中の移動 (関連動画を押す) では、 URL が先に次の動画に
+        //   なり、 <video> はまだ前の動画を持っている (= ユーザー報告:
+        //   切り替わりで不安定)。 その間に飛ばすと**前の動画が飛び**、
+        //   0.3 秒後の確認で「済み」 が立って、 次の動画の続きが二度と
+        //   戻らなかった。 位置の見張り (_injectPositionTracker) が控えて
+        //   いる「要素の持ち主」 が今の動画になるまで待つ。 持ち主が
+        //   分からない時 (読み直した直後など) は今までどおりすぐ飛ばす。
+        function elemReady(){
+          var o = window.__MM_ELEM_VID__;
+          if (!VID || !o) return true;
+          return o === VID;
+        }
         function applyOne(v){
           if (stale() || window.__MM_SEEK_DONE__) return;
+          if (!elemReady()) return;
           try {
             if (!v) return;
             v.currentTime = TARGET;
@@ -171319,7 +171763,11 @@ v.addEventListener('play', function() {
           }
           if (window.__MM_SEEK_DONE__) return;
           try {
-            document.querySelectorAll('video').forEach(attach);
+            // 持ち主が追い付くのを待っていた分も、 見回りのたびに試す
+            //   (attach は初回しか applyOne を呼ばない)。
+            document.querySelectorAll('video').forEach(function(v){
+              attach(v); applyOne(v);
+            });
           } catch(e) {}
         }
         scanAll();
@@ -171338,6 +171786,8 @@ v.addEventListener('play', function() {
         setTimeout(scanAll, 800);
         setTimeout(scanAll, 1500);
         setTimeout(scanAll, 3000);
+        // 見張りが持ち主を採り直すのは 3 秒ごとなので、 その後にもう 1 回。
+        setTimeout(scanAll, 4500);
         // 5 秒経ったら、 この仕掛けは役目を終える (以後は手動シークを尊重)。
         setTimeout(function(){
           if (stale()) return;
