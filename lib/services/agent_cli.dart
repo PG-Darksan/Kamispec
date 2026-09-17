@@ -1014,14 +1014,36 @@ class AgentCli {
   /// [allowFiles] を true にすると、 作業フォルダーの中でファイルを作る事を
   /// 許す (= ユーザー報告: codex から txt などを作れない)。 覚書の文面と
   /// codex の砂箱 (sandbox) の両方が効く。
+  /// [imagePaths] … 一緒に見せる画像の道 (= ユーザー要望: codex CLI や
+  /// Claude Code にも画像を渡せるように)。 どちらの CLI も **ファイルの道**で
+  /// 受け取るので、 呼ぶ側が先に書き出しておくこと。
+  ///   ・codex   … `-i <file>` を画像の数だけ付ける (本物の添付)。
+  ///   ・claude  … 本文に道を書き添える。 Claude Code は道を見せれば自分で
+  ///                読むので、 これで絵が渡る。
   static Future<String?> runPrompt(String prompt,
       {Duration? timeout,
       String? workingDir,
       String guide = '',
       bool allowFiles = false,
+      List<String> imagePaths = const <String>[],
+      // 会話を引き継ぐプロジェクトのフォルダー (= ユーザー要望: VSCode の
+      // codex / Claude Code の会話履歴を引き継いで答える)。 空なら今までどおり。
+      String continueDir = '',
       Map<String, String> extraEnvironment = const <String, String>{}}) async {
     lastPromptError = '';
     if (!supported || prompt.trim().isEmpty) return null;
+    final continuing = continueDir.trim().isNotEmpty &&
+        Directory(continueDir.trim()).existsSync();
+    // 引き継ぐ時は**そのフォルダー**で動かす (CLI は会話をフォルダー単位で
+    // 覚えているため)。
+    if (continuing) workingDir = continueDir.trim();
+    // 実在する物だけに絞る (消えていた時に CLI ごと失敗させない)。
+    final images = <String>[];
+    for (final ip in imagePaths) {
+      try {
+        if (ip.trim().isNotEmpty && File(ip).existsSync()) images.add(ip);
+      } catch (_) {}
+    }
     // ★ 何も指定が無い時は、 専用の小さなフォルダーで動かす。
     //   指定しないとアプリの置き場 (実行ファイルの隣) で動いてしまい、
     //   そこにある設定を読みに行ったり、 余計なファイルを見に行ったりする。
@@ -1065,6 +1087,8 @@ class AgentCli {
       ...switch (pick.spec.kind) {
         AgentCliKind.claude => <String>[
             '-p',
+            // 会話の続きから (= そのフォルダーで最後に使った会話を再開)。
+            if (continuing) '--continue',
             '--output-format',
             'json',
             // ★ 1 回聞くだけの問い合わせに、 利用者が登録している
@@ -1076,6 +1100,9 @@ class AgentCli {
           ],
         AgentCliKind.codex => <String>[
             'exec',
+            // 会話の続きから (対応している版だけ。 無い版は codex が断るので、
+            // その文言がそのまま画面に出る)。
+            if (continuing) ...['resume', '--last'],
             // ★ codex は既定だと「読むだけ」 の状態で動くので、 頼まれても
             //   ファイルを 1 つも作れない (= ユーザー報告)。 作業フォルダー
             //   の中だけ書けるようにする。 外は今までどおり書けない。
@@ -1115,6 +1142,8 @@ class AgentCli {
               '--output-last-message',
               lastMessageFile,
             ],
+            // 画像を添える (= ユーザー要望)。 codex は `-i` で受け取る。
+            for (final ip in images) ...['-i', ip],
             if (m.isNotEmpty) ...['-m', m],
             '-',
           ],
@@ -1124,6 +1153,15 @@ class AgentCli {
           ],
       },
     ];
+    // ★ Claude Code には引数で画像を渡す口が無いので、 本文に道を書き添える
+    //   (道を見せれば自分で読む)。 codex は上の `-i` で渡している。
+    var body = prompt;
+    if (images.isNotEmpty && pick.spec.kind != AgentCliKind.codex) {
+      final list = images.map((e) => '- $e').join('\n');
+      body = '$prompt\n\n'
+          '[images] Read these image files first, then answer about them:\n'
+          '$list';
+    }
     try {
       final proc = await Process.start(
         exe,
@@ -1136,7 +1174,7 @@ class AgentCli {
         // 引数は固定文字だけなので、 これで危ない物が混ざることはない。
         runInShell: pick.needsShell,
       );
-      proc.stdin.write(prompt);
+      proc.stdin.write(body);
       await proc.stdin.flush();
       await proc.stdin.close();
       final out = StringBuffer();

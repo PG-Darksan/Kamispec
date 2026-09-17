@@ -1362,6 +1362,24 @@ bool isDisplayNameRequiredError(Object e) => e is _DisplayNameRequiredException;
 ///
 /// UI 側は `catch (e) { if (isUploadRestrictedError(e)) ... }` でキャッチして
 /// 「このマップは他のユーザーによって制限されています」 と表示するのが想定。
+/// 容量の上限でファイルを上げられなかった時の断り。
+///
+/// ★ = 動作検証 2026-09-17「容量エラーで添付の転送は止まったのに、 ページ
+///   本体はクラウドに作成された」。 上限の断りを一番外側の `catch` が
+///   握り潰して null を返していたので、 呼び出し側は「添付が 1 つ失敗した」
+///   としか分からず、 そのままページ本体を書いていた。 上限は retry しても
+///   必ず同じ結果なので、 専用の型にして**外まで通す**。 受けた側は
+///   ページ本体も書かずに止める (= 中途半端な同期を残さない)。
+class _UploadLimitException implements Exception {
+  _UploadLimitException(this.message);
+  final String message;
+  @override
+  String toString() => message;
+}
+
+/// 上の断りか (型が private なので、 外からはこれで見る)。
+bool isUploadLimitError(Object e) => e is _UploadLimitException;
+
 class _UploadRestrictedException implements Exception {
   final String message;
   const _UploadRestrictedException(this.message);
@@ -23230,16 +23248,50 @@ class MindMapProvider extends ChangeNotifier {
       'ko': 'AI로 작성', 'es': 'Escribir con IA', 'fr': 'Rediger avec l IA',
       'de': 'Mit KI schreiben', 'pt': 'Escrever com IA', 'ru': 'Написать с ИИ',
     },
+    // ★ = ユーザー要望「AI にマークダウンや図を書いてもらう」 は「AI」 に。
     'md.aiTitle': {
-      'ja': 'AI に Markdown / 図を書いてもらう',
-      'en': 'Have the AI write Markdown / diagrams',
-      'zh': '让 AI 编写 Markdown / 图表',
-      'ko': 'AI에게 Markdown / 다이어그램 작성 요청',
-      'es': 'Pedir a la IA que escriba Markdown / diagramas',
-      'fr': 'Demander a l IA d ecrire du Markdown / des diagrammes',
-      'de': 'Die KI Markdown/Diagramme schreiben lassen',
-      'pt': 'Pedir a IA para escrever Markdown / diagramas',
-      'ru': 'Попросить ИИ написать Markdown / диаграммы',
+      'ja': 'AI',
+      'en': 'AI',
+      'zh': 'AI',
+      'ko': 'AI',
+      'es': 'IA',
+      'fr': 'IA',
+      'de': 'KI',
+      'pt': 'IA',
+      'ru': 'ИИ',
+    },
+    'md.aiUseBrowser': {
+      'ja': 'ブラウザ版に切り替える',
+      'en': 'Switch to the browser AI',
+      'zh': '切换到浏览器版',
+      'ko': '브라우저판으로 전환',
+      'es': 'Cambiar a la IA del navegador',
+      'fr': 'Passer à l’IA du navigateur',
+      'de': 'Zur Browser-KI wechseln',
+      'pt': 'Mudar para a IA do navegador',
+      'ru': 'Переключить на браузерный ИИ',
+    },
+    'md.aiUseApi': {
+      'ja': 'API 版に戻す',
+      'en': 'Back to the API AI',
+      'zh': '切回 API 版',
+      'ko': 'API 판으로 되돌리기',
+      'es': 'Volver a la IA por API',
+      'fr': 'Revenir à l’IA par API',
+      'de': 'Zurück zur API-KI',
+      'pt': 'Voltar para a IA por API',
+      'ru': 'Вернуться к API-ИИ',
+    },
+    'md.aiBrowserLabel': {
+      'ja': 'ブラウザ',
+      'en': 'Browser',
+      'zh': '浏览器',
+      'ko': '브라우저',
+      'es': 'Navegador',
+      'fr': 'Navigateur',
+      'de': 'Browser',
+      'pt': 'Navegador',
+      'ru': 'Браузер',
     },
     'md.aiPlaceholder': {
       'ja': '例: 新製品の開発フローを図と表でまとめて',
@@ -24715,16 +24767,32 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Удалить карту',
     },
     'map.deleteConfirm': {
-      'ja': '「{name}」を削除しますか？\nこの操作は元に戻せません。',
-      'en': 'Delete “{name}”?\nThis action cannot be undone.',
-      'zh': '要删除「{name}」吗？\n此操作无法撤销。',
-      'ko': '「{name}」을(를) 삭제할까요?\n이 작업은 되돌릴 수 없습니다.',
-      'es': '¿Eliminar “{name}”?\nEsta acción no se puede deshacer.',
-      'fr': 'Supprimer « {name} » ?\nCette action est irréversible.',
-      'de':
-          '„{name}“ löschen?\nDiese Aktion kann nicht rückgängig gemacht werden.',
-      'pt': 'Excluir “{name}”?\nEsta ação não pode ser desfeita.',
-      'ru': 'Удалить «{name}»?\nЭто действие нельзя отменить.',
+      'ja': '「{name}」を削除しますか?\n'
+          '取り消し (Ctrl+Z) では戻せませんが、 消す直前の控えが自動で残ります '
+          '(⋮ →「バックアップから復元」)。',
+      'en': 'Delete “{name}”?\n'
+          'Undo (Ctrl+Z) will not bring it back, but a snapshot is kept '
+          'automatically (⋮ → “Restore from backup”).',
+      'zh': '要删除「{name}」吗?\n'
+          '撤销 (Ctrl+Z) 无法恢复，但会自动保留备份 (⋮ →「从备份恢复」)。',
+      'ko': '「{name}」을(를) 삭제할까요?\n'
+          '실행 취소(Ctrl+Z)로는 돌아오지 않지만, 자동으로 보관됩니다 '
+          '(⋮ → 「백업에서 복원」).',
+      'es': '¿Eliminar “{name}”?\n'
+          'Deshacer (Ctrl+Z) no lo recupera, pero se guarda una copia '
+          'automática (⋮ → “Restaurar desde copia”).',
+      'fr': 'Supprimer « {name} » ?\n'
+          'Annuler (Ctrl+Z) ne la rend pas, mais une sauvegarde est '
+          'conservée (⋮ → « Restaurer depuis la sauvegarde »).',
+      'de': '„{name}“ löschen?\n'
+          'Rückgängig (Strg+Z) holt sie nicht zurück, aber eine Sicherung '
+          'wird behalten (⋮ → „Aus Sicherung wiederherstellen“).',
+      'pt': 'Excluir “{name}”?\n'
+          'Desfazer (Ctrl+Z) não a traz de volta, mas uma cópia é guardada '
+          '(⋮ → “Restaurar do backup”).',
+      'ru': 'Удалить «{name}»?\n'
+          'Отмена (Ctrl+Z) её не вернёт, но копия сохраняется '
+          'автоматически (⋮ → «Восстановить из резервной копии»).',
     },
     'map.cannotDeleteLast': {
       'ja': '最後のマップは削除できません',
@@ -36451,37 +36519,40 @@ class MindMapProvider extends ChangeNotifier {
       'th': 'ภาษา',
       'jv': 'Basa',
     },
+    // ★ = ユーザー要望「API キー自体は設定しないので表記を変えて」。
+    //   この項目を押すと開くのは AI クレジット (残高とチャージ) の画面で、
+    //   キーはサーバーだけが持つ。 名前から「API キー」 を外す。
     'menu.ai': {
-      'ja': 'AI・APIキー設定',
-      'en': 'AI / API Keys',
-      'zh': 'AI / API 密钥',
-      'ko': 'AI / API 키',
-      'es': 'AI / Claves API',
-      'fr': 'IA / Clés API',
-      'de': 'KI / API-Schlüssel',
-      'pt': 'IA / Chaves API',
-      'ru': 'ИИ / API-ключи',
-      'hi': 'AI / API कुंजी',
-      'ar': 'الذكاء الاصطناعي / مفاتيح API',
-      'bn': 'AI / API কী',
-      'id': 'AI / Kunci API',
-      'ur': 'AI / API کیز',
-      'pcm': 'AI / API Keys',
-      'arz': 'AI / مفاتيح API',
-      'mr': 'AI / API कीज',
-      'vi': 'AI / Khóa API',
-      'te': 'AI / API కీలు',
-      'ha': 'AI / Mabuɗan API',
-      'tr': 'AI / API Anahtarları',
-      'pnb': 'AI / API چابیاں',
-      'sw': 'AI / Funguo za API',
-      'tl': 'AI / API Keys',
-      'ta': 'AI / API சாவிகள்',
-      'yue': 'AI / API 密鑰',
-      'wuu': 'AI / API 密钥',
-      'fa': 'AI / کلیدهای API',
-      'th': 'AI / คีย์ API',
-      'jv': 'AI / Kunci API',
+      'ja': 'AI とクレジット',
+      'en': 'AI & credits',
+      'zh': 'AI 与额度',
+      'ko': 'AI 와 크레딧',
+      'es': 'IA y créditos',
+      'fr': 'IA et crédits',
+      'de': 'KI und Guthaben',
+      'pt': 'IA e créditos',
+      'ru': 'ИИ и кредиты',
+      'hi': 'AI और क्रेडिट',
+      'ar': 'الذكاء الاصطناعي والرصيد',
+      'bn': 'AI ও ক্রেডিট',
+      'id': 'AI & kredit',
+      'ur': 'AI اور کریڈٹ',
+      'pcm': 'AI & credits',
+      'arz': 'الذكاء الاصطناعي والرصيد',
+      'mr': 'AI आणि क्रेडिट',
+      'vi': 'AI và tín dụng',
+      'te': 'AI మరియు క్రెడిట్లు',
+      'ha': 'AI da kuɗin amfani',
+      'tr': 'Yapay zekâ ve kredi',
+      'pnb': 'AI تے کریڈٹ',
+      'sw': 'AI na salio',
+      'tl': 'AI at credits',
+      'ta': 'AI மற்றும் கிரெடிட்',
+      'yue': 'AI 同額度',
+      'wuu': 'AI 搭额度',
+      'fa': 'هوش مصنوعی و اعتبار',
+      'th': 'AI และเครดิต',
+      'jv': 'AI lan kredit',
     },
     'menu.sync': {
       'ja': 'クラウド同期',
@@ -59112,24 +59183,46 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Excluir selecionados',
       'ru': 'Удалить выбранные',
     },
+    // ★ = ユーザー報告「まとめて削除で『取り消せません』 と出ているのに、
+    //   実際はゴミ箱に入るから復元できるのでは?」。 その通りで、 ページが
+    //   減る保存のたびに直前の状態が自動で控えられる
+    //   (`_backupPagesIfShrinking` / 31 日・30 世代)。 「戻せない」 は嘘なので、
+    //   戻し方まで書く。 ただし Ctrl+Z では戻らないので、 そこも書き分ける。
     'drawer.bulkDeleteBody': {
-      'ja':
-          '{folders} 個のフォルダーと {pages} 個のマップを削除します。フォルダー内のマップも一緒に削除されます。この操作は取り消せません。',
-      'en':
-          'Delete {folders} folder(s) and {pages} map(s). Maps inside folders will also be deleted. This cannot be undone.',
-      'zh': '将删除 {folders} 个文件夹和 {pages} 张地图。文件夹内的地图也会被删除。此操作无法撤销。',
-      'ko':
-          '{folders}개의 폴더와 {pages}개의 맵을 삭제합니다. 폴더 안의 맵도 함께 삭제됩니다. 이 작업은 되돌릴 수 없습니다.',
-      'es':
-          'Eliminar {folders} carpeta(s) y {pages} mapa(s). Los mapas dentro de las carpetas también se eliminarán. No se puede deshacer.',
-      'fr':
-          'Supprimer {folders} dossier(s) et {pages} carte(s). Les cartes dans les dossiers seront aussi supprimées. Cette action est irréversible.',
-      'de':
-          '{folders} Ordner und {pages} Karte(n) löschen. Karten in Ordnern werden ebenfalls gelöscht. Nicht rückgängig zu machen.',
-      'pt':
-          'Excluir {folders} pasta(s) e {pages} mapa(s). Os mapas dentro das pastas também serão excluídos. Não pode ser desfeito.',
-      'ru':
-          'Удалить {folders} папок и {pages} карт. Карты внутри папок также удалятся. Действие необратимо.',
+      'ja': '{folders} 個のフォルダーと {pages} 個のマップを削除します。'
+          'フォルダー内のマップも一緒に削除されます。\n'
+          '取り消し (Ctrl+Z) では戻せませんが、 消す直前の控えが自動で残ります '
+          '(⋮ →「バックアップから復元」 から戻せます)。',
+      'en': 'Delete {folders} folder(s) and {pages} map(s). Maps inside folders '
+          'will also be deleted.\n'
+          'Undo (Ctrl+Z) will not bring them back, but a snapshot is kept '
+          'automatically — restore it from ⋮ → “Restore from backup”.',
+      'zh': '将删除 {folders} 个文件夹和 {pages} 张地图。文件夹内的地图也会被删除。\n'
+          '撤销 (Ctrl+Z) 无法恢复，但会自动保留删除前的备份 '
+          '(可从 ⋮ →「从备份恢复」 还原)。',
+      'ko': '{folders}개의 폴더와 {pages}개의 맵을 삭제합니다. 폴더 안의 맵도 함께 삭제됩니다.\n'
+          '실행 취소(Ctrl+Z)로는 돌아오지 않지만, 삭제 직전 상태가 자동으로 '
+          '보관됩니다 (⋮ → 「백업에서 복원」).',
+      'es': 'Eliminar {folders} carpeta(s) y {pages} mapa(s). Los mapas dentro de '
+          'las carpetas también se eliminarán.\n'
+          'Deshacer (Ctrl+Z) no los recupera, pero se guarda una copia '
+          'automática (⋮ → “Restaurar desde copia”).',
+      'fr': 'Supprimer {folders} dossier(s) et {pages} carte(s). Les cartes dans les '
+          'dossiers seront aussi supprimées.\n'
+          'Annuler (Ctrl+Z) ne les rend pas, mais une sauvegarde est '
+          'conservée (⋮ → « Restaurer depuis la sauvegarde »).',
+      'de': '{folders} Ordner und {pages} Karte(n) löschen. Karten in Ordnern werden '
+          'ebenfalls gelöscht.\n'
+          'Rückgängig (Strg+Z) holt sie nicht zurück, aber eine Sicherung '
+          'wird automatisch behalten (⋮ → „Aus Sicherung wiederherstellen“).',
+      'pt': 'Excluir {folders} pasta(s) e {pages} mapa(s). Os mapas dentro das pastas '
+          'também serão excluídos.\n'
+          'Desfazer (Ctrl+Z) não os traz de volta, mas uma cópia é guardada '
+          'automaticamente (⋮ → “Restaurar do backup”).',
+      'ru': 'Удалить {folders} папок и {pages} карт. Карты внутри папок также '
+          'удалятся.\n'
+          'Отмена (Ctrl+Z) их не вернёт, но копия сохраняется '
+          'автоматически (⋮ → «Восстановить из резервной копии»).',
     },
     'drawer.bulkDeleteWarning': {
       'ja': '全て消します。 消した後に空のマップが 1 枚だけ作られます。',
@@ -66328,6 +66421,233 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Выкл: одна панель открывается один раз и выходит на передний план. '
           'Вкл: каждое нажатие открывает новое окно.',
     },
+    // ★ = 動作検証 2026-09-17「上限に当たった時の表示が『使えるトークンが
+    //   足りません』 だけで、 開発者モードの試験用の上限が原因と分からない」。
+    //   本文は利用者に出る物と同じまま、 末尾にこの短い印だけ足す。
+    // 使える関数の一覧を名前で探す (= ユーザー要望)。
+    'ss.formulaSearchHint': {
+      'ja': '関数名で探す (例: SUM)',
+      'en': 'Search by function name (e.g. SUM)',
+      'zh': '按函数名搜索 (例: SUM)',
+      'ko': '함수 이름으로 찾기 (예: SUM)',
+      'es': 'Buscar por nombre de función (p. ej. SUM)',
+      'fr': 'Rechercher par nom de fonction (ex. SUM)',
+      'de': 'Nach Funktionsname suchen (z. B. SUM)',
+      'pt': 'Buscar pelo nome da função (ex.: SUM)',
+      'ru': 'Поиск по имени функции (напр. SUM)',
+    },
+    'ss.formulaSearchNone': {
+      'ja': '見つかりません',
+      'en': 'No match',
+      'zh': '没有匹配项',
+      'ko': '일치하는 항목이 없습니다',
+      'es': 'Sin resultados',
+      'fr': 'Aucun résultat',
+      'de': 'Keine Treffer',
+      'pt': 'Nenhum resultado',
+      'ru': 'Ничего не найдено',
+    },
+    'overlay.textColorAuto': {
+      'ja': '文字色: 自動 (長押しでこの背景色の既定に)',
+      'en': 'Text color: auto (hold to make it the default for this background)',
+      'zh': '文字颜色: 自动 (长按设为此背景色的默认)',
+      'ko': '글자색: 자동 (길게 눌러 이 배경색의 기본으로)',
+      'es': 'Color de texto: auto (mantén para hacerlo predeterminado)',
+      'fr': 'Couleur du texte : auto (maintenir pour en faire le défaut)',
+      'de': 'Textfarbe: automatisch (halten = Standard für diese Hintergrundfarbe)',
+      'pt': 'Cor do texto: automática (segure para tornar padrão)',
+      'ru': 'Цвет текста: авто (удерживайте, чтобы сделать по умолчанию)',
+    },
+    'overlay.textColorHold': {
+      'ja': '文字色 (長押しでこの背景色の既定に)',
+      'en': 'Text color (hold to make it the default for this background)',
+      'zh': '文字颜色 (长按设为此背景色的默认)',
+      'ko': '글자색 (길게 눌러 이 배경색의 기본으로)',
+      'es': 'Color de texto (mantén para hacerlo predeterminado)',
+      'fr': 'Couleur du texte (maintenir pour en faire le défaut)',
+      'de': 'Textfarbe (halten = Standard für diese Hintergrundfarbe)',
+      'pt': 'Cor do texto (segure para tornar padrão)',
+      'ru': 'Цвет текста (удерживайте, чтобы сделать по умолчанию)',
+    },
+    'overlay.textColorRemembered': {
+      'ja': 'この背景色の要素は、 これからこの文字色になります',
+      'en': 'Elements with this background will use this text color from now on',
+      'zh': '此背景色的元素今后将使用这个文字颜色',
+      'ko': '이 배경색의 요소는 앞으로 이 글자색이 됩니다',
+      'es': 'Los elementos con este fondo usarán este color de texto',
+      'fr': 'Les éléments de ce fond utiliseront cette couleur de texte',
+      'de': 'Elemente mit diesem Hintergrund bekommen ab jetzt diese Textfarbe',
+      'pt': 'Elementos com este fundo passam a usar esta cor de texto',
+      'ru': 'Элементы с этим фоном теперь будут с этим цветом текста',
+    },
+    'overlay.textColorForgot': {
+      'ja': 'この背景色の文字色は自動に戻しました',
+      'en': 'Text color for this background is back to automatic',
+      'zh': '此背景色的文字颜色已恢复自动',
+      'ko': '이 배경색의 글자색을 자동으로 되돌렸습니다',
+      'es': 'El color de texto de este fondo vuelve a automático',
+      'fr': 'La couleur du texte de ce fond est de nouveau automatique',
+      'de': 'Textfarbe für diesen Hintergrund ist wieder automatisch',
+      'pt': 'A cor do texto deste fundo voltou a automática',
+      'ru': 'Цвет текста для этого фона снова автоматический',
+    },
+    'imgAnno.memo': {
+      'ja': 'メモ',
+      'en': 'Memo',
+      'zh': '备注',
+      'ko': '메모',
+      'es': 'Nota',
+      'fr': 'Mémo',
+      'de': 'Notiz',
+      'pt': 'Nota',
+      'ru': 'Заметка',
+    },
+    'imgAnno.memoHint': {
+      'ja': 'この画像についてのメモ。 「要素として出す」 で今のページに置けます',
+      'en': 'Notes about this image. “Put on page” adds them as an element',
+      'zh': '关于此图片的备注。「放到页面」 会作为元素添加',
+      'ko': '이 이미지에 대한 메모. 「페이지에 놓기」 로 요소로 추가',
+      'es': 'Notas sobre esta imagen. “Poner en la página” las añade como elemento',
+      'fr': 'Notes sur cette image. « Mettre sur la page » les ajoute comme élément',
+      'de': 'Notizen zu diesem Bild. „Auf die Seite“ legt sie als Element ab',
+      'pt': 'Notas sobre esta imagem. “Pôr na página” adiciona como elemento',
+      'ru': 'Заметки об этом изображении. «На страницу» добавит их как элемент',
+    },
+    'imgAnno.memoToPage': {
+      'ja': '要素として出す',
+      'en': 'Put on page',
+      'zh': '放到页面',
+      'ko': '페이지에 놓기',
+      'es': 'Poner en la página',
+      'fr': 'Mettre sur la page',
+      'de': 'Auf die Seite',
+      'pt': 'Pôr na página',
+      'ru': 'На страницу',
+    },
+    'imgAnno.memoPlaced': {
+      'ja': 'メモを要素として置きました',
+      'en': 'The memo was placed as an element',
+      'zh': '已将备注作为元素放置',
+      'ko': '메모를 요소로 놓았습니다',
+      'es': 'La nota se colocó como elemento',
+      'fr': 'Le mémo a été placé comme élément',
+      'de': 'Die Notiz wurde als Element abgelegt',
+      'pt': 'A nota foi colocada como elemento',
+      'ru': 'Заметка размещена как элемент',
+    },
+    'pdfMemo.addBullets': {
+      'ja': '箇条書きで分けて追加',
+      'en': 'Add as separate bullet memos',
+      'zh': '按条目分别添加',
+      'ko': '항목별로 나누어 추가',
+      'es': 'Añadir como notas separadas',
+      'fr': 'Ajouter en mémos séparés',
+      'de': 'Als einzelne Notizen hinzufügen',
+      'pt': 'Adicionar como notas separadas',
+      'ru': 'Добавить как отдельные заметки',
+    },
+    'pdfMemo.addBulletsHint': {
+      'ja': '1 行に 1 件。 「- 」「・」「1. 」 の印は外して保存します',
+      'en': 'One memo per line. Leading “- ”, “・”, “1. ” marks are stripped',
+      'zh': '每行一条。开头的「- 」「・」「1. 」 会被去掉',
+      'ko': '한 줄에 한 건. 앞의 「- 」「・」「1. 」 표시는 뺍니다',
+      'es': 'Una nota por línea. Se quitan los signos “- ”, “・”, “1. ”',
+      'fr': 'Un mémo par ligne. Les marques « - », « ・ », « 1. » sont retirées',
+      'de': 'Eine Notiz pro Zeile. Führende „- “, „・“, „1. “ werden entfernt',
+      'pt': 'Uma nota por linha. Marcas “- ”, “・”, “1. ” são removidas',
+      'ru': 'Одна заметка на строку. Маркеры «- », «・», «1. » убираются',
+    },
+    'pdfMemo.addedBullets': {
+      'ja': '{n} 件のメモを足しました',
+      'en': 'Added {n} memos',
+      'zh': '已添加 {n} 条备注',
+      'ko': '메모 {n}건을 추가했습니다',
+      'es': 'Se añadieron {n} notas',
+      'fr': '{n} mémos ajoutés',
+      'de': '{n} Notizen hinzugefügt',
+      'pt': '{n} notas adicionadas',
+      'ru': 'Добавлено заметок: {n}',
+    },
+    'pane.openExternal': {
+      'ja': '外の窓で開く',
+      'en': 'Open in an external window',
+      'zh': '在外部窗口打开',
+      'ko': '외부 창에서 열기',
+      'es': 'Abrir en una ventana externa',
+      'fr': 'Ouvrir dans une fenêtre externe',
+      'de': 'In externem Fenster öffnen',
+      'pt': 'Abrir em janela externa',
+      'ru': 'Открыть во внешнем окне',
+    },
+    'cli.continueTitle': {
+      'ja': 'VSCode などの会話を引き継ぐ (プロジェクトのフォルダー)',
+      'en': 'Continue a conversation from VS Code etc. (project folder)',
+      'zh': '继续 VS Code 等的对话 (项目文件夹)',
+      'ko': 'VS Code 등의 대화를 이어가기 (프로젝트 폴더)',
+      'es': 'Continuar una conversación de VS Code, etc. (carpeta del proyecto)',
+      'fr': 'Reprendre une conversation de VS Code, etc. (dossier du projet)',
+      'de': 'Gespräch aus VS Code usw. fortsetzen (Projektordner)',
+      'pt': 'Continuar uma conversa do VS Code etc. (pasta do projeto)',
+      'ru': 'Продолжить разговор из VS Code и т. п. (папка проекта)',
+    },
+    'cli.continueNone': {
+      'ja': '引き継がない (アプリ専用の作業フォルダーで動かす)',
+      'en': 'Not continuing (runs in the app’s own work folder)',
+      'zh': '不继续 (在应用自己的工作文件夹中运行)',
+      'ko': '이어가지 않음 (앱 전용 작업 폴더에서 실행)',
+      'es': 'Sin continuar (se ejecuta en la carpeta de trabajo de la app)',
+      'fr': 'Sans reprise (s’exécute dans le dossier de travail de l’app)',
+      'de': 'Nicht fortsetzen (läuft im eigenen Arbeitsordner der App)',
+      'pt': 'Sem continuar (executa na pasta de trabalho do app)',
+      'ru': 'Без продолжения (работает в рабочей папке приложения)',
+    },
+    'cli.continuePick': {
+      'ja': 'フォルダーを選ぶ',
+      'en': 'Choose folder',
+      'zh': '选择文件夹',
+      'ko': '폴더 선택',
+      'es': 'Elegir carpeta',
+      'fr': 'Choisir un dossier',
+      'de': 'Ordner wählen',
+      'pt': 'Escolher pasta',
+      'ru': 'Выбрать папку',
+    },
+    'cli.continueHint': {
+      'ja': 'Claude Code はそのフォルダーで最後に使った会話の続きから答えます (--continue)。 '
+          'Codex は resume --last に対応している版だけ。 対応していない版では断りが出ます。',
+      'en': 'Claude Code resumes the last conversation used in that folder (--continue). '
+          'Codex only when its version supports resume --last; otherwise it refuses.',
+      'zh': 'Claude Code 会从该文件夹最后使用的对话继续 (--continue)。 Codex 仅限支持 resume --last 的版本。',
+      'ko': 'Claude Code 는 그 폴더에서 마지막에 쓴 대화를 이어갑니다 (--continue). Codex 는 resume --last 를 지원하는 판만.',
+      'es': 'Claude Code retoma la última conversación de esa carpeta (--continue). Codex solo si soporta resume --last.',
+      'fr': 'Claude Code reprend la dernière conversation de ce dossier (--continue). Codex seulement si resume --last est pris en charge.',
+      'de': 'Claude Code setzt das letzte Gespräch in diesem Ordner fort (--continue). Codex nur mit Unterstützung für resume --last.',
+      'pt': 'O Claude Code retoma a última conversa dessa pasta (--continue). Codex só se suportar resume --last.',
+      'ru': 'Claude Code продолжит последний разговор в этой папке (--continue). Codex — только если поддерживает resume --last.',
+    },
+    'devCap.marker': {
+      'ja': '開発者モードの上限',
+      'en': 'developer-mode test limit',
+      'zh': '开发者模式的上限',
+      'ko': '개발자 모드의 상한',
+      'es': 'límite de prueba del modo desarrollador',
+      'fr': 'limite de test du mode développeur',
+      'de': 'Testlimit im Entwicklermodus',
+      'pt': 'limite de teste do modo de desenvolvedor',
+      'ru': 'тестовый лимит режима разработчика',
+    },
+    // 設定の「AI とクレジット」 で、 残高がまだ無い時に出す一言。
+    'menu.aiNoCredit': {
+      'ja': '未設定',
+      'en': 'Not set up',
+      'zh': '未设置',
+      'ko': '미설정',
+      'es': 'Sin configurar',
+      'fr': 'Non configuré',
+      'de': 'Nicht eingerichtet',
+      'pt': 'Não configurado',
+      'ru': 'Не настроено',
+    },
     'credit.insufficient': {
       'ja': '使えるトークンが足りません。チャージすると続けられます。',
       'en': 'You are out of tokens. Top up to keep going.',
@@ -69582,40 +69902,32 @@ class MindMapProvider extends ChangeNotifier {
       'jv': 'Busak item sing dipilih?',
     },
     'multiDelete.drawer.body': {
-      'ja': 'ページ {pages} 個 / フォルダー {folders} 個\nこの操作は元に戻せません。',
-      'en': '{pages} page(s) / {folders} folder(s)\nThis cannot be undone.',
-      'zh': '{pages} 个页面 / {folders} 个文件夹\n此操作无法撤销。',
-      'ko': '페이지 {pages}개 / 폴더 {folders}개\n이 작업은 되돌릴 수 없습니다.',
-      'es': '{pages} página(s) / {folders} carpeta(s)\nNo se puede deshacer.',
-      'fr': '{pages} page(s) / {folders} dossier(s)\nAction irréversible.',
-      'de':
-          '{pages} Seite(n) / {folders} Ordner\nKann nicht rückgängig gemacht werden.',
-      'pt': '{pages} página(s) / {folders} pasta(s)\nNão pode ser desfeito.',
-      'ru': '{pages} стр. / {folders} папок\nЭто действие необратимо.',
-      'hi':
-          '{pages} पृष्ठ / {folders} फ़ोल्डर\nयह क्रिया वापस नहीं की जा सकती।',
-      'ar': '{pages} صفحة / {folders} مجلد\nلا يمكن التراجع عن هذا الإجراء.',
-      'bn': '{pages} পৃষ্ঠা / {folders} ফোল্ডার\nএই কাজ ফিরিয়ে আনা যাবে না।',
-      'id': '{pages} halaman / {folders} folder\nTidak dapat dibatalkan.',
-      'ur': '{pages} صفحات / {folders} فولڈرز\nیہ عمل واپس نہیں ہو سکتا۔',
-      'pcm': '{pages} pages / {folders} folders\nYou no fit undo dis.',
-      'arz': '{pages} صفحة / {folders} فولدر\nمش هتقدر ترجع.',
-      'mr': '{pages} पृष्ठ / {folders} फोल्डर\nहे पूर्ववत करता येणार नाही.',
-      'vi': '{pages} trang / {folders} thư mục\nKhông thể hoàn tác.',
-      'te':
-          '{pages} పేజీలు / {folders} ఫోల్డర్‌లు\nఈ చర్యను వెనక్కి తీసుకోలేరు.',
-      'ha': 'Shafuka {pages} / Manyan fayil {folders}\nBa za a iya warware ba.',
-      'tr': '{pages} sayfa / {folders} klasör\nGeri alınamaz.',
-      'pnb': '{pages} صفحے / {folders} فولڈر\nایہ واپس نہیں ہو سکدا۔',
-      'sw': 'Kurasa {pages} / Folda {folders}\nHaiwezi kutenduliwa.',
-      'tl': '{pages} pahina / {folders} folder\nHindi na maibabalik.',
-      'ta':
-          '{pages} பக்கங்கள் / {folders} கோப்புறைகள்\nஇதைத் திரும்பப் பெற முடியாது.',
-      'yue': '{pages} 頁 / {folders} 資料夾\n此操作無法復原。',
-      'wuu': '{pages} 页 / {folders} 文件夹\n此操作不可撤销。',
-      'fa': '{pages} صفحه / {folders} پوشه\nاین عمل قابل بازگشت نیست.',
-      'th': '{pages} หน้า / {folders} โฟลเดอร์\nไม่สามารถยกเลิกได้',
-      'jv': 'Kaca {pages} / Folder {folders}\nIki ora bisa dibalèkaké.',
+      'ja': 'ページ {pages} 個 / フォルダー {folders} 個\n'
+          '取り消し (Ctrl+Z) では戻せませんが、 消す直前の控えが自動で残ります '
+          '(⋮ →「バックアップから復元」)。',
+      'en': '{pages} page(s) / {folders} folder(s)\n'
+          'Undo (Ctrl+Z) will not bring them back, but a snapshot is kept '
+          'automatically (⋮ → “Restore from backup”).',
+      'zh': '{pages} 个页面 / {folders} 个文件夹\n'
+          '撤销 (Ctrl+Z) 无法恢复，但会自动保留备份 (⋮ →「从备份恢复」)。',
+      'ko': '페이지 {pages}개 / 폴더 {folders}개\n'
+          '실행 취소(Ctrl+Z)로는 돌아오지 않지만, 자동으로 보관됩니다 '
+          '(⋮ → 「백업에서 복원」).',
+      'es': '{pages} página(s) / {folders} carpeta(s)\n'
+          'Deshacer (Ctrl+Z) no los recupera, pero se guarda una copia '
+          'automática (⋮ → “Restaurar desde copia”).',
+      'fr': '{pages} page(s) / {folders} dossier(s)\n'
+          'Annuler (Ctrl+Z) ne les rend pas, mais une sauvegarde est '
+          'conservée (⋮ → « Restaurer depuis la sauvegarde »).',
+      'de': '{pages} Seite(n) / {folders} Ordner\n'
+          'Rückgängig (Strg+Z) holt sie nicht zurück, aber eine Sicherung '
+          'wird behalten (⋮ → „Aus Sicherung wiederherstellen“).',
+      'pt': '{pages} página(s) / {folders} pasta(s)\n'
+          'Desfazer (Ctrl+Z) não os traz de volta, mas uma cópia é guardada '
+          '(⋮ → “Restaurar do backup”).',
+      'ru': '{pages} стр. / {folders} папок\n'
+          'Отмена (Ctrl+Z) их не вернёт, но копия сохраняется '
+          'автоматически (⋮ → «Восстановить из резервной копии»).',
     },
     'multiDelete.drawer.deletePagesInFolder': {
       'ja': 'フォルダー内のページも削除する',
@@ -72432,24 +72744,53 @@ class MindMapProvider extends ChangeNotifier {
 
   /// 代行を呼ぶ前の関所。 上限に達していたら、 サーバーが返すのと同じ
   /// 文言で止める (= 利用者に出る見え方をそのまま確かめられる)。
-  void _guardDevSelfCap() {
-    // ★ 回数の上限 (= ユーザー要望)。 金額と同じく、 利用者に出るのと
-    //   そっくり同じ文言で止める。
-    if (devSelfCallCapReached) {
-      _notifyCreditShort();
-      throw Exception(t('credit.insufficient'));
+  /// 上限に当たった時に投げる断り。
+  ///
+  /// ★ 文言は**利用者に出るのとそっくり同じ**にする (= ユーザー要望: 実際の
+  ///   ユーザーが使う画面のテストがしたい)。 開発者向けの言い回しにすると、
+  ///   本番で何が出るのかを確かめられない。
+  /// ★ ただし、 それだけだと「残高不足なのか、 自分で掛けた試験用の上限なのか」
+  ///   が区別できなかった (= 動作検証 2026-09-17 の指摘)。 本文はそのままに、
+  ///   末尾へ短い印だけ足す。 印が出ていたら開発者モードの上限が原因。
+  Exception _devSelfCapError() {
+    _notifyCreditShort();
+    return Exception('${t('credit.insufficient')} (${t('devCap.marker')})');
+  }
+
+  /// 画像 1 枚ぶんの見積もり (USD)。
+  ///
+  /// ★ = 動作検証 2026-09-17「$0.01 の上限に対して、 最初の 1 回で $0.0468 を
+  ///   計上した」。 実際の値段を決めているのは代行サーバーなので、 呼ぶ前に
+  ///   正確な額は分からない。 分かっている相場より**少し高め**に見積もって
+  ///   おけば、 上限を跨ぐ呼び出しは始まらない。
+  static const double kEstimatedImageUsd = 0.06;
+
+  /// 文字の生成 1 回ぶんの見積もり (USD)。 上限判定にだけ使う控えめな値。
+  static double estimatedTextUsd({int? maxTokens}) {
+    // 出力の上限が分かっていればそれで、 分からなければ 4k トークン相当。
+    final out = (maxTokens == null || maxTokens <= 0) ? 4000 : maxTokens;
+    // 入力は出力と同じくらい積まれる事が多いので、 同数を見る。
+    return billedCostUsd(calcCostUsd('pro', out, out));
+  }
+
+  /// 代行を呼ぶ前の関所。
+  ///
+  /// [estimatedUsd] は「この呼び出しでこれくらい掛かる」 見込み。
+  /// ★ = 動作検証 2026-09-17 の指摘「上限を**超える呼び出しを開始しない**」。
+  ///   使った後に見ていたので、 $0.01 の上限でも 1 回目は必ず通ってしまい、
+  ///   $0.0468 を使い切ってから止まっていた。 呼ぶ前に
+  ///   「使った額 + 見込み」 を上限と比べる。
+  void _guardDevSelfCap({double estimatedUsd = 0}) {
+    // ★ 回数の上限 (= ユーザー要望)。
+    if (devSelfCallCapReached) throw _devSelfCapError();
+    // 金額の上限: 使い切る前に、 跨ぎそうな呼び出しを止める。
+    if (devSelfCapActive &&
+        _devSelfSpentUsd + estimatedUsd > _devSelfCapUsd + 1e-9) {
+      throw _devSelfCapError();
     }
     // ここを通ったら 1 回ぶん数える (通らなかった呼び出しは数えない)。
     // ignore: discarded_futures
     _addDevSelfCall();
-    if (devSelfCapReached) {
-      // ★ 文言も利用者とそっくり同じにする (= ユーザー要望: 実際のユーザーが
-      //   使う画面のテストがしたい)。 開発者向けの言い回しにすると、
-      //   本番で何が出るのかを確かめられない。 上限の数字は開発者モードの
-      //   画面に出ているので、 そちらで確かめられる。
-      _notifyCreditShort();
-      throw Exception(t('credit.insufficient'));
-    }
   }
 
   void recordAppKeyUsage({
@@ -76354,7 +76695,7 @@ class MindMapProvider extends ChangeNotifier {
     if (currentPage.pageType == 'bookshelf') {
       final pc = shelfCellOf(parentNodeId);
       if (pc != null) {
-        _reserveShelfCells(pc[1], pc[0] + 1, 1);
+        _reserveShelfCells(currentPage, pc[1], pc[0] + 1, 1);
         _shelfCells[node.id] = [pc[0] + 1, pc[1]];
         _saveShelfCells();
       }
@@ -82164,7 +82505,7 @@ class MindMapProvider extends ChangeNotifier {
   /// そのまま AI に渡したい)。 対応していないモデルではサーバー側が無視する。
   Future<String> askAiViaRelay(String prompt,
       {int? maxTokens, List<AiInputImage>? images}) async {
-    _guardDevSelfCap();
+    _guardDevSelfCap(estimatedUsd: estimatedTextUsd(maxTokens: maxTokens));
     final base = relayApiBase;
     if (base.isEmpty) throw Exception(t('relay.notConfigured'));
     // 合鍵つきの Dev ビルドはサインイン不能でも通す (Worker が合鍵で認める)。
@@ -82272,7 +82613,7 @@ class MindMapProvider extends ChangeNotifier {
   /// Worker 経由で画像を 1 枚生成する (= 前払いクレジットから 1 枚分を引く)。
   /// 本物の API キーは Worker だけが持つので、 アプリには埋め込まれない。
   Future<Uint8List> generateAiImageViaRelay(String prompt) async {
-    _guardDevSelfCap();
+    _guardDevSelfCap(estimatedUsd: kEstimatedImageUsd);
     final base = relayApiBase;
     if (base.isEmpty) throw Exception(t('relay.notConfigured'));
     // 合鍵つきの Dev ビルドはサインイン不能でも通す (Worker が合鍵で認める)。
@@ -82500,6 +82841,27 @@ class MindMapProvider extends ChangeNotifier {
       final v = p.getString('cliAutonomy') ?? '';
       if (AgentCli.autonomyLevels.contains(v)) AgentCli.autonomy = v;
     } catch (_) {}
+    await _loadCliContinueDir();
+  }
+
+  /// VSCode 等で進めていた会話を引き継ぐプロジェクトのフォルダー
+  /// (= ユーザー要望)。 空なら引き継がない。
+  String _cliContinueDir = '';
+  String get cliContinueDir => _cliContinueDir;
+  Future<void> setCliContinueDir(String dir) async {
+    _cliContinueDir = dir.trim();
+    notifyListeners();
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setString('cliContinueDir', _cliContinueDir);
+    } catch (_) {}
+  }
+
+  Future<void> _loadCliContinueDir() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      _cliContinueDir = p.getString('cliContinueDir') ?? '';
+    } catch (_) {}
   }
 
   /// PC の CLI に渡す環境変数 (今は空)。
@@ -82653,14 +83015,74 @@ class MindMapProvider extends ChangeNotifier {
   /// 時、 作業フォルダーの覚書と codex の砂箱をゆるめて、 頼まれたファイル
   /// (txt など) を作れるようにする (= ユーザー報告: codex から txt ファイル
   /// 等を生成できない)。 ただの問い合わせ (要約・分類) では false のまま。
+  /// 写真を PC の CLI へ渡せる形 (= ファイル) にする。
+  ///
+  /// ★ = ユーザー要望「codex CLI や Claude Code に画像を渡せるようにして」。
+  ///   どちらの CLI も受け取り口は**ファイルの道**なので、 アプリが持って
+  ///   いる base64 を一度書き出す。 置き場はアプリの支え置き場の下で、
+  ///   1 日より古い物は開くたびに片付ける。
+  Future<List<String>> _writeImagesForCli(List<AiInputImage> images) async {
+    final out = <String>[];
+    if (images.isEmpty) return out;
+    try {
+      final base = await getApplicationSupportDirectory();
+      final dir = Directory(
+          '${base.path}${Platform.pathSeparator}cli_images');
+      if (!await dir.exists()) await dir.create(recursive: true);
+      // 古い物の片付け (溜め込まない)。
+      try {
+        final now = DateTime.now();
+        for (final f in dir.listSync()) {
+          if (f is! File) continue;
+          if (now.difference(f.statSync().modified).inHours >= 24) {
+            try {
+              f.deleteSync();
+            } catch (_) {}
+          }
+        }
+      } catch (_) {}
+      final stamp = DateTime.now().millisecondsSinceEpoch;
+      for (var i = 0; i < images.length; i++) {
+        final im = images[i];
+        final isImg = im.mime.startsWith('image/');
+        // 動画などは絵にならないので、 一覧用の小さい絵を渡す。
+        final data = isImg ? im.base64 : (im.previewBase64 ?? '');
+        if (data.isEmpty) continue;
+        final ext = !isImg
+            ? 'png'
+            : switch (im.mime) {
+                'image/png' => 'png',
+                'image/webp' => 'webp',
+                'image/gif' => 'gif',
+                'image/bmp' => 'bmp',
+                _ => 'jpg',
+              };
+        final f = File('${dir.path}${Platform.pathSeparator}'
+            'img_${stamp}_$i.$ext');
+        await f.writeAsBytes(base64Decode(data));
+        out.add(f.path);
+      }
+    } catch (e) {
+      debugPrint('_writeImagesForCli failed: $e');
+    }
+    return out;
+  }
+
   Future<String> askAi(String prompt,
       {int? maxTokensOverride,
       Duration? timeoutOverride,
       List<AiInputImage>? images,
       bool allowFiles = false}) async {
     // ★ PC の CLI に頼む設定なら、 まずそちらへ (= ユーザー要望)。
-    //   写真つきは渡せないので、 その時だけ今までどおり。
-    if (useCliAi && (images == null || images.isEmpty)) {
+    //   写真も渡せるようになった (= ユーザー要望: codex CLI や Claude Code に
+    //   画像を渡せるように)。 一度ファイルへ書き出して、 その道を渡す。
+    //   書き出せなかった時だけ、 今までどおり API へ回す。
+    final cliImages = (useCliAi && images != null && images.isNotEmpty)
+        ? await _writeImagesForCli(images)
+        : const <String>[];
+    final cliCanTakeImages =
+        images == null || images.isEmpty || cliImages.isNotEmpty;
+    if (useCliAi && cliCanTakeImages) {
       // ★ 考える深さを渡す (= ユーザー要望: API より遅すぎる)。 画面で
       //   「低い」 を選んでいれば、 CLI 側もそれで動く。
       AgentCli.chosenReasoning = reasoningFor('cli');
@@ -82668,6 +83090,8 @@ class MindMapProvider extends ChangeNotifier {
           timeout: timeoutOverride,
           guide: languageInstructionForAi().trim(),
           allowFiles: allowFiles,
+          imagePaths: cliImages,
+          continueDir: _cliContinueDir,
           extraEnvironment: cliAiEnvironment());
       _rememberCliModel();
       _addCliUsage();
@@ -88773,9 +89197,19 @@ $cleanQ
       //    ため、 転送中の編集が中途半端に混ざっていた。
       final snapshot = MindMapPage.fromJson(
           jsonDecode(jsonEncode(_pages[idx].toJson())) as Map<String, dynamic>);
-      await _uploadPageAttachments(pageId, onPageProgress: (p) {
-        onPageProgress?.call(p * 0.95);
-      });
+      try {
+        await _uploadPageAttachments(pageId, onPageProgress: (p) {
+          onPageProgress?.call(p * 0.95);
+        });
+      } on _UploadLimitException {
+        // ★ = 動作検証 2026-09-17「容量エラーで添付は止まったのに、 ページ
+        //   本体はクラウドに作られた」。 添付の無い抜け殻を置いても使い道が
+        //   無く、 消す口も無い (MCP にクラウド削除は無い)。 上限に当たった
+        //   ページは**本体も書かずに**止める。 何が起きたかは
+        //   `lastSyncLimitMessage` が画面に出す。
+        _lastSyncAttachmentFailed = true;
+        return;
+      }
 
       // 添付転送で確定した Storage URL はスナップショットにも反映する
       // (ライブ側ノードは _uploadPageAttachments 内で書き換え済み)。
@@ -89314,7 +89748,7 @@ $cleanQ
             (monthlyUploadLimit / 1024 / 1024 / 1024).toStringAsFixed(1);
         _lastSyncLimitMessage =
             t('sync.monthlyUploadLimit').replaceFirst('{limit}', limitGb);
-        throw Exception(_lastSyncLimitMessage);
+        throw _UploadLimitException(_lastSyncLimitMessage!);
       }
       // ── 累積ストレージ容量チェック ──
       // Max: 100 GB を超える場合は不要ファイルを削除してから
@@ -89327,7 +89761,7 @@ $cleanQ
         _lastSyncLimitMessage = t('sync.storageLimit')
             .replaceFirst('{limit}', limitGb)
             .replaceFirst('{used}', usedGb);
-        throw Exception(_lastSyncLimitMessage);
+        throw _UploadLimitException(_lastSyncLimitMessage!);
       }
 
       final ext = fileName.split('.').last.toLowerCase();
@@ -89474,6 +89908,10 @@ $cleanQ
         stallTimer?.cancel();
         client.close();
       }
+    } on _UploadLimitException {
+      // ★ 容量の上限は「もう一度やれば通る」 類ではないので、 握り潰さずに
+      //   外まで通す (= ページ本体を書く前に止めてもらう)。
+      rethrow;
     } catch (e) {
       debugPrint('Storage upload error: $e');
       return null;
@@ -89822,20 +90260,35 @@ $cleanQ
       _uploadProgress[job.nodeId] = 0.0;
       notifyListeners();
 
-      final storageUrl = await uploadAttachmentToStorage(
-        job.localPath,
-        job.name,
-        onProgress: (p) {
-          // p は単一ファイル内の 0.0〜1.0 進捗
-          _uploadProgress[job.nodeId] = p;
-          // ページ全体: 完了済みバイト + 現在ファイルの進捗バイト
-          final size = job.sizeBytes > 0 ? job.sizeBytes : 1;
-          final pageProgress =
-              ((completedBytes + p * size) / totalBytes).clamp(0.0, 1.0);
-          onPageProgress?.call(pageProgress);
-          notifyListeners();
-        },
-      );
+      String? storageUrl;
+      try {
+        storageUrl = await uploadAttachmentToStorage(
+          job.localPath,
+          job.name,
+          onProgress: (p) {
+            // p は単一ファイル内の 0.0〜1.0 進捗
+            _uploadProgress[job.nodeId] = p;
+            // ページ全体: 完了済みバイト + 現在ファイルの進捗バイト
+            final size = job.sizeBytes > 0 ? job.sizeBytes : 1;
+            final pageProgress =
+                ((completedBytes + p * size) / totalBytes).clamp(0.0, 1.0);
+            onPageProgress?.call(pageProgress);
+            notifyListeners();
+          },
+        );
+      } on _UploadLimitException {
+        // ★ 容量の上限。 ここで止めるが、 **ここまでに上げ終わった分の URL は
+        //   手元に残してから**外へ通す (残さないと、 枠を空けて上げ直した時に
+        //   同じファイルをもう一度送る事になる)。
+        _uploading.remove(job.nodeId);
+        _uploadProgress.remove(job.nodeId);
+        _lastSyncAttachmentFailed = true;
+        if (anyUpdated) {
+          await _saveToStorageLocal();
+        }
+        notifyListeners();
+        rethrow;
+      }
 
       _uploading.remove(job.nodeId);
       _uploadProgress.remove(job.nodeId);
@@ -98304,6 +98757,12 @@ $cleanQ
   }
 
   /// addNodeAtCenter と同じだが、生成した MindMapNode を返す
+  /// 新しい要素に、 背景色に覚えさせた文字色を当てる (= ユーザー要望)。
+  MindMapNode _applyRememberedTextColor(MindMapNode n) {
+    final c = textColorForBg(n.color);
+    return c == null ? n : n.copyWith(textColor: c.value);
+  }
+
   MindMapNode addNodeAtCenterReturning(Offset position) {
     // 既定の大きさ (= ユーザー要望: 今の大きさを「これから作る物の既定」
     //   として覚えられるように)。 覚えていなければ今までどおり。
@@ -98342,6 +98801,9 @@ $cleanQ
       // 今いる作業レイヤーに置く (= ユーザー要望)。
       layer: activeLayer,
     );
+    // 背景色に覚えさせた文字色があれば当てる (= ユーザー要望)。
+    final rememberedTc = textColorForBg(newNode.color);
+    if (rememberedTc != null) newNode.textColor = rememberedTc.value;
     _pushUndo();
     nodeMap[newNode.id] = newNode;
     _selectedNodeId = newNode.id;
@@ -101397,6 +101859,15 @@ $cleanQ
       sheet['t'] = texts;
       // ★ 書き込みも知らせも **全部足し終わってから 1 回だけ**。
       await prefs.setString(key, jsonEncode(decoded));
+      // ★ = ユーザー報告 (動作検証 2026-09-17)「written の件数と、 読み直した
+      //   件数が合わない」。 書けたと言う前に**読み直して確かめる**。
+      //   書けていなければ 0 を返し、 呼んだ側 (AI) に「出来ませんでした」 と
+      //   言わせる。 黙って「書きました」 と答えるのが一番たちが悪い。
+      final back = prefs.getString(key) ?? '';
+      if (back.isEmpty) {
+        debugPrint('mcpAddPaintTexts: 書いた直後に読み返せませんでした');
+        return 0;
+      }
       _paintReloadTick++;
       _mcpContentTick++;
       // 共同編集中なら相手にも配る (= 点検で判明)。
@@ -103538,16 +104009,19 @@ $cleanQ
         final cols = _shelfGridCols(currentPage);
         // 親の行の占有数 (= その行が満杯かどうか)。
         int rowCount = 0;
+        // ★ 数えるのはこのページの要素だけ (全ページ分を数えると、 別の
+        //   ギャラリーの要素で「満杯」 と誤判定していた)。
         _shelfCells.forEach((id, c) {
+          if (!currentPage.nodes.containsKey(id)) return;
           if (c[1] == pc[1]) rowCount++;
         });
         if (pc[0] + 1 < cols && rowCount < cols) {
           // 右隣に空きがある → 右へ 1 つずらして間に挿入。
-          _reserveShelfCells(pc[1], pc[0] + 1, 1);
+          _reserveShelfCells(currentPage, pc[1], pc[0] + 1, 1);
           _shelfCells[node.id] = [pc[0] + 1, pc[1]];
         } else {
           // 5 列を超える → 親の直下に新しい行を挿入して、 その先頭に置く。
-          _insertShelfRow(pc[1] + 1);
+          _insertShelfRow(currentPage, pc[1] + 1);
           _shelfCells[node.id] = [0, pc[1] + 1];
         }
         _saveShelfCells();
@@ -105733,13 +106207,18 @@ $cleanQ
   /// (= ユーザー要望: 動画の数分ブロックを確保 / 既存要素をずらして間に挿入)。
   /// 同じ行で col が fromCol 以上の既存セルを右へ count ずらす。 これで
   /// [fromCol, fromCol+count) が空き、 そこへ新要素を重ならず置ける。
-  void _reserveShelfCells(int row, int fromCol, int count) {
+  ///
+  /// ★ ずらす相手は [page] の要素だけ。 `_shelfCells` は全ページ共通の控えな
+  ///   ので、 ページを見ずにずらすと他のギャラリーの配置まで動いてしまう
+  ///   ([_pruneOrphanShelfCells] の覚書と同じ落とし穴)。
+  void _reserveShelfCells(MindMapPage page, int row, int fromCol, int count) {
     if (count <= 0) return;
     if (row < 0 ||
         row >= kShelfMaxGridRows ||
         fromCol < 0 ||
         fromCol >= kShelfMaxGridCols) return;
     _shelfCells.forEach((id, c) {
+      if (!page.nodes.containsKey(id)) return;
       if (c[1] == row && c[0] >= fromCol) {
         final nextCol = c[0] + count;
         if (nextCol < kShelfMaxGridCols) c[0] = nextCol;
@@ -105750,9 +106229,11 @@ $cleanQ
   /// [row] 以降の行を 1 段ずつ下へずらして、 [row] に空の新しい行を作る。
   /// = ユーザー要望: 「5 列を超える場合は間に新しい行を追加してそこにメモを入れて」。
   /// 動画メモを親動画の右隣に入れられない (行が満杯=列数超過) ときに使う。
-  void _insertShelfRow(int row) {
+  /// ★ [page] の要素だけを下げる (理由は [_reserveShelfCells] と同じ)。
+  void _insertShelfRow(MindMapPage page, int row) {
     if (row < 0 || row >= kShelfMaxGridRows) return;
     _shelfCells.forEach((id, c) {
+      if (!page.nodes.containsKey(id)) return;
       if (c[1] >= row && c[1] + 1 < kShelfMaxGridRows) c[1] = c[1] + 1;
     });
   }
@@ -105823,15 +106304,39 @@ $cleanQ
   ///  ように見えてしまうため。)
   /// 行番号 (row) は一切変えず、 各行の中だけで col を昇順に 0,1,2... と
   /// 振り直して隙間を詰める。 ある行が空になっても、 下の段は繰り上げない。
-  void compactShelfCells() {
-    final page = currentPage;
+  /// どのページにも居なくなった要素のマス目だけを捨てる。
+  ///
+  /// ★ = ユーザー報告「境界を越えてギャラリーへ渡すと、 1 行目 1 列目が
+  ///   置いた場所に関係なく空いてしまう」 の根っこ。
+  ///   `_shelfCells` は**全ページ共通**の (要素 id → マス目) の控えなのに、
+  ///   後始末が `!今のページ.nodes.containsKey(id)` で消していたため、
+  ///   ギャラリー A で 1 回掃除するだけで**ギャラリー B の配置が丸ごと消えて**
+  ///   いた。 渡す時は元ページ (A) で掃除が走るので、 渡し先 (B) は
+  ///   「誰もマス目を持っていない」 状態になり、 渡って来た要素が (0,0) を
+  ///   取り、 残りは並び順で振り直される。 その後で落とした枠へ移すので、
+  ///   (0,0) だけが空いたまま残っていた。
+  void _pruneOrphanShelfCells() {
+    if (_shelfCells.isEmpty) return;
+    final alive = <String>{};
+    for (final p in _pages) {
+      alive.addAll(p.nodes.keys);
+    }
+    _shelfCells.removeWhere((id, _) => !alive.contains(id));
+  }
+
+  void compactShelfCells([MindMapPage? p]) {
+    final page = p ?? currentPage;
     if (page.pageType != 'bookshelf') return;
-    // 既に存在しないノードのセル情報を掃除。
-    _shelfCells.removeWhere((id, _) => !page.nodes.containsKey(id));
+    // 既に存在しないノードのセル情報を掃除 (★ そのページに居ないだけの
+    //   要素は消さない。 他のギャラリーの配置まで消えてしまう)。
+    _pruneOrphanShelfCells();
     if (_shelfCells.isEmpty) return;
     // 行ごとにグループ化し、 その行内の列だけを左詰めする。
+    // ★ **このページの要素だけ**を並べ替える (前は全ページの控えを
+    //   ひとまとめに詰め直していたので、 他のギャラリーが崩れていた)。
     final byRow = <int, List<MapEntry<String, List<int>>>>{};
     for (final e in _shelfCells.entries) {
+      if (!page.nodes.containsKey(e.key)) continue;
       byRow.putIfAbsent(e.value[1], () => []).add(e);
     }
     bool changed = false;
@@ -105860,7 +106365,8 @@ $cleanQ
   void repackShelfCellsRowMajor([MindMapPage? p]) {
     final page = p ?? currentPage;
     if (page.pageType != 'bookshelf') return;
-    _shelfCells.removeWhere((id, _) => !page.nodes.containsKey(id));
+    // ★ 他のページの要素のマス目は消さない ([_pruneOrphanShelfCells] の覚書)。
+    _pruneOrphanShelfCells();
     final occupants = _shelfCells.entries.where((e) {
       final n = page.nodes[e.key];
       return n != null && n.hiddenInContainer == null;
@@ -106686,6 +107192,73 @@ $cleanQ
     return best;
   }
 
+  /// ギャラリーの (startCol,startRow) から [count] 個ぶんのマス目を押さえる。
+  ///
+  /// ★ = ユーザー要望「まとめてファイルを投げた時にギャラリーページで
+  ///   レイアウトが崩れないようにして欲しくて、 例えば 9 ファイル投げたら
+  ///   5 ファイル + 4 ファイルの 2 行になるように。 間に行を追加して既存の
+  ///   ファイルがずれないように」。
+  ///
+  ///   今までは押さえた列から**右へ一直線**に並べていたので、 9 個投げると
+  ///   9 列に伸び、 格子ごと横に広がって見た目が崩れていた。
+  ///   ここでは列数で折り返し、 行が足りない時は**間に空の行を挿し込んで**
+  ///   から続ける (挿し込みなので、 下にあった物は段ごと下がるだけで
+  ///   並びは崩れない)。
+  ///
+  ///   返すのは使う (col,row) の並び。 呼ぶ側は要素を作りながら順に当てる。
+  ///   まだ置いていない要素は数に入らないので、 **作る前に**呼ぶこと。
+  List<List<int>> reserveShelfBlock(
+      String pageId, int startCol, int startRow, int count) {
+    if (count <= 0) return const [];
+    final idx = _pages.indexWhere((p) => p.id == pageId);
+    if (idx < 0) return const [];
+    final page = _pages[idx];
+    if (page.pageType != 'bookshelf') return const [];
+    final cols = _shelfGridCols(page);
+
+    Set<String> occupied() {
+      final occ = <String>{};
+      for (final e in page.nodes.entries) {
+        if (e.value.hiddenInContainer != null) continue;
+        final c = _shelfCells[e.key];
+        if (c != null && c.length >= 2) occ.add('${c[0]},${c[1]}');
+      }
+      return occ;
+    }
+
+    var occ = occupied();
+    final out = <List<int>>[];
+    var col = startCol.clamp(0, cols - 1).toInt();
+    var row = startRow.clamp(0, kShelfMaxGridRows - 1).toInt();
+    var guard = 0;
+    while (out.length < count && guard++ < kShelfMaxGridRows * 4) {
+      if (col >= cols || occ.contains('$col,$row')) {
+        // 次の段へ。 そこに誰か居るなら**行を挿し込んで**空けてから使う。
+        final next = row + 1;
+        if (next >= kShelfMaxGridRows) break;
+        final nextRowBusy = () {
+          for (var c = 0; c < cols; c++) {
+            if (occ.contains('$c,$next')) return true;
+          }
+          return false;
+        }();
+        if (nextRowBusy) {
+          _insertShelfRow(page, next);
+          occ = occupied();
+        }
+        row = next;
+        col = 0;
+        continue;
+      }
+      out.add([col, row]);
+      occ.add('$col,$row');
+      col++;
+    }
+    if (out.isNotEmpty) _saveShelfCells();
+    return out;
+  }
+
+  /// [pageId] のギャラリーで、 キャンバス座標 [canvasPos] に一番近い
   /// [pageId] のギャラリーで、 キャンバス座標 [canvasPos] に一番近い
   /// 空きセル (= 「+ボックス」) を返す。 空きが無ければ null。
   ///
@@ -107132,7 +107705,7 @@ $cleanQ
     // cell 指定があればその位置へ (1 セル確保して既存を右へずらす = 重なり防止)。
     //   無ければ整列時に下段の右へ割り当てられる。
     if (cell != null) {
-      _reserveShelfCells(cell[1], cell[0], 1);
+      _reserveShelfCells(currentPage, cell[1], cell[0], 1);
       _shelfCells[node.id] = [cell[0], cell[1]];
     }
     _arrangeAsBookshelfBody(currentPage);
@@ -108014,6 +108587,7 @@ $cleanQ
     _colorMode = prefs.getString('colorMode') ?? 'cycle';
     _fixedColorIndex = prefs.getInt('fixedColorIndex') ?? 0;
     _cycleCounter = prefs.getInt('colorCycleCounter') ?? 0;
+    await _loadTextColorByBg();
   }
 
   Future<void> _saveCycleCounter() async {
@@ -109225,9 +109799,77 @@ $cleanQ
     final node = currentPage.nodes[id];
     if (node == null) return;
     _pushUndo();
-    currentPage.nodes[id] = node.copyWith(color: color);
+    // ★ 背景色を変えたら、 その背景色に覚えさせた文字色を当てる
+    //   (= ユーザー要望: 保存したらその色の背景の要素はその文字色に)。
+    final remembered = textColorForBg(color);
+    currentPage.nodes[id] = node.copyWith(
+        color: color,
+        textColor: remembered ?? node.textColor);
     _saveToStorage();
     notifyListeners();
+  }
+
+  // ─── 要素の文字色 (= ユーザー要望) ───────────────────────────────
+  //
+  //  「保存したらその色の背景色の要素が出現した時にその文字色になるように」
+  //  = 背景色 (ARGB) → 文字色 (ARGB) の対応表を覚える。 要素を作る時と
+  //  背景色を変える時に引く。 prefs `nodeTextColorByBg_v1` (JSON)。
+  final Map<int, int> _textColorByBg = {};
+
+  /// この背景色に覚えさせた文字色 (無ければ null = 自動)。
+  Color? textColorForBg(Color bg) {
+    final v = _textColorByBg[bg.value];
+    return v == null ? null : Color(v);
+  }
+
+  /// 要素の文字色を変える。 [remember] なら、 同じ背景色の要素に以後も
+  /// この文字色を使う (null = 自動に戻す + 覚えも消す)。
+  Future<void> updateNodeTextColor(String id, Color? color,
+      {bool remember = false}) async {
+    final node = currentPage.nodes[id];
+    if (node == null) return;
+    _pushUndo();
+    currentPage.nodes[id] = node.copyWith(textColor: color?.value);
+    if (remember) {
+      if (color == null) {
+        _textColorByBg.remove(node.color.value);
+      } else {
+        _textColorByBg[node.color.value] = color.value;
+      }
+      // 今のページの同じ背景色の要素にも、 その場で当てる。
+      for (final e in currentPage.nodes.entries.toList()) {
+        if (e.key == id) continue;
+        if (e.value.color.value == node.color.value) {
+          currentPage.nodes[e.key] = e.value.copyWith(textColor: color?.value);
+        }
+      }
+      await _saveTextColorByBg();
+    }
+    _saveToStorage();
+    notifyListeners();
+  }
+
+  Future<void> _saveTextColorByBg() async {
+    try {
+      final prefs = await _prefsWithRetry();
+      await prefs.setString('nodeTextColorByBg_v1',
+          jsonEncode(_textColorByBg.map((k, v) => MapEntry('$k', v))));
+    } catch (_) {}
+  }
+
+  Future<void> _loadTextColorByBg() async {
+    try {
+      final prefs = await _prefsWithRetry();
+      final raw = prefs.getString('nodeTextColorByBg_v1') ?? '';
+      if (raw.isEmpty) return;
+      final m = jsonDecode(raw);
+      if (m is! Map) return;
+      _textColorByBg.clear();
+      m.forEach((k, v) {
+        final kk = int.tryParse('$k');
+        if (kk != null && v is num) _textColorByBg[kk] = v.toInt();
+      });
+    } catch (_) {}
   }
 
   /// 指定位置に「表ノード」 を新規作成する。
@@ -112721,38 +113363,82 @@ $example
 
   /// 絵が無い時の代わりの札を描き起こす (黒い札 + ▶ + 見出し)。
   /// [play] が false なら ▶ を描かない (= 飛ぶ先の無い要素の札)。
-  Future<String?> _makeVideoCardImage(String title, {bool play = true}) async {
+  /// 要素を紙に貼る「札」 の絵を作る。
+  ///
+  /// ★ = ユーザー報告「ギャラリーの要素をフリーノートに転送すると、 要素の
+  ///   全文が入らないのと真っ黒な背景になってしまう」。 前は 480×270 の
+  ///   決め打ちの黒い札に、 題名を 2 行で切って描いていた。
+  ///   [bg] に元の要素の色を渡せば**その色**で塗り、 文字は明るさから
+  ///   黒 / 白を選ぶ。 [memo] (本文) も入れ、 入り切るまで札を縦に伸ばす
+  ///   (上限あり)。 動画の ▶ は今までどおり [play] の時だけ。
+  Future<String?> _makeVideoCardImage(String title,
+      {bool play = true, Color? bg, String? memo, int? textColor}) async {
     try {
-      const w = 480.0, h = 270.0;
+      const w = 480.0;
+      final bgColor = bg ?? const Color(0xFF1B1B2A);
+      final light = bgColor.computeLuminance() > 0.30;
+      final fg = textColor != null
+          ? Color(textColor)
+          : (light ? const Color(0xEE000000) : Colors.white);
+      final t = title.trim();
+      final body = (memo ?? '').trim();
+      // 文字を先に測って、 札の高さを決める。
+      final titleTp = t.isEmpty
+          ? null
+          : (TextPainter(
+              text: TextSpan(
+                  text: t,
+                  style: TextStyle(
+                      color: fg, fontSize: 22, fontWeight: FontWeight.w700)),
+              textDirection: TextDirection.ltr,
+            )..layout(maxWidth: w - 40));
+      final bodyTp = body.isEmpty
+          ? null
+          : (TextPainter(
+              text: TextSpan(
+                  text: body,
+                  style: TextStyle(color: fg.withValues(alpha: 0.92),
+                      fontSize: 17, height: 1.35)),
+              textDirection: TextDirection.ltr,
+              maxLines: 60,
+              ellipsis: '\u2026',
+            )..layout(maxWidth: w - 40));
+      final playH = play ? 110.0 : 0.0;
+      var h = 24.0 +
+          playH +
+          (titleTp?.height ?? 0) +
+          (titleTp != null && bodyTp != null ? 10 : 0) +
+          (bodyTp?.height ?? 0) +
+          24.0;
+      // 何も無い札や動画だけの札は、 今までの比率を保つ。
+      if (h < 270) h = 270;
+      if (h > 2400) h = 2400;
       final rec = ui.PictureRecorder();
-      final c = Canvas(rec, const Rect.fromLTWH(0, 0, w, h));
-      final bg = Paint()..color = const Color(0xFF1B1B2A);
+      final c = Canvas(rec, Rect.fromLTWH(0, 0, w, h));
       c.drawRRect(
           RRect.fromRectAndRadius(
-              const Rect.fromLTWH(0, 0, w, h), const Radius.circular(14)),
-          bg);
+              Rect.fromLTWH(0, 0, w, h), const Radius.circular(14)),
+          Paint()..color = bgColor);
+      var y = 24.0;
       // ▶ の丸。
       if (play) {
         final circle = Paint()..color = const Color(0xFFE53935);
-        c.drawCircle(const Offset(w / 2, h / 2 - 12), 34, circle);
+        final cy = y + 50;
+        c.drawCircle(Offset(w / 2, cy), 34, circle);
         final tri = Path()
-          ..moveTo(w / 2 - 11, h / 2 - 30)
-          ..lineTo(w / 2 - 11, h / 2 + 6)
-          ..lineTo(w / 2 + 19, h / 2 - 12)
+          ..moveTo(w / 2 - 11, cy - 18)
+          ..lineTo(w / 2 - 11, cy + 18)
+          ..lineTo(w / 2 + 19, cy)
           ..close();
         c.drawPath(tri, Paint()..color = Colors.white);
+        y += playH;
       }
-      final t = title.trim();
-      if (t.isNotEmpty) {
-        final tp = TextPainter(
-          text: TextSpan(
-              text: t,
-              style: const TextStyle(color: Colors.white, fontSize: 20)),
-          textDirection: TextDirection.ltr,
-          maxLines: 2,
-          ellipsis: '\u2026',
-        )..layout(maxWidth: w - 40);
-        tp.paint(c, Offset((w - tp.width) / 2, h - 66));
+      if (titleTp != null) {
+        titleTp.paint(c, Offset((w - titleTp.width) / 2, y));
+        y += titleTp.height + 10;
+      }
+      if (bodyTp != null) {
+        bodyTp.paint(c, Offset(20, y));
       }
       final img = await rec.endRecording().toImage(w.toInt(), h.toInt());
       final data = await img.toByteData(format: ui.ImageByteFormat.png);
@@ -112819,7 +113505,13 @@ $example
       if (thumb != null && url != null) {
         thumb = await _withPlayBadgeFile(thumb) ?? thumb;
       }
-      thumb ??= await _makeVideoCardImage(node.title, play: url != null);
+      // ★ 元の要素の色と本文をそのまま札にする (= ユーザー報告: 真っ黒に
+      //   なる / 全文が入らない)。
+      thumb ??= await _makeVideoCardImage(node.title,
+          play: url != null,
+          bg: node.color,
+          memo: node.memoText,
+          textColor: node.textColor);
       if (thumb == null) continue;
       final ok =
           await mcpPlacePaintImage(target.id, thumb, linkUrl: url, slot: slot);
@@ -112977,8 +113669,10 @@ $example
     if (moved.contains(_selectedNodeId)) _selectedNodeId = null;
 
     // ギャラリー (bookshelf) の元ページは削除後に左詰めして gap を除去。
+    // ★ 詰める相手は**元ページ**だと明示する。 引数無しだと「今開いている
+    //   ページ」 になり、 分割の向こう側から渡した時に別のページを詰める。
     if (source.pageType == 'bookshelf') {
-      compactShelfCells();
+      compactShelfCells(source);
       _arrangeAsBookshelfBody(source);
     }
 

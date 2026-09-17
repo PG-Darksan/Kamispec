@@ -823,6 +823,10 @@ class MindMapNode {
   /// ノード個別タイトルフォントサイズ（null = グローバルデフォルトを使用）
   double? titleFontSize;
 
+  /// 文字の色 (ARGB)。 null なら背景の明るさから自動で黒 / 白を選ぶ
+  /// (= ユーザー要望: 要素の文字色も設定できるように)。
+  int? textColor;
+
   /// ノード個別メモフォントサイズ（null = グローバルデフォルトを使用）
   double? memoFontSize;
 
@@ -963,6 +967,7 @@ class MindMapNode {
     this.attachmentThumbPath,
     this.titleFontSize,
     this.memoFontSize,
+    this.textColor,
     this.videoStorageUrl,
     this.attachmentThumbStorageUrl,
     this.attachmentStorageUrl,
@@ -1429,6 +1434,7 @@ class MindMapNode {
     String? attachmentThumbPath,
     Object? titleFontSize = _sentinel,
     Object? memoFontSize = _sentinel,
+    Object? textColor = _sentinel,
     String? videoStorageUrl,
     String? attachmentStorageUrl,
     String? attachmentThumbStorageUrl,
@@ -1477,6 +1483,7 @@ class MindMapNode {
       memoFontSize: memoFontSize == _sentinel
           ? this.memoFontSize
           : memoFontSize as double?,
+      textColor: textColor == _sentinel ? this.textColor : textColor as int?,
       videoStorageUrl: videoStorageUrl ?? this.videoStorageUrl,
       attachmentStorageUrl: attachmentStorageUrl ?? this.attachmentStorageUrl,
       attachmentThumbStorageUrl:
@@ -1539,6 +1546,7 @@ class MindMapNode {
       'attachmentThumbPath': attachmentThumbPath,
       'titleFontSize': titleFontSize,
       'memoFontSize': memoFontSize,
+      if (textColor != null) 'textColor': textColor,
       'videoStorageUrl': videoStorageUrl,
       'attachmentStorageUrl': attachmentStorageUrl,
       'attachmentThumbStorageUrl': attachmentThumbStorageUrl,
@@ -1616,6 +1624,7 @@ class MindMapNode {
       attachmentThumbPath: json['attachmentThumbPath'] as String?,
       titleFontSize: (json['titleFontSize'] as num?)?.toDouble(),
       memoFontSize: (json['memoFontSize'] as num?)?.toDouble(),
+      textColor: (json['textColor'] as num?)?.toInt(),
       videoStorageUrl: json['videoStorageUrl'] as String?,
       attachmentStorageUrl: json['attachmentStorageUrl'] as String?,
       attachmentThumbStorageUrl:

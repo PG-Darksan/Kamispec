@@ -901,12 +901,18 @@ class _NodeWidgetState extends State<NodeWidget> {
     //   その 9 色が黒文字に変わり (比 7.6〜11.8)、 紫や藍はこれまでどおり
     //   白文字のまま (アプリらしさは変えない)。
     final bool _isLightBg = effectiveColor.computeLuminance() > 0.30;
-    final Color titleTextColor =
-        _isLightBg ? const Color(0xEE000000) : Colors.white;
+    // ★ 利用者が決めた文字色があればそれを使う (= ユーザー要望: 要素の
+    //   文字色も設定できるように)。 無い時は背景の明るさから自動。
+    final Color? chosenText =
+        node.textColor != null ? Color(node.textColor!) : null;
+    final Color titleTextColor = chosenText ??
+        (_isLightBg ? const Color(0xEE000000) : Colors.white);
     // メモは薄くし過ぎない (= 一番読みにくかったのがここ)。
-    final Color memoTextColor = _isLightBg
-        ? const Color(0xDD000000)
-        : Colors.white.withValues(alpha: 0.88);
+    final Color memoTextColor = chosenText != null
+        ? chosenText.withValues(alpha: 0.92)
+        : (_isLightBg
+            ? const Color(0xDD000000)
+            : Colors.white.withValues(alpha: 0.88));
     // ── リンク文字色は実背景の明暗で自動調整 (= ユーザー要望: 黒背景では
     //    白リンク、 白背景では黒リンクになるように。 中間の色付き背景は
     //    従来の水色) ──
