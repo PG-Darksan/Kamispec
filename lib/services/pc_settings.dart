@@ -33,6 +33,7 @@
 // アプリと同じやり方なので、 あちらを開けば同じ値が見える。
 import 'dart:ffi' as ffi;
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart' as pkgffi;
@@ -418,12 +419,57 @@ class PcSettings {
   }
 
   /// 「色の設定が変わった」 と全部の窓へ知らせる。
+  ///
+  /// ★ = ユーザー報告「Windows の見た目をいじると処理が重くなる」。
+  ///   ここは以前 SendMessageTimeoutW(HWND_BROADCAST) を **画面を組む側
+  ///   (UI isolate) から直に**呼んでいた。 放送は「最上位の窓へ 1 枚ずつ
+  ///   順に届けて返事を待つ」 作りなので、 見た目が切り替わって
+  ///   エクスプローラー・タスクバー・他のアプリが一斉に描き直している間は、
+  ///   窓 1 枚につき時間切れぶん (200ms) 待たされる。 見えない窓も含めて
+  ///   20〜30 枚あるのが普通なので、 数秒のあいだアプリは 1 枚も絵を出せず、
+  ///   入力も受けない (= 固まる)。 SMTO_ABORTIFHUNG は Windows が「応答
+  ///   なし」 と判定した窓 (5 秒級) にしか効かないので、 ただ忙しいだけの
+  ///   窓は素通りしない。
+  ///
+  ///   知らせる相手はこのアプリの外なので、 別の isolate に投げて待たない
+  ///   (音声の出力先 [AudioOutput] やショートカット作成と同じ作法)。
+  ///   連打しても走るのは 1 本だけ。 走っている間に来たぶんは、 終わってから
+  ///   1 回だけまとめて追いかける (レジストリには最後の値が入っているので、
+  ///   追いかけの 1 回で必ず最新が伝わる)。
+  static bool _broadcasting = false;
+  static bool _broadcastAgain = false;
+
   static void _broadcastImmersiveColorSet() {
+    if (_broadcasting) {
+      _broadcastAgain = true;
+      return;
+    }
+    _broadcasting = true;
+    _runBroadcast();
+  }
+
+  static Future<void> _runBroadcast() async {
+    try {
+      await Isolate.run(PcSettings._broadcastWorker)
+          .timeout(const Duration(seconds: 5));
+    } catch (_) {
+      // 知らせられなくても、 レジストリには書けているので次回から効く。
+    }
+    _broadcasting = false;
+    if (_broadcastAgain) {
+      _broadcastAgain = false;
+      _broadcastImmersiveColorSet();
+    }
+  }
+
+  /// 放送そのもの。 別の isolate で走るので、 ここで待っても画面は止まらない。
+  /// 時間切れは窓 1 枚あたり 100ms (= 返事をしない窓に付き合わない)。
+  static void _broadcastWorker() {
     final lp = 'ImmersiveColorSet'.toNativeUtf16(allocator: pkgffi.calloc);
     final res = pkgffi.calloc<ffi.IntPtr>();
     try {
       _sendMsg(_hwndBroadcast, _wmSettingChange, 0, lp, _smtoAbortIfHung,
-          200, res);
+          100, res);
     } catch (_) {
       // 知らせられなくても、 レジストリには書けているので次回から効く。
     } finally {

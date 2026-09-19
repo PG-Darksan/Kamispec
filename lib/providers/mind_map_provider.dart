@@ -19,6 +19,8 @@ import '../services/billing_service.dart';
 import '../services/cursor_wrap.dart';
 import '../services/mouse_remap.dart';
 import '../services/cursor_style.dart';
+import '../services/pc_settings.dart';
+import '../services/wheel_scroll_scale.dart';
 import '../services/display_light.dart';
 import '../services/google_auth.dart';
 import '../services/mcp_server.dart';
@@ -5135,6 +5137,18 @@ class MindMapProvider extends ChangeNotifier {
       ..addAll(snap.decorations.map((d) => d.copyWith()));
     _namedGroups[pageId] = Map.fromEntries(
         snap.namedGroups.entries.map((e) => MapEntry(e.key, Set.of(e.value))));
+    // ★ ギャラリーは控えを書き戻したら必ず並べ直す (= ユーザー報告: 削除の
+    //   直後に +ボックスが無い行/列の掴みだけ残る、 の裏返し)。 行/列の掴みは
+    //   控えの格子 [_shelfGridCache] から数えるので、 まず捨てる。 さらに
+    //   削除時に手放したマス目 ([deleteNode] の `_shelfCells.remove`) は
+    //   控えに入っていないため、 取り消しで戻した要素はマス目を失ったまま
+    //   昔の位置に居座り、 その真下に +ボックスが描かれていた。
+    //   _arrangeAsBookshelfBody が中でマス目を割り当て直し、 位置も格子も
+    //   同時に整える (この関数は保存も通知もしないので、 呼び元に任せる)。
+    if (page.pageType == 'bookshelf') {
+      _shelfGridCache.remove(page.id);
+      _arrangeAsBookshelfBody(page);
+    }
   }
 
   double defaultTitleFontSize = 15.0;
@@ -5288,6 +5302,78 @@ class MindMapProvider extends ChangeNotifier {
     _cursorWrapDaemon = prefs.getBool('cursorWrapDaemon') ?? false;
   }
 
+  // ── ポインターの動き (速さ / 精度 / ホイールの行数) の控え ──────────
+  //   ★ この 3 つは SystemParametersInfo に SPIF_UPDATEINIFILE を付けて
+  //     書いているので、 **Windows 本体に残る**。 アプリを閉じても消えない。
+  //     ここで控えるのは「ほかの道具 (ゲーミングマウスの付属ソフト等) に
+  //     書き換えられていた時、 次に開いた時へ戻す」 為
+  //     (= ユーザー要望「閉じた後に設定を維持する設定」)。
+
+  /// 次に開いた時、 控えた値へ戻すか。
+  bool _mouseMotionKeepAfterExit = false;
+  bool get mouseMotionKeepAfterExit => _mouseMotionKeepAfterExit;
+
+  /// 控えた値。 速さ / 行数は -1 = まだ控えていない。
+  int _mouseMotionSpeed = -1;
+  bool _mouseMotionAccel = true;
+  int _mouseMotionWheel = -1;
+
+  Future<void> setMouseMotionKeepAfterExit(bool v) async {
+    _mouseMotionKeepAfterExit = v;
+    final prefs = await _prefsWithRetry();
+    await prefs.setBool('mouseMotionKeepAfterExit', v);
+    // 入れた時点の値を土台にする (入れる前に動かした分も拾える)。
+    if (v) await rememberMouseMotion();
+    notifyListeners();
+  }
+
+  /// 今 Windows に入っている 3 つを控える (つまみを動かした後に呼ぶ)。
+  Future<void> rememberMouseMotion() async {
+    if (!PcSettings.isSupported) return;
+    final st = PcSettings.readMouse();
+    _mouseMotionSpeed = st.speed;
+    _mouseMotionAccel = st.acceleration;
+    _mouseMotionWheel = st.wheelLines;
+    final prefs = await _prefsWithRetry();
+    await prefs.setInt('mouseMotionSpeed', _mouseMotionSpeed);
+    await prefs.setBool('mouseMotionAccel', _mouseMotionAccel);
+    await prefs.setInt('mouseMotionWheel', _mouseMotionWheel);
+  }
+
+  void _loadMouseMotionKeep(SharedPreferences prefs) {
+    _mouseMotionKeepAfterExit =
+        prefs.getBool('mouseMotionKeepAfterExit') ?? false;
+    _mouseMotionSpeed = prefs.getInt('mouseMotionSpeed') ?? -1;
+    _mouseMotionAccel = prefs.getBool('mouseMotionAccel') ?? true;
+    _mouseMotionWheel = prefs.getInt('mouseMotionWheel') ?? -1;
+  }
+
+  /// 起動時に、 控えた値へ戻す。
+  ///
+  /// ★ **ずれている物だけ**書く。 書くと SPIF_SENDCHANGE で他のアプリにも
+  ///   変更が飛ぶので、 同じ値をわざわざ書き直さない。
+  /// ★ ここは main() の `resetPointerBoost()` (= 旧「もっと速く」 の後始末。
+  ///   中で加速を昔の値へ戻す) より**後**に走るので、 利用者が選んだ
+  ///   「精度を高める」 が巻き戻される件もこれで打ち消せる。
+  void _reapplyMouseMotion() {
+    if (!_mouseMotionKeepAfterExit) return;
+    if (!PcSettings.isSupported) return;
+    try {
+      final now = PcSettings.readMouse();
+      if (_mouseMotionSpeed >= 1 && _mouseMotionSpeed != now.speed) {
+        PcSettings.setMouseSpeed(_mouseMotionSpeed);
+      }
+      if (_mouseMotionAccel != now.acceleration) {
+        PcSettings.setMouseAcceleration(_mouseMotionAccel);
+      }
+      if (_mouseMotionWheel >= 1 && _mouseMotionWheel != now.wheelLines) {
+        PcSettings.setWheelScrollLines(_mouseMotionWheel);
+        // engine が焼き込んだ行数と食い違うので、 アプリ内の倍率も合わせる。
+        WheelScrollScale.refreshFromOs();
+      }
+    } catch (_) {}
+  }
+
   // ── マウスのボタンに割り当てたキー (= ユーザー要望) ────────────────
   //   ★ 既定では**動かない**。 割り当てを入れて、 スイッチを入れた時だけ
   //     見張りが立ち上がる。 パソコン全体に効く仕掛けなので、 黙って
@@ -5303,6 +5389,25 @@ class MindMapProvider extends ChangeNotifier {
 
   /// 立ち上げようとして駄目だった (セキュリティソフトなどに阻まれた)。
   bool get mouseRemapFailed => MouseRemap.instance.failed;
+
+  /// アプリを次に開いた時、 割り当てを自動で効かせ直すか (既定 = する)。
+  ///
+  /// ★ 割り当ては **Windows 側には残せない**。 押されたボタンを見張って
+  ///   差し替えているのはこのアプリなので、 閉じている間は効かない。
+  ///   ここで言う「保つ」 は「次に開いた時に自動で入れ直す」 という意味で、
+  ///   画面の説明もそう書いてある。
+  /// ★ 切ると、 起動時は必ず「効かせる」 が切れた所から始まる
+  ///   (= セキュリティソフトに見張られたくない人の逃げ道)。 控えの
+  ///   mouseRemapEnabled は消さないので、 入れ直せば元に戻る。
+  bool _mouseRemapKeepAfterExit = true;
+  bool get mouseRemapKeepAfterExit => _mouseRemapKeepAfterExit;
+
+  Future<void> setMouseRemapKeepAfterExit(bool v) async {
+    _mouseRemapKeepAfterExit = v;
+    final prefs = await _prefsWithRetry();
+    await prefs.setBool('mouseRemapKeepAfterExit', v);
+    notifyListeners();
+  }
 
   Future<void> setMouseRemapEnabled(bool v) async {
     _mouseRemapEnabled = v;
@@ -5349,7 +5454,13 @@ class MindMapProvider extends ChangeNotifier {
   }
 
   void _loadMouseKeyBindings(SharedPreferences prefs) {
-    _mouseRemapEnabled = prefs.getBool('mouseRemapEnabled') ?? false;
+    _loadMouseMotionKeep(prefs);
+    _mouseRemapKeepAfterExit =
+        prefs.getBool('mouseRemapKeepAfterExit') ?? true;
+    // 「次に開いた時も効かせ直す」 が切ってあれば、 スイッチは切った所から
+    //   始める。 控え (mouseRemapEnabled) は書き換えないので、 入れ直せば戻る。
+    _mouseRemapEnabled = _mouseRemapKeepAfterExit &&
+        (prefs.getBool('mouseRemapEnabled') ?? false);
     try {
       final raw = prefs.getString('mouseKeyBindings');
       if (raw == null || raw.isEmpty) return;
@@ -5598,8 +5709,10 @@ class MindMapProvider extends ChangeNotifier {
   int _crosshairOutlineArgb = 0xFF000000;
   int get crosshairOutlineArgb => _crosshairOutlineArgb;
 
-  /// 腕の太さ (px)。 0 = 大きさから決める。
-  int _crosshairThickness = 0;
+  /// 腕の太さ (px)。 1 以上 (= ユーザー要望で「おまかせ」 は廃止)。
+  /// 既定の 5 は、 既定の大きさ 48 px の時の昔の「おまかせ」 (= 大きさの
+  /// 1/10) と同じ太さなので、 今まで触っていない人の見た目は変わらない。
+  int _crosshairThickness = 5;
   int get crosshairThickness => _crosshairThickness;
 
   /// 真ん中を空ける幅 (px)。 0 = 空けない。
@@ -5618,7 +5731,7 @@ class MindMapProvider extends ChangeNotifier {
     if (sizePx != null) _crosshairSizePx = sizePx.clamp(16, 256);
     if (argb != null) _crosshairArgb = argb;
     if (outlineArgb != null) _crosshairOutlineArgb = outlineArgb;
-    if (thickness != null) _crosshairThickness = thickness.clamp(0, 64);
+    if (thickness != null) _crosshairThickness = thickness.clamp(1, 64);
     if (gap != null) _crosshairGap = gap.clamp(0, 64);
     final prefs = await _prefsWithRetry();
     await prefs.setBool('crosshairEnabled', _crosshairEnabled);
@@ -14961,27 +15074,33 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'O Windows só deixa um aplicativo mover as próprias janelas. Arraste as de outros aplicativos na visão Win+Tab. Aqui você pode ir para a área de trabalho onde a janela está.',
       'ru': 'Windows позволяет приложению перемещать только свои окна. Окна других приложений перетаскивайте в режиме Win+Tab. Отсюда можно перейти на рабочий стол, где находится окно.',
     },
+    // ★ = ユーザー要望「そこへ移るなどの項目が分かりにくい」。
+    //   「移る」 だと窓の方を動かすと読めてしまうので、 実際の動き
+    //   (= こちらの画面がその窓の居るデスクトップへ切り替わる) を
+    //   そのまま書く。
     'vdesk.goThere': {
-      'ja': 'そこへ移る',
-      'en': 'Go there',
-      'zh': '切换过去',
-      'ko': '그쪽으로 이동',
-      'es': 'Ir allí',
-      'fr': 'Y aller',
-      'de': 'Dorthin wechseln',
-      'pt': 'Ir para lá',
-      'ru': 'Перейти туда',
+      'ja': 'この窓のデスクトップへ切り替え',
+      'en': 'Switch to that desktop',
+      'zh': '切换到该窗口的桌面',
+      'ko': '이 창의 데스크톱으로 전환',
+      'es': 'Ir al escritorio de esa ventana',
+      'fr': 'Aller au bureau de cette fenêtre',
+      'de': 'Zum Desktop des Fensters wechseln',
+      'pt': 'Ir para a área dessa janela',
+      'ru': 'Перейти на его рабочий стол',
     },
-    'vdesk.bringFront': {
-      'ja': '手前に出す',
-      'en': 'Bring to front',
-      'zh': '置于前台',
-      'ko': '앞으로 가져오기',
-      'es': 'Traer al frente',
-      'fr': 'Mettre au premier plan',
-      'de': 'In den Vordergrund',
-      'pt': 'Trazer para a frente',
-      'ru': 'На передний план',
+    // ★ 今見ているデスクトップに居る窓の行に出す、 押せない覚え書き
+    //   (「手前に出す」 を取りやめた跡地)。
+    'vdesk.here': {
+      'ja': 'このデスクトップ',
+      'en': 'On this desktop',
+      'zh': '在此桌面',
+      'ko': '이 데스크톱',
+      'es': 'En este escritorio',
+      'fr': 'Sur ce bureau',
+      'de': 'Auf diesem Desktop',
+      'pt': 'Nesta área de trabalho',
+      'ru': 'На этом рабочем столе',
     },
     'vdesk.taskView': {
       'ja': 'タスクビュー (Win+Tab)',
@@ -54963,6 +55082,39 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Não foi possível iniciar os atalhos. O antivírus pode tê-los bloqueado.',
       'ru': 'Не удалось запустить. Возможно, заблокировал антивирус.',
     },
+    'mouse.keepAfterExit': {
+      'ja': 'アプリを閉じた後も保つ',
+      'en': 'Keep after closing the app',
+      'zh': '关闭应用后仍保留',
+      'ko': '앱을 닫은 뒤에도 유지',
+      'es': 'Mantener tras cerrar la aplicación',
+      'fr': 'Conserver après la fermeture',
+      'de': 'Nach dem Schließen beibehalten',
+      'pt': 'Manter depois de fechar a aplicação',
+      'ru': 'Сохранять после закрытия',
+    },
+    'mouse.keepMotionNote': {
+      'ja': '上の 3 つは Windows 本体に保存されるので、 閉じてもそのまま残ります。 入れておくと、 ほかの道具に書き換えられていた時だけ、 次に開いた時へこの値を戻します。',
+      'en': 'These three are stored by Windows itself, so they already survive closing. Turn this on and the app puts them back at the next launch if something else changed them.',
+      'zh': '这三项由 Windows 自身保存，关闭后依然保留。开启后，若被其他软件改动，下次启动时会恢复为此处的值。',
+      'ko': '위 세 가지는 Windows 자체에 저장되므로 앱을 닫아도 그대로 유지됩니다. 켜 두면 다른 프로그램이 바꿨을 때만 다음 실행 시 이 값으로 되돌립니다.',
+      'es': 'Estos tres los guarda Windows, así que ya se mantienen al cerrar. Si lo activas, la app los restaura en el próximo inicio cuando otro programa los haya cambiado.',
+      'fr': 'Ces trois réglages sont conservés par Windows : ils survivent déjà à la fermeture. Activé, l’application les rétablit au prochain démarrage si un autre logiciel les a modifiés.',
+      'de': 'Diese drei speichert Windows selbst, sie bleiben also ohnehin erhalten. Aktiviert stellt die App sie beim nächsten Start wieder her, falls ein anderes Programm sie geändert hat.',
+      'pt': 'Estes três são guardados pelo próprio Windows, por isso já se mantêm ao fechar. Se ativar, a aplicação repõe-nos no arranque seguinte caso outro programa os tenha alterado.',
+      'ru': 'Эти три параметра хранит сама Windows, поэтому они и так сохраняются. Если включить, приложение вернёт их при следующем запуске, если их изменила другая программа.',
+    },
+    'mouse.keepRemapNote': {
+      'ja': '割り当ては Windows 側には残せません (押されたボタンを見張っているのはこのアプリです)。 入れておくと、 次にアプリを開いた時に自動で効かせ直します。 閉じている間は効きません。',
+      'en': 'Assignments cannot be stored in Windows — this app is what watches the buttons. Turn this on and they are re-applied automatically at the next launch. They do not work while the app is closed.',
+      'zh': '按键分配无法保存到 Windows 中（拦截按键的是本应用）。开启后，下次启动时会自动重新生效。应用关闭期间不起作用。',
+      'ko': '할당은 Windows 에 저장할 수 없습니다 (버튼을 감시하는 것은 이 앱입니다). 켜 두면 다음에 앱을 열 때 자동으로 다시 적용합니다. 앱이 닫혀 있는 동안에는 동작하지 않습니다.',
+      'es': 'Las asignaciones no pueden guardarse en Windows: es esta app la que vigila los botones. Si lo activas, se vuelven a aplicar solas al abrir la app. No funcionan con la app cerrada.',
+      'fr': 'Les affectations ne peuvent pas être enregistrées dans Windows : c’est cette application qui surveille les boutons. Activé, elles sont réappliquées au prochain lancement. Elles ne fonctionnent pas application fermée.',
+      'de': 'Die Belegungen lassen sich nicht in Windows speichern – diese App überwacht die Tasten. Aktiviert werden sie beim nächsten Start automatisch wieder gesetzt. Bei geschlossener App wirken sie nicht.',
+      'pt': 'As atribuições não podem ficar guardadas no Windows — é esta aplicação que vigia os botões. Se ativar, voltam a ser aplicadas no arranque seguinte. Não funcionam com a aplicação fechada.',
+      'ru': 'Назначения нельзя сохранить в Windows — кнопки отслеживает само приложение. Если включить, они снова применятся при следующем запуске. Пока приложение закрыто, они не действуют.',
+    },
     'cursorWrap.section': {
       'ja': 'モニターの繋がり方',
       'en': 'Monitor layout',
@@ -55490,11 +55642,6 @@ class MindMapProvider extends ChangeNotifier {
       'ja': '線の太さ', 'en': 'Line thickness', 'zh': '线条粗细',
       'ko': '선 굵기', 'es': 'Grosor', 'fr': 'Epaisseur',
       'de': 'Liniendicke', 'pt': 'Espessura', 'ru': 'Толщина линии',
-    },
-    'cross.thicknessAuto': {
-      'ja': 'おまかせ', 'en': 'Auto', 'zh': '自动', 'ko': '자동',
-      'es': 'Auto', 'fr': 'Auto', 'de': 'Auto', 'pt': 'Auto',
-      'ru': 'Авто',
     },
     'cross.fill': {
       'ja': '中の色', 'en': 'Fill color', 'zh': '填充色', 'ko': '안쪽 색',
@@ -94386,7 +94533,15 @@ $cleanQ
     for (final id in toRemove) {
       page.nodes.remove(id);
       _liveLastPushed.remove(id);
+      _shelfCells.remove(id);
       changed = true;
+    }
+    // ★ 共同編集で相手が消した時も、 ギャラリーの格子の控えを捨てて
+    //   並べ直す (= +ボックスと行/列の掴みの数を必ず揃える)。
+    if (toRemove.isNotEmpty && page.pageType == 'bookshelf') {
+      _shelfGridCache.remove(page.id);
+      compactShelfCells(page);
+      _arrangeAsBookshelfBody(page);
     }
 
     // 接続・装飾は件数が少ないのでまとめて 1 フィールドで扱う。
@@ -97512,8 +97667,13 @@ $cleanQ
     _crosshairArgb = prefs.getInt('crosshairArgb') ?? 0xFFFFD54F;
     _crosshairOutlineArgb =
         prefs.getInt('crosshairOutlineArgb') ?? 0xFF000000;
-    _crosshairThickness =
-        (prefs.getInt('crosshairThickness') ?? 0).clamp(0, 64);
+    // ★ 昔は 0 = 「おまかせ (大きさから決める)」 だった (= ユーザー要望で
+    //   廃止)。 控えに 0 が残っていたら、 今までと同じ見た目になる太さ
+    //   (= 大きさの 1/10。 cursor_style の元の決め方) へ読み替える。
+    final savedCrossThick = prefs.getInt('crosshairThickness') ?? 0;
+    _crosshairThickness = savedCrossThick > 0
+        ? savedCrossThick.clamp(1, 64)
+        : (_crosshairSizePx / 10).round().clamp(1, 24);
     _crosshairGap = (prefs.getInt('crosshairGap') ?? 0).clamp(0, 64);
     _syncCursorKeepFlag();
     // ★ 「既定は何 px か」 を控えておく (= ユーザー要望: 数値で示して)。
@@ -97553,6 +97713,10 @@ $cleanQ
     _loadMouseKeyBindings(prefs);
     // ignore: discarded_futures
     _applyMouseRemap();
+    // ★ ポインターの動き (速さ / 精度 / 行数) を、 控えた値へ戻す
+    //   (= ユーザー要望「閉じた後に設定を維持する設定」)。 切ってある時と、
+    //   今の値とずれていない時は何も書かない。
+    _reapplyMouseMotion();
     // プランの読み込みは別経路なので、 ここでは今分かっている範囲で当て、
     //   プランが確定した時に applyBillingPlan からもう一度当て直す。
     CursorWrap.instance.applyEdgeTargets(
@@ -103805,6 +103969,15 @@ $cleanQ
     final removed = page.nodes.remove(nodeId);
     page.connections
         .removeWhere((c) => c.fromId == nodeId || c.toId == nodeId);
+    // ★ ギャラリーは画面の削除 ([deleteNode]) と同じ後始末をする。
+    //   マス目の控えを手放し、 格子の控えを捨ててから並べ直さないと、
+    //   +ボックスが無いのに行/列の掴みだけ残り、 詰め直しも走らない。
+    _shelfCells.remove(nodeId);
+    if (page.pageType == 'bookshelf') {
+      _shelfGridCache.remove(page.id);
+      compactShelfCells(page);
+      _arrangeAsBookshelfBody(page);
+    }
     _saveToStorage();
     notifyListeners();
     return removed?.title ?? '';
@@ -107775,6 +107948,9 @@ $cleanQ
     }
     if (all.contains(_selectedNodeId)) _selectedNodeId = null;
     _pruneContainersAfterDelete();
+    // ★ 行/列ごと消した時も格子の控えを捨てる (= 掴みと +ボックスの数を
+    //   必ず揃える)。 最後の 1 行を消して空になると整列が空振りするため。
+    _shelfGridCache.remove(page.id);
     compactShelfCells();
     _arrangeAsBookshelfBody(page);
     _saveToStorage();
@@ -108006,6 +108182,8 @@ $cleanQ
     _pruneContainersAfterDelete();
     // 削除で空いたセルを行優先で詰めて穴を消す (= ユーザー要望: 見終わって削除
     //   されたら行単位で要素を詰める)。 repack 内で _saveShelfCells/notify する。
+    // ★ 格子の控えも捨てて、 行/列の掴みと +ボックスの数を揃える。
+    _shelfGridCache.remove(page.id);
     repackShelfCellsRowMajor(page);
     _arrangeAsBookshelfBody(page);
     _saveShelfCells();
@@ -108276,7 +108454,19 @@ $cleanQ
     final ids = onlyIds ?? page.nodes.keys.toSet();
     final list =
         ids.map((id) => page.nodes[id]).whereType<MindMapNode>().toList();
-    if (list.isEmpty) return;
+    if (list.isEmpty) {
+      // ★ = ユーザー報告「要素を削除して直ぐは +ボックスが無いのに行や列の
+      //   掴みだけ残る」。 行/列の掴み ([bookshelfRowHandleRects] 等) は控えの
+      //   格子 [_shelfGridCache] の段数/列数から数え、 +ボックス
+      //   ([bookshelfFrontierCells]) はその場の [_shelfGridRows] /
+      //   [_shelfGridCols] から数える。 中身が空になるとここで即戻っていたので
+      //   控えが前の段数のまま残り、 掴みだけ 1 段多く描かれていた。
+      //   空になっても控えを組み直して、 両者の数を必ず揃える。
+      if (onlyIds == null && page.pageType == 'bookshelf') {
+        _shelfGridCache[page.id] = _buildShelfGrid(page);
+      }
+      return;
+    }
 
     // ギャラリーページ全体の整列か (= 末尾に常設の +ボックスを置く対象)。
     final bool wholeShelf = onlyIds == null && page.pageType == 'bookshelf';
@@ -113779,6 +113969,11 @@ $example
     //   node.position で描画されるため見た目が動かなかった (= ユーザー報告:
     //   削除しても詰まらない)。 _arrangeAsBookshelfBody で実際の位置を再配置する。
     if (currentPage.pageType == 'bookshelf') {
+      // ★ 格子の控えを先に捨てる (= ユーザー報告: 削除直後に +ボックスが
+      //   無い行/列の掴みだけ残る)。 掴みは控えの格子から数えるので、
+      //   残っている要素があれば直後の整列が正しい控えを作り直し、
+      //   1 個も残らなければ控え無しでその場の段数から組み直される。
+      _shelfGridCache.remove(currentPage.id);
       compactShelfCells();
       _arrangeAsBookshelfBody(currentPage);
     }
@@ -113788,6 +113983,16 @@ $example
 
   void clearCurrentPage() {
     _pushUndo();
+    // ★ ギャラリーは消した要素のマス目の控えも手放し、 格子の控えを捨てる
+    //   (= ユーザー報告: 全部消した直後に +ボックスが無い行/列の掴みが残る)。
+    //   `_shelfCells` は全ページ共通なので、 このページの要素だけを外す。
+    for (final id in currentPage.nodes.keys) {
+      _shelfCells.remove(id);
+    }
+    if (currentPage.pageType == 'bookshelf') {
+      _shelfGridCache.remove(currentPage.id);
+      unawaited(_saveShelfCells());
+    }
     currentPage.nodes.clear();
     currentPage.connections.clear();
     _selectedNodeId = null;
@@ -113825,6 +114030,8 @@ $example
     //   node.position で描画されるため見た目が動かなかった (= ユーザー報告:
     //   削除しても詰まらない)。 _arrangeAsBookshelfBody で実際の位置を再配置する。
     if (currentPage.pageType == 'bookshelf') {
+      // ★ 格子の控えを先に捨てる (deleteNode と同じ理由)。
+      _shelfGridCache.remove(currentPage.id);
       compactShelfCells();
       _arrangeAsBookshelfBody(currentPage);
     }

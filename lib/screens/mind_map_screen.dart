@@ -107122,9 +107122,22 @@ class _OsThemeInlineState extends State<_OsThemeInline> {
   }
 
   void _apply({bool? appsDark, bool? systemDark}) {
+    // ★ = ユーザー報告「Windows の見た目をいじると処理が重くなる」。
+    //   書けた値がそのまま今の値なので、 押すたびにレジストリを開き直さない
+    //   (画面を組む側で OS を触る回数を減らす)。 他のアプリへ知らせる放送は
+    //   [PcSettings] 側で別の isolate に逃がしてあるので、 ここでは待たない。
     final ok = PcSettings.setTheme(appsDark: appsDark, systemDark: systemDark);
+    if (!mounted) return;
+    if (ok) {
+      final st = _state;
+      setState(() => _state = PcThemeState(
+            appsDark: appsDark ?? st?.appsDark ?? false,
+            systemDark: systemDark ?? st?.systemDark ?? false,
+          ));
+      return;
+    }
+    // 書けなかった時だけ、 本当の値を読み直して戻す。
     _reload();
-    if (!mounted || ok) return;
     ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
       content: Text(widget.provider.t('osTheme.failed')),
       backgroundColor: const Color(0xFFE57373),
@@ -109270,6 +109283,9 @@ class _MouseTweakInlineState extends State<_MouseTweakInline> {
             setState(() => _speedDrag = null);
             PcSettings.setMouseSpeed(v.round());
             _reload();
+            // 「閉じた後も保つ」 の為に控える (切ってあっても控えるだけ。
+            //   後から入れた時に、 今の値が土台になる)。
+            unawaited(p.rememberMouseMotion());
           },
         ),
         note: speedNote,
@@ -109281,6 +109297,7 @@ class _MouseTweakInlineState extends State<_MouseTweakInline> {
         onChanged: (v) {
           PcSettings.setMouseAcceleration(v);
           _reload();
+          unawaited(p.rememberMouseMotion());
         },
       ),
       _pcRow(
@@ -109301,6 +109318,7 @@ class _MouseTweakInlineState extends State<_MouseTweakInline> {
             //   書けたかどうかを当てにせず、 OS から読み直して合わせる。
             WheelScrollScale.refreshFromOs();
             _reload();
+            unawaited(p.rememberMouseMotion());
           },
         ),
       ),
@@ -109308,6 +109326,21 @@ class _MouseTweakInlineState extends State<_MouseTweakInline> {
       _pcTestBox(
         p.t('mouse.wheelTest'),
         _WheelTestBox(key: ValueKey(st.wheelLines), osLines: st.wheelLines),
+      ),
+      // ── アプリを閉じた後も保つ (= ユーザー要望) ──
+      //   ★ 上の 3 つは SPIF_UPDATEINIFILE 付きで書いているので、 元々
+      //     Windows 本体に残る (閉じても戻していない)。 だからここは
+      //     「ほかの道具に書き換えられていた時、 次に開いた時へ戻す」
+      //     という意味になる。 説明文にもそう書いてある。
+      const SizedBox(height: 6),
+      _pcToggle(
+        label: p.t('mouse.keepAfterExit'),
+        value: p.mouseMotionKeepAfterExit,
+        note: p.t('mouse.keepMotionNote'),
+        onChanged: (v) async {
+          await p.setMouseMotionKeepAfterExit(v);
+          if (mounted) setState(() {});
+        },
       ),
     ]);
   }
@@ -109900,6 +109933,18 @@ class _MouseButtonBindingsState extends State<_MouseButtonBindings> {
               backgroundColor: const Color(0xFFE53935),
             ));
           }
+        },
+      ),
+      // ★ 「閉じた後も保つ」 (= ユーザー要望)。 割り当てだけは Windows に
+      //   残せないので、 意味は「次に開いた時に自動で効かせ直す」。
+      //   嘘にならないよう、 説明文でそこをはっきり書いている。
+      _pcToggle(
+        label: p.t('mouse.keepAfterExit'),
+        value: p.mouseRemapKeepAfterExit,
+        note: p.t('mouse.keepRemapNote'),
+        onChanged: (v) async {
+          await p.setMouseRemapKeepAfterExit(v);
+          if (mounted) setState(() {});
         },
       ),
     ]);
@@ -110730,19 +110775,19 @@ class _VirtualDesktopInlineState extends State<_VirtualDesktopInline> {
                       : () => unawaited(_goToWindow(w)),
                 ),
         ],
-        // ★ 送れない窓が今のデスクトップに居る時は、 手前に出すだけでも
-        //   役に立つ (行が押せない札だけになるのを防ぐ)。
+        // ★ = ユーザー要望「他のアプリの窓の手前に出す項目が必要性を
+        //   感じない」。 今見ているデスクトップに居る窓を手前に出すのは
+        //   タスクバーや Alt+Tab と同じ事なうえ、 この板の裏で持ち上がる
+        //   だけなので取りやめる。 行そのものは 「どの窓がどこに居るか」
+        //   の一覧として残し、 押す物の代わりに 「このデスクトップ」 と
+        //   書くだけにする。 高さは札に合わせておく (行ごとに背が変わって
+        //   並びが崩れるのを防ぐ)。
         if (w.onCurrentDesktop && !w.canSend) ...[
           const SizedBox(width: 6),
-          _chip(
-            icon: Icons.open_in_full_rounded,
-            label: p.t('vdesk.bringFront'),
-            onTap: _busy
-                ? null
-                : () {
-                    OsQuickToggles.focusWindow(w.hwnd);
-                    setState(() => _note = null);
-                  },
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 7),
+            child: Text(p.t('vdesk.here'),
+                style: const TextStyle(color: Colors.white30, fontSize: 11)),
           ),
         ],
         const SizedBox(width: 6),
@@ -111190,7 +111235,7 @@ class _CursorAppearanceInlineState extends State<_CursorAppearanceInline> {
   double _crossSizeLive(MindMapProvider p) =>
       _crossSizeDrag ?? p.crosshairSizePx.toDouble().clamp(16, 128);
   double _crossThickLive(MindMapProvider p) =>
-      _crossThickDrag ?? p.crosshairThickness.toDouble().clamp(0, 24);
+      _crossThickDrag ?? p.crosshairThickness.toDouble().clamp(1, 24);
 
   /// 十字の色を選ぶ札。
   Widget _crossChip(MindMapProvider p, int argb, {required bool outline}) {
@@ -111555,12 +111600,10 @@ class _CursorAppearanceInlineState extends State<_CursorAppearanceInline> {
               Expanded(
                 child: Slider(
                   value: _crossThickLive(p),
-                  min: 0,
+                  min: 1,
                   max: 24,
-                  divisions: 24,
-                  label: _crossThickLive(p) < 1
-                      ? p.t('cross.thicknessAuto')
-                      : '${_crossThickLive(p).round()} px',
+                  divisions: 23,
+                  label: '${_crossThickLive(p).round()} px',
                   activeColor: const Color(0xFF4FC3F7),
                   onChanged: (v) => setState(() => _crossThickDrag = v),
                   onChangeEnd: (v) {
