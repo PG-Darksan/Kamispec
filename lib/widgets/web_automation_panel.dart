@@ -2780,6 +2780,21 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
         _log('実行', '$label ${_kindLabel(p, s.kind)}'
             '${detail.isEmpty ? '' : '  $detail'}');
       }
+      // ★ = ユーザー要望「要素が手動では追加できないようになっているから
+      //   できるようにして」 で、 手で足した手順は位置が未設定のまま走り得る。
+      //   位置の入れ物は (0,0) 始まりなので、 そのまま走らせるとページや
+      //   画面の左上隅を押してしまう (パソコン操作の時は他のアプリの隅)。
+      //   位置が要る種類で未設定のままなら、 押さずに飛ばして理由を残す。
+      if (_needsPosition(s)) {
+        _log('飛ばす', '$label 位置が決まっていないので飛ばしました');
+        if (mounted) {
+          setState(() => _status = context
+              .read<MindMapProvider>()
+              .t('auto.noPosSkip')
+              .replaceFirst('{n}', label));
+        }
+        continue;
+      }
       switch (s.kind) {
         case WebAutoKind.loop:
           // 回数 0 = 停止するまで無限に回す (= while)。
@@ -5575,11 +5590,89 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
     );
   }
 
+  /// 手で足せる種類。
+  ///
+  /// ★ 「全体を 1 枚」 は別項目にせず、 スクショの中の「ページ全体」
+  ///   切替えにまとめた (= ユーザー要望: 分かりにくい)。
+  static final List<WebAutoKind> _addableKinds = WebAutoKind.values
+      .where((k) => k != WebAutoKind.fullShot)
+      .toList(growable: false);
+
+  /// 「手順を追加」 の窓に出す種類。
+  ///
+  /// ★ パソコン操作のうち、 窓の名前・座標・文字・回数が要る 6 つ
+  ///   (osActivate / osClick / osMove / osType / osKey / osScroll) は外す。
+  ///   手順の札にはこの 6 つを直す欄が一つも無く (tap / hold / swipe の
+  ///   「位置を指定」 に当たる物が無い)、 手で足しても (0,0) や空のまま
+  ///   直せないため。 何も要らない osShot は残す。 AI が組み立てた物は
+  ///   今までどおり動く (足す口を絞るだけで、 走らせる側は変えていない)。
+  static const List<WebAutoKind> _noHandEditKinds = [
+    WebAutoKind.osActivate,
+    WebAutoKind.osClick,
+    WebAutoKind.osMove,
+    WebAutoKind.osType,
+    WebAutoKind.osKey,
+    WebAutoKind.osScroll,
+  ];
+
+  static final List<WebAutoKind> _addMenuKinds = _addableKinds
+      .where((k) => !_noHandEditKinds.contains(k))
+      .toList(growable: false);
+
+  /// 手で足す 1 手の既定値。
+  ///
+  /// ★ 既定の決め方をここ 1 か所にまとめた (= ユーザー要望「要素が手動では
+  ///   追加できないようになっているからできるようにして」 で足した
+  ///   「手順を追加」 の窓と、 元からあるボタン一覧が、 別々の既定を
+  ///   持ってしまわないように)。
+  WebAutoStep _defaultStepOf(WebAutoKind k) => WebAutoStep(
+        kind: k,
+        count: k == WebAutoKind.loop ? 2 : 1,
+        durationMs: k == WebAutoKind.scroll
+            ? 600
+            : (k == WebAutoKind.wait
+                ? 1000
+                : (k == WebAutoKind.open
+                    ? 2000
+                    // ダウンロードは終わるまで待つので長め。
+                    : (k == WebAutoKind.download
+                        ? 60000
+                        : (k == WebAutoKind.scrollTo || k == WebAutoKind.click
+                            ? 1200
+                            : 400)))),
+        // 取り出す物の既定は本文。
+        text: k == WebAutoKind.extract ? 'text' : '',
+        // 端まで送るのは既定で「一番下」 (フッター狙い)。
+        scrollDir: k == WebAutoKind.scrollTo ? 'bottom' : 'down',
+      );
+
+  /// 手順を 1 つ足して控える。 足す口はどこからでもここを通す。
+  void _addStep(List<WebAutoStep> into, WebAutoKind k) {
+    setState(() => into.add(_defaultStepOf(k)));
+    _save();
+  }
+
+  /// 位置が要るのに、 まだ決まっていない手順か。
+  ///
+  /// ★ (0,0) は「まだ指定していない」 の代わり。 左上隅をわざわざ押したい
+  ///   場面は無いので、 隅を押してしまう事故の方がずっと痛い。
+  bool _needsPosition(WebAutoStep s) {
+    switch (s.kind) {
+      case WebAutoKind.tap:
+      case WebAutoKind.hold:
+      case WebAutoKind.osClick:
+      case WebAutoKind.osMove:
+        return s.x == 0 && s.y == 0;
+      case WebAutoKind.swipe:
+        return (s.x == 0 && s.y == 0) || (s.x2 == 0 && s.y2 == 0);
+      default:
+        return false;
+    }
+  }
+
   Widget _addChips(MindMapProvider provider, List<WebAutoStep> into) {
     return Wrap(spacing: 6, runSpacing: 6, children: [
-      // ★ 「全体を 1 枚」 は別項目にせず、 スクショの中の
-      //   「ページ全体」 切替えにまとめた (= ユーザー要望: 分かりにくい)。
-      for (final k in WebAutoKind.values.where((k) => k != WebAutoKind.fullShot))
+      for (final k in _addableKinds)
         ActionChip(
           avatar: Icon(_kindIcon(k), size: 14, color: Colors.white70),
           label: Text(_kindLabel(provider, k),
@@ -5587,33 +5680,70 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
           backgroundColor: const Color(0xFF2A2A44),
           side: BorderSide.none,
           visualDensity: VisualDensity.compact,
-          onPressed: () {
-            setState(() => into.add(WebAutoStep(
-                  kind: k,
-                  count: k == WebAutoKind.loop ? 2 : 1,
-                  durationMs: k == WebAutoKind.scroll
-                      ? 600
-                      : (k == WebAutoKind.wait
-                          ? 1000
-                          : (k == WebAutoKind.open
-                              ? 2000
-                              // ダウンロードは終わるまで待つので長め。
-                              : (k == WebAutoKind.download
-                                  ? 60000
-                                  : (k == WebAutoKind.scrollTo ||
-                                          k == WebAutoKind.click
-                                      ? 1200
-                                      : 400)))),
-                  // 取り出す物の既定は本文。
-                  text: k == WebAutoKind.extract ? 'text' : '',
-                  // 端まで送るのは既定で「一番下」 (フッター狙い)。
-                  scrollDir:
-                      k == WebAutoKind.scrollTo ? 'bottom' : 'down',
-                )));
-            _save();
-          },
+          onPressed: () => _addStep(into, k),
         ),
     ]);
+  }
+
+  /// 「手順を追加」 の窓 (= ユーザー要望「要素が手動では追加できないように
+  /// なっているからできるようにして」)。
+  ///
+  /// ★ 手で足す口は元からあった (この上のボタン一覧) が、 見出しの
+  ///   「手順を並べて実行します…」 を畳むと一覧ごと消える作りで、 しかも
+  ///   畳んだ事を控える (prefs webauto_agent_opts_v1 の chipsOpen) ので、
+  ///   一度畳むと次からも出ない。 実際、 利用者の控えは chipsOpen:false
+  ///   だった。 繰り返しの中の一覧は畳みに関わらず出るが、 手順が空の時は
+  ///   繰り返し自体が無いので、 足す口がどこにも無くなる。
+  ///   畳み具合に関わらず押せる口を用意する。
+  ///   中身はボタン一覧と同じ種類・同じ既定 (_addStep) を使い回す。
+  Future<void> _showAddStepMenu(
+      MindMapProvider provider, List<WebAutoStep> into) async {
+    // 押した所の近くに出す (= この画面の決まり)。
+    await _showNearDialog<void>(
+      maxWidth: 380,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF2A2A3E),
+        titlePadding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
+        contentPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+        title: Text(provider.t('auto.addStep'),
+            style: const TextStyle(color: Colors.white, fontSize: 15)),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text(provider.t('auto.addStepHint'),
+                style: const TextStyle(
+                    color: Colors.white54, fontSize: 11, height: 1.35)),
+          ),
+          const SizedBox(height: 10),
+          // ★ 種類が多いので巻物にする。 高さは決め打ち 230px。
+          //   この窓は Positioned (幅だけ指定) に出るので、 縦は画面の
+          //   高さまで取れてしまう。 取れるだけ伸ばすと押した所から遠くまで
+          //   被さるので、 一覧の高さだけ決めて中で送る。
+          SizedBox(
+            height: 230,
+            child: SingleChildScrollView(
+              child: Wrap(spacing: 6, runSpacing: 6, children: [
+                for (final k in _addMenuKinds)
+                  ActionChip(
+                    avatar:
+                        Icon(_kindIcon(k), size: 14, color: Colors.white70),
+                    label: Text(_kindLabel(provider, k),
+                        style: const TextStyle(
+                            color: Colors.white, fontSize: 10.5)),
+                    backgroundColor: const Color(0xFF2A2A44),
+                    side: BorderSide.none,
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () {
+                      _addStep(into, k);
+                      Navigator.pop(dctx);
+                    },
+                  ),
+              ]),
+            ),
+          ),
+        ]),
+      ),
+    );
   }
 
   // ─── フローの複数選択 (= ユーザー要望: Ctrl / Shift でまとめて消す) ───
@@ -6688,10 +6818,37 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
         //   (Expanded だと決めた高さが無視されるため)。
         final fixedSteps = tight || _stepsH != null;
         final steps = _steps.isEmpty
+            // ★ 空っぽの時は、 案内だけでなく足す口もここに置く
+            //   (= ユーザー要望「要素が手動では追加できないようになって
+            //   いるからできるようにして」)。 上のボタン一覧は畳めるうえ
+            //   畳んだ事を控えるので、 畳んだ人には案内が指す「上のボタン」
+            //   自体が見えていなかった。
             ? Center(
-                child: Text(provider.t('auto.empty'),
-                    style: const TextStyle(
-                        color: Colors.white24, fontSize: 11)),
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Text(provider.t('auto.empty'),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                          color: Colors.white24, fontSize: 11)),
+                  const SizedBox(height: 10),
+                  // 窓を押した所の近くに出すため、 位置を控える
+                  // (ヘッダーの帯の外なので、 ここでも自分で拾う)。
+                  Listener(
+                    onPointerDown: (e) => _lastPointerPos = e.position,
+                    child: OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: const Color(0xFF80CBC4),
+                        side: const BorderSide(color: Color(0xFF80CBC4)),
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        minimumSize: const Size(0, 30),
+                      ),
+                      icon: const Icon(Icons.add_rounded, size: 16),
+                      label: Text(provider.t('auto.addStep'),
+                          style: const TextStyle(fontSize: 11.5)),
+                      onPressed: () =>
+                          unawaited(_showAddStepMenu(provider, _steps)),
+                    ),
+                  ),
+                ]),
               )
             : ListView.builder(
                 padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -6784,6 +6941,29 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
                         style: const TextStyle(
                             fontSize: 11, fontWeight: FontWeight.w700)),
                     onPressed: toggleRecording,
+                  ),
+                ),
+              // ── 手で手順を足す (= ユーザー要望「要素が手動では追加
+              //    できないようになっているからできるようにして」) ──
+              //    ★ 足す口は下のボタン一覧に元からあるが、 見出しを畳むと
+              //      丸ごと消え、 畳んだ事を控えるので一度畳むと戻らない。
+              //      記録 (赤) の隣に、 畳み具合に関わらず使える口を置く。
+              if (!_running && !_recording)
+                Padding(
+                  padding: const EdgeInsets.only(right: 4),
+                  child: OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFF80CBC4),
+                      side: const BorderSide(color: Color(0xFF80CBC4)),
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                      minimumSize: const Size(0, 28),
+                    ),
+                    icon: const Icon(Icons.add_rounded, size: 15),
+                    label: Text(provider.t('auto.addStep'),
+                        style: const TextStyle(
+                            fontSize: 11, fontWeight: FontWeight.w700)),
+                    onPressed: () =>
+                        unawaited(_showAddStepMenu(provider, _steps)),
                   ),
                 ),
               if (_recording) ...[

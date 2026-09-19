@@ -154,7 +154,8 @@ flowchart TD
 | `update_node` | title / memo / 位置の更新 |
 | `delete_node` | ノードと接続線を削除 |
 | `connect_nodes` | 接続。**バッチ形推奨** `connections: [{fromId, toId, label?}]` |
-| `add_image_node` | 画像ノード。`imageBase64`+`fileName` か `imagePath` |
+| `add_image_node` | 画像ノード。`imageBase64`+`fileName` か `imagePath`。画像を渡さず `prompt` だけ書くと AI が描いて置く (= `generate_image`)。`pageId` 省略 = 今開いているページ |
+| `generate_image` | **AI に絵を描かせてページの上に置く**。`prompt` / `pageId`(省略 = 今開いているページ) / `title`。「〜の絵を描いて」「画像を生成して」はこれ (**背景ではない**)。種類に応じて 画像ノード / タイル / 紙の上の画像 / 本文末尾の `![](…)` / タイムラインの画像 として置かれ、どれで置いたかが `placedOn` で返る。絵 1 枚分のクレジットを消費 |
 | `add_table_node` | 表ノード。`rows` は 2 次元配列、先頭行が見出し |
 
 ### 背景
@@ -422,7 +423,9 @@ flowchart TD
 - 最後の説明文の前に `read_page` で実際の中身を確認し、本当に作られた物だけを説明する
 - 作ったノードは必ず `connect_nodes` で親につなぐ (つながっていないノードは「根」扱いでバラバラに並ぶ)
 - 比較・一覧・数値は `add_table_node` で表にする
-- 背景の指示は `generate_page_background` を既定にする
+- 「絵を描いて」「画像を生成して」は `generate_image` (**背景ではない**)
+  (`pageId` を省けば今開いているページ。絵のために新しいページを作らない)
+- 「背景」「壁紙」と言われた時だけ `generate_page_background` を既定にする
   (`pageId` を省けば今開いているページ。断られたら利用者に尋ねる)
 - 機能を開く指示は `run_app_command`
 

@@ -279,6 +279,30 @@ class AgentTerminalState extends State<AgentTerminal> {
     if (!identical(old.session, widget.session)) {
       old.session.removeListener(_onChanged);
       widget.session.addListener(_onChanged);
+      // ★ タブを切り替えた時 (= ユーザー要望: 新規タブ) に、 前のタブへ
+      //   「先出し」 していた文字を持ち越さない。 持ち越すと、 次に打った
+      //   文字の「消す分」 が前のタブの長さだけずれて、 新しいタブの行が
+      //   壊れる。 開いていた欄 (履歴 / 順番待ち) も畳む。
+      //   ★ ここでは setState を呼ばない (この後どのみち組み直される)。
+      _flushing = true;
+      _inputCtrl.clear();
+      _flushing = false;
+      _liveSent = '';
+      _composing = '';
+      // ★ 待たせてある打鍵も捨てる。 `_flushPendingKeys` は `_s`
+      //   (= いま差し替わった**新しい**セッション) へ送るので、 前のタブ
+      //   へ打った文字が新しいタブに紛れ込む (最大 400 ミリ秒ぶん)。
+      _pendingTimer?.cancel();
+      _pendingTimer = null;
+      _pendingKeys.clear();
+      _openPanelCmd = null;
+      _histOpen = false;
+      _queueOpen = false;
+      _queueCtrl.clear();
+      _focusTried = false;
+      // ★ 前のタブで外へ出ていた掛け金は下ろす。 下ろさないと
+      //   `_grabFocusSoon` が素通りして、 選んだタブに打ち込めない。
+      _userLeft = false;
       _grabFocusSoon();
     }
   }

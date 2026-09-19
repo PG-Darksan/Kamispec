@@ -14939,7 +14939,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Рабочий стол {n}',
     },
     'vdesk.current': {
-      'ja': '(今ここ)',
+      'ja': '(現在)',
       'en': '(current)',
       'zh': '(当前)',
       'ko': '(현재)',
@@ -15102,6 +15102,30 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Nesta área de trabalho',
       'ru': 'На этом рабочем столе',
     },
+    // ★ = ユーザー要望「何の画面か分かりにくいから窓のプレビュー画面を
+    //   表示して欲しい」。 絵が撮れなかった行に出す覚え書き。
+    'vdesk.minimized': {
+      'ja': '最小化中 (中身は写せません)',
+      'en': 'Minimised (no preview)',
+      'zh': '已最小化 (无法预览)',
+      'ko': '최소화됨 (미리 보기 없음)',
+      'es': 'Minimizada (sin vista previa)',
+      'fr': 'Réduite (pas d’aperçu)',
+      'de': 'Minimiert (keine Vorschau)',
+      'pt': 'Minimizada (sem prévia)',
+      'ru': 'Свёрнуто (без предпросмотра)',
+    },
+    'vdesk.noPreview': {
+      'ja': 'この窓の中身は写せませんでした',
+      'en': 'No preview available for this window',
+      'zh': '无法获取该窗口的预览',
+      'ko': '이 창은 미리 보기를 가져올 수 없습니다',
+      'es': 'No hay vista previa de esta ventana',
+      'fr': 'Aucun aperçu disponible pour cette fenêtre',
+      'de': 'Für dieses Fenster ist keine Vorschau verfügbar',
+      'pt': 'Sem prévia disponível para esta janela',
+      'ru': 'Предпросмотр этого окна недоступен',
+    },
     'vdesk.taskView': {
       'ja': 'タスクビュー (Win+Tab)',
       'en': 'Task view (Win+Tab)',
@@ -15112,6 +15136,193 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Taskansicht (Win+Tab)',
       'pt': 'Visão de tarefas (Win+Tab)',
       'ru': 'Представление задач (Win+Tab)',
+    },
+    // ★ = ユーザー要望「現在いないデスクトップから別のデスクトップや
+    //   その窓を削除できるようにして欲しい」。
+    'vdesk.removeDesktop': {
+      'ja': 'デスクトップを閉じる',
+      'en': 'Close desktop',
+      'zh': '关闭桌面',
+      'ko': '데스크톱 닫기',
+      'es': 'Cerrar escritorio',
+      'fr': 'Fermer le bureau',
+      'de': 'Desktop schließen',
+      'pt': 'Fechar área de trabalho',
+      'ru': 'Закрыть рабочий стол',
+    },
+    'vdesk.removeTitle': {
+      'ja': '{n} を閉じますか',
+      'en': 'Close {n}?',
+      'zh': '要关闭 {n} 吗？',
+      'ko': '{n} 을(를) 닫을까요?',
+      'es': '¿Cerrar {n}?',
+      'fr': 'Fermer {n} ?',
+      'de': '{n} schließen?',
+      'pt': 'Fechar {n}?',
+      'ru': 'Закрыть {n}?',
+    },
+    'vdesk.removing': {
+      'ja': 'デスクトップを閉じています…',
+      'en': 'Closing the desktop…',
+      'zh': '正在关闭桌面…',
+      'ko': '데스크톱을 닫는 중…',
+      'es': 'Cerrando el escritorio…',
+      'fr': 'Fermeture du bureau…',
+      'de': 'Desktop wird geschlossen…',
+      'pt': 'Fechando a área de trabalho…',
+      'ru': 'Закрытие рабочего стола…',
+    },
+    'vdesk.removed': {
+      'ja': '{n} を閉じました。',
+      'en': 'Closed {n}.',
+      'zh': '已关闭 {n}。',
+      'ko': '{n} 을(를) 닫았습니다.',
+      'es': 'Se cerró {n}.',
+      'fr': '{n} a été fermé.',
+      'de': '{n} wurde geschlossen.',
+      'pt': '{n} foi fechada.',
+      'ru': '{n} закрыт.',
+    },
+    'vdesk.removeFailed': {
+      'ja': 'デスクトップを閉じられませんでした。',
+      'en': 'Could not close the desktop.',
+      'zh': '无法关闭桌面。',
+      'ko': '데스크톱을 닫지 못했습니다.',
+      'es': 'No se pudo cerrar el escritorio.',
+      'fr': 'Impossible de fermer le bureau.',
+      'de': 'Der Desktop konnte nicht geschlossen werden.',
+      'pt': 'Não foi possível fechar a área de trabalho.',
+      'ru': 'Не удалось закрыть рабочий стол.',
+    },
+    // ★ 移れていないのに閉じると別のデスクトップを閉じてしまうので、
+    //   移れなかった時は何もせずにこれを出す。
+    'vdesk.removeSwitchFailed': {
+      'ja': 'そのデスクトップへ移れなかったので、 何も閉じていません。',
+      'en': 'Could not switch to that desktop, so nothing was closed.',
+      'zh': '无法切换到该桌面，因此未关闭任何内容。',
+      'ko': '해당 데스크톱으로 이동하지 못해 아무것도 닫지 않았습니다.',
+      'es': 'No se pudo cambiar a ese escritorio, así que no se cerró nada.',
+      'fr': "Impossible de basculer vers ce bureau ; rien n'a été fermé.",
+      'de': 'Zu diesem Desktop konnte nicht gewechselt werden, daher wurde nichts geschlossen.',
+      'pt': 'Não foi possível alternar para essa área de trabalho, então nada foi fechado.',
+      'ru': 'Не удалось перейти на этот рабочий стол, поэтому ничего не закрыто.',
+    },
+    'vdesk.removeLast': {
+      'ja': '最後の 1 枚は閉じられません。',
+      'en': 'The last desktop cannot be closed.',
+      'zh': '无法关闭最后一个桌面。',
+      'ko': '마지막 데스크톱은 닫을 수 없습니다.',
+      'es': 'No se puede cerrar el último escritorio.',
+      'fr': 'Le dernier bureau ne peut pas être fermé.',
+      'de': 'Der letzte Desktop kann nicht geschlossen werden.',
+      'pt': 'A última área de trabalho não pode ser fechada.',
+      'ru': 'Последний рабочий стол закрыть нельзя.',
+    },
+    'vdesk.removeHint': {
+      'ja': '押すとそこへ移ります。 × でそのデスクトップを閉じます (今いない所も閉じられます)。',
+      'en': 'Tap to switch there. Use × to close that desktop — including one you are not on.',
+      'zh': '点按即可切换过去。用 × 关闭该桌面（不在的桌面也可以）。',
+      'ko': '누르면 그곳으로 이동합니다. × 로 그 데스크톱을 닫습니다 (지금 있지 않은 곳도 가능).',
+      'es': 'Pulsa para cambiar allí. Usa × para cerrar ese escritorio, incluso uno en el que no estás.',
+      'fr': 'Appuyez pour y basculer. Utilisez × pour fermer ce bureau, même celui où vous n’êtes pas.',
+      'de': 'Tippen, um dorthin zu wechseln. Mit × diesen Desktop schließen — auch einen, auf dem Sie nicht sind.',
+      'pt': 'Toque para alternar para lá. Use × para fechar essa área de trabalho, mesmo uma em que você não está.',
+      'ru': 'Нажмите, чтобы перейти туда. Кнопка × закрывает этот рабочий стол — даже тот, на котором вы не находитесь.',
+    },
+    // ★ 窓を閉じるのは WM_CLOSE なので、 どのデスクトップに居ても効く
+    //   (移動と違って Windows に断られない)。
+    'vdesk.closeWindow': {
+      'ja': 'この窓を閉じる',
+      'en': 'Close this window',
+      'zh': '关闭此窗口',
+      'ko': '이 창 닫기',
+      'es': 'Cerrar esta ventana',
+      'fr': 'Fermer cette fenêtre',
+      'de': 'Dieses Fenster schließen',
+      'pt': 'Fechar esta janela',
+      'ru': 'Закрыть это окно',
+    },
+    'vdesk.windowClosed': {
+      'ja': '「{name}」 を閉じました。',
+      'en': 'Closed “{name}”.',
+      'zh': '已关闭「{name}」。',
+      'ko': '「{name}」 을(를) 닫았습니다.',
+      'es': 'Se cerró «{name}».',
+      'fr': '« {name} » a été fermé.',
+      'de': '„{name}“ wurde geschlossen.',
+      'pt': '“{name}” foi fechada.',
+      'ru': '«{name}» закрыто.',
+    },
+    // ★ 閉じられない理由は 2 つある。 (1) 相手が保存を尋ねている。
+    //   (2) 相手が管理者として動いている (= こちらより上の権限)。
+    //   Windows は下から上へ WM_CLOSE を送らせない (UIPI) ので、
+    //   その時は何も起きない。 どちらか分からないので両方を伝える。
+    'vdesk.windowCloseRefused': {
+      'ja': 'その窓はまだ閉じていません。 保存を尋ねる窓が出ていないか、 相手が管理者として動いていないか確かめてください (管理者の窓には Windows が閉じる合図を通しません)。',
+      'en': 'That window is still open. Check whether it is asking you to save, or whether it is running as administrator - Windows will not deliver the close request to an elevated window.',
+      'zh': '该窗口仍未关闭。请确认它是否正在询问是否保存，或是否以管理员身份运行——Windows 不会把关闭请求传给提升权限的窗口。',
+      'ko': '그 창은 아직 닫히지 않았습니다. 저장 여부를 묻고 있지 않은지, 또는 관리자 권한으로 실행 중이지 않은지 확인해 주세요. Windows 는 관리자 권한 창에 닫기 신호를 전달하지 않습니다.',
+      'es': 'Esa ventana sigue abierta. Comprueba si te esta preguntando si quieres guardar, o si se ejecuta como administrador: Windows no entrega la peticion de cierre a una ventana con permisos elevados.',
+      'fr': "Cette fenetre est toujours ouverte. Verifiez si elle vous demande d'enregistrer, ou si elle s'execute en tant qu'administrateur : Windows ne transmet pas la demande de fermeture a une fenetre elevee.",
+      'de': 'Dieses Fenster ist noch offen. Pruefen Sie, ob es nach dem Speichern fragt oder als Administrator laeuft - an ein erhoehtes Fenster liefert Windows die Schliessen-Anforderung nicht aus.',
+      'pt': 'Essa janela ainda esta aberta. Verifique se ela esta perguntando se deseja salvar, ou se esta sendo executada como administrador - o Windows nao entrega o pedido de fechamento a uma janela elevada.',
+      'ru': 'Это окно всё ещё открыто. Проверьте, не спрашивает ли оно о сохранении и не запущено ли оно от имени администратора - Windows не доставляет запрос на закрытие окну с повышенными правами.',
+    },
+    'vdesk.closingWindow': {
+      'ja': '「{name}」 を閉じています…',
+      'en': 'Closing "{name}"...',
+      'zh': '正在关闭「{name}」…',
+      'ko': '「{name}」 을(를) 닫는 중…',
+      'es': 'Cerrando "{name}"...',
+      'fr': 'Fermeture de "{name}"...',
+      'de': '"{name}" wird geschlossen...',
+      'pt': 'Fechando "{name}"...',
+      'ru': 'Закрытие "{name}"...',
+    },
+    // ★ 作る前にやめた時。 行き先の GUID が読めないまま Ctrl+Win+D を
+    //   送ると、 この窓を連れて行けずに何も無い画面へ置き去りにする。
+    'vdesk.createSkipped': {
+      'ja': '今どのデスクトップに居るか読めなかったので、 作るのをやめました。 作ってもこのアプリを連れて行けず、 何も無い画面になってしまいます。 Win+Tab からなら作れます。',
+      'en': 'Could not tell which desktop you are on, so nothing was created - creating one would have left you on an empty desktop without this app. You can still create one from Win+Tab.',
+      'zh': '无法判断你当前在哪个桌面，因此没有新建——否则无法把本应用带过去，你会停在空白桌面上。你仍可以用 Win+Tab 新建。',
+      'ko': '지금 어느 데스크톱에 있는지 읽지 못해 만들지 않았습니다. 만들어도 이 앱을 데려갈 수 없어 빈 화면에 남게 됩니다. Win+Tab 에서는 만들 수 있습니다.',
+      'es': 'No se pudo saber en qué escritorio estás, así que no se creó ninguno: al crearlo, esta aplicación no habría podido acompañarte y te habrías quedado en un escritorio vacío. Puedes crearlo desde Win+Tab.',
+      'fr': "Impossible de savoir sur quel bureau vous êtes, donc aucun n'a été créé : l'application n'aurait pas pu vous suivre et vous seriez resté sur un bureau vide. Vous pouvez en créer un via Win+Tab.",
+      'de': 'Es war nicht erkennbar, auf welchem Desktop Sie sind, daher wurde keiner erstellt - die App hätte nicht mitkommen können und Sie wären auf einem leeren Desktop gelandet. Über Win+Tab geht es weiterhin.',
+      'pt': 'Não foi possível saber em qual área de trabalho você está, então nada foi criado: o aplicativo não poderia acompanhar você e você ficaria numa área vazia. Você pode criar uma pelo Win+Tab.',
+      'ru': 'Не удалось определить, на каком рабочем столе вы находитесь, поэтому новый не создан: приложение не смогло бы перейти с вами, и вы остались бы на пустом столе. Создать его можно через Win+Tab.',
+    },
+    // ★ = ユーザー要望「windows初心者だとデスクトップ変えた時の戻り方が
+    //   分からないだろうから、 他のデスクトップを作成したらこのアプリが
+    //   開いた状態にして欲しい」。 連れて来た事と、 戻り方 (「移る」 では
+    //   なく「送る」) をその場で伝える。
+    //
+    //   ★ 文中の「このアプリ」 「送る」 「送った先へ一緒に移動する」 は
+    //     画面に出ている札そのもの (vdesk.thisApp / vdesk.send /
+    //     vdesk.followSwitch)。 訳を変える時は札の方と必ずそろえる。
+    'vdesk.createdWithApp': {
+      'ja': '新しいデスクトップを作って、 このアプリも一緒に連れて来ました。 元のデスクトップへ戻るときは、 下の「このアプリ」 の「送る」 から前のデスクトップを選んでください (「送った先へ一緒に移動する」 に印が付いていれば、 このアプリも一緒に戻ります)。',
+      'en': 'Created a new desktop and brought this app with you. To go back, use "Send" under "This app" below and choose the desktop you came from - with "Follow the window to that desktop" ticked, this app returns with you.',
+      'zh': '已新建桌面，并把本应用一起带了过来。要返回时，请在下方「本应用」的「发送」中选择原来的桌面（勾选「一起切换到目标桌面」后，本应用会和你一起回去）。',
+      'ko': '새 데스크톱을 만들고 이 앱도 함께 옮겼습니다. 원래 데스크톱으로 돌아가려면 아래 「이 앱」 의 「보내기」 에서 이전 데스크톱을 선택하세요 (「보낸 데스크톱으로 함께 이동」 에 표시가 있으면 이 앱도 함께 돌아갑니다).',
+      'es': 'Se creó un escritorio nuevo y esta aplicación vino contigo. Para volver, usa «Enviar» en «Esta aplicación» y elige el escritorio anterior (con «Seguir la ventana a ese escritorio» marcado, la aplicación vuelve contigo).',
+      'fr': "Un nouveau bureau a été créé et cette application vous a suivi. Pour revenir, utilisez « Envoyer » sous « Cette application » et choisissez le bureau d'origine (si « Suivre la fenêtre vers ce bureau » est coché, l'application revient avec vous).",
+      'de': 'Ein neuer Desktop wurde erstellt und diese App ist mitgekommen. Zum Zurückgehen unten unter „Diese App“ auf „Senden“ tippen und den vorherigen Desktop wählen (wenn „Dem Fenster auf diesen Desktop folgen“ angehakt ist, kommt die App mit).',
+      'pt': 'Uma nova área de trabalho foi criada e este aplicativo veio junto. Para voltar, use “Enviar” em “Este aplicativo” e escolha a área anterior (com “Acompanhar a janela para essa área de trabalho” marcado, o aplicativo volta com você).',
+      'ru': 'Создан новый рабочий стол, и это приложение перешло вместе с вами. Чтобы вернуться, нажмите «Отправить» в разделе «Это приложение» и выберите прежний рабочий стол (если отмечено «Перейти вслед за окном», приложение вернётся с вами).',
+    },
+    // ★ 行き先の GUID が読めなかった時・Windows に断られた時。 当てずっぽうで
+    //   送らず、 作るだけで止めた事と戻り方 (Windows の操作) を伝える。
+    'vdesk.createdOnly': {
+      'ja': '新しいデスクトップを作りました。 このアプリは前のデスクトップに残っています。 Ctrl+Win+← か Win+Tab で戻れます。',
+      'en': 'Created a new desktop. This app stayed on the previous one - press Ctrl+Win+Left or Win+Tab to go back.',
+      'zh': '已新建桌面。本应用仍留在之前的桌面——按 Ctrl+Win+← 或 Win+Tab 返回。',
+      'ko': '새 데스크톱을 만들었습니다. 이 앱은 이전 데스크톱에 남아 있습니다. Ctrl+Win+← 또는 Win+Tab 으로 돌아갈 수 있습니다.',
+      'es': 'Se creó un escritorio nuevo. Esta app se quedó en el anterior: pulsa Ctrl+Win+Izquierda o Win+Tab para volver.',
+      'fr': 'Un nouveau bureau a été créé. Cette application est restée sur le précédent : appuyez sur Ctrl+Win+Gauche ou Win+Tab pour revenir.',
+      'de': 'Ein neuer Desktop wurde erstellt. Diese App ist auf dem vorherigen geblieben - mit Strg+Win+Links oder Win+Tab zurück.',
+      'pt': 'Uma nova área de trabalho foi criada. Este app ficou na anterior: pressione Ctrl+Win+Esquerda ou Win+Tab para voltar.',
+      'ru': 'Создан новый рабочий стол. Приложение осталось на прежнем - нажмите Ctrl+Win+Влево или Win+Tab, чтобы вернуться.',
     },
     'hdr.silentCamera': {
       'ja': '無音カメラ',
@@ -23655,6 +23866,41 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Zurück zur API-KI',
       'pt': 'Voltar para a IA por API',
       'ru': 'Вернуться к API-ИИ',
+    },
+    // ★ 側欄の札に出す「今ほんとうに答えている相手」 (= ユーザー指摘:
+    //   「CLI は API ではない」)。 札は狭いので短い言い方にする。
+    'md.aiEngineApi': {
+      'ja': 'API',
+      'en': 'API',
+      'zh': 'API',
+      'ko': 'API',
+      'es': 'API',
+      'fr': 'API',
+      'de': 'API',
+      'pt': 'API',
+      'ru': 'API',
+    },
+    'md.aiEngineCli': {
+      'ja': 'PC内AI',
+      'en': 'PC AI',
+      'zh': 'PC 内 AI',
+      'ko': 'PC 내 AI',
+      'es': 'IA del PC',
+      'fr': 'IA du PC',
+      'de': 'PC-KI',
+      'pt': 'IA do PC',
+      'ru': 'ИИ на ПК',
+    },
+    'md.aiUseCli': {
+      'ja': 'PC内AI に戻す',
+      'en': 'Back to the PC AI',
+      'zh': '切回 PC 内 AI',
+      'ko': 'PC 내 AI 로 되돌리기',
+      'es': 'Volver a la IA del PC',
+      'fr': 'Revenir à l’IA du PC',
+      'de': 'Zurück zur PC-KI',
+      'pt': 'Voltar para a IA do PC',
+      'ru': 'Вернуться к ИИ на ПК',
     },
     'md.aiBrowserLabel': {
       'ja': 'ブラウザ',
@@ -40666,25 +40912,28 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'O auto clicker é apenas para Windows',
       'ru': 'Автокликер только для Windows',
     },
+    // ★ 相互案内。 行き先の名前は 'auto.title' と必ず揃える
+    //   (= ユーザー要望で「自動操作」→「クリック手順」に改名したため、
+    //    ここを直さないと存在しない名前を指してしまう)。
     'autoClicker.note': {
       'ja': '押すのはパソコンの画面そのものです。 この窓を閉じると必ず止まります。 '
-          '手順を組み合わせたい時 (文字を打つ・待つ・撮る…) は自動操作の方をどうぞ。',
+          '手順を組み合わせたい時 (文字を打つ・待つ・撮る…) は「クリック手順」 の方をどうぞ。',
       'en': 'This clicks the real desktop. Closing this window always stops it. '
-          'For longer sequences (typing, waiting, screenshots) use the automation panel.',
+          'For longer sequences (typing, waiting, screenshots) use Click steps.',
       'zh': '点击的是电脑桌面本身。关闭此窗口即会停止。'
-          '需要组合步骤 (输入、等待、截图) 时请用自动操作。',
+          '需要组合步骤 (输入、等待、截图) 时请用「点击步骤」。',
       'ko': '누르는 대상은 PC 화면 자체입니다. 이 창을 닫으면 반드시 멈춥니다. '
-          '여러 단계를 엮으려면 자동 조작을 사용하세요.',
+          '여러 단계를 엮으려면 「클릭 순서」를 사용하세요.',
       'es': 'Esto hace clic en el escritorio real. Al cerrar la ventana siempre se detiene. '
-          'Para secuencias más largas usa el panel de automatización.',
+          'Para secuencias más largas usa Pasos de clic.',
       'fr': 'Ceci clique sur le bureau réel. Fermer la fenêtre l\u2019arrête toujours. '
           'Pour des séquences plus longues, utilisez le panneau d\u2019automatisation.',
       'de': 'Das klickt auf den echten Desktop. Fenster schließen stoppt es immer. '
-          'Für längere Abläufe das Automatisierungs-Panel nutzen.',
+          'Für längere Abläufe Klick-Ablauf nutzen.',
       'pt': 'Isto clica na área de trabalho real. Fechar a janela sempre para. '
-          'Para sequências maiores use o painel de automação.',
+          'Para sequências maiores use Passos de clique.',
       'ru': 'Нажимает по реальному рабочему столу. Закрытие окна всегда останавливает. '
-          'Для длинных сценариев используйте панель автоматизации.',
+          'Для длинных сценариев используйте Сценарий кликов.',
     },
     // ★ ストア提出版で取り残された動画編集ページを開いた時の案内。
     'page.videoEditorUnavailable': {
@@ -46567,16 +46816,23 @@ class MindMapProvider extends ChangeNotifier {
     },
     // ── Web 自動操作 (= ユーザー要望: タップ/スワイプ/ホールドの自動化 +
     //    スクショとの組み合わせ) ──
+    // ★ = ユーザー要望「自動操作はカスタムボタンから呼び出す際は
+    //    オートクリッカーとかそういう名前にして欲しい」。
+    //    単純な連打は別ボタンの 'hdr.autoClicker' (=「オートクリッカー」)
+    //    が既に名乗っているので、 一覧に同じ名前が 2 つ並ばないよう
+    //    こちらは「手順を組む方」 と分かる名前にする。
+    //    下のバーのボタンは文字を FittedBox で縮めて 1 行に押し込むため
+    //    (_ToolBarBtn)、 長い名前は読めなくなる。 8 文字までに収める。
     'auto.title': {
-      'ja': '自動操作',
-      'en': 'Automation',
-      'zh': '自动操作',
-      'ko': '자동 조작',
-      'es': 'Automatización',
-      'fr': 'Automatisation',
-      'de': 'Automatisierung',
-      'pt': 'Automação',
-      'ru': 'Автоматизация',
+      'ja': 'クリック手順',
+      'en': 'Click steps',
+      'zh': '点击步骤',
+      'ko': '클릭 순서',
+      'es': 'Pasos de clic',
+      'fr': 'Séquence de clics',
+      'de': 'Klick-Ablauf',
+      'pt': 'Passos de clique',
+      'ru': 'Сценарий кликов',
     },
     'auto.hint': {
       'ja': '手順を並べて実行します。位置はページ上をクリックして指定します。',
@@ -46589,16 +46845,56 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Monte uma sequência e execute. Escolha posições clicando na página.',
       'ru': 'Составьте последовательность и запустите. Точки задаются кликом.',
     },
+    // ★ 「上のボタンで」 は行き止まりだった (= ユーザー報告「要素が手動では
+    //   追加できないようになっている」)。 指していたボタン一覧は畳めるうえ
+    //   畳んだ事を控えるので、 一度畳むと画面から消えたままだった。
+    //   案内の下に置いた 「手順を追加」 を指す文に改める。
     'auto.empty': {
-      'ja': '手順がありません。上のボタンで追加してください。',
-      'en': 'No steps yet. Add one with the buttons above.',
-      'zh': '暂无步骤。请用上方按钮添加。',
-      'ko': '단계가 없습니다. 위 버튼으로 추가하세요.',
-      'es': 'Sin pasos. Añade uno con los botones de arriba.',
-      'fr': 'Aucune étape. Ajoutez-en avec les boutons ci-dessus.',
-      'de': 'Noch keine Schritte. Oben hinzufügen.',
-      'pt': 'Nenhum passo. Adicione com os botões acima.',
-      'ru': 'Шагов нет. Добавьте кнопками выше.',
+      'ja': '手順がありません。 下の 「手順を追加」 から足せます。',
+      'en': 'No steps yet. Use Add step below.',
+      'zh': '暂无步骤。请用下方的「添加步骤」添加。',
+      'ko': '단계가 없습니다. 아래의 「단계 추가」로 추가하세요.',
+      'es': 'Sin pasos. Usa Añadir paso abajo.',
+      'fr': 'Aucune étape. Utilisez Ajouter une étape ci-dessous.',
+      'de': 'Noch keine Schritte. Unten über Schritt hinzufügen.',
+      'pt': 'Nenhum passo. Use Adicionar passo abaixo.',
+      'ru': 'Шагов нет. Добавьте кнопкой Добавить шаг ниже.',
+    },
+    // ── 手で手順を足す (= ユーザー要望「要素が手動では追加できないように
+    //    なっているからできるようにして」) ──
+    'auto.addStep': {
+      'ja': '手順を追加',
+      'en': 'Add step',
+      'zh': '添加步骤',
+      'ko': '단계 추가',
+      'es': 'Añadir paso',
+      'fr': 'Ajouter une étape',
+      'de': 'Schritt hinzufügen',
+      'pt': 'Adicionar passo',
+      'ru': 'Добавить шаг',
+    },
+    'auto.addStepHint': {
+      'ja': '種類を選ぶと、 一覧の最後に足されます。 位置や回数は足した後に直せます。',
+      'en': 'Pick a kind; it is appended to the list. Position and counts stay editable.',
+      'zh': '选择种类后会追加到列表末尾。位置和次数可在之后修改。',
+      'ko': '종류를 고르면 목록 끝에 추가됩니다. 위치와 횟수는 나중에 고칠 수 있습니다.',
+      'es': 'Elige un tipo; se añade al final. La posición y el número se editan después.',
+      'fr': "Choisissez un type : il s'ajoute à la fin. Position et nombre restent modifiables.",
+      'de': 'Art wählen; der Schritt wird angehängt. Position und Anzahl bleiben änderbar.',
+      'pt': 'Escolha um tipo; ele é acrescentado ao fim. Posição e contagem seguem editáveis.',
+      'ru': 'Выберите вид; шаг добавится в конец. Точку и число можно изменить потом.',
+    },
+    // 位置が未設定のまま走った手順は、 押さずに飛ばす (= 左上隅を押す事故よけ)。
+    'auto.noPosSkip': {
+      'ja': '{n} 手目は位置が決まっていないので飛ばしました',
+      'en': 'Step {n} skipped: no position set',
+      'zh': '第 {n} 步未设置位置，已跳过',
+      'ko': '{n}번째 단계는 위치가 없어 건너뛰었습니다',
+      'es': 'Paso {n} omitido: sin posición',
+      'fr': 'Étape {n} ignorée : position non définie',
+      'de': 'Schritt {n} übersprungen: keine Position',
+      'pt': 'Passo {n} ignorado: sem posição',
+      'ru': 'Шаг {n} пропущен: точка не задана',
     },
     'auto.kindTap': {
       'ja': 'タップ',
@@ -51378,15 +51674,15 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Какой ИИ открыть?',
     },
     'float.aiAssistant': {
-      'ja': 'AI アシスタント (アプリを操作)',
-      'en': 'AI assistant (operates the app)',
-      'zh': 'AI 助手（操作应用）',
-      'ko': 'AI 어시스턴트 (앱을 조작)',
-      'es': 'Asistente de IA (controla la app)',
-      'fr': 'Assistant IA (pilote l application)',
-      'de': 'KI-Assistent (bedient die App)',
-      'pt': 'Assistente de IA (opera o app)',
-      'ru': 'ИИ-ассистент (управляет приложением)',
+      'ja': 'AI (API) (アプリを操作)',
+      'en': 'AI (API) (operates the app)',
+      'zh': 'AI (API)（操作应用）',
+      'ko': 'AI (API) (앱을 조작)',
+      'es': 'IA (API) (controla la app)',
+      'fr': "IA (API) (pilote l'application)",
+      'de': 'KI (API) (bedient die App)',
+      'pt': 'IA (API) (opera o app)',
+      'ru': 'ИИ (API) (управляет приложением)',
     },
     'float.toAi': {
       'ja': 'フローティングAIに切り替え',
@@ -51552,16 +51848,19 @@ class MindMapProvider extends ChangeNotifier {
     //   (= ユーザー要望)。 どの AI を開くか / どう開くかは右クリックで選ぶ。
     // アプリを操作してくれる方の AI (= ブラウザで開く
     //   'hdr.openAiBrowser' とは別物)。
+    // ★ = ユーザー要望「AI アシスタントも AI (API) って表記に」。
+    //   PC 内 AI (Claude Code / Codex) と並べた時に、 どちらの経路で
+    //   答えているのかが名前だけで分かるようにする。
     'hdr.aiAssistant': {
-      'ja': 'AI アシスタント',
-      'en': 'AI assistant',
-      'zh': 'AI 助手',
-      'ko': 'AI 어시스턴트',
-      'es': 'Asistente de IA',
-      'fr': 'Assistant IA',
-      'de': 'KI-Assistent',
-      'pt': 'Assistente de IA',
-      'ru': 'AI-ассистент',
+      'ja': 'AI (API)',
+      'en': 'AI (API)',
+      'zh': 'AI (API)',
+      'ko': 'AI (API)',
+      'es': 'IA (API)',
+      'fr': 'IA (API)',
+      'de': 'KI (API)',
+      'pt': 'IA (API)',
+      'ru': 'ИИ (API)',
     },
     'hdr.openAiBrowser': {
       // ★ アプリの中の AI と紛らわしいので、 ブラウザで開く方だと明記する
@@ -51710,6 +52009,15 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Hintergrund für {name} zeichnen',
       'pt': 'Desenhando um fundo para {name}',
       'ru': 'Рисование фона для {name}',
+    },
+    'mcp.actDrawImage': {
+      'ja': '{name} に絵を描く', 'en': 'Drawing a picture on {name}',
+      'zh': '在 {name} 上绘制图片', 'ko': '{name} 에 그림 그리기',
+      'es': 'Dibujando una imagen en {name}',
+      'fr': 'Dessin d’une image sur {name}',
+      'de': 'Bild auf {name} zeichnen',
+      'pt': 'Desenhando uma imagem em {name}',
+      'ru': 'Рисование изображения на странице {name}',
     },
     'mcp.actSplitView': {
       'ja': '画面を分割', 'en': 'Splitting the view',
@@ -52224,18 +52532,98 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Открыть Node.js',
     },
     'cli.backToChat': {
-      'ja': 'AI アシスタントへ切り替え',
-      'en': 'Switch to the AI assistant',
-      'zh': '返回对话',
-      'ko': '대화로 돌아가기',
-      'es': 'Volver al chat',
-      'fr': 'Retour au chat',
-      'de': 'Zurueck zum Chat',
-      'pt': 'Voltar ao chat',
-      'ru': 'Назад к чату',
+      'ja': 'AI (API) へ切り替え',
+      'en': 'Switch to AI (API)',
+      'zh': '切换到 AI (API)',
+      'ko': 'AI (API) 로 전환',
+      'es': 'Cambiar a la IA (API)',
+      'fr': "Passer a l'IA (API)",
+      'de': 'Zur KI (API) wechseln',
+      'pt': 'Mudar para a IA (API)',
+      'ru': 'Переключиться на ИИ (API)',
     },
     // ── 端末から CLI の一覧へ戻る (= ユーザー要望: 「終了」 を押さないと
     //    選び直せなくて使いづらい)。 走っている CLI は止めない ──
+    // ── 「+」 から何を開くか選ぶ (= ユーザー要望: claudecode / codex /
+    //    AI アシスタントなど、 別の種類も選べるように) ──
+    'cli.newTabPick': {
+      'ja': '開く物を選ぶ (Claude Code / Codex / AI (API))',
+      'en': 'Choose what to open (Claude Code / Codex / AI (API))',
+      'zh': '选择要打开的内容（Claude Code / Codex / AI (API)）',
+      'ko': '무엇을 열지 고르기 (Claude Code / Codex / AI (API))',
+      'es': 'Elige que abrir (Claude Code / Codex / IA (API))',
+      'fr': 'Choisir quoi ouvrir (Claude Code / Codex / IA (API))',
+      'de': 'Waehlen, was geoeffnet wird (Claude Code / Codex / KI (API))',
+      'pt': 'Escolha o que abrir (Claude Code / Codex / IA (API))',
+      'ru': 'Выберите, что открыть (Claude Code / Codex / ИИ (API))',
+    },
+    // ★ AI アシスタントは端末ではないので、 帯では固定の札として出す。
+    'cli.newTabAssistant': {
+      'ja': 'AI (API)',
+      'en': 'AI (API)',
+      'zh': 'AI (API)',
+      'ko': 'AI (API)',
+      'es': 'IA (API)',
+      'fr': 'IA (API)',
+      'de': 'KI (API)',
+      'pt': 'IA (API)',
+      'ru': 'ИИ (API)',
+    },
+    // ── タブの結合 / 左右分割 (= ユーザー要望: タブを結合させて左右分割で
+    //    出せるように) ──
+    'cli.splitTip': {
+      'ja': '左右に分割。 いまのタブともう 1 枚を並べて出します。 タブを長押しで'
+          '掴んで別のタブの上に落としても結合できます。',
+      'en': 'Split left/right. Shows this tab and one more side by side. You '
+          'can also long-press a tab and drop it onto another to pair them.',
+      'zh': '左右分屏。将当前标签页与另一个并排显示。也可以长按标签页并把它放到'
+          '另一个标签页上来配对。',
+      'ko': '좌우 분할. 지금 탭과 다른 한 개를 나란히 보여줍니다. 탭을 길게 눌러 '
+          '다른 탭 위에 놓아도 짝지을 수 있습니다.',
+      'es': 'Dividir en izquierda y derecha. Muestra esta pestaña y otra una '
+          'al lado de la otra. También puedes mantener pulsada una pestaña y '
+          'soltarla sobre otra para emparejarlas.',
+      'fr': 'Partager en gauche/droite. Affiche cet onglet et un autre côte à '
+          'côte. Vous pouvez aussi appuyer longuement sur un onglet et le '
+          'déposer sur un autre pour les associer.',
+      'de': 'Links/rechts teilen. Zeigt diesen Tab und einen weiteren '
+          'nebeneinander. Sie koennen auch einen Tab lange druecken und auf '
+          'einen anderen ziehen, um beide zu paaren.',
+      'pt': 'Dividir em esquerda e direita. Mostra esta aba e outra lado a '
+          'lado. Você também pode pressionar uma aba e soltá-la sobre outra '
+          'para emparelhá-las.',
+      'ru': 'Разделить на левую и правую. Показывает эту вкладку и ещё одну '
+          'рядом. Можно также зажать вкладку и отпустить её на другой, чтобы '
+          'объединить их.',
+    },
+    'cli.unsplit': {
+      'ja': '分割をやめて 1 枚に戻す',
+      'en': 'Stop splitting and go back to one',
+      'zh': '取消分屏，返回单个视图',
+      'ko': '분할을 그만두고 한 개로 되돌리기',
+      'es': 'Dejar de dividir y volver a una sola',
+      'fr': 'Arrêter le partage et revenir à un seul',
+      'de': 'Teilung beenden und zu einem zurueck',
+      'pt': 'Parar de dividir e voltar para uma só',
+      'ru': 'Отменить разделение и вернуться к одной',
+    },
+    'cli.splitNeedTwo': {
+      'ja': '並べる相手がありません。 「新規タブ」 でもう 1 つ立ち上げてください。',
+      'en': 'There is no second tab to pair with. Start one more with '
+          '"New tab".',
+      'zh': '没有可以并排的另一个标签页。请用「新建标签页」再开一个。',
+      'ko': '나란히 놓을 상대가 없습니다. 「새 탭」 으로 하나 더 시작해 주세요.',
+      'es': 'No hay una segunda pestaña con la que emparejar. Abre otra con '
+          '«Pestaña nueva».',
+      'fr': 'Il n’y a pas de second onglet à associer. Ouvrez-en un autre avec '
+          '« Nouvel onglet ».',
+      'de': 'Es gibt keinen zweiten Tab zum Paaren. Starten Sie mit '
+          '"Neuer Tab" einen weiteren.',
+      'pt': 'Não há uma segunda aba para emparelhar. Abra outra com '
+          '"Nova aba".',
+      'ru': 'Нет второй вкладки для объединения. Откройте ещё одну через '
+          '«Новая вкладка».',
+    },
     'cli.backToList': {
       'ja': 'CLI の一覧へ戻る',
       'en': 'Back to the CLI list',
@@ -52365,15 +52753,15 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Какой ИИ использовать?',
     },
     'ai.modeApi': {
-      'ja': 'このアプリの AI (API)',
-      'en': "This app's AI (API)",
-      'zh': '本应用的 AI (API)',
-      'ko': '이 앱의 AI (API)',
-      'es': 'La IA de esta app (API)',
-      'fr': "L'IA de cette app (API)",
-      'de': 'Die KI dieser App (API)',
-      'pt': 'A IA deste app (API)',
-      'ru': 'ИИ этого приложения (API)',
+      'ja': 'AI (API)',
+      'en': 'AI (API)',
+      'zh': 'AI (API)',
+      'ko': 'AI (API)',
+      'es': 'IA (API)',
+      'fr': 'IA (API)',
+      'de': 'KI (API)',
+      'pt': 'IA (API)',
+      'ru': 'ИИ (API)',
     },
     'ai.modeApiBody': {
       'ja': 'アプリの中で直接ページや要素を作れます。 AI の残高を使います。',
@@ -53070,44 +53458,228 @@ class MindMapProvider extends ChangeNotifier {
     // ★ 誰で入っているかまで分かった時の文言 (= ユーザー要望)。
     //   分からない時は下の 'cli.ready' に戻る。
     'cli.readyAs': {
-      'ja':
-          'ログイン済みのようです ({n})',
-      'en':
-          'Looks signed in ({n})',
-      'zh':
-          '似乎已登录 ({n})',
-      'ko':
-          '로그인되어 있는 것 같습니다 ({n})',
-      'es':
-          'Parece que has iniciado sesión ({n})',
-      'fr':
-          'Semble connecté ({n})',
-      'de':
-          'Scheint angemeldet ({n})',
-      'pt':
-          'Parece conectado ({n})',
-      'ru':
-          'Похоже, вход выполнен ({n})',
+      'ja': 'ログイン済み ({n})',
+      'en': 'Signed in ({n})',
+      'zh': '已登录 ({n})',
+      'ko': '로그인됨 ({n})',
+      'es': 'Sesión iniciada ({n})',
+      'fr': 'Connecté ({n})',
+      'de': 'Angemeldet ({n})',
+      'pt': 'Conectado ({n})',
+      'ru': 'Вход выполнен ({n})',
     },
     'cli.ready': {
+      'ja': 'ログイン済み',
+      'en': 'Signed in',
+      'zh': '已登录',
+      'ko': '로그인됨',
+      'es': 'Sesión iniciada',
+      'fr': 'Connecté',
+      'de': 'Angemeldet',
+      'pt': 'Conectado',
+      'ru': 'Вход выполнен',
+    },
+    // ── ログインするアカウントを分ける (= ユーザー要望: codex や Claude Code を
+    //    複数垢でログインして切り替えられるように) ──
+    'cli.account': {
       'ja':
-          'ログイン済みのようです',
+          'アカウント',
       'en':
-          'Looks signed in',
+          'Account',
       'zh':
-          '似乎已登录',
+          '账号',
       'ko':
-          '로그인되어 있는 것 같습니다',
+          '계정',
       'es':
-          'Parece que has iniciado sesión',
+          'Cuenta',
       'fr':
-          'Semble connecté',
+          'Compte',
       'de':
-          'Scheint angemeldet',
+          'Konto',
       'pt':
-          'Parece conectado',
+          'Conta',
       'ru':
-          'Похоже, вход выполнен',
+          'Аккаунт',
+    },
+    'cli.accountDefault': {
+      'ja':
+          '既定',
+      'en':
+          'Default',
+      'zh':
+          '默认',
+      'ko':
+          '기본',
+      'es':
+          'Predeterminada',
+      'fr':
+          'Par défaut',
+      'de':
+          'Standard',
+      'pt':
+          'Padrão',
+      'ru':
+          'По умолчанию',
+    },
+    'cli.accountAdd': {
+      'ja':
+          'アカウントを追加',
+      'en':
+          'Add account',
+      'zh':
+          '添加账号',
+      'ko':
+          '계정 추가',
+      'es':
+          'Añadir cuenta',
+      'fr':
+          'Ajouter un compte',
+      'de':
+          'Konto hinzufügen',
+      'pt':
+          'Adicionar conta',
+      'ru':
+          'Добавить аккаунт',
+    },
+    'cli.accountAddHint': {
+      'ja':
+          'このアカウント専用の置き場を作ります。 開いた端末で CLI のログインを行ってください。 今のログインはそのまま残ります。',
+      'en':
+          'Creates a separate folder for this account. Sign in with the CLI in the terminal that opens. Your current sign-in stays as it is.',
+      'zh':
+          '会为该账号创建独立的目录。请在打开的终端中用 CLI 登录。当前的登录不会受影响。',
+      'ko':
+          '이 계정 전용 폴더를 만듭니다. 열리는 터미널에서 CLI 로 로그인해 주세요. 지금의 로그인은 그대로 남습니다.',
+      'es':
+          'Crea una carpeta propia para esta cuenta. Inicia sesión con la CLI en la terminal que se abre. Tu sesión actual no cambia.',
+      'fr':
+          'Crée un dossier dédié à ce compte. Connectez-vous avec la CLI dans le terminal qui s\'ouvre. Votre connexion actuelle est conservée.',
+      'de':
+          'Legt einen eigenen Ordner für dieses Konto an. Melden Sie sich im geöffneten Terminal mit der CLI an. Die aktuelle Anmeldung bleibt bestehen.',
+      'pt':
+          'Cria uma pasta própria para esta conta. Faça login com a CLI no terminal que abrir. O login atual continua como está.',
+      'ru':
+          'Создаёт отдельную папку для этого аккаунта. Войдите через CLI в открывшемся терминале. Текущий вход останется без изменений.',
+    },
+    'cli.accountName': {
+      'ja':
+          '名前',
+      'en':
+          'Name',
+      'zh':
+          '名称',
+      'ko':
+          '이름',
+      'es':
+          'Nombre',
+      'fr':
+          'Nom',
+      'de':
+          'Name',
+      'pt':
+          'Nome',
+      'ru':
+          'Имя',
+    },
+    'cli.accountRemove': {
+      'ja':
+          '一覧から外す',
+      'en':
+          'Remove from list',
+      'zh':
+          '从列表中移除',
+      'ko':
+          '목록에서 제거',
+      'es':
+          'Quitar de la lista',
+      'fr':
+          'Retirer de la liste',
+      'de':
+          'Aus der Liste entfernen',
+      'pt':
+          'Remover da lista',
+      'ru':
+          'Убрать из списка',
+    },
+    'cli.accountRemoveHint': {
+      'ja':
+          '一覧から外すだけで、 ログインの控えは下の場所に残ります。 完全に消すには、 そのフォルダーを手で削除してください。',
+      'en':
+          'Only removes it from the list — the sign-in files stay in the folder below. Delete that folder yourself to remove them for good.',
+      'zh':
+          '仅从列表中移除，登录信息仍保留在下面的目录中。若要彻底清除，请手动删除该文件夹。',
+      'ko':
+          '목록에서 제거할 뿐이며 로그인 정보는 아래 폴더에 그대로 남습니다. 완전히 지우려면 그 폴더를 직접 삭제해 주세요.',
+      'es':
+          'Solo se quita de la lista: los datos de sesión siguen en la carpeta de abajo. Bórrala tú mismo para eliminarlos del todo.',
+      'fr':
+          'Retire seulement de la liste : les données de connexion restent dans le dossier ci-dessous. Supprimez-le vous-même pour tout effacer.',
+      'de':
+          'Entfernt es nur aus der Liste – die Anmeldedaten bleiben im unten genannten Ordner. Löschen Sie diesen Ordner selbst, um sie ganz zu entfernen.',
+      'pt':
+          'Apenas sai da lista: os dados de login continuam na pasta abaixo. Apague essa pasta você mesmo para removê-los de vez.',
+      'ru':
+          'Удаляется только из списка — данные входа остаются в папке ниже. Удалите эту папку вручную, чтобы стереть их полностью.',
+    },
+    'cli.accountSwitched': {
+      'ja':
+          '{n} に切り替えました (次に開く時から)',
+      'en':
+          'Switched to {n} (from the next time you open it)',
+      'zh':
+          '已切换到 {n}（下次打开时生效）',
+      'ko':
+          '{n} 로 전환했습니다 (다음에 열 때부터)',
+      'es':
+          'Cambiado a {n} (a partir de la próxima vez que lo abras)',
+      'fr':
+          'Basculé sur {n} (à partir de la prochaine ouverture)',
+      'de':
+          'Zu {n} gewechselt (ab dem nächsten Öffnen)',
+      'pt':
+          'Alterado para {n} (a partir da próxima vez que abrir)',
+      'ru':
+          'Переключено на {n} (со следующего открытия)',
+    },
+    'cli.accountLoginHint': {
+      'ja':
+          'このアカウント専用の置き場です。 この端末でログインしてください。',
+      'en':
+          'This is a separate folder for this account. Sign in here, in this terminal.',
+      'zh':
+          '这是该账号的独立目录。请在此终端中登录。',
+      'ko':
+          '이 계정 전용 폴더입니다. 이 터미널에서 로그인해 주세요.',
+      'es':
+          'Esta es una carpeta aparte para esta cuenta. Inicia sesión aquí, en esta terminal.',
+      'fr':
+          'Ce dossier est propre à ce compte. Connectez-vous ici, dans ce terminal.',
+      'de':
+          'Dies ist ein eigener Ordner für dieses Konto. Melden Sie sich hier im Terminal an.',
+      'pt':
+          'Esta é uma pasta separada para esta conta. Faça login aqui, neste terminal.',
+      'ru':
+          'Это отдельная папка для этого аккаунта. Войдите здесь, в этом терминале.',
+    },
+    'cli.accountAddFailed': {
+      'ja':
+          '置き場を作れませんでした',
+      'en':
+          'Could not create the folder',
+      'zh':
+          '无法创建目录',
+      'ko':
+          '폴더를 만들지 못했습니다',
+      'es':
+          'No se pudo crear la carpeta',
+      'fr':
+          'Impossible de créer le dossier',
+      'de':
+          'Der Ordner konnte nicht erstellt werden',
+      'pt':
+          'Não foi possível criar a pasta',
+      'ru':
+          'Не удалось создать папку',
     },
     'cli.needLogin': {
       'ja':
@@ -53551,6 +54123,29 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Expandir',
       'ru': 'Развернуть',
     },
+    // ── 全画面 (= ユーザー要望: AI の画面を全画面で開けるように) ──
+    'mcp.fullscreen': {
+      'ja': '全画面にする',
+      'en': 'Full screen',
+      'zh': '全屏显示',
+      'ko': '전체 화면으로',
+      'es': 'Pantalla completa',
+      'fr': 'Plein écran',
+      'de': 'Vollbild',
+      'pt': 'Tela cheia',
+      'ru': 'Во весь экран',
+    },
+    'mcp.exitFullscreen': {
+      'ja': '全画面をやめる',
+      'en': 'Exit full screen',
+      'zh': '退出全屏',
+      'ko': '전체 화면 해제',
+      'es': 'Salir de pantalla completa',
+      'fr': 'Quitter le plein écran',
+      'de': 'Vollbild beenden',
+      'pt': 'Sair da tela cheia',
+      'ru': 'Выйти из полноэкранного режима',
+    },
     // ── フリーノートの入れ物の操作 (会話欄に出す一行) ──
     'mcp.actListTabs': {
       'ja': 'タブの一覧を見る', 'en': 'List the tabs',
@@ -53840,15 +54435,15 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Изменить и отправить',
     },
     'mcp.chatTitle': {
-      'ja': 'AI アシスタント',
-      'en': 'AI assistant',
-      'zh': 'AI 助手',
-      'ko': 'AI 어시스턴트',
-      'es': 'Asistente de IA',
-      'fr': 'Assistant IA',
-      'de': 'KI-Assistent',
-      'pt': 'Assistente de IA',
-      'ru': 'ИИ-ассистент',
+      'ja': 'AI (API)',
+      'en': 'AI (API)',
+      'zh': 'AI (API)',
+      'ko': 'AI (API)',
+      'es': 'IA (API)',
+      'fr': 'IA (API)',
+      'de': 'KI (API)',
+      'pt': 'IA (API)',
+      'ru': 'ИИ (API)',
     },
     // 説明は短く (= ユーザー要望: 長すぎるので軽い一文で良い)
     'mcp.chatHint': {
@@ -88385,6 +88980,8 @@ $cleanQ
     unawaited(_loadCodexSandbox());
     // npm を使わずに入れた CLI の置き場を思い出す。
     unawaited(AgentCli.loadManualInstalls());
+    // どのアカウントで CLI を使うか (= ユーザー要望: 複数垢の切り替え)。
+    unawaited(AgentCli.ensureAccountsLoaded());
     _loadJoinedGroups();
     _loadColorSettings();
     loadDisplayName();

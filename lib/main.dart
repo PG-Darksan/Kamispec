@@ -3642,7 +3642,10 @@ void main(List<String> args) async {
       final opts = WindowOptions(
         size: Size(fw ?? 900, fh ?? 720),
         center: px == null || py == null,
-        title: '自動操作',
+        // ★ = ユーザー要望の改名 (「自動操作」→「クリック手順」)。
+        //    ここは runApp より前で provider がまだ無く t() を使えないため
+        //    直書きのまま。 'auto.title' の値を変えたら必ずここも揃える。
+        title: 'クリック手順',
       );
       unawaited(windowManager.waitUntilReadyToShow(opts, () async {
         if (px != null && py != null) {

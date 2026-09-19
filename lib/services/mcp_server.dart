@@ -782,9 +782,13 @@ class McpServer {
         'picture is NOT a fixed background: it is placed on the CURRENT SHEET '
         'as a normal image element on the back-most layer, sized to the paper, '
         'so the user can later select, move, resize or delete it with the '
-        'select tool - that is '
-        'the '
-        'right tool when the user says "draw a picture on this free note". '
+        'select tool. '
+        // ★ 絵そのものを頼まれた時は generate_image を使う (= ユーザー要望:
+        //   場所を言わずに「〜の絵を描いて」 と頼んだら、 開いている
+        //   ページの上に置く)。 この道具は「背景」 の時だけ。
+        'EVEN ON A FREE NOTE, prefer generate_image when the user simply '
+        'says "draw me a picture" - use THIS tool only when they actually '
+        'said background / wallpaper / 背景 / 壁紙. '
         'This is the preferred way to change a background: '
         'describe the picture you want in "prompt" (English works best, be '
         'concrete about subject, colours and mood) and an image is generated '
@@ -798,8 +802,11 @@ class McpServer {
         '(free, via set_page_background) would do, then generate. '
         'Optionally set opacityPercent (0-100, default 70) and '
         'fit (cover/contain/tile, default cover). '
-        'SET "placeOnSheet": true WHEN THE USER ASKS YOU TO DRAW SOMETHING '
-        'ON AN OPEN FREE NOTE ("このノートに猫を描いて" / "draw a cat here"). '
+        'SET "placeOnSheet": true ONLY when the user asked for a BACKGROUND '
+        'on an open free note but wants it in front of what is already '
+        'drawn. For a plain "draw me a picture" ("このノートに猫を描いて" / '
+        '"draw a cat here") use generate_image instead - it places the '
+        'picture on the same sheet, and that is the tool for pictures. '
         'The picture is then placed on the sheet at a normal size IN FRONT '
         'of what is already drawn, instead of covering the whole paper from '
         'behind - which is what someone asking for a drawing expects. '
@@ -830,6 +837,51 @@ class McpServer {
           'placeOnSheet': {'type': 'boolean'},
         },
         // pageId は省ける (= 省いたら「今開いているページ」)。
+        ['prompt']),
+    // ★ 絵を描いて「ページの上」 に置く (= ユーザー要望:「〜の絵を描いて」
+    //   「画像を生成して」 と置き場所を言わずに頼んだら、 今開いている
+    //   ページに配置してほしい)。 これまでは絵を作れる道具が背景用の
+    //   generate_page_background しか無く、 add_image_node は画像そのものを
+    //   渡さないと必ず断られていた (文章のモデルは絵を作れない)。
+    _tool(
+        'generate_image',
+        'Draw a NEW picture with AI and PLACE IT ON A PAGE as a normal '
+        'element the user can move, resize or delete. '
+        'THIS IS THE TOOL FOR "draw me a picture of X" / "generate an '
+        'image" ("〜の絵を描いて" / "画像を生成して"). Do NOT use '
+        'generate_page_background for that: a background is the WALLPAPER '
+        'behind the page, which is not what someone asking for a picture '
+        'wants. Use generate_page_background only when the user actually '
+        'says background / wallpaper / 背景 / 壁紙. '
+        'WHICH PAGE: leave "pageId" out and the picture goes onto the page '
+        'the user is looking at RIGHT NOW (the one list_pages marks '
+        'isCurrent:true). That is the default whenever the user did not name '
+        'a destination - do NOT create a new page for the picture and do NOT '
+        'reuse a page you happened to make earlier in this conversation. '
+        'The picture is placed the way that page type holds pictures: an '
+        'image node on a mind map, a tile on a gallery (bookshelf), an image '
+        'element on the sheet of a free note / notepad (paint / document), an '
+        'image line appended to the body of a markdown page, and an image '
+        'clip on a video-editor timeline. The result says which in '
+        '"placedOn" - report the PAGE NAME, not the id. '
+        'Describe the picture in "prompt" (English works best: be concrete '
+        'about subject, colours and mood). Optional "title" names the '
+        'element. Do not pass x/y unless the user asked for a position. '
+        'It costs a flat ~0.047 USD of prepaid credit per picture when the '
+        'setting says to draw (fetching from the web is free), so draw ONE '
+        'picture per request unless the user asked for several. '
+        'ALWAYS tell the user where the picture came from: the result carries '
+        '"imageSource" (and "imageSourceUrl" when it was fetched from the '
+        'web). Never claim it was drawn if it was fetched, or the other way '
+        'round.',
+        {
+          'pageId': {'type': 'string'},
+          'prompt': {'type': 'string'},
+          'title': {'type': 'string'},
+          'x': {'type': 'number'},
+          'y': {'type': 'number'},
+        },
+        // ★ pageId は省ける (= 省いたら「今開いているページ」)。
         ['prompt']),
     _tool(
         'set_page_background',
@@ -915,17 +967,27 @@ class McpServer {
         'either way nothing is attached, so never bundle images into one '
         'call. The path is also checked before anything is created: a '
         'missing file, a non-image extension or a file that cannot be '
-        'decoded comes back as an error and no node is made.',
+        'decoded comes back as an error and no node is made. '
+        'NO PICTURE YET? Then pass "prompt" (an English description) instead '
+        'of imagePath / imageBase64: the picture is drawn with AI and placed '
+        'on the page, exactly like generate_image - which is the tool to '
+        'prefer when the user says "draw me a picture". '
+        'WHICH PAGE: leave "pageId" out and the node goes onto the page the '
+        'user is looking at right now.',
         {
           'pageId': {'type': 'string'},
           'imageBase64': {'type': 'string'},
           'fileName': {'type': 'string'},
           'imagePath': {'type': 'string'},
+          // ★ 絵がまだ無い時は、 ここに描く指示を書けば AI が描いて置く
+          //   (= ユーザー要望: 場所を言わずに「絵を描いて」 と頼まれた時)。
+          'prompt': {'type': 'string'},
           'title': {'type': 'string'},
           'x': {'type': 'number'},
           'y': {'type': 'number'},
         },
-        ['pageId']),
+        // ★ pageId は省ける (= 省いたら「今開いているページ」)。
+        const []),
     _tool(
         'add_table_node',
         'Add a table (grid) node to a page. Use this to present researched '
@@ -1840,6 +1902,102 @@ class McpServer {
     return pages.isEmpty ? '' : _provider.currentPage.id;
   }
 
+  /// AI に絵を 1 枚描かせて、 そのページ**の上**に置く。
+  ///
+  /// = ユーザー要望「『〜の絵を描いて』『画像を生成して』 と置き場所を
+  ///   言わずに頼んだら、 開いているページに配置してほしい」。
+  ///   呼ぶ側で [pageId] を _pageIdOrCurrent に通しておけば、 AI が場所を
+  ///   書き忘れても開いているページへ落ちる (道具の説明頼みにしない)。
+  ///
+  /// 置き方はページの種類で変える。 どれも「背景」 にはしない。
+  ///   normal / その他  … 画像ノード
+  ///   bookshelf        … ギャラリーのタイル
+  ///   paint / document … 紙の上の画像要素 (後から選んで動かせる)
+  ///   markdown         … 本文の末尾に ![…](file:///…) を足す
+  ///   videoEditor      … タイムラインの画像
+  Future<Map<String, dynamic>> _drawImageOnPage(
+    String pageId,
+    String prompt, {
+    String? title,
+    double? x,
+    double? y,
+  }) async {
+    final page = _provider.mcpPageById(pageId);
+    if (page == null) {
+      return _err('no page has the id "$pageId" - call list_pages.');
+    }
+    final type = page.pageType;
+    // 背景ではなく「絵」 なので薄く描かせない。 文字は入れさせない。
+    final full = '$prompt\n\n'
+        'A single clear subject on a plain background. '
+        'No text, no letters, no watermark, no logo.';
+    // 設定に従って AI が描くか Web から取る (出どころは lastImageSource)。
+    final bytes = await _provider.makeSlideImage(prompt: full, query: prompt);
+    // ★ = ユーザー要望「今開いているフォルダー外に新規ファイルや
+    //   フォルダーを作成しない」。 置き場は aiNewFileDir に任せる。
+    final dir = await _provider.aiNewFileDir('images');
+    final path = '${dir.path}${Platform.pathSeparator}'
+        'img_${DateTime.now().millisecondsSinceEpoch}.png';
+    await File(path).writeAsBytes(bytes, flush: true);
+    final src = _provider.lastImageSource;
+    final srcNote = src == null
+        ? ''
+        : ' The picture came from: ${src.label}'
+            '${src.url == null ? '' : ' (${src.url})'}.';
+    Map<String, dynamic> done(String placedOn,
+            [Map<String, Object?> extra = const <String, Object?>{}]) =>
+        _ok(<String, Object?>{
+          'pageId': page.id,
+          'pageName': page.name,
+          'imagePath': path,
+          'placedOn': placedOn,
+          if (src != null) 'imageSource': src.label,
+          if (src?.url != null) 'imageSourceUrl': src!.url,
+          'tellTheUser':
+              'Say WHICH PAGE you put the picture on, by name.$srcNote',
+          ...extra,
+        });
+    // 紙のページ (フリーノート / 便箋) は紙の上へ。
+    if (_provider.mcpPageIsPaintSheet(page.id)) {
+      final ok = await _provider.mcpPlacePaintImage(page.id, path);
+      return ok
+          ? done('free-note sheet')
+          : _err('could not place the picture on that free note');
+    }
+    if (type == 'bookshelf') {
+      final gid = _provider.mcpAddGalleryItem(page.id,
+          text: title ?? '', imagePath: path);
+      return gid == null
+          ? _err('could not add the picture to that gallery page')
+          : done('gallery tile', {'nodeId': gid});
+    }
+    if (type == 'markdown') {
+      // ★ マークダウンのページには要素 (ノード) が無いので、 本文の末尾へ
+      //   絵を足す。 プレビューは file:// で開いているので画像は出る。
+      final alt = (title ?? prompt).replaceAll('\n', ' ').replaceAll(']', ' ');
+      final ok = await _provider.mcpWriteMarkdown(page.id,
+          '![$alt](file:///${path.replaceAll('\\', '/')})',
+          append: true);
+      return ok
+          ? done('markdown body')
+          : _err('could not write the picture into that markdown page '
+              '(a web tab holds no body).');
+    }
+    if (type == 'videoEditor') {
+      final iid = await _provider.mcpAddVideoEditorItem(page.id,
+          kind: 'image', path: path);
+      return iid == null
+          ? _err('could not add the picture to that video editor page')
+          : done('video timeline', {'itemId': iid});
+    }
+    // マップ (normal) と、 種類の分からないページは画像ノードにする。
+    final nid = _provider.mcpAddImageNode(page.id,
+        filePath: path, title: title, x: x, y: y);
+    return nid == null
+        ? _err('page not found: ${page.id}')
+        : done('image node', {'nodeId': nid});
+  }
+
   /// 2 次元配列の引数を表に直す。
   static List<List<String>> _rowsOf(Object? v) {
     if (v is! List) return const [];
@@ -2552,6 +2710,31 @@ class McpServer {
               },
           });
         }
+      // ── 絵を描いて「開いているページの上」 に置く (= ユーザー要望:
+      //    「〜の絵を描いて」「画像を生成して」 と置き場所を言われずに
+      //    頼まれた時は、 今開いているページに配置する) ──
+      case 'generate_image':
+        {
+          final drawPrompt = (a['prompt'] as String? ?? '').trim();
+          if (drawPrompt.isEmpty) return _err('prompt is required');
+          // ★ pageId は省ける。 省かれたら**今開いているページ**。 ここで
+          //   決めてしまうので、 AI が場所を書き忘れても外さない。
+          final drawPageId = _pageIdOrCurrent(a['pageId']);
+          if (drawPageId.isEmpty) {
+            return _err('no page is open - make one with create_page first.');
+          }
+          try {
+            return await _drawImageOnPage(
+              drawPageId,
+              drawPrompt,
+              title: a['title'] as String?,
+              x: numOf('x'),
+              y: numOf('y'),
+            );
+          } catch (e) {
+            return _err('$e');
+          }
+        }
       case 'generate_page_background':
         {
           // ★ 指定が無ければ「今開いているページ」 (= ユーザー要望:
@@ -2853,8 +3036,30 @@ class McpServer {
             return _err('failed to save image: $e');
           }
         }
+        // ★ = ユーザー要望「『〜の絵を描いて』 と場所を言わずに頼んだら、
+        //   開いているページに配置してほしい」。 文章のモデルは絵そのものを
+        //   作れないので、 頼まれるとここへ prompt だけで来る。 これまでは
+        //   「imageBase64 か imagePath が要る」 と突き返すだけで、 何も
+        //   描かれずに終わっていた。 その場で描いて、 今開いているページへ
+        //   置く (generate_image と同じ道)。
         if (path == null || path.isEmpty) {
-          return _err('imageBase64 or imagePath is required');
+          final drawFrom = (a['prompt'] as String? ?? '').trim();
+          if (drawFrom.isNotEmpty) {
+            try {
+              return await _drawImageOnPage(
+                _pageIdOrCurrent(pageId),
+                drawFrom,
+                title: a['title'] as String?,
+                x: numOf('x'),
+                y: numOf('y'),
+              );
+            } catch (e) {
+              return _err('$e');
+            }
+          }
+          return _err('imageBase64 or imagePath is required - or pass '
+              '"prompt" to have the picture drawn with AI and placed on the '
+              'page the user is looking at (the same as generate_image).');
         }
         // ★ 双子の add_gallery_item と同じ物差しで断る (= BUG-01)。
         //   存在確認だけだと、 .txt や壊れた png でも添付ノードが出来て

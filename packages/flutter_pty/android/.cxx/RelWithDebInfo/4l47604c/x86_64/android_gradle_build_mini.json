@@ -1,0 +1,27 @@
+{
+  "buildFiles": [
+    "C:\\Users\\Study\\mindmap_app_out\\packages\\flutter_pty\\src\\CMakeLists.txt"
+  ],
+  "cleanCommandsComponents": [
+    [
+      "C:\\Users\\Study\\AppData\\Local\\Android\\Sdk\\cmake\\3.22.1\\bin\\ninja.exe",
+      "-C",
+      "C:\\Users\\Study\\mindmap_app_out\\packages\\flutter_pty\\android\\.cxx\\RelWithDebInfo\\4l47604c\\x86_64",
+      "clean"
+    ]
+  ],
+  "buildTargetsCommandComponents": [
+    "C:\\Users\\Study\\AppData\\Local\\Android\\Sdk\\cmake\\3.22.1\\bin\\ninja.exe",
+    "-C",
+    "C:\\Users\\Study\\mindmap_app_out\\packages\\flutter_pty\\android\\.cxx\\RelWithDebInfo\\4l47604c\\x86_64",
+    "{LIST_OF_TARGETS_TO_BUILD}"
+  ],
+  "libraries": {
+    "flutter_pty::@6890427a1f51a3e7e1df": {
+      "artifactName": "flutter_pty",
+      "abi": "x86_64",
+      "output": "C:\\Users\\Study\\mindmap_app_out\\build\\flutter_pty\\intermediates\\cxx\\RelWithDebInfo\\4l47604c\\obj\\x86_64\\libflutter_pty.so",
+      "runtimeFiles": []
+    }
+  }
+}

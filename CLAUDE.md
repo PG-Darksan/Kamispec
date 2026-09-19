@@ -419,3 +419,21 @@ Writes are HTTP `PATCH` with `updateMask.fieldPaths=...`; creates with a fixed i
 - **Client-side security only:** all Firestore access control (upload-restriction lock, sharing gates, coupon/inquiry rate limits) is enforced in Dart and is bypassable; production must replicate it in Firestore Security Rules (none are in-repo).
 - **Cost accounting is inconsistent across Gemini paths:** `askGemini` (`:22178`) uses `_pricing`/`calcCostUsd` (canonical); two other generateContent paths hardcode different per-token rates. `usdToJpy` uses a fixed 170 rate.
 - **env.json may contain real secrets in the working tree** despite being meant as git-ignored — verify `.gitignore` actually excludes it before any commit/push, and never commit it.
+
+## Token discipline (this repo is expensive to read)
+
+Cost is driven by **what you read**, not what you write: every grep result and file excerpt stays in context and is re-sent on every subsequent turn, so cost ≈ `bytes read × turns remaining`. A miss costs as much as a hit. With a 101.5k-line screen file, a 30.6k-line provider, and pervasive twin classes (mobile/Windows, fullscreen/split-pane), undisciplined exploration dominates the bill. Full rationale and phrasing examples: `デスクトップ/claude_token_notes/トークン節約の手引き.md`.
+
+**Searching**
+- Delegate broad sweeps ("where is X", "is there a second twin", "any leftover code") to an `Explore` subagent — the search debris burns in its context and only the conclusion returns. Don't delegate a single known location; the startup cost exceeds the read.
+- Use `-C 3` (3–5 lines, not 20): enough to judge a hit without opening the file. Use `head_limit`, `output_mode: files_with_matches`, and `Read` with `offset`/`limit` — never open either big file whole.
+- The navigation maps above plus memory already answer most "where is it" questions. Extra reading only earns its cost when it changes a **design decision** (a twin exists / this path bypasses the relay / that state lives in prefs, not page JSON). Otherwise prefer: make the call, edit, and ask if it misses.
+
+**Verifying**
+- Keep the type check — skipping it costs more in rework.
+- Skip re-reading edited regions to confirm the edit landed; a failed Edit errors out on its own.
+- On a failed check, read only the head of the output (`2>&1 | head -20`) — one Dart slip yields ~40 errors, and re-appending the full log each round is the waste.
+- Screenshots are ~1.5–2k tokens each and retakes accumulate; take them only when the user asks for visual confirmation.
+- Delegate "did all the twins get fixed?" sweeps to a subagent.
+
+**Session hygiene:** suggest `/clear` after a large investigation or verification pass, but not mid-implementation — while the context is still in use, re-sending beats re-reading.

@@ -1,0 +1,1 @@
+C:\Users\Study\mindmap_app_out\packages\flutter_pty\src\CMakeLists.txt

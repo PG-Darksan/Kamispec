@@ -186,6 +186,24 @@ class AgentCliFound {
   }
 }
 
+/// ログインの控えを分けて持つための「アカウント」 1 つ。
+///
+/// = ユーザー要望「codex や Claude Code は複数垢ログインできるようにして
+///   切り替えられるようにして欲しい」。
+///
+/// ★ アプリは合言葉に一切触らない。 どの CLI も「設定の置き場」 を環境変数で
+///   差し替えられるので、 アカウントごとに別のフォルダーを用意して、 起こす
+///   時にそこを指すだけ。 ログインは今までどおり CLI 自身がその中で行う。
+/// ★ [id] は道に使うので英数字だけ ('a1' 等、 アプリが振る)。 [name] は
+///   利用者が付ける札なので日本語でもよく、 道には一切使わない。
+/// ★ [id] が空の物は「既定」 = CLI 自身の置き場 (= 今あるログイン)。
+class AgentAccount {
+  const AgentAccount({required this.id, required this.name});
+
+  final String id;
+  final String name;
+}
+
 class AgentCli {
   /// この機能を出してよい環境か。
   ///
@@ -236,6 +254,9 @@ class AgentCli {
   }
 
   static Future<AgentCliFound> _find(AgentCliKind kind) async {
+    // ★ どのアカウントを見るかが先に決まっていないと、 控えを別の置き場から
+    //   読んでしまう (= 切り替えたのに前のアカウントの宛名が出る)。
+    await ensureAccountsLoaded();
     final spec = AgentCliSpec.of(kind);
     String? found;
     if (supported) {
@@ -427,19 +448,25 @@ class AgentCli {
   /// ★ あくまで目安。ファイルが在るだけで中身も期限も見ていないので、
   ///   これを根拠に「使えます」と断言しないこと。
   static Future<bool?> _loggedInHint(AgentCliKind kind) async {
-    final env = Platform.environment;
-    final home = env['USERPROFILE'] ?? env['HOME'] ?? '';
+    // ★ 今選んでいるアカウントの置き場を見る (= ユーザー要望: 複数垢)。
+    //   既定のアカウントの時は、 今までどおり利用者のホーム。
+    final home = accountBaseDir(kind);
     if (home.isEmpty) return null;
     final sep = Platform.pathSeparator;
     final candidates = switch (kind) {
       AgentCliKind.claude => [
+          // 置き場を差し替えた時は、 その直下に置かれる。
+          '$home$sep.credentials.json',
           '$home$sep.claude$sep.credentials.json',
           '$home$sep.claude${sep}credentials.json',
         ],
       AgentCliKind.codex => [
+          // CODEX_HOME を指した時は、 その直下が ~/.codex の代わり。
+          '$home${sep}auth.json',
           '$home$sep.codex${sep}auth.json',
         ],
       AgentCliKind.gemini => [
+          // GEMINI_CLI_HOME はホームそのものの代わりなので、 形は同じ。
           '$home$sep.gemini${sep}oauth_creds.json',
           '$home$sep.config${sep}gemini${sep}oauth_creds.json',
         ],
@@ -470,8 +497,8 @@ class AgentCli {
   /// ★ 合言葉 (トークン) には触れない。 取り出すのは宛名だけ。
   /// ★ 形が変わっていたら黙って null を返す (今までの文言に戻るだけ)。
   static Future<String?> _accountHint(AgentCliKind kind) async {
-    final env = Platform.environment;
-    final home = env['USERPROFILE'] ?? env['HOME'] ?? '';
+    // ★ 今選んでいるアカウントの置き場から読む (既定は利用者のホーム)。
+    final home = accountBaseDir(kind);
     if (home.isEmpty) return null;
     final sep = Platform.pathSeparator;
     try {
@@ -481,6 +508,10 @@ class AgentCli {
           // ★ この控えはページごとの履歴も抱えるので何 MB にもなる。
           //   まるごと jsonDecode すると描き直しが詰まるので、
           //   oauthAccount の周りだけを切り出して読む。
+          // ★ 置き場を差し替えた時は、 その直下に .claude.json が出来る。
+          //   (取り込んだ本体の中身で確認: 置き場を差し替えた時はその直下、
+          //    既定の時はホーム直下。 どちらもこの 1 本で当たるので、
+          //    別の候補は要らない。)
           final f = File('$home$sep.claude.json');
           if (!f.existsSync()) return null;
           if (await f.length() > 64 * 1024 * 1024) return null;
@@ -504,7 +535,9 @@ class AgentCli {
         case AgentCliKind.codex:
           // ~/.codex/auth.json の tokens.id_token (JWT) の真ん中に宛名がある。
           // 署名は見ない (本物かどうかはここでは要らない)。
-          final f = File('$home$sep.codex${sep}auth.json');
+          // CODEX_HOME を指した時は、 その直下が ~/.codex の代わりになる。
+          var f = File('$home${sep}auth.json');
+          if (!f.existsSync()) f = File('$home$sep.codex${sep}auth.json');
           if (!f.existsSync()) return null;
           final m = jsonDecode(await f.readAsString());
           if (m is! Map) return null;
@@ -1326,14 +1359,17 @@ class AgentCli {
           '[images] Read these image files first, then answer about them:\n'
           '$list';
     }
+    // ★ 使うアカウントの置き場をここで指す (= ユーザー要望: 複数垢)。
+    //   既定のアカウントなら空が返るので、 今までどおりの動き。
+    final accountEnv = accountEnvironment(pick.spec.kind);
     try {
       final proc = await Process.start(
         exe,
         args,
         workingDirectory: workingDir,
-        environment: extraEnvironment.isEmpty
+        environment: (extraEnvironment.isEmpty && accountEnv.isEmpty)
             ? null
-            : {...Platform.environment, ...extraEnvironment},
+            : {...Platform.environment, ...accountEnv, ...extraEnvironment},
         // 薄皮の中身を割り出せなかった時だけ、 今までどおりシェル経由。
         // 引数は固定文字だけなので、 これで危ない物が混ざることはない。
         runInShell: pick.needsShell,
@@ -1781,4 +1817,222 @@ class AgentCli {
   /// ブラウザを使わないログインを出せる相手か。
   static bool supportsDeviceLogin(AgentCliKind kind) =>
       deviceLoginArgs(kind).isNotEmpty;
+
+  // ─── 複数のアカウント (= ユーザー要望: 複数垢ログインして切り替えたい) ──
+  //
+  //   **アプリは合言葉を預からない**。 どの CLI も設定の置き場を環境変数で
+  //   差し替えられるので、 アカウントごとに別のフォルダーを用意して、
+  //   起こす時にそこを指すだけ。 ログインは CLI 自身がその中で行う。
+  //
+  //     ・Claude Code … CLAUDE_CONFIG_DIR
+  //       (実測: 空のフォルダーを指して `claude auth status` を聞くと
+  //        loggedIn:false / configDirectory がその道になり、 .claude.json も
+  //        そこに作られた)
+  //     ・Codex       … CODEX_HOME
+  //       (実測: 空のフォルダーを指すと `codex login status` が
+  //        「Not logged in」、 指さない時は「Logged in using ChatGPT」)
+  //     ・Gemini CLI  … GEMINI_CLI_HOME
+  //       (取り込んだ物の中身で確認: ホームの代わりに使われ、 その下に
+  //        .gemini が出来る。 GEMINI_CONFIG_DIR という名前は無い)
+  //
+  //   ★ 既定 (id が空) の時は**何も渡さない** = 今あるログインには指 1 本
+  //     触れない (控えを写したり動かしたりもしない)。
+  //   ★ 置き場は一時フォルダーの下に置かない。 codex は %TEMP% の下だと
+  //     「Refusing to create helper binaries under temporary dir」 と言って
+  //     一部を作らない (= 実測)。 アプリの置き場の下に作る。
+
+  /// 設定の置き場を差し替える環境変数の名前。
+  static String accountEnvVar(AgentCliKind kind) => switch (kind) {
+        AgentCliKind.claude => 'CLAUDE_CONFIG_DIR',
+        AgentCliKind.codex => 'CODEX_HOME',
+        AgentCliKind.gemini => 'GEMINI_CLI_HOME',
+      };
+
+  /// 既定のアカウント (= CLI 自身の置き場) の id。
+  static const String kDefaultAccountId = '';
+
+  /// 種類 → 足したアカウントの一覧 (既定は含まない)。
+  static final Map<AgentCliKind, List<AgentAccount>> accounts = {};
+
+  /// 種類 → 今選んでいる id (空 = 既定)。
+  static final Map<AgentCliKind, String> activeAccountId = {};
+
+  /// アカウントのフォルダーの親 (= アプリの置き場)。 起動時に 1 度だけ。
+  static String _accountsRoot = '';
+
+  static Future<void>? _accountsLoad;
+
+  static String _accountsKey(AgentCliKind k) => 'agent_cli_accounts_${k.name}';
+  static String _activeAccountKey(AgentCliKind k) =>
+      'agent_cli_account_active_${k.name}';
+
+  /// 控えを読み出す (何度呼んでも走るのは 1 回だけ)。
+  static Future<void> ensureAccountsLoaded() =>
+      _accountsLoad ??= _loadAccounts();
+
+  static Future<void> _loadAccounts() async {
+    try {
+      _accountsRoot = (await getApplicationSupportDirectory()).path;
+    } catch (e) {
+      debugPrint('accounts root failed: $e');
+    }
+    try {
+      final p = await SharedPreferences.getInstance();
+      for (final k in AgentCliKind.values) {
+        final list = <AgentAccount>[];
+        try {
+          final j = jsonDecode(p.getString(_accountsKey(k)) ?? '[]');
+          if (j is List) {
+            for (final e in j) {
+              if (e is! Map) continue;
+              final id = '${e['id'] ?? ''}'.trim();
+              if (id.isEmpty) continue;
+              list.add(AgentAccount(id: id, name: '${e['name'] ?? ''}'));
+            }
+          }
+        } catch (_) {}
+        accounts[k] = list;
+        final act = p.getString(_activeAccountKey(k)) ?? '';
+        activeAccountId[k] =
+            list.any((e) => e.id == act) ? act : kDefaultAccountId;
+      }
+    } catch (e) {
+      debugPrint('loadAccounts failed: $e');
+    }
+  }
+
+  static Future<void> _saveAccounts(AgentCliKind kind) async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setString(
+          _accountsKey(kind),
+          jsonEncode(<Map<String, String>>[
+            for (final a in accounts[kind] ?? const <AgentAccount>[])
+              <String, String>{'id': a.id, 'name': a.name},
+          ]));
+      await p.setString(
+          _activeAccountKey(kind), activeAccountId[kind] ?? kDefaultAccountId);
+    } catch (e) {
+      debugPrint('saveAccounts failed: $e');
+    }
+  }
+
+  /// 画面に出す一覧 (先頭は必ず「既定」)。
+  static List<AgentAccount> accountList(AgentCliKind kind) => <AgentAccount>[
+        const AgentAccount(id: kDefaultAccountId, name: ''),
+        ...(accounts[kind] ?? const <AgentAccount>[]),
+      ];
+
+  /// 今選んでいるアカウント。
+  static AgentAccount activeAccount(AgentCliKind kind) {
+    final id = activeAccountId[kind] ?? kDefaultAccountId;
+    for (final a in accountList(kind)) {
+      if (a.id == id) return a;
+    }
+    return const AgentAccount(id: kDefaultAccountId, name: '');
+  }
+
+  /// そのアカウント専用の置き場 (既定なら空)。
+  static String accountDirFor(AgentCliKind kind, String id) {
+    if (id.isEmpty || _accountsRoot.isEmpty) return '';
+    final sep = Platform.pathSeparator;
+    return '$_accountsRoot${sep}agent_cli${sep}accounts$sep${kind.name}$sep$id';
+  }
+
+  /// 今選んでいるアカウントの置き場 (既定なら空)。
+  static String activeAccountDir(AgentCliKind kind) =>
+      accountDirFor(kind, activeAccountId[kind] ?? kDefaultAccountId);
+
+  /// 控え (ログインの有無・宛名) を探す時の土台。
+  ///
+  /// 既定は今までどおり利用者のホーム。 アカウントを選んでいる時はその置き場。
+  static String accountBaseDir(AgentCliKind kind) {
+    final d = activeAccountDir(kind);
+    if (d.isNotEmpty) return d;
+    final env = Platform.environment;
+    return env['USERPROFILE'] ?? env['HOME'] ?? '';
+  }
+
+  /// 起こす時に足す環境変数 (既定なら空)。
+  ///
+  /// ★ [forPty] は擬似端末 (AgentCliSession) から起こす時だけ true。
+  ///   flutter_pty は環境変数の値を **1 バイトずつ WCHAR へ広げる**ので、
+  ///   日本語を含む道はそのまま渡すと子プロセス側で化ける
+  ///   ([asciiEnvironment] が捨てるのではない。 この実行にだけ足す物は
+  ///    `{...asciiEnvironment(), ...extraEnvironment}` の後ろ側にあり、
+  ///    ふるいに掛からず素通りする)。 8.3 形式の短い名前に直して渡し、
+  ///   直せない時は何も返さない (壊れた道を渡すくらいなら渡さない)。
+  /// ★ `Process.start` 側は Dart が正しく UTF-16 へ直してくれるので、
+  ///   短い名前に直す必要が無い。 ここで直そうとして失敗すると
+  ///   「切り替えたつもりで既定のアカウントを使う」 という**一番たちの悪い
+  ///   嘘**になるので、 直さずそのまま渡す。
+  static Map<String, String> accountEnvironment(AgentCliKind kind,
+      {bool forPty = false}) {
+    var dir = activeAccountDir(kind);
+    if (dir.isEmpty) return const <String, String>{};
+    try {
+      final d = Directory(dir);
+      if (!d.existsSync()) d.createSync(recursive: true);
+    } catch (e) {
+      debugPrint('accountEnvironment mkdir failed: $e');
+      return const <String, String>{};
+    }
+    // ★ GetShortPathName は**実在するフォルダー**にしか効かないので、
+    //   上で作った後に呼ぶ事 (順番を入れ替えない)。
+    if (forPty && !isAscii(dir)) dir = ptySafeDirectory(dir) ?? '';
+    if (dir.isEmpty) return const <String, String>{};
+    return <String, String>{accountEnvVar(kind): dir};
+  }
+
+  /// 切り替える (走っている端末には触らない = 次に開く時から)。
+  static Future<void> setActiveAccount(AgentCliKind kind, String id) async {
+    await ensureAccountsLoaded();
+    final ok = accountList(kind).any((e) => e.id == id);
+    activeAccountId[kind] = ok ? id : kDefaultAccountId;
+    await _saveAccounts(kind);
+    forget();
+  }
+
+  /// 足す (置き場を作って選ぶだけ。 ログインは CLI がその中で行う)。
+  /// 作れなければ null。
+  static Future<AgentAccount?> addAccount(
+      AgentCliKind kind, String name) async {
+    if (!supported) return null;
+    await ensureAccountsLoaded();
+    final list = accounts[kind] ?? const <AgentAccount>[];
+    var n = list.length + 1;
+    while (list.any((e) => e.id == 'a$n')) {
+      n++;
+    }
+    final acc = AgentAccount(id: 'a$n', name: name.trim());
+    final dir = accountDirFor(kind, acc.id);
+    if (dir.isEmpty) return null;
+    try {
+      final d = Directory(dir);
+      if (!await d.exists()) await d.create(recursive: true);
+    } catch (e) {
+      debugPrint('addAccount failed: $e');
+      return null;
+    }
+    accounts[kind] = <AgentAccount>[...list, acc];
+    activeAccountId[kind] = acc.id;
+    await _saveAccounts(kind);
+    forget();
+    return acc;
+  }
+
+  /// 一覧から外す (**フォルダーは消さない** = 合言葉には触らない)。
+  static Future<void> removeAccount(AgentCliKind kind, String id) async {
+    if (id.isEmpty) return;
+    await ensureAccountsLoaded();
+    accounts[kind] = <AgentAccount>[
+      for (final a in accounts[kind] ?? const <AgentAccount>[])
+        if (a.id != id) a,
+    ];
+    if ((activeAccountId[kind] ?? '') == id) {
+      activeAccountId[kind] = kDefaultAccountId;
+    }
+    await _saveAccounts(kind);
+    forget();
+  }
 }

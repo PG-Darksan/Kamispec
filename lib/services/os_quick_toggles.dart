@@ -95,6 +95,15 @@ class DesktopWindowInfo {
   /// 今居るデスクトップの並び順 (0 始まり)。 分からなければ -1。
   final int desktopIndex;
 
+  /// 実行ファイルの道筋 (例 'C:\Program Files\...\chrome.exe')。
+  /// 取れなければ空。
+  ///
+  /// ★ = ユーザー要望「何の画面か分かりにくいから窓のプレビュー画面を
+  ///   表示して欲しい」。 窓がアイコンを持っていない時に、 実行ファイル
+  ///   から絵を取るのに使う (window_preview.dart)。 名前だけ
+  ///   ([processName]) では絵を引けない。
+  final String exePath;
+
   const DesktopWindowInfo({
     required this.hwnd,
     required this.title,
@@ -103,6 +112,7 @@ class DesktopWindowInfo {
     this.processName = '',
     this.desktopId = '',
     this.desktopIndex = -1,
+    this.exePath = '',
   });
 
   /// この窓を [OsQuickToggles.moveWindowToDesktop] で別のデスクトップへ
@@ -112,13 +122,22 @@ class DesktopWindowInfo {
   ///   送ったりできるようにして欲しい」 の**届かない所**。
   ///   公開 API の `IVirtualDesktopManager::MoveWindowToDesktop` は
   ///   **呼び出した側のプロセスが持っている窓しか動かせない**決まりで、
-  ///   他のアプリの窓を渡すと必ず E_ACCESSDENIED が返る (権限を上げても、
+  ///   他のアプリの窓を渡すと必ず E_ACCESSDENIED (0x80070005) が返る。
+  ///   2026-09-19 実測、 Windows 11 26200.9168 で他のアプリの窓 8 つ全部が
+  ///   これ。 **今居るのと同じデスクトップ**を行き先にしても断られたので、
+  ///   判定は「移す必要があるか」 ではなく「持ち主かどうか」 だけ。
+  ///   確かめ直すには tool/vdesk_move_probe.dart を dart run する。
+  ///   ここから先は未実測 (権限を上げても、
   ///   Windows の版が変わっても同じ)。 本家の Win+Tab が他のアプリの窓を
   ///   引っ張れるのは、 公開されていない内部 COM
   ///   (IVirtualDesktopManagerInternal) をシェル自身が使っているから。
   ///   内部 COM は Windows のビルドが上がるたびに形 (IID / 関数の並び) が
   ///   変わり、 当てが外れるとその場でプロセスが落ちるので、 ここでは
-  ///   使わない。 代わりに画面側で、 送れない窓には「送る」 を出さず
+  ///   使わない。 「試して駄目なら諦める」 も成り立たない: この機体で
+  ///   ImmersiveShell の QueryService は**世代の違う IID 2 つに等しく
+  ///   S_OK を返し**、 しかも返る vtable は combase.dll の遠隔呼び出し用の
+  ///   共通表 (OneCoreCommonProxyStub 経由) で**同一**だった。 つまり
+  ///   **呼ぶ前に関数の並びが合っているか見分ける道が無い** (2026-09-19 実測)。 代わりに画面側で、 送れない窓には「送る」 を出さず
   ///   「そこへ移る」 とタスクビュー ([OsQuickToggles.openTaskView]) への
   ///   案内を出す。
   bool get canSend => isSelf;
@@ -184,6 +203,30 @@ enum DesktopSwitchResult {
   noNeighbor,
 
   /// キーを送れなかった。
+  failed,
+
+  /// Windows 以外。
+  unsupported,
+}
+
+/// デスクトップを閉じるよう頼んだ結果。
+///
+/// ★ = ユーザー要望「現在いないデスクトップから別のデスクトップや
+///   その窓を削除できるようにして欲しい」。
+enum DesktopRemoveResult {
+  /// 閉じられた。
+  ok,
+
+  /// そのデスクトップへ移れなかったので、 何もしていない。
+  ///
+  /// ★ ここで止めるのが肝心。 移れていないのに閉じると**別の
+  ///   デスクトップを閉じてしまう** (取り返しが付かない)。
+  switchFailed,
+
+  /// 最後の 1 枚なので閉じられない。
+  lastOne,
+
+  /// 閉じられなかった。
   failed,
 
   /// Windows 以外。
@@ -469,6 +512,131 @@ class OsQuickToggles {
   ///   隣のデスクトップへ移る (仕事を失わない)。
   static bool closeDesktop() => _ctrlWin(_kVkF4);
 
+  /// 今見ているデスクトップの GUID ('{...}')。 読めなければ空。
+  ///
+  /// ★ = ユーザー要望「現在いないデスクトップから別のデスクトップや
+  ///   その窓を削除できるようにして欲しい」。 戻る先は**番号ではなく
+  ///   GUID** で覚える (1 枚閉じると並び順がずれるため)。
+  static String currentDesktopId() =>
+      isSupported ? _readCurrentDesktopFromRegistry() : '';
+
+  /// 今いないデスクトップ [desktopId] を閉じる。
+  ///
+  /// ★ = ユーザー要望「現在いないデスクトップから別のデスクトップや
+  ///   その窓を削除できるようにして欲しい」。
+  ///
+  /// ★ **公開された道は無い**。 デスクトップを消せるのは (1) 公開されて
+  ///   いない内部 COM (IVirtualDesktopManagerInternal::RemoveDesktop) か、
+  ///   (2) Ctrl+Win+F4 = **今いるデスクトップだけ**、 のどちらか。
+  ///   内部 COM は Windows のビルドが上がるたびに IID と関数の並びが
+  ///   変わり、 当てが外れるとその場でプロセスごと落ちる (例外にもならない)
+  ///   ので使わない。 ここでは「そこへ移る → 閉じる → 元へ戻る」 で代える。
+  ///   画面が 2 回切り替わって見えるが、 壊れ方が無い。
+  ///
+  /// 閉じた先にあった窓は Windows が隣のデスクトップへ移す (消えない)。
+  static Future<DesktopRemoveResult> removeDesktop(String desktopId) async {
+    if (!isSupported) return DesktopRemoveResult.unsupported;
+    if (desktopId.isEmpty) return DesktopRemoveResult.failed;
+    if (_readDesktopsFromRegistry().length <= 1) {
+      return DesktopRemoveResult.lastOne;
+    }
+    final home = _readCurrentDesktopFromRegistry();
+    final start = desktopIndexNow(desktopId);
+    if (start.current < 0 || start.target < 0) {
+      return DesktopRemoveResult.failed;
+    }
+    // ① そこへ移る。
+    if (start.current != start.target) {
+      final sw = await switchToDesktopIndex(
+          from: start.current, to: start.target, targetId: desktopId);
+      if (sw != DesktopSwitchResult.ok) {
+        await _goHome(home);
+        return DesktopRemoveResult.switchFailed;
+      }
+    }
+    // ② ★ 本当にそこに居るか確かめてから閉じる。 ここを省くと、 移動に
+    //    失敗した時に**別のデスクトップを閉じてしまう**。
+    await Future<void>.delayed(const Duration(milliseconds: 240));
+    final here = desktopIndexNow(desktopId);
+    if (here.current < 0 || here.target < 0 || here.current != here.target) {
+      await _goHome(home);
+      return DesktopRemoveResult.switchFailed;
+    }
+    if (!closeDesktop()) {
+      await _goHome(home);
+      return DesktopRemoveResult.failed;
+    }
+    // ③ 消えたか確かめる (消えると一覧からその GUID が居なくなる)。
+    var gone = false;
+    for (var i = 0; i < 6; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 220));
+      if (desktopIndexNow(desktopId).target < 0) {
+        gone = true;
+        break;
+      }
+    }
+    // ④ 元いたデスクトップへ戻る。 閉じたぶん並び順がずれているので、
+    //    番号ではなく GUID から数え直す。
+    await _goHome(home);
+    return gone ? DesktopRemoveResult.ok : DesktopRemoveResult.failed;
+  }
+
+  /// [homeId] のデスクトップへ戻る (戻れなくても黙って諦める)。
+  static Future<void> _goHome(String homeId) async {
+    if (homeId.isEmpty) return;
+    final now = desktopIndexNow(homeId);
+    if (now.current < 0 || now.target < 0 || now.current == now.target) return;
+    await switchToDesktopIndex(
+        from: now.current, to: now.target, targetId: homeId);
+  }
+
+  /// [hwnd] の窓に「閉じてください」 と伝える (WM_CLOSE)。
+  ///
+  /// ★ = ユーザー要望「現在いないデスクトップから別のデスクトップや
+  ///   その窓を削除できるようにして欲しい」 の**窓のぶん**。 窓を閉じるのは
+  ///   公開された道で出来て、 しかも**どのデスクトップに居ても効く**
+  ///   (WM_CLOSE は持ち主のメッセージの列に入るだけで、 仮想デスクトップ
+  ///   とは関わりが無い)。 移動 ([moveWindowToDesktop]) と違って断られない。
+  ///
+  /// ★ ぶつ切りにはしない。 送るのは「×を押した」 のと同じ合図なので、
+  ///   相手のアプリは保存を尋ねたり、 断ったり出来る (= 仕事を失わない)。
+  ///   閉じなかった時は false を返す。
+  ///
+  /// ★ SendMessage ではなく PostMessage を使う。 SendMessage は相手が
+  ///   固まっているとこちらまで止まる。
+  static Future<bool> closeWindow(int hwnd) async {
+    if (!isSupported || hwnd == 0) return false;
+    try {
+      if (w32.IsWindow(hwnd) == 0) return true;
+      if (w32.PostMessage(hwnd, w32.WM_CLOSE, 0, 0) == 0) return false;
+      // 保存を尋ねる窓が出る事があるので、 少し長めに見る (最大 3 秒)。
+      for (var i = 0; i < 12; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+        if (w32.IsWindow(hwnd) == 0) return true;
+      }
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+  /// [hwnd] が Windows 自身のデスクトップの土台 (Program Manager) か。
+  ///
+  /// ★ ここへ WM_CLOSE を送るとエクスプローラーが落ちて、 タスクバーと
+  ///   デスクトップのアイコンが消える。 題名 ('Program Manager') で
+  ///   見分けると言語や版で変わってすり抜けるので、 公開の GetShellWindow
+  ///   と突き合わせる (返るのはこのセッションの土台の窓 1 つだけ)。
+  ///   フォルダーを開いている explorer.exe の窓はここに当たらないので、
+  ///   そちらは今までどおり閉じられる。
+  static bool isShellWindow(int hwnd) {
+    if (!isSupported || hwnd == 0) return false;
+    try {
+      return w32.GetShellWindow() == hwnd;
+    } catch (_) {
+      return false;
+    }
+  }
+
+
   // ── 他のアプリの窓を移す ────────────────────────────
   //
   // ★ = ユーザー要望「切り替えに加えて、 作成 / 削除に他の起動中の
@@ -611,6 +779,17 @@ class OsQuickToggles {
     }
   }
 
+  /// このアプリ自身の窓の番号 (分からなければ 0)。
+  ///
+  /// ★ = ユーザー要望「windows初心者だとデスクトップ変えた時の戻り方が
+  ///   分からないだろうから、 他のデスクトップを作成したらこのアプリが
+  ///   開いた状態にして欲しい」。 新しいデスクトップを作った後に
+  ///   [moveWindowToDesktop] でこの窓を連れて行くのに要る。
+  ///
+  /// ★ **Ctrl+Win+D を送る前に**取っておく事。 作った後は手前の窓が
+  ///   空のデスクトップの土台に変わっていて、 自分の窓を取り損ねる。
+  static int selfWindowHandle() => isSupported ? _selfHwnd() : 0;
+
   /// 自分の窓 (= 今のデスクトップに居る窓) を探す。
   static int _selfHwnd() {
     try {
@@ -675,6 +854,7 @@ class OsQuickToggles {
               processName: (r['proc'] as String?) ?? '',
               desktopId: (r['did'] as String?) ?? '',
               desktopIndex: (r['didx'] as int?) ?? -1,
+              exePath: (r['exe'] as String?) ?? '',
             ),
         ],
       );
@@ -807,13 +987,17 @@ class OsQuickToggles {
         }
         // アプリ名 (守られているプロセスは取れない = 空のまま)。
         var proc = '';
+        // ★ 道筋まるごとも持ち帰る (窓のアイコンを実行ファイルから取る
+        //   時に要る = ユーザー要望「窓のプレビュー画面を表示して欲しい」)。
+        var full = '';
         try {
           final hp = w32.OpenProcess(_kProcQueryLimited, 0, pidBuf.value);
           if (hp != 0) {
             // 入りは容量、 出は長さ。 毎回入れ直す。
             exeLen.value = 511;
             if (w32.QueryFullProcessImageName(hp, 0, exePath, exeLen) != 0) {
-              proc = exePath.toDartString().split('\\').last;
+              full = exePath.toDartString();
+              proc = full.split('\\').last;
             }
             w32.CloseHandle(hp);
           }
@@ -824,6 +1008,7 @@ class OsQuickToggles {
           'cur': cur,
           'self': pidBuf.value == selfPid,
           'proc': proc,
+          'exe': full,
           'did': did,
           'didx': order[did] ?? -1,
         });
