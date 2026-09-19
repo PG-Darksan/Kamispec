@@ -135,6 +135,7 @@ class AgentCliFound {
     required this.spec,
     this.exePath,
     this.loggedInHint,
+    this.account,
     this.launchExe,
     this.launchPrefixArgs = const <String>[],
   });
@@ -147,6 +148,15 @@ class AgentCliFound {
   /// ログインしていそうか (**目安**。設定ファイルの有無で見るだけなので、
   /// 期限切れでも true になる。最終判定は実際に動かした結果に任せる)。
   final bool? loggedInHint;
+
+  /// どのアカウントで入っているか (分からなければ null)。
+  ///
+  /// = ユーザー要望「ログイン済みのようです、 だけでなく、 何のアカウントで
+  ///   ログインされているかまで表示して欲しい」。
+  ///
+  /// ★ CLI が自分で置いている控えを**読むだけ**で取る。 合言葉には触れない。
+  /// ★ 取れなかった時は null のまま = 今までどおりの文言に戻るだけ。
+  final String? account;
 
   /// 実際に起こす物 (= ユーザー報告: 「悪意のあるプロセスがブロックされました」
   /// がしょっちゅう出る)。
@@ -239,10 +249,14 @@ class AgentCli {
       found ??= await _search(spec);
     }
     final launch = found == null ? null : resolveLauncher(found);
+    final loggedIn = found == null ? null : await _loggedInHint(kind);
+    // ★ 宛名は「入っていそう」 な時だけ調べる (= 無駄にファイルを読まない)。
+    //   ここで求めた物は _cache に入るので、 描き直しのたびには読まない。
     final res = AgentCliFound(
       spec: spec,
       exePath: found,
-      loggedInHint: found == null ? null : await _loggedInHint(kind),
+      loggedInHint: loggedIn,
+      account: loggedIn == true ? await _accountHint(kind) : null,
       launchExe: launch?.exe,
       launchPrefixArgs: launch?.args ?? const <String>[],
     );
@@ -443,6 +457,121 @@ class AgentCli {
       return true;
     }
     return false;
+  }
+
+  /// どのアカウントでログインしているか (**目安**。 分からなければ null)。
+  ///
+  /// = ユーザー要望「ログイン済みのようです、 だけでなく、 何のアカウントで
+  ///   ログインされているかまで表示して欲しい」。
+  ///
+  /// ★ 外のプログラムは 1 つも起こさない。 CLI に `/status` を聞くには
+  ///   擬似端末を立てて会話する必要があり、 一覧を出すたびにそれをやるのは
+  ///   高くつく。 CLI が自分で置いている控えを**読むだけ**にする。
+  /// ★ 合言葉 (トークン) には触れない。 取り出すのは宛名だけ。
+  /// ★ 形が変わっていたら黙って null を返す (今までの文言に戻るだけ)。
+  static Future<String?> _accountHint(AgentCliKind kind) async {
+    final env = Platform.environment;
+    final home = env['USERPROFILE'] ?? env['HOME'] ?? '';
+    if (home.isEmpty) return null;
+    final sep = Platform.pathSeparator;
+    try {
+      switch (kind) {
+        case AgentCliKind.claude:
+          // ~/.claude.json の oauthAccount に宛名が入っている。
+          // ★ この控えはページごとの履歴も抱えるので何 MB にもなる。
+          //   まるごと jsonDecode すると描き直しが詰まるので、
+          //   oauthAccount の周りだけを切り出して読む。
+          final f = File('$home$sep.claude.json');
+          if (!f.existsSync()) return null;
+          if (await f.length() > 64 * 1024 * 1024) return null;
+          final s = await f.readAsString();
+          final i = s.indexOf('"oauthAccount"');
+          if (i < 0) return null;
+          final end = (i + 4000) <= s.length ? (i + 4000) : s.length;
+          final win = s.substring(i, end);
+          for (final k in const [
+            'emailAddress',
+            'displayName',
+            'fullName',
+            'organizationName',
+          ]) {
+            final m =
+                RegExp('"' + k + r'"\s*:\s*"([^"]+)"').firstMatch(win);
+            final v = m?.group(1)?.trim() ?? '';
+            if (v.isNotEmpty) return v;
+          }
+          return null;
+        case AgentCliKind.codex:
+          // ~/.codex/auth.json の tokens.id_token (JWT) の真ん中に宛名がある。
+          // 署名は見ない (本物かどうかはここでは要らない)。
+          final f = File('$home$sep.codex${sep}auth.json');
+          if (!f.existsSync()) return null;
+          final m = jsonDecode(await f.readAsString());
+          if (m is! Map) return null;
+          final tk = m['tokens'];
+          final idt = tk is Map ? tk['id_token'] : null;
+          return idt is String ? _emailFromJwt(idt) : null;
+        case AgentCliKind.gemini:
+          // 新しい Gemini CLI は google_accounts.json に今の宛名を書く。
+          // 無ければ oauth_creds.json の id_token を見る。
+          for (final p in [
+            '$home$sep.gemini${sep}google_accounts.json',
+            '$home$sep.config${sep}gemini${sep}google_accounts.json',
+          ]) {
+            final f = File(p);
+            if (!f.existsSync()) continue;
+            final m = jsonDecode(await f.readAsString());
+            final v = m is Map ? m['active'] : null;
+            if (v is String && v.contains('@')) return v.trim();
+          }
+          for (final p in [
+            '$home$sep.gemini${sep}oauth_creds.json',
+            '$home$sep.config${sep}gemini${sep}oauth_creds.json',
+          ]) {
+            final f = File(p);
+            if (!f.existsSync()) continue;
+            final m = jsonDecode(await f.readAsString());
+            final idt = m is Map ? m['id_token'] : null;
+            if (idt is String) {
+              final e = _emailFromJwt(idt);
+              if (e != null) return e;
+            }
+          }
+          return null;
+      }
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// JWT の真ん中 (中身) から宛名らしき物を 1 つ取り出す。
+  ///
+  /// ★ 鍵の名前は CLI の版で変わりうるので、 よくある名前を先に見て、
+  ///   駄目なら「宛名の形をした値」 を探す。 合言葉そのものは返さない。
+  static String? _emailFromJwt(String jwt) {
+    try {
+      final parts = jwt.split('.');
+      if (parts.length < 2) return null;
+      final body = jsonDecode(
+          utf8.decode(base64Url.decode(base64Url.normalize(parts[1]))));
+      if (body is! Map) return null;
+      final re = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
+      for (final k in const ['email', 'preferred_username', 'sub']) {
+        final v = body[k];
+        if (v is String && re.hasMatch(v.trim())) return v.trim();
+      }
+      for (final v in body.values) {
+        if (v is String && re.hasMatch(v.trim())) return v.trim();
+        if (v is Map) {
+          for (final w in v.values) {
+            if (w is String && re.hasMatch(w.trim())) return w.trim();
+          }
+        }
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
   }
 
   /// アプリが預かっている Gemini の API キー (画面側が入れてくれる)。

@@ -118489,6 +118489,11 @@ class _WindowsWebViewSheetState extends State<_WindowsWebViewSheet> {
   late _WinTab _winDisplayedTab;
   _WinTabNavigation? _winActiveNavigation;
   int _winNavigationGeneration = 0;
+
+  /// 直近に自動送りした時刻 (= 二重に進まないための歯止め)。
+  /// ★ モバイル側には `_advancing` があるが Windows だけ抜けていて、
+  ///   「終わった」 の知らせが重なると 1 本飛ばしになっていた。
+  DateTime? _winLastAdvanceAt;
   bool _winActiveNavigationMatched = false;
   // 閉じたタブの履歴 (Ctrl+Shift+T で復元)。 末尾が直近に閉じたタブ。
   final List<_WinTab> _closedWinTabs = [];
@@ -119561,6 +119566,16 @@ try {
     // 単一動画 (playlist なし) は従来通り停止のまま (= 視聴完了記録も遷移も
     // しない)。 ギャラリーから playlist 付きで開いた時だけ働く。
     if (_playlist.length <= 1) return;
+    // ★ 「終わった」 の知らせは重なって届くことがある (要素が 2 つある /
+    //   巻き戻ってまた終わる)。 モバイル側の `_advancing` にあたる歯止めが
+    //   Windows だけ無く、 二重に進んで 1 本飛ばしになっていた。
+    final nowAdv = DateTime.now();
+    final lastAdv = _winLastAdvanceAt;
+    if (lastAdv != null &&
+        nowAdv.difference(lastAdv) < const Duration(seconds: 3)) {
+      return;
+    }
+    _winLastAdvanceAt = nowAdv;
     final curVid = _extractVideoIdFromWin(_currentUrl);
     if (curVid != null) {
       try {
@@ -171901,8 +171916,11 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
     //    (= ユーザー要望 2026-08-06)。 ──
     _ytSideUiSettings,
     _ytSideBackgroundPlayback,
-    _ytSideAiChat,
-    _ytSideShareWithAi,
+    // ★ = ユーザー要望 2026-09: モバイルの YouTube 画面からは「AIチャット」と
+    //   「動画をAIと共有」 を外す。 PC 版の AI ドックは別クラス
+    //   (_WindowsWebViewSheetState の _buildWinVideoAiPanel) なので影響しない。
+    //   既定順から外すと _normalizeYoutubeSideActionOrder が端末に保存済みの
+    //   並びからも落とすため、 ヘッダー / サイド / 配置設定の全てから消える。
     _ytSideClose,
     _ytSideHistoryBack,
     _ytSideHistoryForward,
@@ -172646,14 +172664,34 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
         if (!mounted) return;
         try {
           final u = await _c?.getUrl();
+          if (!mounted) return;
           final urlStr = u?.toString() ?? '';
           if (urlStr.isNotEmpty && urlStr != _currentUrl) {
+            // ★ こちらから次の動画を読み込んでいる最中は、 この見回りは
+            //   手を出さない (= ユーザー報告: 裏で動画が切り替わると不安定)。
+            //   読み込みが終わるまで WebView は **まだ前の動画** を映して
+            //   いるので、 ここで書き戻すと向かっている先を見失い、
+            //   移動そのものが打ち切られる (_navigateTo は番号が変わると
+            //   loadUrl をやめる)。
+            if (_switchingVideo || _advancing) return;
+            // ★ この見回りが先に URL を書き換えると、 直後に届く
+            //   onUpdateVisitedHistory の `urlStr != _currentUrl` が偽に
+            //   なり、 切り替えの後始末 (速さの入れ直し・見張りの張り直し)
+            //   が丸ごと飛んでいた。 どちらが先に気付くかで結果が変わるので
+            //   「効く時と効かない時がある」 形になっていた。 先に気付いた
+            //   方が後始末も引き受ける。
+            final prevVideoId = _currentVideoId;
             setState(() => _analyzeUrlSync(urlStr));
             _persistBrowseUrl();
+            if (_currentVideoId != null && _currentVideoId != prevVideoId) {
+              _beginInPageVideoSwitch();
+              _injectPlaybackRate();
+              _injectPositionTracker();
+              _pollVideoTitle();
+            }
           }
         } catch (_) {}
-      });
-    }
+      });    }
     // 安全策: 15 秒経ってもローディング中のままならば強制解除する。
     // SPA サイト (YouTube チャンネルページ等) では onLoadStop が
     // 発火しないケースがあるため。
@@ -173041,18 +173079,22 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
   void _forceVideoPlay() {
     final c = _c;
     if (c == null) return;
-    // ★ 切り替えの最中は何もしない (= ユーザー報告: 裏で流している時に
-    //   切り替わると不安定)。 200ms ごとに resume と再生の強制を撃つので、
-    //   新しいページを読み込んでいる最中に当たると、 前の動画を鳴らし
-    //   直したり読み込みを妨げたりしていた。
-    if (_switchingVideo || _advancing) return;
     // 1. WebView 自体を resume (Android 内部の WebView.onResume()) 。
     //    これがないと evaluateJavascript すら走らないことがある。
+    // ★ 切り替えの最中でも **必ず** 撃つ (= ユーザー報告: 裏で流している時に
+    //   動画が切り替わると不安定)。 裏に回っている間、 Android は WebView を
+    //   止めるので、 ここで起こし直さないと次の動画の読み込みごと凍り、
+    //   歯止めが外れる (8〜12 秒) まで無音が続いていた。
     try {
       c.android.resume().catchError((_) {});
     } catch (_) {
       // iOS / 古い API バージョンでは利用不可
     }
+    // ★ 切り替えの最中は、 前の動画を鳴らし直さない (= 二重再生と読み込みの
+    //   妨げを防ぐ)。 「常に表示中」 の細工は document start の
+    //   _kBgPlaybackPatchJs が先回りして入れてあるので、 ここを飛ばしても
+    //   新しいページで効いている。
+    if (_switchingVideo || _advancing) return;
     // 2. Page Visibility API を偽装 + <video>.play() 強制 + YouTube 内部の
     //    プレーヤー API も叩く (HTML5 player の 'play' メソッドを直接呼ぶ)
     c.evaluateJavascript(source: r'''
@@ -174259,9 +174301,11 @@ v.addEventListener('play', function() {
     _switchGuardTimer = Timer(const Duration(seconds: 3), () {
       if (gen == _navGen) _switchingVideo = false;
     });
-    // 自動送りの最中にここへ来たなら、 その送りは完了している。
-    _advanceGuardTimer?.cancel();
-    _advancing = false;
+    // ★ 自動送りの印はここでは下ろさない (= ユーザー報告: 切り替わりで
+    //   不安定)。 この知らせは移動の**始まり**で届く。 こちらの読み込みが
+    //   まだ飛んでいる最中に YouTube 自身の自動再生が先に動いた場合、 ここで
+    //   下ろすと二本目の「終わった」 が通って 1 本飛ばしになる。 下ろすのは
+    //   読み終わり (onLoadStop / 進捗 100%) と 12 秒の保険だけに任せる。
   }
 
   Future<void> _restorePosition() async {
@@ -175972,6 +176016,10 @@ v.addEventListener('play', function() {
   }
 
   bool _isYoutubeSideActionCurrentlyVisible(String id) {
+    // ★ モバイルの YouTube 画面に AI 系ボタンは出さない (= ユーザー要望
+    //   2026-09)。 既定順から外した上で、 古い端末設定が残っていても
+    //   描かれないようにここでも止める。
+    if (id == _ytSideAiChat || id == _ytSideShareWithAi) return false;
     final isVideo = (_isYoutube && _currentVideoId != null) || _isMp4;
     final canEmbed = widget.onEmbedUrl != null &&
         (_isEmbeddableYoutubeUrl(_currentUrl) || _currentVideoId != null);
@@ -176854,53 +176902,168 @@ v.addEventListener('play', function() {
     );
   }
 
-  /// モバイル YouTube のヘッダー配置。
-  ///
-  /// ★ 動画を見ている時も **1 段**にまとめる (= ユーザー要望: 上に付ける
-  ///   配置がイマイチ)。 以前は 1 段目に 閉じる/履歴/更新 + 速度のつまみ、
-  ///   2 段目にその他… と 2 段に積んでいたので、 縦に 100px 近く取られて
-  ///   動画そのものが押し下げられていた。 速度は「1.0x」 のボタンから同じ
-  ///   つまみを開けるので、 1 段に並べても何も失われない。 入り切らない分は
-  ///   横スクロールで出す (ブラウズ中と同じ見せ方)。
-  Widget _buildMobileYoutubeHeader(bool isVideo) {
-    // 先頭に固定する物 (残りは配置設定の並び順のまま後ろへ続く)。
-    final List<String> leadingIds = isVideo
-        ? const <String>[
-            _ytSideClose,
-            _ytSideHistoryBack,
-            _ytSideHistoryForward,
-            _ytSideReload,
-            _ytSidePlaybackRate,
-          ]
-        : const <String>[
-            _ytSideClose,
-            _ytSideHistoryBack,
-            _ytSideHistoryForward,
-            _ytSideReload,
-            // 非表示ボタンを右端へ置かず、画面上中央付近へ来る順にする。
-            _ytSideHideUi,
-          ];
-    final ids = <String>[
-      ...leadingIds,
-      for (final id in _youtubeSideActionOrder)
-        if (!leadingIds.contains(id)) id,
+  /// ヘッダー 1 段ぶんの高さ (= ボタン 1 個の枠の大きさ)。
+  static const double _kYtHeaderRowH = 34.0;
+
+  /// レール用の 40x40 ボタンを 1 段に収まる枠へ入れる。 中身 (既存の
+  /// onTap / onLongPress) はそのまま。 当たり判定も一緒に縮む。
+  Widget _ytHeaderCell(Widget control) => SizedBox(
+        width: _kYtHeaderRowH,
+        height: _kYtHeaderRowH,
+        child: FittedBox(fit: BoxFit.contain, child: control),
+      );
+
+  /// 1 段ぶんのボタン列。 横スクロールは出さず、 入り切らない時は列ごと
+  /// 縮めて必ず 1 行に収める (= ユーザー要望: スクロールせずに全部入る)。
+  /// 360dp 幅なら素の大きさで 9 個、 11 個でも 0.86 倍に縮んで収まる。
+  Widget _buildYoutubeHeaderButtonRow(List<String> ids) {
+    final controls = <Widget>[
+      for (final id in ids)
+        if (_buildMobileYoutubeSideAction(id) case final control?) control,
     ];
-    return Container(
-      height: 52,
-      color: Colors.black,
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        physics: const ClampingScrollPhysics(),
+    if (controls.isEmpty) return const SizedBox(height: _kYtHeaderRowH);
+    return SizedBox(
+      height: _kYtHeaderRowH,
+      width: double.infinity,
+      child: FittedBox(
+        fit: BoxFit.scaleDown,
+        alignment: Alignment.centerLeft,
         child: Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            for (final id in ids)
-              if (_buildMobileYoutubeSideAction(id) case final control?) ...[
-                control,
-                const SizedBox(width: 6),
-              ],
+            for (var i = 0; i < controls.length; i++) ...[
+              if (i > 0) const SizedBox(width: 3),
+              _ytHeaderCell(controls[i]),
+            ],
           ],
         ),
+      ),
+    );
+  }
+
+  /// 1 段目の再生速度バー (= ユーザー要望: つまみを上に出す)。
+  /// 上限は provider の videoMaxRate に追従し、 右の歯車から変えられる。
+  Widget _buildYoutubeSpeedBar() {
+    final maxRate =
+        context.select<MindMapProvider, double>((p) => p.videoMaxRate);
+    if (_playbackRate > maxRate) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _changeRate(maxRate);
+      });
+    }
+    final divs = ((maxRate - 1.0) * 4).round().clamp(4, 60);
+    return Row(children: [
+      Text('${_playbackRate.toStringAsFixed(2)}x',
+          style: const TextStyle(
+              color: Color(0xFF4FC3F7),
+              fontSize: 11,
+              fontWeight: FontWeight.w800)),
+      Expanded(
+        child: SliderTheme(
+          data: SliderThemeData(
+            trackHeight: 2,
+            thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 5),
+            activeTrackColor: Colors.white.withValues(alpha: 0.5),
+            inactiveTrackColor: Colors.white.withValues(alpha: 0.15),
+            thumbColor: Colors.white,
+            overlayShape:
+                const RoundSliderOverlayShape(overlayRadius: 10),
+          ),
+          child: Slider(
+            value: _playbackRate.clamp(1.0, maxRate).toDouble(),
+            min: 1.0,
+            max: maxRate,
+            divisions: divs,
+            onChanged: _changeRate,
+          ),
+        ),
+      ),
+      IconButton(
+        tooltip: context.read<MindMapProvider>().t('video.tip.maxRate'),
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+        iconSize: 15,
+        icon: const Icon(Icons.tune_rounded, color: Colors.white54),
+        onPressed: () => _showMaxRateDialog(context),
+      ),
+    ]);
+  }
+
+  /// モバイル YouTube のヘッダー配置 (動画中は 2 段構成)。
+  ///
+  /// ★ = ユーザー要望 2026-09:「再生速度バーや戻る進むを上に出した 2 段構成に
+  ///   して、 全てのボタンが 2 段にスクロールせずに入る状態に」。
+  ///     1 段目: [履歴戻る] [履歴進む]  1.00x [── 速度のつまみ ──] [上限]
+  ///     2 段目: 残りのボタン
+  ///   横スクロールは廃止。 入り切らない時は列ごと縮めて必ず収める。
+  ///   動画以外 (検索 / 一覧 / チャンネル) は速度のつまみが無いので 1 段の
+  ///   ままにして、 動画以外の画面で高さを取らないようにする。
+  Widget _buildMobileYoutubeHeader(bool isVideo) {
+    if (!isVideo) {
+      // ── ブラウズ中 (動画ではない) は従来どおり 1 段 ──
+      const browseLeading = <String>[
+        _ytSideClose,
+        _ytSideHistoryBack,
+        _ytSideHistoryForward,
+        _ytSideReload,
+        // 非表示ボタンを右端へ置かず、画面上中央付近へ来る順にする。
+        _ytSideHideUi,
+      ];
+      return Container(
+        height: _kYtHeaderRowH + 8,
+        color: Colors.black,
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+        child: _buildYoutubeHeaderButtonRow(<String>[
+          ...browseLeading,
+          for (final id in _youtubeSideActionOrder)
+            if (!browseLeading.contains(id)) id,
+        ]),
+      );
+    }
+    // ── 1 段目に出す物 (2 段目からは外す) ──
+    // 速度は「1.0x」 ボタンではなく、 1 段目のつまみそのものに置き換える。
+    const upperIds = <String>[
+      _ytSideHistoryBack,
+      _ytSideHistoryForward,
+      _ytSidePlaybackRate,
+    ];
+    // 2 段目の先頭に固定する物 (残りは配置設定の並び順のまま後ろへ続く)。
+    const leadingIds = <String>[
+      _ytSideClose,
+      _ytSideReload,
+      _ytSideHideUi,
+    ];
+    final lowerIds = <String>[
+      ...leadingIds,
+      for (final id in _youtubeSideActionOrder)
+        if (!leadingIds.contains(id) && !upperIds.contains(id)) id,
+    ];
+    return Container(
+      height: _kYtHeaderRowH * 2 + 10,
+      color: Colors.black,
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // 1 段目: 戻る / 進む + 再生速度バー
+          SizedBox(
+            height: _kYtHeaderRowH,
+            child: Row(children: [
+              if (_buildMobileYoutubeSideAction(_ytSideHistoryBack)
+                  case final back?)
+                _ytHeaderCell(back),
+              const SizedBox(width: 3),
+              if (_buildMobileYoutubeSideAction(_ytSideHistoryForward)
+                  case final fwd?)
+                _ytHeaderCell(fwd),
+              const SizedBox(width: 6),
+              Expanded(child: _buildYoutubeSpeedBar()),
+            ]),
+          ),
+          const SizedBox(height: 2),
+          // 2 段目: 残り全部 (スクロールさせない)
+          _buildYoutubeHeaderButtonRow(lowerIds),
+        ],
       ),
     );
   }
@@ -178531,6 +178694,15 @@ v.addEventListener('play', function() {
                                 _switchGuardTimer?.cancel();
                                 _switchGuardTimer = null;
                                 _switchingVideo = false;
+                                // ★ 裏で切り替わった時は常駐 (Foreground
+                                //   Service) の生存を確かめる (= ユーザー報告:
+                                //   裏で動画が切り替わると再生が止まる)。 前の
+                                //   動画が止まった時点で常駐が畳まれている事が
+                                //   あり、 その時は二度と音が戻らなかった。
+                                if (_bgPlayKeeper != null) {
+                                  _BgPlaybackController.ensureRunning()
+                                      .catchError((_) {});
+                                }
                                 // ★ この読み終わりが「今向かっている動画」 の
                                 //   物か控える。 途中で次へ押されていたら、
                                 //   以降の後始末 (位置の復元・見た目・速さ) は
@@ -178580,16 +178752,37 @@ v.addEventListener('play', function() {
                                   // ハイパーリンクからのジャンプは最優先で適用したい
                                   // (autoplay で 0 秒に戻される前に loadedmetadata 等の
                                   //  リスナーを仕掛けるため、 他の injection より先に呼ぶ)。
-                                  if (loadGen != _navGen) return;
-                                  await _restorePosition();
-                                  if (loadGen != _navGen || !mounted) return;
-                                  if (widget.focusMode) {
-                                    await _injectStyle();
-                                    if (loadGen != _navGen || !mounted) return;
+                                  // ★ 「この時間へ飛ばす」 と 見た目の細工は
+                                  //   古くなったらやめる (= 前の動画の時刻へ
+                                  //   飛んだり、 検索の画面に視聴用の細工が
+                                  //   残って検索欄が触れなくなるのを防ぐ)。
+                                  if (loadGen == _navGen) {
+                                    await _restorePosition();
                                   }
+                                  if (!mounted) return;
+                                  if (widget.focusMode && loadGen == _navGen) {
+                                    await _injectStyle();
+                                    if (!mounted) return;
+                                  }
+                                  // ★ 速さと見張りの仕掛けは **必ず** 入れ直す
+                                  //   (= ユーザー報告: 切り替わりで不安定)。
+                                  //   これを番号で見送ると、 読み込みの最中に
+                                  //   画面の中で動画が変わった回だけ、 今読み
+                                  //   終わったページに見張りが付かず、 速さも
+                                  //   1 倍に戻ることがあった。 どちらも同じ
+                                  //   ページに二度入れても害は無い
+                                  //   (__MM_RATE_INSTALLED__ / __MM_PT__)。
                                   await _injectPlaybackRate();
-                                  if (loadGen != _navGen || !mounted) return;
+                                  if (!mounted) return;
                                   await _injectPositionTracker();
+                                  // ★ 仕掛け直した後に鳴らし直す (= 裏での
+                                  //   切り替えで無音になる件)。 ここまで来た =
+                                  //   今向かっているページの読み終わりなので、
+                                  //   前の動画を鳴らしてしまう心配は無い。
+                                  if (_bgPlayKeeper != null &&
+                                      loadGen == _navGen) {
+                                    _forceVideoPlay();
+                                  }
                                 } else if (_isMp4) {
                                   await _injectPlaybackRate();
                                 } else {
@@ -178619,10 +178812,17 @@ v.addEventListener('play', function() {
                                 //   届かない造りのページでも、 二度押しの
                                 //   歯止めを必ず外す (= 押しても進めなく
                                 //   ならないように)。
-                                if (p >= 100 && _switchingVideo) {
+                                if (p >= 100 &&
+                                    (_switchingVideo || _advancing)) {
                                   _switchGuardTimer?.cancel();
                                   _switchGuardTimer = null;
                                   _switchingVideo = false;
+                                  // ★ 自動送りの印も一緒に下ろす (= 読み終わり
+                                  //   の知らせが来ない造りのページでは、 12 秒
+                                  //   経つまで強制再生が止まったままだった)。
+                                  _advanceGuardTimer?.cancel();
+                                  _advanceGuardTimer = null;
+                                  _advancing = false;
                                 }
                                 if (mounted) {
                                   if (p >= 100 && _loading) {
@@ -196825,6 +197025,14 @@ class _PiPMiniPlayerState extends State<_PiPMiniPlayer>
           var vs = document.querySelectorAll('video');
           for (var i = 0; i < vs.length; i++) {
             var v = vs[i];
+            // ★ 終わった動画を play() すると先頭から鳴り出す (= 全画面版
+            //   (_forceVideoPlay) と同じ直し。 PiP だけ抜けていて、 裏で
+            //   終わるたびに同じ動画が頭から回っていた)。
+            if (v.ended) continue;
+            if (v.duration && isFinite(v.duration) &&
+                v.currentTime >= v.duration - 0.35) {
+              continue;
+            }
             if (v.paused && !window.__MM_USER_PAUSED__) {
               v.play().catch(function(){});
             }
@@ -280000,9 +280208,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
                                   color: Colors.white, fontSize: 12)),
                           Text(
                               f.installed
-                                  ? (f.loggedInHint == true
-                                      ? provider.t('cli.ready')
-                                      : provider.t('cli.needLogin'))
+                                  ? _cliReadyLine(provider, f)
                                   : '${provider.t('cli.notFound')}  '
                                       '${f.spec.installHint}',
                               maxLines: 2,
@@ -280192,6 +280398,19 @@ class _McpChatDialogState extends State<_McpChatDialog>
         ),
       ]),
     );
+  }
+
+  /// 入っている CLI の状態の一行。
+  ///
+  /// = ユーザー要望「ログイン済みのようです、 だけでなく、 何のアカウントで
+  ///   ログインされているかまで表示して欲しい」。
+  ///
+  /// ★ 宛名が分からない時は今までどおりの文言に戻すだけ (黙って諦める)。
+  String _cliReadyLine(MindMapProvider provider, AgentCliFound f) {
+    if (f.loggedInHint != true) return provider.t('cli.needLogin');
+    final acc = (f.account ?? '').trim();
+    if (acc.isEmpty) return provider.t('cli.ready');
+    return provider.t('cli.readyAs').replaceFirst('{n}', acc);
   }
 
   /// CLI の一覧 (欄の中に出す中身)。
@@ -280436,9 +280655,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
                     const SizedBox(height: 5),
                     SelectableText(
                         f.installed
-                            ? (f.loggedInHint == true
-                                ? provider.t('cli.ready')
-                                : provider.t('cli.needLogin'))
+                            ? _cliReadyLine(provider, f)
                             : '${provider.t('cli.notFound')}  '
                                 '${f.spec.installHint}'
                                 '${AgentCli.npmAvailable == false ? '\n${provider.t('cli.needNode')}' : ''}',

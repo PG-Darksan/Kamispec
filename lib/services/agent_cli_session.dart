@@ -212,6 +212,12 @@ class AgentCliSession extends ChangeNotifier {
       }
       final now = busy;
       if (now == _busyShown) return;
+      // ★ 考え終わった = 渡した 1 件は無事に済んだ (控えを外す)。
+      // ★ 考え終わった = 渡した 1 件は無事に済んだ (控えを外す)。
+      //   ただし承認待ちなどの短い間は「終わった」 と見ない。
+      if (!now && DateTime.now().difference(_lastOutputAt) >= _kIdle * 2) {
+        _inFlight = null;
+      }
       _busyShown = now;
       notifyListeners();
     });
@@ -231,67 +237,320 @@ class AgentCliSession extends ChangeNotifier {
   bool get queueFull => _queued.length >= kMaxQueued;
 
   /// 順番待ちに足す。 入れられたら true。
-  ///
-  /// [force] は時刻指定の予約用 (上限を越えても入れる)。
-  /// 予約した時刻に「溜まっていて入らない」 で消えるのは困るため。
-  bool enqueue(String text, {bool force = false}) {
+  bool enqueue(String text) {
     final t = text.trim();
     if (t.isEmpty) return false;
-    if (!force && queueFull) return false;
+    if (queueFull) return false;
     _queued.add(t);
     _startQueueTimer();
     notifyListeners();
     return true;
   }
 
-  // ── 時刻を指定して投げる ─────────────────────────────
+  // ── プランの上限で待つ (= ユーザー要望: 予約はやめて、 上限に当たったら
+  //    解除まで待ってから送る) ─────────────────────────────
   //
-  // ★ = ユーザー要望「プラン上限が来た時にその時刻になったら処理を
-  //   投げれるようにしたい」。 上限は決まった時刻に戻るので、 その時刻を
-  //   指定しておけば、 寝ている間でも続きを始められる。
+  // ★ CLI は上限を「画面の文字」 でしか教えてくれない。 擬似端末の出力を
+  //   見て、 上限らしい文言が出たら順番待ちを止め、 書いてあった再開時刻
+  //   (読めなければ [_kLimitRetry] ごと) にひとりでに送り直す。
   //
-  // ★ アプリが起きていて、 この CLI が走っている間だけ投げられる
-  //   (端末を閉じたら消える)。 その事は画面側が伝える。
+  // ★ 出力は色と枠と折り返しだらけで、 「usage limit reached」 が
+  //   「usage limit │\n│ reached」 のように割れて届く。 色と枠を落として
+  //   1 行に均し、 直近の分をつないだ物 ([_outTail]) に当てる。
+  //
+  // ★ アプリが起きていて、 この CLI が走っている間だけ待てる
+  //   (端末を閉じたら畳む)。 その事は画面側が伝える。
 
-  final List<({DateTime at, String text})> _scheduled = [];
-  List<({DateTime at, String text})> get scheduled =>
-      List<({DateTime at, String text})>.unmodifiable(_scheduled);
-  Timer? _scheduleTimer;
+  /// 均した出力の直近分 (文言が chunk をまたいでも拾えるように)。
+  final StringBuffer _outTail = StringBuffer();
+  static const int _kTailMax = 4000;
 
-  /// 予約を 1 件足す。 早い順に並べる。
-  void schedule(DateTime at, String text) {
-    final t = text.trim();
-    if (t.isEmpty) return;
-    _scheduled.add((at: at, text: t));
-    _scheduled.sort((a, b) => a.at.compareTo(b.at));
-    _scheduleTimer ??=
-        Timer.periodic(const Duration(seconds: 10), (_) => _pumpSchedule());
-    notifyListeners();
+  /// 上限が解けるのを待っている最中か。
+  bool get limitWaiting => _limitWaiting;
+  bool _limitWaiting = false;
+
+  /// 再開する時刻 (読み取れなかった時は null = [_kLimitRetry] ごとに試す)。
+  DateTime? get limitUntil => _limitUntil;
+  DateTime? _limitUntil;
+
+  /// 出力に添えてあった地域名 (例 'Asia/Tokyo')。 表示にだけ使う。
+  String? get limitZoneNote => _limitZoneNote;
+  String? _limitZoneNote;
+
+  /// 上限が解けたら「続けて」 を送るか (= 返事の途中で切れた時)。
+  bool get needsResumeWord => _needsResumeWord;
+  bool _needsResumeWord = false;
+
+  /// 上限が解けた後に送る言葉 (画面が表示言語に合わせて入れ替える)。
+  String resumeWord = '続けて';
+
+  /// 渡したが、 まだ返事が終わっていない 1 件。
+  /// 上限で弾かれたらここから順番待ちへ戻す (= 消してしまわない)。
+  String? _inFlight;
+
+  Timer? _limitTimer;
+  DateTime _limitSince = DateTime.now();
+  int _shownLeftMin = -1;
+
+  /// 時刻が読めなかった時に試し直す間隔。
+  ///
+  /// ★ 短くしても上限は早く解けない。 弾かれた分だけ無駄に出力が流れるので、
+  ///   10 分に 1 度だけ様子を見る。
+  static const Duration _kLimitRetry = Duration(minutes: 10);
+
+  /// 上の待ち直しの間隔 (分)。 画面の文言に出すため公開している。
+  static int get kLimitRetryMinutes => _kLimitRetry.inMinutes;
+
+  /// 読み取った時刻に足す余裕 (きっかりだとまだ解けていない事がある)。
+  static const Duration _kLimitMargin = Duration(seconds: 45);
+
+  /// 一度見つけたら、 しばらくは二度目を見ない (同じ画面を描き直す度に
+  /// 反応しない為)。
+  static const Duration _kLimitDebounce = Duration(seconds: 90);
+  DateTime _lastLimitHit = DateTime.fromMillisecondsSinceEpoch(0);
+
+  /// 「待機をやめる」 の後、 見張りを止めておく時間。
+  ///
+  /// ★ 止めないと、 溜めた分を渡した先から同じ文言が出てまた待ちに入り、
+  ///   利用者が抜け出せなくなる。
+  static const Duration _kLimitMute = Duration(minutes: 30);
+  DateTime _limitMuteUntil = DateTime.fromMillisecondsSinceEpoch(0);
+
+  // 色・枠・折り返しを落として 1 行に均す為の型。
+  static final RegExp _kAnsi = RegExp(
+      r'\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\)|[@-Z_\\])');
+  static final RegExp _kBoxy = RegExp(r'[─-▟\r\n\t]');
+  static final RegExp _kSpaces = RegExp(r'\s{2,}');
+
+  static String _flatten(String s) => s
+      .replaceAll(_kAnsi, ' ')
+      .replaceAll(_kBoxy, ' ')
+      .replaceAll(_kSpaces, ' ');
+
+  /// 「上限に当たった」 と言い切れる文言だけ。
+  ///
+  /// ★ ここは**狭く**取る。 `/usage` の画面にも「resets 3:10pm」 は出るし、
+  ///   「approaching your usage limit」 は当たる前の注意書きなので、 これらで
+  ///   待ちに入ると動かなくなる。 当たった事を言う語 (reached / exceeded /
+  ///   hit / out of) を必ず伴う物だけを拾う。
+  static final List<RegExp> _kLimitHits = [
+    RegExp(r'usage limit reached'),
+    RegExp(r"hit (?:your|the) [a-z0-9 \-']{0,28}limit"),
+    RegExp(r'reached (?:your|the) [a-z0-9 \-]{0,28}(?:limit|quota)'),
+    RegExp(r'(?:hour|daily|weekly|monthly|session|spend|rate) limit reached'),
+    RegExp(r'quota exceeded'),
+    RegExp(r'exceeded your current quota'),
+    RegExp(r'resource[_ ]exhausted'),
+    RegExp(r'rate limit exceeded'),
+    RegExp(r'\b429\b[^.]{0,40}(?:quota|limit|rate)'),
+    RegExp(r'(?:quota|limit|rate)[^.]{0,40}\b429\b'),
+    RegExp(r'out of (?:credits|usage)'),
+    RegExp(r'credit balance is too low'),
+    RegExp(r'insufficient (?:credits|quota)'),
+    RegExp(r'上限に達し'),
+    RegExp(r'上限を超え'),
+    RegExp(r'利用上限'),
+  ];
+
+  /// 待っても直らない物 / まだ当たっていない物は除く。
+  static final RegExp _kNotPlanLimit = RegExp(
+      r'context (?:window|limit)|token limit|too many tokens|'
+      r'prompt is too long|approaching|almost|nearly|will reach|まもなく');
+
+  static bool _looksLikeLimit(String tail) {
+    for (final r in _kLimitHits) {
+      final m = r.firstMatch(tail);
+      if (m == null) continue;
+      final from = m.start - 80 < 0 ? 0 : m.start - 80;
+      final to = m.end + 80 > tail.length ? tail.length : m.end + 80;
+      if (_kNotPlanLimit.hasMatch(tail.substring(from, to))) continue;
+      return true;
+    }
+    return false;
   }
 
-  void cancelScheduled(int index) {
-    if (index < 0 || index >= _scheduled.length) return;
-    _scheduled.removeAt(index);
-    notifyListeners();
+  /// 端末へ書いた出力を見て、 上限に当たっていないか調べる。
+  void _scanForLimit(String chunk) {
+    if (!_running || isInstall || isShell) return;
+    final now = DateTime.now();
+    if (now.isBefore(_limitMuteUntil)) return;
+    final flat = _flatten(chunk);
+    if (flat.trim().isEmpty) return;
+    _outTail.write(flat);
+    if (_outTail.length > _kTailMax) {
+      final s = _outTail.toString();
+      _outTail
+        ..clear()
+        ..write(s.substring(s.length - _kTailMax));
+    }
+    if (_limitWaiting) return;
+    if (now.difference(_lastLimitHit) < _kLimitDebounce) return;
+    final raw = _outTail.toString();
+    final tail = raw.toLowerCase();
+    if (!_looksLikeLimit(tail)) return;
+    _lastLimitHit = now;
+    final at = _parseResetAt(tail, raw, now);
+    // 同じ文言にもう一度当たらないよう、 見た分は捨てる。
+    _outTail.clear();
+    _enterLimitWait(at);
   }
 
-  void _pumpSchedule() {
-    if (_scheduled.isEmpty || !_running) {
-      if (_scheduled.isEmpty) {
-        _scheduleTimer?.cancel();
-        _scheduleTimer = null;
+  /// 文言から再開時刻を読み取る。 読めなければ null。
+  ///
+  /// ★ 読めた時刻は**この端末の地元時間**として扱う (CLI は利用者の時計で
+  ///   書き出す)。 括弧の中の地域名は表示にだけ使い、 計算には使わない —
+  ///   取り違えると丸一日待たせてしまう。 読めなかった時と同じ
+  ///   [_kLimitRetry] の試し直しが、 どちらにせよ保険として動く。
+  DateTime? _parseResetAt(String tail, String raw, DateTime now) {
+    _limitZoneNote = null;
+    // 「try again in 12 minutes」
+    final rel = RegExp(r'(?:try again|retry|available again) in '
+            r'(\d{1,3}) ?(second|minute|hour)')
+        .firstMatch(tail);
+    if (rel != null) {
+      final n = int.tryParse(rel.group(1) ?? '') ?? 0;
+      if (n > 0) {
+        switch (rel.group(2)) {
+          case 'second':
+            return now.add(Duration(seconds: n));
+          case 'minute':
+            return now.add(Duration(minutes: n));
+          case 'hour':
+            return now.add(Duration(hours: n));
+        }
       }
+    }
+    // 「limit resets 3:10pm」「will reset at 3pm (Asia/Tokyo)」「resets at 15:10」
+    final m = RegExp(r'reset(?:s|ting)?(?: at| on)? '
+            r'(\d{1,2})(?::(\d{2}))? ?(am|pm)?')
+        .firstMatch(tail);
+    if (m == null) return null;
+    var h = int.tryParse(m.group(1) ?? '');
+    if (h == null || h < 0 || h > 23) return null;
+    final min = int.tryParse(m.group(2) ?? '0') ?? 0;
+    if (min < 0 || min > 59) return null;
+    final ap = m.group(3);
+    if (ap == 'pm' && h < 12) h += 12;
+    if (ap == 'am' && h == 12) h = 0;
+    if (h > 23) return null;
+    // 地域名は元の大小文字のまま拾う (表示用)。
+    final zm = RegExp(r'reset[a-z]*(?: at| on)? [^()]{0,24}\(([^)]{1,40})\)',
+            caseSensitive: false)
+        .firstMatch(raw);
+    final z = zm?.group(1)?.trim();
+    if (z != null && z.isNotEmpty) _limitZoneNote = z;
+    var at = DateTime(now.year, now.month, now.day, h, min);
+    // ★ 過ぎていたら明日。 ただし数分の遅れ (文言が出てから読むまでのずれ)
+    //   で丸一日待たされないよう、 少しの過去は今日のままにする。
+    if (at.isBefore(now.subtract(const Duration(minutes: 5)))) {
+      at = at.add(const Duration(days: 1));
+    }
+    if (!at.isAfter(now)) at = now.add(const Duration(seconds: 30));
+    // ★ 読み違いの保険。 12 時間より先は信じない (= 時刻無しとして扱う)。
+    if (at.difference(now) > const Duration(hours: 12)) return null;
+    return at;
+  }
+
+  /// 上限と見て、 順番待ちを止める。
+  void _enterLimitWait(DateTime? at) {
+    _limitWaiting = true;
+    _limitUntil = at;
+    _limitSince = DateTime.now();
+    _shownLeftMin = -1;
+    // ★ 渡した先から弾かれた分は捨てない (= ユーザー要望: 上限で消えない)。
+    final back = _inFlight;
+    _inFlight = null;
+    if (back != null) {
+      _queued.insert(0, back);
+      _needsResumeWord = false;
+    } else {
+      // こちらが渡した物ではない = 返事の途中で切れた。 続きを頼む。
+      _needsResumeWord = !starting;
+    }
+    _limitTimer ??=
+        Timer.periodic(const Duration(seconds: 20), (_) => _tickLimit());
+    terminal.write(at == null
+        ? '\r\n[上限に達したようです — 解けるのを待って送り直します]\r\n'
+        : '\r\n[上限に達したようです — ${_hhmm(at)} に送り直します]\r\n');
+    notifyListeners();
+  }
+
+  static String _hhmm(DateTime d) =>
+      '${d.hour.toString().padLeft(2, '0')}:'
+      '${d.minute.toString().padLeft(2, '0')}';
+
+  void _tickLimit() {
+    if (!_running) {
+      _limitTimer?.cancel();
+      _limitTimer = null;
       return;
     }
+    if (!_limitWaiting) return;
     final now = DateTime.now();
-    var sent = false;
-    while (_scheduled.isNotEmpty && !_scheduled.first.at.isAfter(now)) {
-      final job = _scheduled.removeAt(0);
-      // 順番待ちへ入れる (落ち着いてから渡る)。 上限は越えても良い。
-      enqueue(job.text, force: true);
-      sent = true;
+    final at = _limitUntil;
+    if (at != null) {
+      if (now.isAfter(at.add(_kLimitMargin))) {
+        resumeFromLimit();
+        return;
+      }
+    } else if (now.difference(_limitSince) >= _kLimitRetry) {
+      resumeFromLimit();
+      return;
     }
-    if (sent) notifyListeners();
+    // 残りの表示を進める (分が変わった時だけ知らせる)。
+    final left = at == null
+        ? _kLimitRetry - now.difference(_limitSince)
+        : at.difference(now);
+    if (left.inMinutes != _shownLeftMin) {
+      _shownLeftMin = left.inMinutes;
+      notifyListeners();
+    }
+  }
+
+  /// 待つのをやめて送り直す (時刻が来た時 / 「今すぐ試す」)。
+  void resumeFromLimit() {
+    if (!_limitWaiting) return;
+    _limitWaiting = false;
+    _limitUntil = null;
+    _limitZoneNote = null;
+    _shownLeftMin = -1;
+    _limitTimer?.cancel();
+    _limitTimer = null;
+    // ★ 返事の途中で切れていた時は、 まず「続けて」 で続きから始めさせる
+    //   (= ユーザー要望)。
+    if (_needsResumeWord) {
+      _needsResumeWord = false;
+      final w = resumeWord.trim();
+      if (w.isNotEmpty) _queued.insert(0, w);
+    }
+    // 次の見回りですぐ 1 件出せるように、 落ち着いた事にする。
+    _lastOutputAt =
+        DateTime.now().subtract(_kIdle + const Duration(seconds: 1));
+    // ★ 見張りはすぐには解かない。 解くと、 画面に残ったままの同じ文言を
+    //   もう一度拾って待ちへ戻り、 「続けて」 を繰り返し送ってしまう。
+    //   [_kLimitDebounce] の間を置いてから、 新しく出た文言だけを見る。
+    _lastLimitHit = DateTime.now();
+    _outTail.clear();
+    if (_queued.isNotEmpty) _startQueueTimer();
+    notifyListeners();
+  }
+
+  /// 待つのをやめる (溜めた分はそのまま渡す)。
+  ///
+  /// ★ ここで見張りを [_kLimitMute] だけ止める。 止めないと、 渡した先から
+  ///   同じ文言が出てまた待ちに入り、 利用者が抜け出せなくなる。
+  void cancelLimitWait() {
+    if (!_limitWaiting) return;
+    _limitMuteUntil = DateTime.now().add(_kLimitMute);
+    _needsResumeWord = false;
+    resumeFromLimit();
+  }
+
+  /// 「続けて」 を送らないようにする (= 自分で打ち直す時)。
+  void dropResumeWord() {
+    if (!_needsResumeWord) return;
+    _needsResumeWord = false;
+    notifyListeners();
   }
 
   void cancelQueued(int index) {
@@ -317,8 +576,14 @@ class AgentCliSession extends ChangeNotifier {
       _queueTimer = null;
       return;
     }
+    // ★ 上限で待っている間は渡さない。 消さずにそのまま持っておく
+    //   (= ユーザー要望: 上限が解けるまで送信を待つ)。
+    if (_limitWaiting) return;
     if (DateTime.now().difference(_lastOutputAt) < _kIdle) return;
     final next = _queued.removeAt(0);
+    // ★ 渡した 1 件は、 返事が終わるまで控えておく。 上限で弾かれたら
+    //   ここから順番待ちの先頭へ戻す (消えてしまわないように)。
+    _inFlight = next;
     // 送った時点で出力が動くので、 次の 1 件はまた落ち着くまで待つ。
     _lastOutputAt = DateTime.now();
     send(next);
@@ -431,6 +696,9 @@ class AgentCliSession extends ChangeNotifier {
         // ★ 一度でも喋れば「本当に動き出した」 (= 起動の失敗ではない)。
         if (chunk.isNotEmpty) _sawOutput = true;
         terminal.write(chunk);
+        // ★ プランの上限に当たっていないか見る (当たっていたら順番待ちを
+        //   止めて、 解けるのを待つ = ユーザー要望)。
+        _scanForLimit(chunk);
       }, onError: (Object e) {
         terminal.write('\r\n[エラー] $e\r\n');
       }, onDone: () {
@@ -537,10 +805,15 @@ class AgentCliSession extends ChangeNotifier {
     _busyTimer?.cancel();
     _busyTimer = null;
     _queued.clear();
-    // ★ 端末が閉じたら予約も捨てる (投げる先が無いため)。
-    _scheduled.clear();
-    _scheduleTimer?.cancel();
-    _scheduleTimer = null;
+    // ★ 端末が閉じたら上限待ちも畳む (送る先が無いため)。
+    _limitWaiting = false;
+    _limitUntil = null;
+    _limitZoneNote = null;
+    _needsResumeWord = false;
+    _inFlight = null;
+    _outTail.clear();
+    _limitTimer?.cancel();
+    _limitTimer = null;
     unawaited(_sub?.cancel());
     _sub = null;
     terminal.onOutput = null;

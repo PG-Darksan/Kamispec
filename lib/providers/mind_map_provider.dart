@@ -52776,6 +52776,103 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Tentar de novo',
       'ru': 'Повторить',
     },
+    // ── プランの上限で待つ (= ユーザー要望: 予約はやめて、 上限に当たったら
+    //    解除まで待ってから送る) ──
+    'cli.limitWaitingAt': {
+      'ja': '上限まで待機中 ({time} に再開)',
+      'en': 'Waiting for the limit to lift (resumes at {time})',
+      'zh': '正在等待用量上限解除 ({time} 恢复)',
+      'ko': '사용 한도가 풀릴 때까지 대기 중 ({time} 에 재개)',
+      'es': 'Esperando a que se levante el limite (se reanuda a las {time})',
+      'fr': 'En attente de la levee de la limite (reprise a {time})',
+      'de': 'Warten, bis das Limit aufgehoben wird (Fortsetzung um {time})',
+      'pt': 'Aguardando o limite ser liberado (retoma as {time})',
+      'ru': 'Ожидание снятия лимита (возобновление в {time})',
+    },
+    'cli.limitWaitingRetry': {
+      'ja': '上限まで待機中 (約 {min} 分ごとに試します)',
+      'en': 'Waiting for the limit to lift (retrying about every {min} min)',
+      'zh': '正在等待用量上限解除 (约每 {min} 分钟重试一次)',
+      'ko': '사용 한도가 풀릴 때까지 대기 중 (약 {min} 분마다 재시도)',
+      'es': 'Esperando a que se levante el limite (reintento cada {min} min)',
+      'fr':
+          'En attente de la levee de la limite (nouvel essai toutes les {min} min)',
+      'de':
+          'Warten, bis das Limit aufgehoben wird (erneuter Versuch alle {min} Min.)',
+      'pt': 'Aguardando o limite ser liberado (nova tentativa a cada {min} min)',
+      'ru': 'Ожидание снятия лимита (повтор примерно каждые {min} мин)',
+    },
+    'cli.limitQueued': {
+      'ja': '待ち {n} 件',
+      'en': '{n} waiting',
+      'zh': '{n} 条待发送',
+      'ko': '{n} 건 대기',
+      'es': '{n} en espera',
+      'fr': '{n} en attente',
+      'de': '{n} wartend',
+      'pt': '{n} na fila',
+      'ru': '{n} в очереди',
+    },
+    'cli.limitTryNow': {
+      'ja': '今すぐ試す',
+      'en': 'Try now',
+      'zh': '立即重试',
+      'ko': '지금 시도',
+      'es': 'Probar ahora',
+      'fr': 'Essayer maintenant',
+      'de': 'Jetzt versuchen',
+      'pt': 'Tentar agora',
+      'ru': 'Попробовать сейчас',
+    },
+    'cli.limitStopWait': {
+      'ja': '待機をやめる',
+      'en': 'Stop waiting',
+      'zh': '停止等待',
+      'ko': '대기 중지',
+      'es': 'Dejar de esperar',
+      'fr': 'Arreter d attendre',
+      'de': 'Warten beenden',
+      'pt': 'Parar de esperar',
+      'ru': 'Перестать ждать',
+    },
+    // ★ 上限が解けた後に送る言葉そのもの (CLI はこの言葉で返事をしている)。
+    'cli.limitResumeWord': {
+      'ja': '続けて',
+      'en': 'continue',
+      'zh': '继续',
+      'ko': '계속',
+      'es': 'continua',
+      'fr': 'continue',
+      'de': 'weiter',
+      'pt': 'continue',
+      'ru': 'продолжай',
+    },
+    'cli.limitResumePending': {
+      'ja': '返事が途中で切れました。 上限が解けたら「{word}」 を送って続きから再開します',
+      'en': 'The reply was cut off. "{word}" will be sent once the limit lifts.',
+      'zh': '回复被中断。上限解除后将发送「{word}」以继续。',
+      'ko': '답변이 도중에 끊겼습니다. 한도가 풀리면 「{word}」 를 보내 이어서 진행합니다.',
+      'es':
+          'La respuesta se corto. Se enviara "{word}" cuando se levante el limite.',
+      'fr':
+          'La reponse a ete coupee. "{word}" sera envoye des la levee de la limite.',
+      'de':
+          'Die Antwort wurde abgeschnitten. "{word}" wird gesendet, sobald das Limit faellt.',
+      'pt':
+          'A resposta foi cortada. "{word}" sera enviado quando o limite for liberado.',
+      'ru': 'Ответ оборвался. Когда лимит снимется, будет отправлено «{word}».',
+    },
+    'cli.limitResumeCancel': {
+      'ja': '送らない',
+      'en': 'Do not send it',
+      'zh': '不要发送',
+      'ko': '보내지 않기',
+      'es': 'No enviarlo',
+      'fr': 'Ne pas l envoyer',
+      'de': 'Nicht senden',
+      'pt': 'Nao enviar',
+      'ru': 'Не отправлять',
+    },
     'cli.openAdmin': {
       'ja': '管理者として開く (別の窓)',
       'en': 'Open as administrator (separate window)',
@@ -52850,6 +52947,28 @@ class MindMapProvider extends ChangeNotifier {
           'Abrir',
       'ru':
           'Открыть',
+    },
+    // ★ 誰で入っているかまで分かった時の文言 (= ユーザー要望)。
+    //   分からない時は下の 'cli.ready' に戻る。
+    'cli.readyAs': {
+      'ja':
+          'ログイン済みのようです ({n})',
+      'en':
+          'Looks signed in ({n})',
+      'zh':
+          '似乎已登录 ({n})',
+      'ko':
+          '로그인되어 있는 것 같습니다 ({n})',
+      'es':
+          'Parece que has iniciado sesión ({n})',
+      'fr':
+          'Semble connecté ({n})',
+      'de':
+          'Scheint angemeldet ({n})',
+      'pt':
+          'Parece conectado ({n})',
+      'ru':
+          'Похоже, вход выполнен ({n})',
     },
     'cli.ready': {
       'ja':

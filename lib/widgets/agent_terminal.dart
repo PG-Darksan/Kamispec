@@ -123,14 +123,6 @@ class AgentTerminalState extends State<AgentTerminal> {
   final _queueFocus = FocusNode(debugLabel: 'agent_cli_queue');
   bool _queueOpen = false;
 
-  // ── 時刻を指定して投げる (= ユーザー要望) ────────────────
-  final _timerCtrl = TextEditingController();
-  final _timerFocus = FocusNode(debugLabel: 'agent_cli_timer');
-  bool _timerOpen = false;
-
-  /// 予約する時刻 (未指定なら今日 / 明日の同じ時刻を後で決める)。
-  TimeOfDay? _timerAt;
-
   /// いまの会話で投げた指示の一覧を出しているか (= ユーザー要望)。
   bool _histOpen = false;
 
@@ -228,6 +220,17 @@ class AgentTerminalState extends State<AgentTerminal> {
     super.initState();
     live.add(this);
     _s.addListener(_onChanged);
+    // ★ 上限が解けた後に送る言葉は、 表示言語に合わせる (CLI はその言葉で
+    //   返事をしている)。 置き場が無い / 言葉が見つからない時は既定の
+    //   「続けて」 のまま (鍵の名前をそのまま打ち込ませない)。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      try {
+        const k = 'cli.limitResumeWord';
+        final w = context.read<MindMapProvider>().t(k).trim();
+        if (w.isNotEmpty && w != k) _s.resumeWord = w;
+      } catch (_) {}
+    });
     _inputCtrl.addListener(_onInputChanged);
     _scroll.addListener(_onScroll);
     _grabFocusSoon();
@@ -294,8 +297,6 @@ class AgentTerminalState extends State<AgentTerminal> {
     _inputFocus.dispose();
     _queueCtrl.dispose();
     _queueFocus.dispose();
-    _timerCtrl.dispose();
-    _timerFocus.dispose();
     _termController.dispose();
     _termFocus.dispose();
     super.dispose();
@@ -707,38 +708,6 @@ class AgentTerminalState extends State<AgentTerminal> {
     setState(() {});
   }
 
-  /// 時刻を選んでから予約する。
-  Future<void> _pickTimerAt() async {
-    final now = TimeOfDay.now();
-    final picked = await showTimePicker(
-      context: context,
-      initialTime: _timerAt ?? now,
-      helpText: 'この時刻に投げる',
-    );
-    if (picked == null || !mounted) return;
-    setState(() => _timerAt = picked);
-  }
-
-  /// 指定した時刻の「次に来る日時」。
-  ///
-  /// ★ 今より先なら今日、 過ぎているなら明日。
-  ///   (プランの上限は深夜に戻る事が多いので、 この決め方が自然)。
-  DateTime _nextOccurrence(TimeOfDay t) {
-    final now = DateTime.now();
-    var at = DateTime(now.year, now.month, now.day, t.hour, t.minute);
-    if (!at.isAfter(now)) at = at.add(const Duration(days: 1));
-    return at;
-  }
-
-  void _addTimer() {
-    final t = _timerCtrl.text.trim();
-    final at = _timerAt;
-    if (t.isEmpty || at == null) return;
-    _s.schedule(_nextOccurrence(at), t);
-    _timerCtrl.clear();
-    setState(() {});
-  }
-
   static String _two(int v) => v.toString().padLeft(2, '0');
 
   static String _clock(DateTime d) => '${_two(d.hour)}:${_two(d.minute)}';
@@ -928,7 +897,7 @@ class AgentTerminalState extends State<AgentTerminal> {
           ? 'これ以上は溜められません '
               '(${AgentCliSession.kMaxQueued} 件まで)。 渡し終えるか、 下の × で減らしてください'
           : '処理が終わって落ち着いたら、 ここに入れた指示を順番に渡します '
-              '(${q.length}/${AgentCliSession.kMaxQueued})',
+              '(${q.length} 件)',
       ctrl: _queueCtrl,
       focus: _queueFocus,
       hint: '次に渡す指示 (Ctrl+Enter で確定 / Enter は改行)',
@@ -971,98 +940,129 @@ class AgentTerminalState extends State<AgentTerminal> {
     );
   }
 
-  /// 時刻を指定して投げる帯。
-  Widget _buildTimerBar() {
-    final list = _s.scheduled;
-    final at = _timerAt;
-    return _buildBar(
-      icon: Icons.schedule_send_rounded,
-      color: const Color(0xFF80CBC4),
-      note: '指定した時刻になったら、 ここに入れた指示を投げます',
-      ctrl: _timerCtrl,
-      focus: _timerFocus,
-      hint: 'その時刻に渡す指示 (Ctrl+Enter で確定 / Enter は改行)',
-      buttonLabel: '予約',
-      onSubmit: _addTimer,
-      onClose: () {
-        setState(() => _timerOpen = false);
-        _grabInput();
-      },
-      extra: [
-        const SizedBox(height: 5),
+  /// 表示の言葉。
+  ///
+  /// ★ この widget は置き場 (provider) 無しでも使えるようにしてあるので、
+  ///   見つからない時は素の英語に落として落ちないようにする。
+  String _tr(String key, String fallback) {
+    try {
+      return context.read<MindMapProvider>().t(key);
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+  /// 上限が解けるのを待っている時の帯 (= ユーザー要望: 予約の代わりに、
+  /// 上限に当たったら解除まで待ってから送る)。
+  ///
+  /// ★ 「いつ動き出すのか」 と「今すぐ試す / やめる」 が一目で要る。 下の帯は
+  ///   横に流れて隠れてしまうので、 全幅の帯として下の帯の上に出す。
+  Widget _buildLimitWaitBar() {
+    final at = _s.limitUntil;
+    final zone = _s.limitZoneNote;
+    final note = at == null
+        ? _tr('cli.limitWaitingRetry',
+                'Waiting for the limit to lift (retrying about every {min} min)')
+            .replaceFirst('{min}', '${AgentCliSession.kLimitRetryMinutes}')
+        : _tr('cli.limitWaitingAt',
+                'Waiting for the limit to lift (resumes at {time})')
+            .replaceFirst(
+                '{time}', zone == null ? _clock(at) : '${_clock(at)} ($zone)');
+    final q = _s.queued.length;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(10, 6, 6, 6),
+      decoration: const BoxDecoration(
+        color: Color(0xFF3B3320),
+        border: Border(top: BorderSide(color: Colors.white12)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
-          InkWell(
-            borderRadius: BorderRadius.circular(6),
-            onTap: () => unawaited(_pickTimerAt()),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
-              decoration: BoxDecoration(
-                color: Colors.white10,
-                borderRadius: BorderRadius.circular(6),
-                border: Border.all(color: Colors.white24),
-              ),
-              child: Row(mainAxisSize: MainAxisSize.min, children: [
-                const Icon(Icons.access_time_rounded,
-                    size: 13, color: Color(0xFF80CBC4)),
-                const SizedBox(width: 5),
-                Text(
-                    at == null
-                        ? '時刻を選ぶ'
-                        : '${_two(at.hour)}:${_two(at.minute)}',
-                    style: const TextStyle(
-                        color: Colors.white70, fontSize: 11.5)),
-              ]),
-            ),
+          const SizedBox(
+            width: 13,
+            height: 13,
+            child: CircularProgressIndicator(
+                strokeWidth: 1.6, color: Color(0xFFFFB347)),
           ),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-                at == null
-                    ? 'まず時刻を選んでください'
-                    : '次の ${_clock(_nextOccurrence(at))} '
-                        '(${_nextOccurrence(at).day == DateTime.now().day ? "今日" : "明日"})'
-                        ' に投げます',
-                maxLines: 1,
+                q == 0
+                    ? note
+                    : '$note  '
+                        '(${_tr('cli.limitQueued', '{n} waiting')
+                            .replaceFirst('{n}', '$q')})',
+                maxLines: 2,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Colors.white38, fontSize: 10.5)),
+                style: const TextStyle(
+                    color: Color(0xFFFFD79A), fontSize: 11, height: 1.4)),
+          ),
+          TextButton(
+            style: TextButton.styleFrom(
+              foregroundColor: const Color(0xFFFFB347),
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              minimumSize: const Size(0, 26),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            onPressed: () {
+              _s.resumeFromLimit();
+              _grabInput();
+            },
+            child: Text(_tr('cli.limitTryNow', 'Try now'),
+                style: const TextStyle(fontSize: 11)),
+          ),
+          TextButton(
+            style: TextButton.styleFrom(
+              foregroundColor: Colors.white54,
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              minimumSize: const Size(0, 26),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            onPressed: () {
+              _s.cancelLimitWait();
+              _grabInput();
+            },
+            child: Text(_tr('cli.limitStopWait', 'Stop waiting'),
+                style: const TextStyle(fontSize: 11)),
           ),
         ]),
-        // ★ 端末を閉じると予約も消える。 先に伝えておく。
-        const Padding(
-          padding: EdgeInsets.only(top: 4),
-          child: Text(
-              '※ この端末を閉じると予約も消えます (アプリは開けたままに)',
-              style: TextStyle(color: Colors.white24, fontSize: 10)),
-        ),
-        if (list.isNotEmpty) ...[
-          const SizedBox(height: 5),
-          for (var i = 0; i < list.length; i++)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 3),
-              child: Row(children: [
-                Text(_clock(list[i].at),
+        // ── 返事の途中で切れた時 (= ユーザー要望: 「続けて」 と再開を促す) ──
+        //    時刻が来たら自分で送るが、 送る事と取り消し方をここに出しておく。
+        if (_s.needsResumeWord)
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Row(children: [
+              const Icon(Icons.subdirectory_arrow_right_rounded,
+                  size: 13, color: Color(0xFF80CBC4)),
+              const SizedBox(width: 5),
+              Expanded(
+                child: Text(
+                    _tr('cli.limitResumePending',
+                            'The reply was cut off. "{word}" will be sent once the limit lifts.')
+                        .replaceFirst('{word}', _s.resumeWord),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
-                        color: Color(0xFF80CBC4), fontSize: 10.5)),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(list[i].text,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                        color: Color(0xFF9FD8D0),
+                        fontSize: 10.5,
+                        height: 1.4)),
+              ),
+              InkWell(
+                borderRadius: BorderRadius.circular(6),
+                onTap: () => setState(_s.dropResumeWord),
+                child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  child: Text(_tr('cli.limitResumeCancel', 'Do not send it'),
                       style: const TextStyle(
-                          color: Colors.white60, fontSize: 10.5)),
+                          color: Colors.white38, fontSize: 10.5)),
                 ),
-                InkWell(
-                  onTap: () => setState(() => _s.cancelScheduled(i)),
-                  child: const Padding(
-                    padding: EdgeInsets.all(3),
-                    child: Icon(Icons.close_rounded,
-                        size: 12, color: Colors.white38),
-                  ),
-                ),
-              ]),
-            ),
-        ],
-      ],
+              ),
+            ]),
+          ),
+      ]),
     );
   }
 
@@ -1433,8 +1433,8 @@ class AgentTerminalState extends State<AgentTerminal> {
       if (_histOpen && running) _buildHistoryPanel(),
       // ── 順番待ちの欄 (= ユーザー要望: キュー) ──
       if (_queueOpen && running) _buildQueueBar(),
-      // ── 時刻を指定して投げる欄 (= ユーザー要望) ──
-      if (_timerOpen && running) _buildTimerBar(),
+      // ── 上限が解けるのを待っている時の帯 (= ユーザー要望: 予約の代わり) ──
+      if (running && _s.limitWaiting) _buildLimitWaitBar(),
       // ── 下の帯 ──
       Container(
         padding: const EdgeInsets.fromLTRB(8, 5, 8, 6),
@@ -1501,6 +1501,8 @@ class AgentTerminalState extends State<AgentTerminal> {
                       command: '/usage',
                       enabled: running),
                   // ── 順番待ち (= ユーザー要望: 5 件まで貯めておける) ──
+                  //    ★ 上限に当たったら、 ここに溜めた分は消さずに
+                  //      解けるまで待ってから渡る (上の帯に様子が出る)。
                   if (wantQueue)
                     _panelButton(
                       label: _s.queued.isEmpty
@@ -1508,37 +1510,16 @@ class AgentTerminalState extends State<AgentTerminal> {
                           : 'キュー ${_s.queued.length}',
                       icon: Icons.playlist_add_rounded,
                       tip: '処理が終わってから渡す指示を溜めておく '
-                          '(${AgentCliSession.kMaxQueued} 件まで)',
+                          '(${AgentCliSession.kMaxQueued} 件まで)。 '
+                          'プランの上限に当たった時は、 解けるまで待ってから渡します',
                       open: _queueOpen,
                       color: const Color(0xFFFFB347),
                       enabled: running,
                       onTap: () {
-                        setState(() {
-                          _queueOpen = !_queueOpen;
-                          if (_queueOpen) _timerOpen = false;
-                        });
+                        setState(() => _queueOpen = !_queueOpen);
                         if (!_queueOpen) _grabInput();
                       },
                     ),
-                  // ── 時刻を指定して投げる (= ユーザー要望: プラン上限が
-                  //    戻る時刻に続きを始めたい) ──
-                  _panelButton(
-                    label: _s.scheduled.isEmpty
-                        ? '予約'
-                        : '予約 ${_s.scheduled.length}',
-                    icon: Icons.schedule_send_rounded,
-                    tip: '時刻を指定して指示を投げる',
-                    open: _timerOpen,
-                    color: const Color(0xFF80CBC4),
-                    enabled: running,
-                    onTap: () {
-                      setState(() {
-                        _timerOpen = !_timerOpen;
-                        if (_timerOpen) _queueOpen = false;
-                      });
-                      if (!_timerOpen) _grabInput();
-                    },
-                  ),
                 ],
               ]),
             ),
