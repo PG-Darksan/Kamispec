@@ -4,6 +4,8 @@ import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:ui' show FontFeature;
 import 'package:flutter/painting.dart';
+// ★ 絵の拡張子の共通一覧 (jpe / jfif 対応)。 node_widget.dart と同じ物を見る。
+import '../utils/image_file_types.dart';
 
 enum NodeContentType { none, memo, youtube, link, attachment, table }
 
@@ -1293,14 +1295,10 @@ class MindMapNode {
       if (hIdx >= 0) p = p.substring(0, hIdx);
       final dot = p.lastIndexOf('.');
       final ext = dot >= 0 ? p.substring(dot + 1).toLowerCase() : '';
-      if (ext == 'jpg' ||
-          ext == 'jpeg' ||
-          // .jpe も JPEG (= node_widget 側の判定と合わせる)。
-          ext == 'jpe' ||
-          ext == 'png' ||
-          ext == 'gif' ||
-          ext == 'webp' ||
-          ext == 'bmp') {
+      // ★ 絵かどうかは共通の一覧で (.jpe / .jfif も JPEG の綴り)。
+      //   node_widget.dart の isImageAttach と**必ず**同じ一覧を見ること
+      //   (ずれると当たり判定・接続点が描画とずれる)。
+      if (isImageFileExt(ext)) {
         // ── 画像プレビュー高さ ──
         // ユーザー要望: 「横長画像を貼り付けた際のリンクの接続位置がおかしい」。
         // 旧実装は一律 `width * 0.6` で高さを計算していたため、 横長画像

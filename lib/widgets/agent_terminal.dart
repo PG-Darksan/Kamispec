@@ -28,8 +28,10 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:provider/provider.dart';
 import 'package:xterm/xterm.dart';
 
+import '../providers/mind_map_provider.dart';
 import '../services/agent_cli_session.dart';
 
 /// 押されたキー → 端末の決まり。
@@ -1064,6 +1066,86 @@ class AgentTerminalState extends State<AgentTerminal> {
     );
   }
 
+  // ── 起こせなかった時の帯 (= ユーザー報告: 「ターミナルボタンを押すと
+  //    セキュリティソフトにブロックされてアプリが落ちてしまう」) ──
+  //
+  //   落とさずに、 枠の中に赤い字で理由を出す。 「もう一度」 で同じ物を
+  //   組み直せる。
+  Widget _buildLaunchErrorBar(BuildContext context) {
+    // ★ この帯だけが唯一の provider 頼み。 失敗を伝える為の帯が、
+    //   置き場所の都合で自分から落ちては本末転倒なので、 見つからない時は
+    //   英語の素文に落とす (= この widget は元々 provider 無しで使えた)。
+    MindMapProvider? provider;
+    try {
+      provider = context.read<MindMapProvider>();
+    } catch (_) {
+      provider = null;
+    }
+    String tr(String key, String fallback) => provider?.t(key) ?? fallback;
+    // ★ 「何も出さないまま、 起動直後に終わった」 だけは言い切らない。
+    //   出力と終了は別の口から届くので取りこぼしの目もあるし、 引数の誤りや
+    //   ログイン切れでも同じ形になる (= セキュリティソフトのせいだと
+    //   決めつけると、 直し先を間違わせる)。
+    final early = _s.launchDiedEarly;
+    final title = early
+        ? tr('cli.launchDiedEarly', 'It exited right after starting')
+        : tr('cli.launchFailed', 'Could not start the terminal');
+    final hint = early
+        ? tr('cli.launchDiedEarlyHint',
+            'It ended without printing anything. Security software may have '
+                'blocked it, but a wrong argument or an expired login can do '
+                'the same.')
+        : tr('cli.launchBlockedHint',
+            'Security software may have blocked it. Check your exclusion '
+                'settings.');
+    return Container(
+      width: double.infinity,
+      color: const Color(0xFF3B1F1F),
+      padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Icon(Icons.report_gmailerrorred_rounded,
+            size: 16, color: Color(0xFFFF8A80)),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(title,
+                style: const TextStyle(
+                    color: Color(0xFFFF8A80),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    height: 1.5)),
+            const SizedBox(height: 2),
+            SelectableText(_s.launchError ?? '',
+                style: const TextStyle(
+                    color: Color(0xFFFFC1BC), fontSize: 11, height: 1.5)),
+            const SizedBox(height: 2),
+            Text(hint,
+                style: const TextStyle(
+                    color: Color(0xFFE0A0A0), fontSize: 10.5, height: 1.5)),
+          ]),
+        ),
+        const SizedBox(width: 6),
+        TextButton.icon(
+          onPressed: () {
+            // ★ 外が「もう一度」 を持っている時はそちらへ (新しい 1 回分を
+            //   組み直してくれる)。 無い時はこの実行をそのまま起こし直す。
+            final again = widget.onRunAgain;
+            if (again != null) {
+              again();
+              return;
+            }
+            _s.retry();
+            if (mounted) setState(() {});
+          },
+          icon: const Icon(Icons.refresh_rounded,
+              size: 15, color: Color(0xFFFFC1BC)),
+          label: Text(tr('cli.launchRetry', 'Try again'),
+              style: const TextStyle(color: Color(0xFFFFC1BC), fontSize: 11)),
+        ),
+      ]),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final running = _s.running;
@@ -1139,7 +1221,9 @@ class AgentTerminalState extends State<AgentTerminal> {
               style: const TextStyle(
                   color: Color(0xFF9BD7F0), fontSize: 11, height: 1.5)),
         ),
-      if (!running)
+      // ★ 起こせなかった時は、 終了の帯ではなく赤い理由と「もう一度」 を出す。
+      if (!running && _s.launchFailed) _buildLaunchErrorBar(context),
+      if (!running && !_s.launchFailed)
         Container(
           width: double.infinity,
           color: _s.exitCode == 0

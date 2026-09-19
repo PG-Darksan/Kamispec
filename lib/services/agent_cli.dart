@@ -28,6 +28,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:win32/win32.dart' as w32;
 
+import 'hnb_launcher.dart' show hnbLauncherDir;
 import '../utils/build_flags.dart';
 
 /// 書庫 (.tgz) の中の 1 ファイル。
@@ -676,53 +677,69 @@ class AgentCli {
       }
       // 直しようが無い物は渡さない (壊れた値より無い方が安全)。
     });
+    // ── `hnb` (= 端末からこのアプリでファイルを開く薄皮) を通す ──
+    //    環境変数は起動時に配られるので、 PATH へ足した直後のこの
+    //    プロセスはまだ古い PATH を持っている。 ここで必ず足しておく。
+    final hnbDir = hnbLauncherDir();
+    if (hnbDir != null && isAscii(hnbDir)) {
+      final key = out.keys
+          .firstWhere((k) => k.toLowerCase() == 'path', orElse: () => 'Path');
+      final cur = out[key] ?? '';
+      final already = cur
+          .split(';')
+          .map((e) => e.trim().toLowerCase())
+          .contains(hnbDir.toLowerCase());
+      if (!already) out[key] = cur.isEmpty ? hnbDir : '$cur;$hnbDir';
+    }
     return out;
   }
 
   /// シェルをどう起こすか (実行ファイル・引数・最初の居場所)。
   ///
-  /// ★ 日本語を含む場所では、 作業フォルダーとしても引数としても素では
-  ///   渡せない (どちらも 1 バイトずつ広げられて壊れる)。 そこで
-  ///   **場所を base64 にして**英数字だけの 1 語に畳み、 PowerShell 自身に
-  ///   復元させて移動させる。 引用符も空白も無いので、 引数を空白で切る
-  ///   flutter_pty の作りとも噛み合う。 (8.3 形式の短い名前は、 日本語
-  ///   Windows では短い名前自体に日本語が残るため使えない — 実測)
+  /// ★ = ユーザー報告「ターミナルボタンを押すとセキュリティソフトに
+  ///   ブロックされてアプリが落ちてしまう」。
+  ///
+  ///   以前はここで **PowerShell に base64 を復元させて移動させる**一行を
+  ///   渡していた (日本語を含む場所へ移るため)。 画面のあるアプリが裏で
+  ///   PowerShell を起こし、 しかもその引数が base64 という形は、
+  ///   セキュリティソフトから見ると「難読化した指示を黙って走らせた」
+  ///   そのものなので、 撃たれてアプリごと巻き添えで落ちていた。
+  ///
+  ///   今は **cmd.exe (ComSpec) を既定**にして、 引数は一切渡さない。
+  ///   日本語を含む場所は [AgentCliSession] が受け持つ (8.3 形式の短い
+  ///   名前 → 駄目ならこのプロセスの現在地を一瞬だけ移して引き継がせる)
+  ///   ので、 ここで小細工する必要はもう無い。
+  ///
+  ///   [preferPowerShell] を立てれば今までどおり PowerShell も選べるが、
+  ///   **既定にはしない**。 その時も渡すのは `-NoLogo` だけ。
   static ({String exe, List<String> args, String dir}) shellLaunch(
-      String workingDir) {
-    final exe = systemShell();
-    if (!Platform.isWindows || isAscii(workingDir)) {
-      return (exe: exe, args: const <String>[], dir: workingDir);
-    }
-    if (!exe.toLowerCase().endsWith('powershell.exe')) {
-      // cmd では畳んだ指示を渡せないので、 英数字の場所で開く。
-      return (exe: exe, args: const <String>[], dir: _asciiStartDir());
-    }
-    final b64 = base64.encode(utf8.encode(workingDir));
+    String workingDir, {
+    bool preferPowerShell = false,
+  }) {
+    final exe = systemShell(preferPowerShell: preferPowerShell);
+    final isPs = exe.toLowerCase().endsWith('powershell.exe');
     return (
       exe: exe,
-      args: <String>[
-        '-NoLogo',
-        '-NoExit',
-        '-Command',
-        "Set-Location([Text.Encoding]::UTF8.GetString("
-            "[Convert]::FromBase64String('$b64')))",
-      ],
-      dir: _asciiStartDir(),
+      // ★ 起動時に走らせる細工は置かない (= 撃たれる形を作らない)。
+      args: isPs ? const <String>['-NoLogo'] : const <String>[],
+      dir: workingDir,
     );
   }
 
-  static String _asciiStartDir() {
-    final root = Platform.environment['SystemRoot'] ?? r'C:\Windows';
-    return isAscii(root) ? root : r'C:\Windows';
-  }
-
-  /// OS のシェル。 Windows は PowerShell (無ければ cmd)。
-  static String systemShell() {
+  /// OS のシェル。 Windows は **cmd.exe (ComSpec)** が既定。
+  ///
+  /// ★ 隠し PowerShell はセキュリティソフトに撃たれるので既定から外した
+  ///   (= ユーザー報告: ターミナルを押すとブロックされてアプリが落ちる)。
+  static String systemShell({bool preferPowerShell = false}) {
     if (Platform.isWindows) {
       final root = Platform.environment['SystemRoot'] ?? r'C:\Windows';
-      for (final p in [
-        '$root\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+      final ps = '$root\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+      final comspec = (Platform.environment['ComSpec'] ?? '').trim();
+      for (final p in <String>[
+        if (preferPowerShell) ps,
+        if (comspec.isNotEmpty) comspec,
         '$root\\System32\\cmd.exe',
+        if (!preferPowerShell) ps,
       ]) {
         try {
           if (File(p).existsSync()) return p;
@@ -732,6 +749,24 @@ class AgentCli {
     }
     final sh = Platform.environment['SHELL'] ?? '';
     return sh.isNotEmpty ? sh : '/bin/bash';
+  }
+
+  /// 起こす前に、 その実行ファイルが本当にあるか確かめる。
+  ///
+  /// ★ 擬似端末 (flutter_pty) は道筋が駄目だとネイティブ側で失敗するので、
+  ///   **Dart で拾える形にする前に**ここで弾く (= 落ちる前に止める)。
+  ///   道筋の区切りを含まない物 (`cmd.exe` のように PATH 頼み) は
+  ///   確かめようが無いので通す。
+  static String? launchPreflightError(String exePath) {
+    final p = exePath.trim();
+    if (p.isEmpty) return 'executable path is empty';
+    if (!p.contains('\\') && !p.contains('/')) return null;
+    try {
+      if (File(p).existsSync()) return null;
+    } catch (e) {
+      return '$e';
+    }
+    return 'not found: $p';
   }
 
   /// 英数字だけで出来ているか。

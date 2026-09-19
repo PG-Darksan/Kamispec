@@ -7,6 +7,8 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../models/mind_map_node.dart';
 import '../providers/mind_map_provider.dart';
+// ★ 絵の拡張子の共通一覧 (jpe / jfif 対応)。
+import '../utils/image_file_types.dart';
 import 'doc_preview.dart';
 
 /// ドラッグ中のスナップ先情報
@@ -263,13 +265,8 @@ class NodeWidget extends StatefulWidget {
     if (qIdx >= 0) path = path.substring(0, qIdx);
     final hIdx = path.indexOf('#');
     if (hIdx >= 0) path = path.substring(0, hIdx);
-    return path.endsWith('.jpg') ||
-        path.endsWith('.jpeg') ||
-        path.endsWith('.png') ||
-        path.endsWith('.gif') ||
-        path.endsWith('.webp') ||
-        path.endsWith('.bmp') ||
-        path.endsWith('.svg');
+    // ★ 絵かどうかは共通の一覧 + svg で (.jpe / .jfif も絵として出す)。
+    return isImageFilePath(path) || path.endsWith('.svg');
   }
 
   // ★ mqdefault は 16:9 (320x180) で上下の黒帯が無い。 hqdefault (480x360) は
@@ -742,14 +739,10 @@ class _NodeWidgetState extends State<NodeWidget> {
       final dot = p.lastIndexOf('.');
       attachExt = dot >= 0 ? p.substring(dot + 1).toLowerCase() : '';
     }
-    final isImageAttach = attachExt == 'jpg' ||
-        attachExt == 'jpeg' ||
-        // .jpe も JPEG (= 手元のファイルで見かける綴り)。
-        attachExt == 'jpe' ||
-        attachExt == 'png' ||
-        attachExt == 'gif' ||
-        attachExt == 'webp' ||
-        attachExt == 'bmp';
+    // ★ 絵かどうかは共通の一覧で (.jpe / .jfif も JPEG の綴り)。
+    //   models/mind_map_node.dart の visualHeight と services/mcp_server.dart
+    //   の _kImageExts も同じ一覧を見ている (ずれると当たり判定がずれる)。
+    final isImageAttach = isImageFileExt(attachExt);
     // 添付サムネイル (PDF / pptx 等の 1 枚目) があるか (= ユーザー要望:
     //   ドロップした PDF / pptx の表紙をサムネイル表示)。
     final hasThumb = (node.attachmentThumbPath ?? '').isNotEmpty;
@@ -2520,6 +2513,123 @@ class _PlayBtn extends StatelessWidget {
   }
 }
 
+/// フローチャート形状 (端子ブロック) の輪郭パス。
+///
+/// ★ = ユーザー要望「端子を配置するまでその形にならず、 四角で配置候補が
+///   現れるのが気になる」。 置く前の配置候補 (プレビュー) でも本物と同じ形を
+///   描けるよう、 形の計算をここへ一本化して公開する。 _FlowShapeBorder
+///   (実際のノード) と画面側のプレビューが同じ関数を使うので、 候補と置いた
+///   後の見た目が必ず一致する。
+///
+/// [kind] は `MindMapNode.shape` と同じ文字列:
+/// 'rounded' (既定 / 'stadium' も同じ) | 'rect' (処理) | 'diamond' (判断) |
+/// 'parallelogram' (入出力) | 'hexagon' (準備) | 'document' (書類) |
+/// 'cylinder' (データベース) | 'trapezoid' (手作業) | 'chevron' (工程) |
+/// 'circle' (結合子)
+Path flowShapePath(String kind, Rect rect) {
+  switch (kind) {
+    case 'rounded':
+    case 'stadium':
+      {
+        // NodeWidget の bodyRadius (18) と同じ。 小さい時は半分まで。
+        final r = math.min(18.0, rect.shortestSide / 2);
+        return Path()
+          ..addRRect(RRect.fromRectAndRadius(rect, Radius.circular(r)));
+      }
+    case 'rect':
+      {
+        final r = math.min(4.0, rect.shortestSide / 2);
+        return Path()
+          ..addRRect(RRect.fromRectAndRadius(rect, Radius.circular(r)));
+      }
+    case 'diamond':
+      return Path()
+        ..moveTo(rect.center.dx, rect.top)
+        ..lineTo(rect.right, rect.center.dy)
+        ..lineTo(rect.center.dx, rect.bottom)
+        ..lineTo(rect.left, rect.center.dy)
+        ..close();
+    case 'hexagon':
+      {
+        // 準備 (六角形)
+        final c = (rect.width * 0.16).clamp(8.0, 34.0).toDouble();
+        return Path()
+          ..moveTo(rect.left + c, rect.top)
+          ..lineTo(rect.right - c, rect.top)
+          ..lineTo(rect.right, rect.center.dy)
+          ..lineTo(rect.right - c, rect.bottom)
+          ..lineTo(rect.left + c, rect.bottom)
+          ..lineTo(rect.left, rect.center.dy)
+          ..close();
+      }
+    case 'document':
+      {
+        // 書類 (下辺が波打つ長方形)
+        final w = rect.height * 0.16;
+        return Path()
+          ..moveTo(rect.left, rect.top)
+          ..lineTo(rect.right, rect.top)
+          ..lineTo(rect.right, rect.bottom - w)
+          ..quadraticBezierTo(rect.left + rect.width * 0.75,
+              rect.bottom - w * 2.4, rect.center.dx, rect.bottom - w)
+          ..quadraticBezierTo(rect.left + rect.width * 0.25,
+              rect.bottom + w * 0.4, rect.left, rect.bottom - w)
+          ..close();
+      }
+    case 'cylinder':
+      {
+        // データベース (円筒)
+        final e = (rect.height * 0.18).clamp(6.0, 24.0).toDouble();
+        return Path()
+          ..moveTo(rect.left, rect.top + e)
+          ..arcToPoint(Offset(rect.right, rect.top + e),
+              radius: Radius.elliptical(rect.width / 2, e), clockwise: true)
+          ..lineTo(rect.right, rect.bottom - e)
+          ..arcToPoint(Offset(rect.left, rect.bottom - e),
+              radius: Radius.elliptical(rect.width / 2, e), clockwise: true)
+          ..close();
+      }
+    case 'trapezoid':
+      {
+        // 手作業 (台形)
+        final s = (rect.width * 0.14).clamp(8.0, 34.0).toDouble();
+        return Path()
+          ..moveTo(rect.left + s, rect.top)
+          ..lineTo(rect.right - s, rect.top)
+          ..lineTo(rect.right, rect.bottom)
+          ..lineTo(rect.left, rect.bottom)
+          ..close();
+      }
+    case 'chevron':
+      {
+        // 工程 (右向き矢印ブロック)
+        final s = (rect.width * 0.14).clamp(10.0, 40.0).toDouble();
+        return Path()
+          ..moveTo(rect.left, rect.top)
+          ..lineTo(rect.right - s, rect.top)
+          ..lineTo(rect.right, rect.center.dy)
+          ..lineTo(rect.right - s, rect.bottom)
+          ..lineTo(rect.left, rect.bottom)
+          ..lineTo(rect.left + s, rect.center.dy)
+          ..close();
+      }
+    case 'circle':
+      // 結合子 (楕円)
+      return Path()..addOval(rect);
+    default:
+      {
+        // parallelogram: 上辺を右へずらした平行四辺形
+        final double skew = (rect.width * 0.18).clamp(10.0, 40.0).toDouble();
+        return Path()
+          ..moveTo(rect.left + skew, rect.top)
+          ..lineTo(rect.right, rect.top)
+          ..lineTo(rect.right - skew, rect.bottom)
+          ..lineTo(rect.left, rect.bottom)
+          ..close();
+      }
+  }
+}
+
 /// フローチャート形状 (ひし形 / 平行四辺形) 用の ShapeBorder
 /// (= ユーザー要望: フローチャートの基本記法にブロックの形状を変えられる
 ///    ように)。 ShapeDecoration に渡すことで塗り・影・枠線が形状に沿う。
@@ -2534,97 +2644,9 @@ class _FlowShapeBorder extends ShapeBorder {
   @override
   EdgeInsetsGeometry get dimensions => EdgeInsets.all(side.width);
 
-  Path _path(Rect rect) {
-    switch (kind) {
-      case 'diamond':
-        return Path()
-          ..moveTo(rect.center.dx, rect.top)
-          ..lineTo(rect.right, rect.center.dy)
-          ..lineTo(rect.center.dx, rect.bottom)
-          ..lineTo(rect.left, rect.center.dy)
-          ..close();
-      case 'hexagon':
-        {
-          // 準備 (六角形)
-          final c = (rect.width * 0.16).clamp(8.0, 34.0).toDouble();
-          return Path()
-            ..moveTo(rect.left + c, rect.top)
-            ..lineTo(rect.right - c, rect.top)
-            ..lineTo(rect.right, rect.center.dy)
-            ..lineTo(rect.right - c, rect.bottom)
-            ..lineTo(rect.left + c, rect.bottom)
-            ..lineTo(rect.left, rect.center.dy)
-            ..close();
-        }
-      case 'document':
-        {
-          // 書類 (下辺が波打つ長方形)
-          final w = rect.height * 0.16;
-          return Path()
-            ..moveTo(rect.left, rect.top)
-            ..lineTo(rect.right, rect.top)
-            ..lineTo(rect.right, rect.bottom - w)
-            ..quadraticBezierTo(rect.left + rect.width * 0.75,
-                rect.bottom - w * 2.4, rect.center.dx, rect.bottom - w)
-            ..quadraticBezierTo(rect.left + rect.width * 0.25,
-                rect.bottom + w * 0.4, rect.left, rect.bottom - w)
-            ..close();
-        }
-      case 'cylinder':
-        {
-          // データベース (円筒)
-          final e = (rect.height * 0.18).clamp(6.0, 24.0).toDouble();
-          return Path()
-            ..moveTo(rect.left, rect.top + e)
-            ..arcToPoint(Offset(rect.right, rect.top + e),
-                radius: Radius.elliptical(rect.width / 2, e),
-                clockwise: true)
-            ..lineTo(rect.right, rect.bottom - e)
-            ..arcToPoint(Offset(rect.left, rect.bottom - e),
-                radius: Radius.elliptical(rect.width / 2, e),
-                clockwise: true)
-            ..close();
-        }
-      case 'trapezoid':
-        {
-          // 手作業 (台形)
-          final s = (rect.width * 0.14).clamp(8.0, 34.0).toDouble();
-          return Path()
-            ..moveTo(rect.left + s, rect.top)
-            ..lineTo(rect.right - s, rect.top)
-            ..lineTo(rect.right, rect.bottom)
-            ..lineTo(rect.left, rect.bottom)
-            ..close();
-        }
-      case 'chevron':
-        {
-          // 工程 (右向き矢印ブロック)
-          final s = (rect.width * 0.14).clamp(10.0, 40.0).toDouble();
-          return Path()
-            ..moveTo(rect.left, rect.top)
-            ..lineTo(rect.right - s, rect.top)
-            ..lineTo(rect.right, rect.center.dy)
-            ..lineTo(rect.right - s, rect.bottom)
-            ..lineTo(rect.left, rect.bottom)
-            ..lineTo(rect.left + s, rect.center.dy)
-            ..close();
-        }
-      case 'circle':
-        // 結合子 (楕円)
-        return Path()..addOval(rect);
-      default:
-        {
-          // parallelogram: 上辺を右へずらした平行四辺形
-          final double skew = (rect.width * 0.18).clamp(10.0, 40.0).toDouble();
-          return Path()
-            ..moveTo(rect.left + skew, rect.top)
-            ..lineTo(rect.right, rect.top)
-            ..lineTo(rect.right - skew, rect.bottom)
-            ..lineTo(rect.left, rect.bottom)
-            ..close();
-        }
-    }
-  }
+  /// ★ 形の計算は [flowShapePath] へ一本化した (= 置く前の配置候補と
+  ///   置いた後の形を必ず同じにするため)。
+  Path _path(Rect rect) => flowShapePath(kind, rect);
 
   @override
   Path getInnerPath(Rect rect, {TextDirection? textDirection}) =>

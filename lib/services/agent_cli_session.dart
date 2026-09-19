@@ -88,6 +88,56 @@ class AgentCliSession extends ChangeNotifier {
   /// 「止める」 を押して終わらせたか。
   bool stoppedByUser = false;
 
+  // ── 起こせなかった時の控え (= ユーザー報告: 「ターミナルボタンを押すと
+  //    セキュリティソフトにブロックされてアプリが落ちてしまう」) ──
+  //
+  //   ★ 落ちていた元は **隠し PowerShell に base64 の一行を渡す**形で、
+  //     それは [AgentCli.shellLaunch] から取り除いてある。 撃たれていたのは
+  //     アプリのプロセスそのもの (= Dart の例外では拾えない) なので、
+  //     ここの受け止めは**その先の保険**であって、 落ちていた原因への
+  //     手当てではない。
+  //
+  //   擬似端末を作る所は、 ネイティブの DLL を読み込む所から
+  //   `CreateProcessW` まで、 いくつも転ぶ口がある。 どこで転んでも
+  //   **全部ここで受け止めて**画面に理由を出し、 「もう一度」 を出せる
+  //   ようにする。
+  //
+  //   ★ 起動直後に死ぬ形 (セキュリティソフトが子だけ撃った時など) は
+  //     例外にならないので、 [_kLaunchWindow] の間に何も喋らないまま
+  //     終わった物も「起こせなかった」 として扱う。 ただし**言い切らない**
+  //     ([launchDiedEarly] を立てて、 画面は柔らかい言い方に変える) —
+  //     引数の誤りやログイン切れでも同じ形になるため。
+  String? launchError;
+  bool get launchFailed => launchError != null;
+
+  /// 「何も喋らないまま、 すぐ死んだ」 で失敗と見なしたか。
+  ///
+  /// ★ セキュリティソフトのせいだと決めつけない為の目印
+  ///   (画面はこれを見て言い方を変える)。
+  bool launchDiedEarly = false;
+
+  /// 起動の失敗と見なす時間 (これより早く、 何も出さずに死んだら失敗)。
+  static const Duration _kLaunchWindow = Duration(seconds: 3);
+
+  /// 終わった後、 出力を汲み切るのに待つ時間。
+  ///
+  /// ★ flutter_pty は出力と終了を**別の口**で届ける (実測: ネイティブ側で
+  ///   読み取りと終了待ちが別々の糸になっていて、 それぞれ別の Port へ
+  ///   投げている)。 `exitCode` の説明にも「終了が返った時点で出力を
+  ///   配り終えている保証は無い」 と明記されている。 そのまま判定すると、
+  ///   CLI がエラー文を出してすぐ死んだ時にその文を取りこぼしたまま
+  ///   「起こせなかった (= セキュリティソフト?)」 と誤って出してしまう。
+  static const Duration _kDrainWindow = Duration(milliseconds: 800);
+
+  /// 一度でも出力があったか (= 本当に動き出したか)。
+  bool _sawOutput = false;
+
+  /// 出力の流れが終わったか (擬似端末が口を閉じた時に立つ)。
+  Completer<void>? _outputDone;
+
+  /// 実際に終わった時刻 (汲み切るのに待った分を勘定に入れない為)。
+  DateTime? _exitedAt;
+
   Pty? _pty;
   StreamSubscription<String>? _sub;
 
@@ -275,15 +325,46 @@ class AgentCliSession extends ChangeNotifier {
     notifyListeners();
   }
 
-  final Completer<int> _finished = Completer<int>();
+  Completer<int> _finished = Completer<int>();
 
   /// 終わるまで待つ (画面を閉じていても必ず 1 回返る)。
   Future<int> get finished => _finished.future;
+
+  /// もう一度起こす (= 画面の「もう一度」)。
+  ///
+  /// ★ 起こせなかった時に、 同じ物をそのまま組み直せるようにする。
+  ///   一度終わった実行は置き場から外れているので、 入れ直してから走らせる。
+  void retry() {
+    if (_running) return;
+    exitCode = null;
+    stoppedByUser = false;
+    launchError = null;
+    launchDiedEarly = false;
+    _sawOutput = false;
+    _outputDone = null;
+    _exitedAt = null;
+    if (_finished.isCompleted) _finished = Completer<int>();
+    if (!AgentCliRunner.active.contains(this)) AgentCliRunner.active.add(this);
+    final f = _finished.future;
+    unawaited(f.whenComplete(() => AgentCliRunner.active.remove(this)));
+    terminal.write('\r\n');
+    start();
+    notifyListeners();
+  }
 
   void start() {
     if (_running || exitCode != null) return;
     // 日本語を含む道筋のために、 一時的に現在地を移した時の戻し先。
     String? savedCwd;
+    // ★ 起こす前に、 その実行ファイルが本当にあるか見る。 擬似端末は
+    //   ネイティブ側で転ぶと Dart では拾えないので、 転ぶ前に止める。
+    final pre = AgentCli.launchPreflightError(exePath);
+    if (pre != null) {
+      launchError = pre;
+      terminal.write('\r\n[起動できませんでした] $pre\r\n');
+      _onExit(-1);
+      return;
+    }
     try {
       // ★ 何を走らせているかを先に出す (= ユーザー要望: 裏で何が
       //   走っているのか分からない)。
@@ -317,8 +398,11 @@ class AgentCliSession extends ChangeNotifier {
         arguments: arguments,
         workingDirectory: cwdArg,
         // 端末の大きさはそのまま伝える (CLI はこれを見て表示を組む)。
-        columns: terminal.viewWidth,
-        rows: terminal.viewHeight,
+        // ★ ただし 0 は渡さない。 まだ一度も組まれていない端末は 0 を返し、
+        //   Windows の擬似端末 (CreatePseudoConsole) は 0 を渡されると
+        //   作れずに失敗する (= 起動できない口の 1 つ)。
+        columns: terminal.viewWidth > 0 ? terminal.viewWidth : 80,
+        rows: terminal.viewHeight > 0 ? terminal.viewHeight : 25,
         // ★ 日本語を含む値は壊れて渡るので、 英数字だけに整えてから
         //   渡す (= 実測: Path と PSModulePath が壊れていた)。
         //   この実行にだけ足す物 (API キーなど) は後ろに重ねる。
@@ -336,15 +420,23 @@ class AgentCliSession extends ChangeNotifier {
       _startBusyTimer();
       // ★ 文字の切れ目を跨いでも壊れないように、 流れたまま解く
       //   (1 回分ずつ utf8.decode すると、 途中で切れた文字が □ になる)。
+      final drained = Completer<void>();
+      _outputDone = drained;
       _sub = pty.output
           .cast<List<int>>()
           .transform(const Utf8Decoder(allowMalformed: true))
           .listen((chunk) {
         // 順番待ちの判断に使う「最後に何か出た時刻」。
         _lastOutputAt = DateTime.now();
+        // ★ 一度でも喋れば「本当に動き出した」 (= 起動の失敗ではない)。
+        if (chunk.isNotEmpty) _sawOutput = true;
         terminal.write(chunk);
       }, onError: (Object e) {
         terminal.write('\r\n[エラー] $e\r\n');
+      }, onDone: () {
+        // ★ 擬似端末が口を閉じた = これ以上は出て来ない。 終わりの判定は
+        //   これを待ってから行う ([_kDrainWindow])。
+        if (!drained.isCompleted) drained.complete();
       });
       // 打った物・矢印キーなどは、 端末がまとめて教えてくれる。
       terminal.onOutput = (data) {
@@ -357,14 +449,15 @@ class AgentCliSession extends ChangeNotifier {
           pty.resize(h, w);
         } catch (_) {}
       };
-      unawaited(pty.exitCode.then(_onExit).catchError((Object e) {
-        terminal.write('\r\n[エラー] $e\r\n');
-        _onExit(-1);
-        return -1;
-      }));
+      unawaited(_watchExit(pty));
       notifyListeners();
-    } catch (e) {
-      terminal.write('端末を開けませんでした: $e\r\n');
+    } catch (e, st) {
+      // ★ 擬似端末は DLL の読み込みから `CreateProcessW` まで転ぶ口が多い。
+      //   どこで転んでもアプリは落とさず、 理由だけ画面に出す
+      //   (= ユーザー報告: ターミナルを押すとアプリが落ちる)。
+      debugPrint('AgentCliSession.start failed: $e\n$st');
+      launchError = '$e';
+      terminal.write('\r\n[起動できませんでした] $e\r\n');
       _onExit(-1);
     } finally {
       if (savedCwd != null) {
@@ -375,8 +468,66 @@ class AgentCliSession extends ChangeNotifier {
     }
   }
 
+  /// 終わりを待って片付ける。
+  ///
+  /// ★ ここで `await` を 1 つ挟むのが肝。 出力と終了は別の口から届くので、
+  ///   速く死んだ相手では**終了の方が先に着く**。 そのまま判定すると、
+  ///   CLI が出したエラー文 (引数違い・ログイン切れなど) を画面に出す前に
+  ///   購読を切ってしまい、 端末には最初の 1 行と `[終了しました]` しか
+  ///   残らないまま「セキュリティソフトに止められたかも」 と誤った案内を
+  ///   出してしまう。
+  Future<void> _watchExit(Pty pty) async {
+    int code;
+    try {
+      code = await pty.exitCode;
+    } catch (e) {
+      // ★ ネイティブ側から返ってきた失敗も、 ここで受け止めて終わらせる
+      //   (投げっぱなしにすると拾い手の無い例外になる)。
+      launchError ??= '$e';
+      terminal.write('\r\n[エラー] $e\r\n');
+      _onExit(-1);
+      return;
+    }
+    // ★ 「すぐ死んだか」 は**終わった時刻**で見る (汲み切るのに待った分を
+    //   足してしまうと、 待った所為で判定が変わる)。
+    _exitedAt = DateTime.now();
+    await _drainOutput();
+    _onExit(code);
+  }
+
+  /// まだ配られていない出力を汲み切る (長くても [_kDrainWindow])。
+  Future<void> _drainOutput() async {
+    final d = _outputDone;
+    if (d != null && !d.isCompleted) {
+      try {
+        await d.future.timeout(_kDrainWindow);
+      } catch (_) {
+        // 来なくても先へ進む (待ち続けて終われない方が困る)。
+      }
+    }
+    // 受け取った分が端末に描かれるまで、 もう 1 拍だけ譲る。
+    await Future<void>.delayed(Duration.zero);
+  }
+
   void _onExit(int code) {
     if (exitCode != null) return;
+    // ★ 起こした直後に、 何も喋らないまま死んだ物は「起こせなかった」 と
+    //   見なす (= セキュリティソフトに子だけ撃たれた時など。 例外は
+    //   飛んでこないので、 時間と出力の有無でしか見分けられない)。
+    //   ★ 出力は [_drainOutput] で汲み切った後に見る。 先に見ると、
+    //     エラー文を出してすぐ死んだ相手を取りこぼす。
+    //   ★ 決めつけない。 [launchDiedEarly] を立てて、 画面には
+    //     「起動直後に終了した」 という事実の方を出す。
+    final began = _startedAt;
+    if (launchError == null &&
+        !stoppedByUser &&
+        code != 0 &&
+        !_sawOutput &&
+        began != null &&
+        (_exitedAt ?? DateTime.now()).difference(began) < _kLaunchWindow) {
+      launchError = 'exited immediately (code $code)';
+      launchDiedEarly = true;
+    }
     exitCode = code;
     _running = false;
     _readyAfterStart = false;
@@ -471,9 +622,22 @@ class AgentCliRunner {
   static final List<AgentCliSession> active = <AgentCliSession>[];
 
   /// 走らせ始める。 終わったら置き場から外す。
+  ///
+  /// ★ ここで転んでも画面は開いたままにする (理由を出して「もう一度」)。
+  ///   = ユーザー報告「ターミナルボタンを押すとセキュリティソフトに
+  ///   ブロックされてアプリが落ちてしまう」 の**手当てそのものではない**
+  ///   (撃たれていたのはアプリのプロセスで、 Dart の例外ではない)。
+  ///   効いているのは [AgentCli.shellLaunch] から隠し PowerShell +
+  ///   base64 を外した所。 ここはその先の保険。
   static AgentCliSession begin(AgentCliSession session) {
     active.add(session);
-    session.start();
+    try {
+      session.start();
+    } catch (e, st) {
+      debugPrint('AgentCliRunner.begin failed: $e\n$st');
+      session.launchError ??= '$e';
+      session._onExit(-1);
+    }
     unawaited(session.finished.whenComplete(() {
       active.remove(session);
     }));

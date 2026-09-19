@@ -27,6 +27,8 @@ import '../services/home_shortcut_service.dart';
 // AI に端末のファイル / Web を読ませる時の取り出し部 (= ユーザー要望)。
 import '../services/talk_reference.dart';
 import '../utils/build_flags.dart';
+// ★ 絵の拡張子の共通一覧 (jpe / jfif 対応)。
+import '../utils/image_file_types.dart';
 
 /// カレンダーのイベント（1 日の予定）
 /// [startTime] / [endTime] は "HH:mm" 形式で、null なら終日イベント
@@ -9426,33 +9428,32 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Configurar',
       'ru': 'Настроить',
     },
+    // ★ = ユーザー要望: API キーはもう設定しない。 設定 → API クレジット へ誘導。
     'quiz.noApiKey': {
-      'ja': 'API キー未設定',
-      'en': 'API key not set',
-      'zh': '未设置 API 密钥',
-      'ko': 'API 키 미설정',
-      'es': 'Clave de API no configurada',
-      'fr': 'Clé API non configurée',
-      'de': 'API-Schlüssel nicht festgelegt',
-      'pt': 'Chave de API não configurada',
-      'ru': 'API-ключ не задан',
+      'ja': 'API クレジット未チャージ',
+      'en': 'No API credits',
+      'zh': 'API 额度未充值',
+      'ko': 'API 크레딧 미충전',
+      'es': 'Sin créditos de API',
+      'fr': 'Aucun crédit API',
+      'de': 'Kein API-Guthaben',
+      'pt': 'Sem créditos de API',
+      'ru': 'Нет API-кредитов',
     },
     'quiz.noApiKeyBody': {
-      'ja': 'クイズ生成には Gemini API キーが必要です。\nAI 設定から API キーを登録してください。',
-      'en':
-          'Quiz generation requires a Gemini API key.\nRegister an API key in AI settings.',
-      'zh': '生成测验需要 Gemini API 密钥。\n请在 AI 设置中注册 API 密钥。',
-      'ko': '퀴즈 생성에는 Gemini API 키가 필요합니다.\nAI 설정에서 API 키를 등록하세요.',
+      'ja': 'クイズ生成には AI が必要です。\nAI クレジットをチャージしてください（設定 → API クレジット）。',
+      'en': 'Quiz generation needs AI.\nAdd credit in Settings → API credits.',
+      'zh': '生成测验需要 AI。\n请充值（设置 → API 额度）。',
+      'ko': '퀴즈 생성에는 AI가 필요합니다.\n크레딧을 충전하세요(설정 → API 크레딧).',
       'es':
-          'La generación de cuestionarios requiere una clave de API de Gemini.\nRegistra una clave de API en los ajustes de IA.',
+          'La generación de cuestionarios necesita IA.\nRecarga créditos en Ajustes → Créditos de API.',
       'fr':
-          'La génération de quiz nécessite une clé API Gemini.\nEnregistrez une clé API dans les paramètres IA.',
+          'La génération de quiz nécessite l’IA.\nRechargez dans Paramètres → Crédits API.',
       'de':
-          'Die Quiz-Generierung erfordert einen Gemini-API-Schlüssel.\nRegistrieren Sie einen API-Schlüssel in den KI-Einstellungen.',
+          'Die Quiz-Generierung benötigt KI.\nGuthaben unter Einstellungen → API-Guthaben aufladen.',
       'pt':
-          'A geração de quiz requer uma chave de API do Gemini.\nRegistre uma chave de API nas configurações de IA.',
-      'ru':
-          'Для генерации теста нужен API-ключ Gemini.\nЗарегистрируйте ключ в настройках ИИ.',
+          'A geração de quiz precisa de IA.\nRecarregue em Configurações → Créditos de API.',
+      'ru': 'Для генерации теста нужен ИИ.\nПополните в Настройки → API-кредиты.',
     },
     'quiz.nQuestions': {
       'ja': '{n}問',
@@ -9651,6 +9652,20 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Notizliste',
       'pt': 'Lista de notas',
       'ru': 'Список заметок',
+    },
+    // ★ = ユーザー要望「モバイル版でも長押ししたらクリップボードの貼り付け
+    //   ではなく、 PC 版の右クリックの項目が出るように」。 長押し = 即貼り付け
+    //   をやめた代わりに、 右クリックメニューの項目として貼り付けを残す。
+    'ctx.pasteClipboard': {
+      'ja': 'クリップボードから貼り付け',
+      'en': 'Paste from clipboard',
+      'zh': '从剪贴板粘贴',
+      'ko': '클립보드에서 붙여넣기',
+      'es': 'Pegar desde el portapapeles',
+      'fr': 'Coller depuis le presse-papiers',
+      'de': 'Aus der Zwischenablage einfügen',
+      'pt': 'Colar da área de transferência',
+      'ru': 'Вставить из буфера обмена',
     },
     'ctx.bulkDownloadMedia': {
       'ja': '画像と動画を一括ダウンロード',
@@ -10182,17 +10197,19 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Mover para uma pasta',
       'ru': 'Переместить в папку',
     },
+    // ★ = ユーザー要望: 呼称を「API クレジット」 へ (キーは設定しないので
+    //   「API キーを確認」 では利用者が手を打てない)。
     'flash.aiGenFailed': {
-      'ja': 'AI 生成に失敗しました (API キー / 通信を確認してください)',
-      'en': 'AI generation failed (check the API key / connection)',
-      'zh': 'AI 生成失败（请检查 API 密钥 / 网络）',
-      'ko': 'AI 생성에 실패했습니다 (API 키 / 통신을 확인하세요)',
+      'ja': 'AI 生成に失敗しました (API クレジットの残高 / 通信を確認してください)',
+      'en': 'AI generation failed (check your API credits / connection)',
+      'zh': 'AI 生成失败（请检查 API 额度 / 网络）',
+      'ko': 'AI 생성에 실패했습니다 (API 크레딧 잔액 / 통신을 확인하세요)',
       'es':
-          'Error en la generación con IA (revisa la clave de API / la conexión)',
-      'fr': 'Échec de la génération IA (vérifiez la clé API / la connexion)',
-      'de': 'KI-Generierung fehlgeschlagen (API-Schlüssel / Verbindung prüfen)',
-      'pt': 'Falha na geração por IA (verifique a chave de API / a conexão)',
-      'ru': 'Ошибка генерации ИИ (проверьте API-ключ / соединение)',
+          'Error en la generación con IA (revisa tus créditos de API / la conexión)',
+      'fr': 'Échec de la génération IA (vérifiez vos crédits API / la connexion)',
+      'de': 'KI-Generierung fehlgeschlagen (API-Guthaben / Verbindung prüfen)',
+      'pt': 'Falha na geração por IA (verifique seus créditos de API / a conexão)',
+      'ru': 'Ошибка генерации ИИ (проверьте API-кредиты / соединение)',
     },
     'flash.frontQ': {
       'ja': '表 (問題)',
@@ -10337,54 +10354,57 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Lado para mostrar a imagem:',
       'ru': 'Сторона для изображения:',
     },
+    // ★ = ユーザー要望: API キーはもう設定しない。 「未設定」 の案内は
+    //   設定 → API クレジット (残高とチャージ) へ誘導する文に統一。
     'flash.apiKeyNotSet': {
-      'ja': 'AI の API キーが未設定です（右上⋮ → AI設定）',
-      'en': 'The AI API key is not set (top-right ⋮ → AI settings)',
-      'zh': '未设置 AI 的 API 密钥（右上角 ⋮ → AI 设置）',
-      'ko': 'AI API 키가 미설정입니다 (오른쪽 위 ⋮ → AI 설정)',
+      'ja': 'AI がまだ使えません（右上⋮ → 設定 → API クレジット でチャージ）',
+      'en': 'AI is not available yet (top-right ⋮ → Settings → API credits)',
+      'zh': 'AI 尚不可用（右上角 ⋮ → 设置 → API 额度 充值）',
+      'ko': 'AI를 아직 사용할 수 없습니다 (오른쪽 위 ⋮ → 설정 → API 크레딧 충전)',
       'es':
-          'La clave de API de IA no está configurada (arriba a la derecha ⋮ → Ajustes de IA)',
+          'La IA aún no está disponible (arriba a la derecha ⋮ → Ajustes → Créditos de API)',
       'fr':
-          'La clé API de l’IA n’est pas configurée (en haut à droite ⋮ → Paramètres IA)',
+          'L’IA n’est pas encore disponible (en haut à droite ⋮ → Paramètres → Crédits API)',
       'de':
-          'Der KI-API-Schlüssel ist nicht festgelegt (oben rechts ⋮ → KI-Einstellungen)',
+          'KI ist noch nicht verfügbar (oben rechts ⋮ → Einstellungen → API-Guthaben)',
       'pt':
-          'A chave de API da IA não está configurada (canto superior direito ⋮ → Configurações de IA)',
-      'ru': 'API-ключ ИИ не задан (вверху справа ⋮ → Настройки ИИ)',
+          'A IA ainda não está disponível (canto superior direito ⋮ → Configurações → Créditos de API)',
+      'ru': 'ИИ пока недоступен (вверху справа ⋮ → Настройки → API-кредиты)',
     },
     'flash.apiKeyNotSetRightClick': {
-      'ja': 'AI の API キーが未設定です。ボタンを右クリック（長押し）して設定してください',
+      'ja': 'AI がまだ使えません。ボタンを右クリック（長押し）して API クレジットをチャージしてください',
       'en':
-          'The AI API key is not set. Right-click (long-press) the button to set it.',
-      'zh': '未设置 AI 的 API 密钥。请右键（长按）该按钮进行设置。',
-      'ko': 'AI API 키가 미설정입니다. 버튼을 우클릭(길게 누르기)하여 설정하세요.',
+          'AI is not available yet. Right-click (long-press) the button to add API credits.',
+      'zh': 'AI 尚不可用。请右键（长按）该按钮为 API 额度充值。',
+      'ko': 'AI를 아직 사용할 수 없습니다. 버튼을 우클릭(길게 누르기)하여 API 크레딧을 충전하세요.',
       'es':
-          'La clave de API de IA no está configurada. Haz clic derecho (mantén pulsado) el botón para configurarla.',
+          'La IA aún no está disponible. Haz clic derecho (mantén pulsado) en el botón para recargar créditos de API.',
       'fr':
-          'La clé API de l’IA n’est pas configurée. Faites un clic droit (appui long) sur le bouton pour la définir.',
+          'L’IA n’est pas encore disponible. Faites un clic droit (appui long) sur le bouton pour recharger des crédits API.',
       'de':
-          'Der KI-API-Schlüssel ist nicht festgelegt. Klicken Sie mit der rechten Maustaste (lange drücken) auf die Schaltfläche, um ihn festzulegen.',
+          'KI ist noch nicht verfügbar. Klicken Sie mit der rechten Maustaste (lange drücken) auf die Schaltfläche, um API-Guthaben aufzuladen.',
       'pt':
-          'A chave de API da IA não está configurada. Clique com o botão direito (pressione e segure) no botão para configurá-la.',
+          'A IA ainda não está disponível. Clique com o botão direito (pressione e segure) no botão para recarregar créditos de API.',
       'ru':
-          'API-ключ ИИ не задан. Щёлкните правой кнопкой (долгое нажатие) по кнопке, чтобы задать его.',
+          'ИИ пока недоступен. Щёлкните правой кнопкой (долгое нажатие) по кнопке, чтобы пополнить API-кредиты.',
     },
+    // (provider の PDF → 生成でも Exception の文言になるので単独で読める文に)
     'flash.apiKeyNotSetDocGen': {
-      'ja': 'AI の API キーが未設定です。「資料から生成」を右クリック（長押し）して設定してください',
+      'ja': 'AI がまだ使えません。AI のボタンを右クリック（長押し）して API クレジットをチャージしてください',
       'en':
-          'The AI API key is not set. Right-click (long-press) “Generate from document” to set it.',
-      'zh': '未设置 AI 的 API 密钥。请右键（长按）“从资料生成”进行设置。',
-      'ko': 'AI API 키가 미설정입니다. “자료에서 생성”을 우클릭(길게 누르기)하여 설정하세요.',
+          'AI is not available yet. Right-click (long-press) the AI button to add API credits.',
+      'zh': 'AI 尚不可用。请右键（长按）AI 按钮为 API 额度充值。',
+      'ko': 'AI를 아직 사용할 수 없습니다. AI 버튼을 우클릭(길게 누르기)하여 API 크레딧을 충전하세요.',
       'es':
-          'La clave de API de IA no está configurada. Haz clic derecho (mantén pulsado) en “Generar desde documento” para configurarla.',
+          'La IA aún no está disponible. Haz clic derecho (mantén pulsado) en el botón de IA para recargar créditos de API.',
       'fr':
-          'La clé API de l’IA n’est pas configurée. Faites un clic droit (appui long) sur « Générer depuis un document » pour la définir.',
+          'L’IA n’est pas encore disponible. Faites un clic droit (appui long) sur le bouton IA pour recharger des crédits API.',
       'de':
-          'Der KI-API-Schlüssel ist nicht festgelegt. Klicken Sie mit der rechten Maustaste (lange drücken) auf „Aus Dokument generieren“, um ihn festzulegen.',
+          'KI ist noch nicht verfügbar. Klicken Sie mit der rechten Maustaste (lange drücken) auf die KI-Schaltfläche, um API-Guthaben aufzuladen.',
       'pt':
-          'A chave de API da IA não está configurada. Clique com o botão direito (pressione e segure) em “Gerar a partir de documento” para configurá-la.',
+          'A IA ainda não está disponível. Clique com o botão direito (pressione e segure) no botão de IA para recarregar créditos de API.',
       'ru':
-          'API-ключ ИИ не задан. Щёлкните правой кнопкой (долгое нажатие) по «Создать из документа», чтобы задать его.',
+          'ИИ пока недоступен. Щёлкните правой кнопкой (долгое нажатие) по кнопке ИИ, чтобы пополнить API-кредиты.',
     },
     'flash.backsGenerated': {
       'ja': '裏面を {done} 件生成しました',
@@ -11350,31 +11370,42 @@ class MindMapProvider extends ChangeNotifier {
     },
     // 置く印ごとの言い方 (= ユーザー報告: ○ を選んでいるのに「チェックを
     //   置く」 と出る)。
+    // ★ 丸 (markCircle) と 四角 (markSquare) は、 別の要望「印の丸・四角と
+    //   図形の丸・四角は同じ物だからまとめて欲しい」 で印の帯から外した。
+    //   今その形を出すのは図形の「楕円」 (pdfdraw.ellipse) と「四角」
+    //   (pdfdraw.rect) のボタンで、 そちらにも別々の説明が出る。
+    //   この 2 つの鍵は、 昔の描き込みに残っている circle / square の印を
+    //   指す時のために残してある (消すと帯に戻した時に説明が消える)。
     'pdfdraw.markCircle': {
-      'ja': '○ を置く', 'en': 'Place a circle',
+      // ★ = ユーザー要望「図形ごとに丸とか異なる説明を」。 記号だけでなく
+      //   形の名前も添える ('pdfdraw.check' の「チェック (✓)」 と同じ書式)。
+      'ja': '丸 (○) を置く', 'en': 'Place a circle',
       'zh': '放置圆圈', 'ko': '○ 놓기',
-      'es': 'Colocar un circulo', 'fr': 'Placer un cercle',
-      'de': 'Kreis setzen', 'pt': 'Colocar um circulo',
+      'es': 'Colocar un círculo', 'fr': 'Placer un cercle',
+      'de': 'Kreis setzen', 'pt': 'Colocar um círculo',
       'ru': 'Поставить кружок',
     },
+    // ★ 図形の「十字 (＋)」 と紛れないよう、 どの言語でも × を添える
+    //   (= ユーザー要望: 図形ごとに違う説明。 英語の 'Cross' だけでは
+    //   ＋ の図形と読み分けられなかった)。
     'pdfdraw.markCross': {
-      'ja': '× を置く', 'en': 'Place a cross',
-      'zh': '放置叉号', 'ko': '× 놓기',
-      'es': 'Colocar una cruz', 'fr': 'Placer une croix',
-      'de': 'Kreuz setzen', 'pt': 'Colocar uma cruz',
-      'ru': 'Поставить крестик',
+      'ja': 'バツ (×) を置く', 'en': 'Place a cross (×)',
+      'zh': '放置叉号 (×)', 'ko': '× 놓기',
+      'es': 'Colocar una cruz (×)', 'fr': 'Placer une croix (×)',
+      'de': 'Kreuz setzen (×)', 'pt': 'Colocar uma cruz (×)',
+      'ru': 'Поставить крестик (×)',
     },
     'pdfdraw.markTriangle': {
-      'ja': '△ を置く', 'en': 'Place a triangle',
+      'ja': '三角 (△) を置く', 'en': 'Place a triangle',
       'zh': '放置三角', 'ko': '△ 놓기',
-      'es': 'Colocar un triangulo', 'fr': 'Placer un triangle',
-      'de': 'Dreieck setzen', 'pt': 'Colocar um triangulo',
+      'es': 'Colocar un triángulo', 'fr': 'Placer un triangle',
+      'de': 'Dreieck setzen', 'pt': 'Colocar um triângulo',
       'ru': 'Поставить треугольник',
     },
     'pdfdraw.markSquare': {
-      'ja': '□ を置く', 'en': 'Place a square',
+      'ja': '四角 (□) を置く', 'en': 'Place a square',
       'zh': '放置方块', 'ko': '□ 놓기',
-      'es': 'Colocar un cuadrado', 'fr': 'Placer un carre',
+      'es': 'Colocar un cuadrado', 'fr': 'Placer un carré',
       'de': 'Quadrat setzen', 'pt': 'Colocar um quadrado',
       'ru': 'Поставить квадрат',
     },
@@ -11432,6 +11463,20 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Nummer fixieren (nicht hochzählen)',
       'pt': 'Fixar o número (não incrementar)',
       'ru': 'Зафиксировать номер (без увеличения)',
+    },
+    // 画像の注釈の連番チップ (次に置く番号。 押すと 1 に戻す)。
+    // ★ = ユーザー報告「印の説明文が図形ごとに違わない」 の直しついでに、
+    //   日本語直書きで残っていた案内を多言語化。
+    'pdfdraw.seqReset': {
+      'ja': '次に置く番号 (押すと 1 に戻す)',
+      'en': 'Next number (press to reset to 1)',
+      'zh': '下一个编号（按下重置为 1）',
+      'ko': '다음 번호 (누르면 1로 되돌림)',
+      'es': 'Siguiente número (pulsa para volver a 1)',
+      'fr': 'Numéro suivant (appuyer pour revenir à 1)',
+      'de': 'Nächste Nummer (Drücken setzt auf 1 zurück)',
+      'pt': 'Próximo número (toque para voltar a 1)',
+      'ru': 'Следующий номер (нажмите, чтобы сбросить на 1)',
     },
     'pdfdraw.fixedSize': {
       'ja': '大きさを固定して置く',
@@ -12821,9 +12866,17 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Escrever uma instrução',
       'ru': 'Ввести указание',
     },
+    // ★ = ユーザー要望: API キーはもう設定しない (API クレジットで動く)。
     'ai.inAppMode': {
-      'ja': 'アプリの AI (API キー使用)',
-      'en': 'In-app AI (uses your API key)',
+      'ja': 'アプリの AI (API クレジット使用)',
+      'en': 'In-app AI (uses API credits)',
+      'zh': '应用内 AI（使用 API 额度）',
+      'ko': '앱 내 AI (API 크레딧 사용)',
+      'es': 'IA de la app (usa créditos de API)',
+      'fr': 'IA de l’app (utilise les crédits API)',
+      'de': 'App-KI (nutzt API-Guthaben)',
+      'pt': 'IA do app (usa créditos de API)',
+      'ru': 'ИИ приложения (использует API-кредиты)',
     },
     'ai.questionMode': {
       'ja': '質問モード（ブラウザの AI にタイトルを渡す）',
@@ -12836,16 +12889,17 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Modo pergunta (passar o título para a IA do navegador)',
       'ru': 'Режим вопроса (передать заголовок браузерному ИИ)',
     },
+    // ★ = ユーザー要望: API キーはもう設定しない (API クレジットで動く)。
     'ai.genChildrenApi': {
-      'ja': '子要素を生成（API キー使用）',
-      'en': 'Generate children (uses API key)',
-      'zh': '生成子要素（使用 API 密钥）',
-      'ko': '자식 요소 생성(API 키 사용)',
-      'es': 'Generar elementos hijos (usa la clave API)',
-      'fr': 'Générer les enfants (utilise la clé API)',
-      'de': 'Untergeordnete generieren (nutzt API-Schlüssel)',
-      'pt': 'Gerar filhos (usa a chave de API)',
-      'ru': 'Создать дочерние (через API-ключ)',
+      'ja': '子要素を生成（API クレジット使用）',
+      'en': 'Generate children (uses API credits)',
+      'zh': '生成子要素（使用 API 额度）',
+      'ko': '자식 요소 생성(API 크레딧 사용)',
+      'es': 'Generar elementos hijos (usa créditos de API)',
+      'fr': 'Générer les enfants (utilise les crédits API)',
+      'de': 'Untergeordnete generieren (nutzt API-Guthaben)',
+      'pt': 'Gerar filhos (usa créditos de API)',
+      'ru': 'Создать дочерние (использует API-кредиты)',
     },
     'ai.askGetAnswer': {
       'ja': 'AI に質問して回答を取得（マップに追加）',
@@ -14644,16 +14698,19 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Verificando…',
       'ru': 'Проверка…',
     },
+    // ★ = ユーザー要望「windows本家の様に仮想デスクトップに window を
+    //   送ったりできるようにして欲しい」。 一覧に今のデスクトップの窓と
+    //   自分のアプリの窓も並ぶようになったので、 見出しを広い言い方へ。
     'vdesk.windowsTitle': {
-      'ja': '他のデスクトップにある窓',
-      'en': 'Windows on other desktops',
-      'zh': '其他桌面上的窗口',
-      'ko': '다른 데스크톱의 창',
-      'es': 'Ventanas en otros escritorios',
-      'fr': "Fenêtres sur d'autres bureaux",
-      'de': 'Fenster auf anderen Desktops',
-      'pt': 'Janelas em outras áreas de trabalho',
-      'ru': 'Окна на других рабочих столах',
+      'ja': '起動中の窓',
+      'en': 'Open windows',
+      'zh': '打开的窗口',
+      'ko': '열려 있는 창',
+      'es': 'Ventanas abiertas',
+      'fr': 'Fenêtres ouvertes',
+      'de': 'Geöffnete Fenster',
+      'pt': 'Janelas abertas',
+      'ru': 'Открытые окна',
     },
     'vdesk.windowsHint': {
       'ja': '押すと、 今見ているデスクトップへ呼び寄せます。',
@@ -14742,6 +14799,200 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Nächster Desktop',
       'pt': 'Área de trabalho seguinte',
       'ru': 'Следующий рабочий стол',
+    },
+    // ★ = ユーザー要望「windows本家の様に仮想デスクトップに window を
+    //   送ったりできるようにして欲しい」。 Win+Tab の画面と同じように、
+    //   デスクトップの一覧から送り先を選べるようにした。
+    'vdesk.desktopsTitle': {
+      'ja': 'デスクトップ',
+      'en': 'Desktops',
+      'zh': '桌面',
+      'ko': '데스크톱',
+      'es': 'Escritorios',
+      'fr': 'Bureaux',
+      'de': 'Desktops',
+      'pt': 'Áreas de trabalho',
+      'ru': 'Рабочие столы',
+    },
+    'vdesk.desktopN': {
+      'ja': 'デスクトップ {n}',
+      'en': 'Desktop {n}',
+      'zh': '桌面 {n}',
+      'ko': '데스크톱 {n}',
+      'es': 'Escritorio {n}',
+      'fr': 'Bureau {n}',
+      'de': 'Desktop {n}',
+      'pt': 'Área de trabalho {n}',
+      'ru': 'Рабочий стол {n}',
+    },
+    'vdesk.current': {
+      'ja': '(今ここ)',
+      'en': '(current)',
+      'zh': '(当前)',
+      'ko': '(현재)',
+      'es': '(actual)',
+      'fr': '(actuel)',
+      'de': '(aktuell)',
+      'pt': '(atual)',
+      'ru': '(текущий)',
+    },
+    'vdesk.thisApp': {
+      'ja': 'このアプリ',
+      'en': 'This app',
+      'zh': '本应用',
+      'ko': '이 앱',
+      'es': 'Esta aplicación',
+      'fr': 'Cette application',
+      'de': 'Diese App',
+      'pt': 'Este aplicativo',
+      'ru': 'Это приложение',
+    },
+    'vdesk.otherApps': {
+      'ja': '他のアプリの窓',
+      'en': 'Other apps',
+      'zh': '其他应用的窗口',
+      'ko': '다른 앱의 창',
+      'es': 'Otras aplicaciones',
+      'fr': 'Autres applications',
+      'de': 'Andere Apps',
+      'pt': 'Outros aplicativos',
+      'ru': 'Окна других приложений',
+    },
+    'vdesk.send': {
+      'ja': '送る',
+      'en': 'Send',
+      'zh': '发送',
+      'ko': '보내기',
+      'es': 'Enviar',
+      'fr': 'Envoyer',
+      'de': 'Senden',
+      'pt': 'Enviar',
+      'ru': 'Отправить',
+    },
+    'vdesk.sendTo': {
+      'ja': '{n} へ送る',
+      'en': 'Send to {n}',
+      'zh': '发送到 {n}',
+      'ko': '{n}(으)로 보내기',
+      'es': 'Enviar a {n}',
+      'fr': 'Envoyer vers {n}',
+      'de': 'An {n} senden',
+      'pt': 'Enviar para {n}',
+      'ru': 'Отправить на {n}',
+    },
+    'vdesk.sent': {
+      'ja': '「{name}」 を {n} へ送りました',
+      'en': 'Sent "{name}" to {n}',
+      'zh': '已将“{name}”发送到 {n}',
+      'ko': '「{name}」을(를) {n}(으)로 보냈습니다',
+      'es': 'Se envió "{name}" a {n}',
+      'fr': '« {name} » a été envoyée vers {n}',
+      'de': '„{name}“ wurde an {n} gesendet',
+      'pt': '"{name}" foi enviada para {n}',
+      'ru': 'Окно «{name}» отправлено на {n}',
+    },
+    'vdesk.followSwitch': {
+      'ja': '送った先へ一緒に移動する',
+      'en': 'Follow the window to that desktop',
+      'zh': '一起切换到目标桌面',
+      'ko': '보낸 데스크톱으로 함께 이동',
+      'es': 'Seguir la ventana a ese escritorio',
+      'fr': 'Suivre la fenêtre vers ce bureau',
+      'de': 'Dem Fenster auf diesen Desktop folgen',
+      'pt': 'Acompanhar a janela para essa área de trabalho',
+      'ru': 'Перейти вслед за окном',
+    },
+    'vdesk.switchFailed': {
+      'ja': '送りましたが、 そのデスクトップへ切り替えられませんでした (Ctrl+Win+←/→ で移れます)',
+      'en': 'Sent, but could not switch to that desktop (use Ctrl+Win+←/→).',
+      'zh': '已发送，但无法切换到该桌面 (可用 Ctrl+Win+←/→)。',
+      'ko': '보냈지만 해당 데스크톱으로 전환하지 못했습니다 (Ctrl+Win+←/→ 사용).',
+      'es': 'Se envió, pero no se pudo cambiar a ese escritorio (usa Ctrl+Win+←/→).',
+      'fr': "Envoyée, mais impossible de basculer vers ce bureau (utilisez Ctrl+Win+←/→).",
+      'de': 'Gesendet, aber der Wechsel auf diesen Desktop war nicht möglich (Ctrl+Win+←/→).',
+      'pt': 'Enviada, mas não foi possível mudar para essa área de trabalho (use Ctrl+Win+←/→).',
+      'ru': 'Отправлено, но переключиться на этот рабочий стол не удалось (Ctrl+Win+←/→).',
+    },
+    'vdesk.noDesktops': {
+      'ja': 'デスクトップの一覧を読めませんでした (Windows 10 / 11 のみ)',
+      'en': 'Could not read the desktop list (Windows 10 / 11 only).',
+      'zh': '无法读取桌面列表 (仅限 Windows 10 / 11)。',
+      'ko': '데스크톱 목록을 읽지 못했습니다 (Windows 10 / 11 전용).',
+      'es': 'No se pudo leer la lista de escritorios (solo Windows 10 / 11).',
+      'fr': 'Impossible de lire la liste des bureaux (Windows 10 / 11 uniquement).',
+      'de': 'Die Desktop-Liste konnte nicht gelesen werden (nur Windows 10 / 11).',
+      'pt': 'Não foi possível ler a lista de áreas de trabalho (apenas Windows 10 / 11).',
+      'ru': 'Не удалось прочитать список рабочих столов (только Windows 10 / 11).',
+    },
+    'vdesk.noWindows': {
+      'ja': '窓が見つかりません。',
+      'en': 'No windows found.',
+      'zh': '未找到窗口。',
+      'ko': '창을 찾을 수 없습니다.',
+      'es': 'No se encontraron ventanas.',
+      'fr': 'Aucune fenêtre trouvée.',
+      'de': 'Keine Fenster gefunden.',
+      'pt': 'Nenhuma janela encontrada.',
+      'ru': 'Окна не найдены.',
+    },
+    'vdesk.sendHint': {
+      'ja': 'Win+Tab の画面で窓を引っ張るのと同じです。',
+      'en': 'Same as dragging a window in the Win+Tab view.',
+      'zh': '与在 Win+Tab 视图中拖动窗口相同。',
+      'ko': 'Win+Tab 화면에서 창을 끄는 것과 같습니다.',
+      'es': 'Es lo mismo que arrastrar una ventana en la vista Win+Tab.',
+      'fr': "Identique au glisser-déposer dans la vue Win+Tab.",
+      'de': 'Wie das Ziehen eines Fensters in der Win+Tab-Ansicht.',
+      'pt': 'O mesmo que arrastar uma janela na visão Win+Tab.',
+      'ru': 'То же, что перетаскивание окна в режиме Win+Tab.',
+    },
+    // ★ = 検証で分かった事。 Windows は「そのアプリ自身が持っている窓」
+    //   しか外から動かせない (公開 API が必ず断る)。 他のアプリの窓には
+    //   「送る」 を出さず、 先にその事と本家の Win+Tab への行き方を伝える。
+    'vdesk.otherHint': {
+      'ja': 'Windows は、 そのアプリ自身の窓しか外から移せません。 他のアプリの窓は Win+Tab の画面で引っ張って移してください。 ここからは、 その窓が居るデスクトップへこちらが移れます。',
+      'en': 'Windows only lets an app move its own windows. Drag other apps’ windows in the Win+Tab view instead. From here you can jump to the desktop a window is on.',
+      'zh': 'Windows 只允许应用移动自己的窗口。其他应用的窗口请在 Win+Tab 视图中拖动。在这里可以切换到该窗口所在的桌面。',
+      'ko': 'Windows는 앱이 자기 창만 옮길 수 있게 합니다. 다른 앱의 창은 Win+Tab 화면에서 끌어 옮기세요. 여기서는 그 창이 있는 데스크톱으로 이동할 수 있습니다.',
+      'es': 'Windows solo permite que una aplicación mueva sus propias ventanas. Arrastra las de otras aplicaciones en la vista Win+Tab. Desde aquí puedes saltar al escritorio donde está la ventana.',
+      'fr':
+          "Windows ne laisse une application déplacer que ses propres fenêtres. Faites glisser celles des autres applications dans la vue Win+Tab. D'ici, vous pouvez rejoindre le bureau où se trouve la fenêtre.",
+      'de': 'Windows lässt eine App nur ihre eigenen Fenster verschieben. Ziehen Sie Fenster anderer Apps in der Win+Tab-Ansicht. Von hier aus können Sie zu dem Desktop wechseln, auf dem das Fenster liegt.',
+      'pt': 'O Windows só deixa um aplicativo mover as próprias janelas. Arraste as de outros aplicativos na visão Win+Tab. Aqui você pode ir para a área de trabalho onde a janela está.',
+      'ru': 'Windows позволяет приложению перемещать только свои окна. Окна других приложений перетаскивайте в режиме Win+Tab. Отсюда можно перейти на рабочий стол, где находится окно.',
+    },
+    'vdesk.goThere': {
+      'ja': 'そこへ移る',
+      'en': 'Go there',
+      'zh': '切换过去',
+      'ko': '그쪽으로 이동',
+      'es': 'Ir allí',
+      'fr': 'Y aller',
+      'de': 'Dorthin wechseln',
+      'pt': 'Ir para lá',
+      'ru': 'Перейти туда',
+    },
+    'vdesk.bringFront': {
+      'ja': '手前に出す',
+      'en': 'Bring to front',
+      'zh': '置于前台',
+      'ko': '앞으로 가져오기',
+      'es': 'Traer al frente',
+      'fr': 'Mettre au premier plan',
+      'de': 'In den Vordergrund',
+      'pt': 'Trazer para a frente',
+      'ru': 'На передний план',
+    },
+    'vdesk.taskView': {
+      'ja': 'タスクビュー (Win+Tab)',
+      'en': 'Task view (Win+Tab)',
+      'zh': '任务视图 (Win+Tab)',
+      'ko': '작업 보기 (Win+Tab)',
+      'es': 'Vista de tareas (Win+Tab)',
+      'fr': 'Vue des tâches (Win+Tab)',
+      'de': 'Taskansicht (Win+Tab)',
+      'pt': 'Visão de tarefas (Win+Tab)',
+      'ru': 'Представление задач (Win+Tab)',
     },
     'hdr.silentCamera': {
       'ja': '無音カメラ',
@@ -17315,23 +17566,26 @@ class MindMapProvider extends ChangeNotifier {
     },
     // AI が使えない時に、 ファイル AI の画面の中へ理由を出す
     // (= ユーザー報告: Word を開いて AI を押しても何も表示されない)。
+    // ★ = ユーザー要望: 呼称を「API クレジット」 に統一し、 誘導先も
+    //   実際にチャージできる 設定 → API クレジット へ直した
+    //   (旧: 「⋮ → プラン・使用状況」 — そこにチャージの導線は無い)。
     'aiAssist.unavailable': {
-      'ja': 'AI がまだ使えません。 ⋮ メニュー → プラン・使用状況 で AI クレジットを'
-          'チャージするか、 通信状態をご確認ください。',
-      'en': 'AI is not available yet. Add AI credit from ⋮ → Plan & usage, '
+      'ja': 'AI がまだ使えません。 設定 → API クレジット でチャージするか、 '
+          '通信状態をご確認ください。',
+      'en': 'AI is not available yet. Add credit in Settings → API credits, '
           'or check your connection.',
-      'zh': 'AI 尚不可用。请在 ⋮ → 套餐与用量 中充值 AI 额度，或检查网络连接。',
-      'ko': 'AI를 아직 사용할 수 없습니다. ⋮ → 요금제·사용량에서 AI 크레딧을 '
-          '충전하거나 통신 상태를 확인하세요.',
-      'es': 'La IA aún no está disponible. Añade crédito de IA desde ⋮ → Plan y uso, '
+      'zh': 'AI 尚不可用。请在 设置 → API 额度 中充值，或检查网络连接。',
+      'ko': 'AI를 아직 사용할 수 없습니다. 설정 → API 크레딧에서 충전하거나 '
+          '통신 상태를 확인하세요.',
+      'es': 'La IA aún no está disponible. Recarga en Ajustes → Créditos de API, '
           'o comprueba tu conexión.',
-      'fr': 'L IA n est pas encore disponible. Ajoutez du crédit IA depuis ⋮ → Offre '
-          'et utilisation, ou vérifiez votre connexion.',
-      'de': 'Die KI ist noch nicht verfügbar. Lade KI-Guthaben unter ⋮ → Tarif & '
-          'Nutzung auf oder prüfe die Verbindung.',
-      'pt': 'A IA ainda não está disponível. Adicione crédito de IA em ⋮ → Plano e '
-          'uso, ou verifique a conexão.',
-      'ru': 'ИИ пока недоступен. Пополните ИИ-кредит в ⋮ → Тариф и использование '
+      'fr': 'L IA n est pas encore disponible. Rechargez dans Réglages → Crédits '
+          'API, ou vérifiez votre connexion.',
+      'de': 'Die KI ist noch nicht verfügbar. Lade unter Einstellungen → '
+          'API-Guthaben auf oder prüfe die Verbindung.',
+      'pt': 'A IA ainda não está disponível. Recarregue em Configurações → '
+          'Créditos de API, ou verifique a conexão.',
+      'ru': 'ИИ пока недоступен. Пополните в Настройки → API-кредиты '
           'или проверьте соединение.',
     },
     'aiAssist.instruction': {
@@ -17904,16 +18158,17 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Diga o que mudar…',
       'ru': 'Опишите правку…',
     },
+    // ★ = ユーザー要望: API キーはもう設定しない。 設定 → API クレジット へ誘導。
     'text.aiNeedKey': {
-      'ja': 'AI を使うには設定で API キーを登録するか、AIクレジットを購入してください',
-      'en': 'Set an AI API key (or buy AI credit) in settings first',
-      'zh': '请先在设置中登记 API 密钥或购买 AI 点数',
-      'ko': '설정에서 API 키를 등록하거나 AI 크레딧을 구매하세요',
-      'es': 'Configura una clave de API de IA (o compra crédito) primero',
-      'fr': 'Définissez d\'abord une clé API IA (ou achetez du crédit)',
-      'de': 'Zuerst einen KI-API-Schlüssel setzen (oder Guthaben kaufen)',
-      'pt': 'Defina uma chave de API de IA (ou compre crédito) primeiro',
-      'ru': 'Сначала укажите API-ключ ИИ (или купите кредит)',
+      'ja': 'AI を使うには設定 → API クレジット でチャージしてください',
+      'en': 'Add API credits in Settings to use AI',
+      'zh': '要使用 AI，请先在 设置 → API 额度 中充值',
+      'ko': 'AI를 사용하려면 설정 → API 크레딧에서 충전하세요',
+      'es': 'Para usar la IA, recarga créditos de API en Ajustes',
+      'fr': 'Pour utiliser l’IA, rechargez des crédits API dans les paramètres',
+      'de': 'Um KI zu verwenden, in den Einstellungen API-Guthaben aufladen',
+      'pt': 'Para usar a IA, recarregue créditos de API nas configurações',
+      'ru': 'Чтобы использовать ИИ, пополните API-кредиты в настройках',
     },
     'memo.searchYoutube': {
       'ja': 'YouTubeで検索',
@@ -23452,6 +23707,42 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Anote aqui. Salvo automaticamente.',
       'ru': 'Пишите здесь. Сохраняется автоматически.',
     },
+    // ── マークダウンのメモを 1 件ずつの箇条書きにする (= ユーザー要望:
+    //    「PDF の様に箇条書きで分けて保存してページに埋め込んだり、 AI に
+    //    渡したり、 Google 検索に渡したりできるように」) ──
+    'mdMemo.inputHint': {
+      'ja': '書いて Enter で 1 件。改行で分けられます',
+      'en': 'Type and press Enter to add. New lines split into items',
+      'zh': '输入后按 Enter 添加，换行可分成多条',
+      'ko': '입력 후 Enter 로 1건. 줄바꿈으로 나뉩니다',
+      'es': 'Escribe y pulsa Enter. Cada línea es una nota',
+      'fr': 'Écrivez puis Entrée. Chaque ligne devient une note',
+      'de': 'Schreiben und Enter drücken. Jede Zeile wird eine Notiz',
+      'pt': 'Escreva e pressione Enter. Cada linha vira uma nota',
+      'ru': 'Напишите и нажмите Enter. Каждая строка — отдельная заметка',
+    },
+    'mdMemo.emptyText': {
+      'ja': 'テキストが空です',
+      'en': 'The text is empty',
+      'zh': '文本为空',
+      'ko': '텍스트가 비어 있습니다',
+      'es': 'El texto está vacío',
+      'fr': 'Le texte est vide',
+      'de': 'Der Text ist leer',
+      'pt': 'O texto está vazio',
+      'ru': 'Текст пуст',
+    },
+    'mdMemo.sentToAi': {
+      'ja': 'AI 欄に入れました',
+      'en': 'Added to the AI box',
+      'zh': '已放入 AI 输入栏',
+      'ko': 'AI 입력란에 넣었습니다',
+      'es': 'Añadido al cuadro de IA',
+      'fr': 'Ajouté au champ IA',
+      'de': 'In das KI-Feld eingefügt',
+      'pt': 'Adicionado ao campo de IA',
+      'ru': 'Добавлено в поле ИИ',
+    },
     'md.aiChat': {
       'ja': 'AI チャット',
       'en': 'AI chat',
@@ -23484,6 +23775,76 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Frage oder Anweisung eingeben…',
       'pt': 'Digite uma pergunta…',
       'ru': 'Введите вопрос…',
+    },
+    // ★ 側欄でのできあがりの確かめ (= ユーザー要望: 中央に項目を出さず
+    //   側欄にまとめる)。 元の書式 / 見た目 の切替と「大きく見る」。
+    'md.aiResultSource': {
+      'ja': '元の書式',
+      'en': 'Source',
+      'zh': '原始格式',
+      'ko': '원본 서식',
+      'es': 'Fuente',
+      'fr': 'Source',
+      'de': 'Quelltext',
+      'pt': 'Fonte',
+      'ru': 'Исходник',
+    },
+    'md.aiResultPreview': {
+      'ja': '見た目',
+      'en': 'Preview',
+      'zh': '预览',
+      'ko': '미리보기',
+      'es': 'Vista previa',
+      'fr': 'Aperçu',
+      'de': 'Vorschau',
+      'pt': 'Pré-visualização',
+      'ru': 'Предпросмотр',
+    },
+    'md.aiResultBig': {
+      'ja': '大きく見る',
+      'en': 'View larger',
+      'zh': '放大查看',
+      'ko': '크게 보기',
+      'es': 'Ver más grande',
+      'fr': 'Afficher en grand',
+      'de': 'Groß anzeigen',
+      'pt': 'Ver maior',
+      'ru': 'Показать крупнее',
+    },
+    // ★ マークダウンの AI 欄 (= ユーザー要望: 中央に項目を出さず側欄に
+    //   まとめ、 ヘッダーの AI ボタンで開閉する)。
+    'md.aiPanelToggle': {
+      'ja': 'AI 欄を開く / 閉じる',
+      'en': 'Show / hide AI panel',
+      'zh': '打开 / 关闭 AI 栏',
+      'ko': 'AI 창 열기 / 닫기',
+      'es': 'Mostrar / ocultar panel de IA',
+      'fr': 'Afficher / masquer le volet IA',
+      'de': 'KI-Leiste ein- / ausblenden',
+      'pt': 'Mostrar / ocultar painel de IA',
+      'ru': 'Показать / скрыть панель ИИ',
+    },
+    'md.aiModeWrite': {
+      'ja': '書いてもらう',
+      'en': 'Write',
+      'zh': '撰写',
+      'ko': '작성',
+      'es': 'Escribir',
+      'fr': 'Rédiger',
+      'de': 'Schreiben',
+      'pt': 'Escrever',
+      'ru': 'Написать',
+    },
+    'md.aiModeChat': {
+      'ja': 'チャット',
+      'en': 'Chat',
+      'zh': '聊天',
+      'ko': '채팅',
+      'es': 'Chat',
+      'fr': 'Chat',
+      'de': 'Chat',
+      'pt': 'Chat',
+      'ru': 'Чат',
     },
     'md.openBrowserAi': {
       'ja': 'ブラウザ AI を開く (ChatGPT など)',
@@ -23614,10 +23975,35 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Enviar uma tabela para outra página',
       'ru': 'Отправить таблицу на другую страницу',
     },
+    // ── プレビューで表の上にカーソルが乗った時に、 その表の右上へ出す札
+    //    (= ユーザー要望: この道具はヘッダーに置かず、 表の上でだけ出す)。
+    //    乗っている表が対象なので「この表」 と短く言う。
+    'md.tableToPageHover': {
+      'ja': 'この表をページへ入れる',
+      'en': 'Put this table on a page',
+      'zh': '把此表格放到页面',
+      'ko': '이 표를 페이지에 넣기',
+      'es': 'Poner esta tabla en una página',
+      'fr': 'Placer ce tableau sur une page',
+      'de': 'Diese Tabelle auf eine Seite legen',
+      'pt': 'Colocar esta tabela em uma página',
+      'ru': 'Поместить эту таблицу на страницу',
+    },
     // ── md の表をアプリの表として埋め込む (= ユーザー要望: md 形式で
     //    書かれている表を自分のアプリの形式に変換して埋め込めるように) ──
     //    本文のその表を ```table で包むだけなので、 文字としては今までどおり
     //    読めるし、 他の道具でも壊れない。
+    'md.diagramReset': {
+      'ja': '元の大きさに戻す',
+      'en': 'Reset to original size',
+      'zh': '恢复原始大小',
+      'ko': '원래 크기로 되돌리기',
+      'es': 'Restablecer al tamaño original',
+      'fr': 'Rétablir la taille d’origine',
+      'de': 'Auf Originalgröße zurücksetzen',
+      'pt': 'Voltar ao tamanho original',
+      'ru': 'Вернуть исходный размер',
+    },
     'md.tableEmbed': {
       'ja': 'アプリの表にして埋め込む',
       'en': 'Embed as an app table',
@@ -30721,17 +31107,18 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Голосовой ввод',
       'fa': 'ورودی صوتی',
     },
+    // ★ = ユーザー要望: API キーはもう設定しない。 設定 → API クレジット へ誘導。
     'talk.apiKeyRequired': {
-      'ja': 'AI を使うには設定で API キーを登録してください',
-      'en': 'Register an API key in Settings to use AI',
-      'zh': '要使用 AI，请在设置中登记 API 密钥',
-      'ko': 'AI를 사용하려면 설정에서 API 키를 등록하세요',
-      'es': 'Para usar la IA, registra una clave API en Ajustes',
-      'fr': 'Pour utiliser l’IA, enregistrez une clé API dans les paramètres',
+      'ja': 'AI を使うには設定 → API クレジット でチャージしてください',
+      'en': 'Add credit in Settings → API credits to use AI',
+      'zh': '要使用 AI，请在 设置 → API 额度 中充值',
+      'ko': 'AI를 사용하려면 설정 → API 크레딧에서 충전하세요',
+      'es': 'Para usar la IA, recarga créditos en Ajustes → Créditos de API',
+      'fr': 'Pour utiliser l’IA, rechargez dans Paramètres → Crédits API',
       'de':
-          'Um KI zu verwenden, hinterlegen Sie in den Einstellungen einen API-Schlüssel',
-      'pt': 'Para usar a IA, registre uma chave de API nas configurações',
-      'ru': 'Чтобы использовать ИИ, добавьте API-ключ в настройках',
+          'Um KI zu verwenden, laden Sie unter Einstellungen → API-Guthaben Guthaben auf',
+      'pt': 'Para usar a IA, recarregue em Configurações → Créditos de API',
+      'ru': 'Чтобы использовать ИИ, пополните в Настройки → API-кредиты',
     },
     'talk.companyRequired': {
       'ja': '会社名を入力してください',
@@ -33165,55 +33552,60 @@ class MindMapProvider extends ChangeNotifier {
       'pt': '{n}',
       'ru': '{n}',
     },
+    // ★ = ユーザー要望 (2): API キーを入れる画面はもう無いので、
+    //   設定 → API クレジット でのチャージを案内する。 キー名は互換のため据え置き。
     'ai.setGeminiKey': {
-      'ja': 'Gemini APIキーを設定してください',
-      'en': 'Please set the Gemini API key',
-      'zh': '请设置 Gemini API 密钥',
-      'ko': 'Gemini API 키를 설정해 주세요',
-      'es': 'Configura la clave de API de Gemini',
-      'fr': 'Veuillez définir la clé API Gemini',
-      'de': 'Bitte den Gemini-API-Schlüssel festlegen',
-      'pt': 'Defina a chave de API do Gemini',
-      'ru': 'Укажите API-ключ Gemini',
-    },
-    'ai.setGeminiKeyHint': {
-      'ja': 'Gemini APIキーを設定してください（上の警告から設定画面に飛べます）',
-      'en':
-          'Please set the Gemini API key (the warning above links to settings)',
-      'zh': '请设置 Gemini API 密钥（可从上方的警告进入设置界面）',
-      'ko': 'Gemini API 키를 설정해 주세요(위 경고에서 설정 화면으로 이동할 수 있습니다)',
-      'es':
-          'Configura la clave de API de Gemini (la advertencia de arriba lleva a los ajustes)',
+      'ja': 'AI がまだ使えません。設定 → API クレジット からチャージしてください。',
+      'en': 'AI is not available yet. Add credit in Settings → API credits.',
+      'zh': 'AI 尚不可用。请在 设置 → API 额度 中充值。',
+      'ko': 'AI를 아직 사용할 수 없습니다. 설정 → API 크레딧에서 충전해 주세요.',
+      'es': 'La IA aún no está disponible. Recarga en Ajustes → Créditos de API.',
       'fr':
-          'Veuillez définir la clé API Gemini (l’avertissement ci-dessus mène aux paramètres)',
+          'L’IA n’est pas encore disponible. Rechargez dans Réglages → Crédits API.',
       'de':
-          'Bitte den Gemini-API-Schlüssel festlegen (die Warnung oben führt zu den Einstellungen)',
+          'KI ist noch nicht verfügbar. Bitte unter Einstellungen → API-Guthaben aufladen.',
       'pt':
-          'Defina a chave de API do Gemini (o aviso acima leva às configurações)',
-      'ru': 'Укажите API-ключ Gemini (предупреждение выше ведёт к настройкам)',
+          'A IA ainda não está disponível. Recarregue em Configurações → Créditos de API.',
+      'ru': 'ИИ пока недоступен. Пополните в Настройки → API-кредиты.',
+    },
+    // ★ = ユーザー要望 (2): API キーを入れる画面はもう無い。 一括 AI の
+    //   3 つの案内 (注意書き・上の小さな注記・ボタン) を
+    //   設定 → API クレジット のチャージへ揃えた。 キー名は互換のため据え置き。
+    'ai.setGeminiKeyHint': {
+      'ja': 'AI がまだ使えません。設定 → API クレジット からチャージしてください。',
+      'en': 'AI is not available yet. Add credit in Settings → API credits.',
+      'zh': 'AI 尚不可用。请在 设置 → API 额度 中充值。',
+      'ko': 'AI를 아직 사용할 수 없습니다. 설정 → API 크레딧에서 충전해 주세요.',
+      'es': 'La IA aún no está disponible. Recarga en Ajustes → Créditos de API.',
+      'fr':
+          'L’IA n’est pas encore disponible. Rechargez dans Réglages → Crédits API.',
+      'de':
+          'KI ist noch nicht verfügbar. Bitte unter Einstellungen → API-Guthaben aufladen.',
+      'pt':
+          'A IA ainda não está disponível. Recarregue em Configurações → Créditos de API.',
+      'ru': 'ИИ пока недоступен. Пополните в Настройки → API-кредиты.',
     },
     'ai.geminiKeyNeeded': {
-      'ja': '※ AIを使うにはGemini APIキーの設定が必要です',
-      'en': '* Using AI requires setting a Gemini API key',
-      'zh': '※ 使用 AI 需要设置 Gemini API 密钥',
-      'ko': '※ AI를 사용하려면 Gemini API 키 설정이 필요합니다',
-      'es':
-          '* Para usar la IA se necesita configurar una clave de API de Gemini',
-      'fr': '* L’utilisation de l’IA nécessite une clé API Gemini',
-      'de': '* Für die KI muss ein Gemini-API-Schlüssel festgelegt werden',
-      'pt': '* Usar a IA requer configurar uma chave de API do Gemini',
-      'ru': '* Для работы ИИ нужно указать API-ключ Gemini',
+      'ja': '※ AI を使うには API クレジットのチャージが必要です',
+      'en': '* Using AI requires API credits',
+      'zh': '※ 使用 AI 需要充值 API 额度',
+      'ko': '※ AI를 사용하려면 API 크레딧 충전이 필요합니다',
+      'es': '* Usar la IA requiere créditos de API',
+      'fr': '* L’utilisation de l’IA nécessite des crédits API',
+      'de': '* Für die KI wird API-Guthaben benötigt',
+      'pt': '* Usar a IA requer créditos de API',
+      'ru': '* Для работы ИИ нужны API-кредиты',
     },
     'ai.setApiKeyBtn': {
-      'ja': 'APIキーを設定する',
-      'en': 'Set the API key',
-      'zh': '设置 API 密钥',
-      'ko': 'API 키 설정',
-      'es': 'Configurar la clave de API',
-      'fr': 'Définir la clé API',
-      'de': 'API-Schlüssel festlegen',
-      'pt': 'Definir a chave de API',
-      'ru': 'Указать API-ключ',
+      'ja': 'API クレジットを開く',
+      'en': 'Open API credits',
+      'zh': '打开 API 额度',
+      'ko': 'API 크레딧 열기',
+      'es': 'Abrir créditos de API',
+      'fr': 'Ouvrir les crédits API',
+      'de': 'API-Guthaben öffnen',
+      'pt': 'Abrir créditos de API',
+      'ru': 'Открыть API-кредиты',
     },
     'md.hint': {
       'ja': '- 中心テーマ\n  - 子要素\n    - 孫要素',
@@ -33610,20 +34002,21 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Falha ao preparar o local de salvamento: {err}',
       'ru': 'Не удалось подготовить место сохранения: {err}',
     },
+    // ★ = ユーザー要望: API キーはもう設定しない。 設定 → API クレジット へ誘導。
     'ai.apiKeyNotSet': {
-      'ja': 'AI の API キーが未設定です（設定 → AI から登録してください）',
-      'en': 'The AI API key isn’t set (register it in Settings → AI)',
-      'zh': '未设置 AI 的 API 密钥（请在 设置 → AI 中登记）',
-      'ko': 'AI API 키가 설정되지 않았습니다(설정 → AI에서 등록하세요)',
+      'ja': 'AI がまだ使えません（設定 → API クレジット でチャージしてください）',
+      'en': 'AI is not available yet (add credit in Settings → API credits)',
+      'zh': 'AI 尚不可用（请在 设置 → API 额度 中充值）',
+      'ko': 'AI를 아직 사용할 수 없습니다(설정 → API 크레딧에서 충전하세요)',
       'es':
-          'La clave de API de la IA no está configurada (regístrala en Ajustes → IA)',
+          'La IA aún no está disponible (recarga créditos en Ajustes → Créditos de API)',
       'fr':
-          'La clé API de l’IA n’est pas définie (enregistrez-la dans Paramètres → IA)',
+          'L’IA n’est pas encore disponible (rechargez dans Paramètres → Crédits API)',
       'de':
-          'Der KI-API-Schlüssel ist nicht festgelegt (in Einstellungen → KI registrieren)',
+          'KI ist noch nicht verfügbar (Guthaben unter Einstellungen → API-Guthaben aufladen)',
       'pt':
-          'A chave de API da IA não está definida (registre em Configurações → IA)',
-      'ru': 'API-ключ ИИ не задан (укажите его в Настройки → ИИ)',
+          'A IA ainda não está disponível (recarregue em Configurações → Créditos de API)',
+      'ru': 'ИИ пока недоступен (пополните в Настройки → API-кредиты)',
     },
     'ai.switchModel': {
       'ja': 'AI モデルを切替',
@@ -36356,20 +36749,21 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Parar headless',
       'ru': 'Остановить фоновое',
     },
+    // ★ = ユーザー要望: API キーはもう設定しない。 設定 → API クレジット へ誘導。
+    //   (キー名は互換のため据え置き。 押した先も API クレジットの画面。)
     'ai.geminiKeyNotSet': {
-      'ja': 'Gemini APIキーが未設定です。設定から登録してください。',
-      'en': 'The Gemini API key is not set. Register it in settings.',
-      'zh': '未设置 Gemini API 密钥。请在设置中注册。',
-      'ko': 'Gemini API 키가 미설정입니다. 설정에서 등록하세요.',
-      'es':
-          'La clave de API de Gemini no está configurada. Regístrala en los ajustes.',
+      'ja': 'AI がまだ使えません。設定 → API クレジット からチャージしてください。',
+      'en': 'AI is not available yet. Add credit in Settings → API credits.',
+      'zh': 'AI 尚不可用。请在 设置 → API 额度 中充值。',
+      'ko': 'AI를 아직 사용할 수 없습니다. 설정 → API 크레딧에서 충전해 주세요.',
+      'es': 'La IA aún no está disponible. Recarga en Ajustes → Créditos de API.',
       'fr':
-          'La clé API Gemini n’est pas configurée. Enregistrez-la dans les paramètres.',
+          'L’IA n’est pas encore disponible. Rechargez dans Réglages → Crédits API.',
       'de':
-          'Der Gemini-API-Schlüssel ist nicht festgelegt. In den Einstellungen registrieren.',
+          'KI ist noch nicht verfügbar. Bitte unter Einstellungen → API-Guthaben aufladen.',
       'pt':
-          'A chave de API do Gemini não está configurada. Registre-a nas configurações.',
-      'ru': 'API-ключ Gemini не задан. Зарегистрируйте его в настройках.',
+          'A IA ainda não está disponível. Recarregue em Configurações → Créditos de API.',
+      'ru': 'ИИ пока недоступен. Пополните в Настройки → API-кредиты.',
     },
     'ai.getFreeKey': {
       'ja': 'Google AI Studio で無料キーを取得',
@@ -36448,22 +36842,23 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Frente',
       'ru': 'Лицо',
     },
+    // ★ = ユーザー要望: API キーはもう設定しない。 右クリック・長押しの先は
+    //   API クレジット (残高とチャージ) の画面。
     'flash.genTooltip': {
-      'ja': 'タップで即生成 / 右クリック・長押しでモデル・APIキー設定',
-      'en':
-          'Tap to generate / right-click or long-press for model & API key settings',
-      'zh': '点击立即生成 / 右键或长按设置模型和 API 密钥',
-      'ko': '탭하면 즉시 생성 / 우클릭·길게 눌러 모델·API 키 설정',
+      'ja': 'タップで即生成 / 右クリック・長押しで API クレジット',
+      'en': 'Tap to generate / right-click or long-press for API credits',
+      'zh': '点击立即生成 / 右键或长按打开 API 额度',
+      'ko': '탭하면 즉시 생성 / 우클릭·길게 눌러 API 크레딧',
       'es':
-          'Toca para generar / clic derecho o mantén pulsado para ajustes de modelo y clave API',
+          'Toca para generar / clic derecho o mantén pulsado para los créditos de API',
       'fr':
-          'Touchez pour générer / clic droit ou appui long pour le modèle et la clé API',
+          'Touchez pour générer / clic droit ou appui long pour les crédits API',
       'de':
-          'Tippen zum Generieren / Rechtsklick oder lange drücken für Modell- & API-Schlüssel-Einstellungen',
+          'Tippen zum Generieren / Rechtsklick oder lange drücken für API-Guthaben',
       'pt':
-          'Toque para gerar / clique direito ou pressione e segure para configurar modelo e chave de API',
+          'Toque para gerar / clique direito ou pressione e segure para os créditos de API',
       'ru':
-          'Нажмите для генерации / правый клик или долгое нажатие — настройки модели и API-ключа',
+          'Нажмите для генерации / правый клик или долгое нажатие — API-кредиты',
     },
     'flash.back': {
       'ja': '裏',
@@ -36519,40 +36914,41 @@ class MindMapProvider extends ChangeNotifier {
       'th': 'ภาษา',
       'jv': 'Basa',
     },
-    // ★ = ユーザー要望「API キー自体は設定しないので表記を変えて」。
-    //   この項目を押すと開くのは AI クレジット (残高とチャージ) の画面で、
-    //   キーはサーバーだけが持つ。 名前から「API キー」 を外す。
+    // ★ = ユーザー要望「AI とクレジット は API クレジット に表記変更」
+    //   (b414 の「AI・APIキー設定」→「AI とクレジット」 から更に改名)。
+    //   この項目を押すと開くのは残高とチャージの画面で、 キーは
+    //   サーバーだけが持つ。 BETA 言語にも古い名前が残らないよう 30 言語とも差し替え。
     'menu.ai': {
-      'ja': 'AI とクレジット',
-      'en': 'AI & credits',
-      'zh': 'AI 与额度',
-      'ko': 'AI 와 크레딧',
-      'es': 'IA y créditos',
-      'fr': 'IA et crédits',
-      'de': 'KI und Guthaben',
-      'pt': 'IA e créditos',
-      'ru': 'ИИ и кредиты',
-      'hi': 'AI और क्रेडिट',
-      'ar': 'الذكاء الاصطناعي والرصيد',
-      'bn': 'AI ও ক্রেডিট',
-      'id': 'AI & kredit',
-      'ur': 'AI اور کریڈٹ',
-      'pcm': 'AI & credits',
-      'arz': 'الذكاء الاصطناعي والرصيد',
-      'mr': 'AI आणि क्रेडिट',
-      'vi': 'AI và tín dụng',
-      'te': 'AI మరియు క్రెడిట్లు',
-      'ha': 'AI da kuɗin amfani',
-      'tr': 'Yapay zekâ ve kredi',
-      'pnb': 'AI تے کریڈٹ',
-      'sw': 'AI na salio',
-      'tl': 'AI at credits',
-      'ta': 'AI மற்றும் கிரெடிட்',
-      'yue': 'AI 同額度',
-      'wuu': 'AI 搭额度',
-      'fa': 'هوش مصنوعی و اعتبار',
-      'th': 'AI และเครดิต',
-      'jv': 'AI lan kredit',
+      'ja': 'API クレジット',
+      'en': 'API credits',
+      'zh': 'API 额度',
+      'ko': 'API 크레딧',
+      'es': 'Créditos de API',
+      'fr': 'Crédits API',
+      'de': 'API-Guthaben',
+      'pt': 'Créditos de API',
+      'ru': 'API-кредиты',
+      'hi': 'API क्रेडिट',
+      'ar': 'رصيد API',
+      'bn': 'API ক্রেডিট',
+      'id': 'Kredit API',
+      'ur': 'API کریڈٹ',
+      'pcm': 'API credits',
+      'arz': 'رصيد API',
+      'mr': 'API क्रेडिट',
+      'vi': 'Tín dụng API',
+      'te': 'API క్రెడిట్లు',
+      'ha': 'Kuɗin API',
+      'tr': 'API kredisi',
+      'pnb': 'API کریڈٹ',
+      'sw': 'Salio la API',
+      'tl': 'API credits',
+      'ta': 'API கிரெடிட்',
+      'yue': 'API 額度',
+      'wuu': 'API 额度',
+      'fa': 'اعتبار API',
+      'th': 'เครดิต API',
+      'jv': 'Kredit API',
     },
     'menu.sync': {
       'ja': 'クラウド同期',
@@ -41330,15 +41726,15 @@ class MindMapProvider extends ChangeNotifier {
       'ru': '(правый клик или долгое нажатие: перейти / справка)',
     },
     'tip.inkFreehand': {
-      'ja': 'フリーハンドで書き込む (右クリックで色/太さ)',
-      'en': 'Draw freehand (right-click for colour / width)',
-      'zh': '手绘书写（右键设置颜色/粗细）',
-      'ko': '자유롭게 그리기 (우클릭으로 색/굵기)',
-      'es': 'Dibujar a mano alzada (clic derecho: color / grosor)',
-      'fr': 'Dessiner à main levée (clic droit : couleur / épaisseur)',
-      'de': 'Freihand zeichnen (Rechtsklick: Farbe / Stärke)',
-      'pt': 'Desenhar à mão livre (clique direito: cor / espessura)',
-      'ru': 'Рисовать от руки (правый клик — цвет / толщина)',
+      'ja': 'フリーハンドで書き込む (色/太さ/手振れ補正)',
+      'en': 'Draw freehand (colour / width / stabilization)',
+      'zh': '手绘书写（颜色/粗细/防抖）',
+      'ko': '자유롭게 그리기 (색/굵기/손떨림 보정)',
+      'es': 'Dibujar a mano alzada (color / grosor / estabilización)',
+      'fr': 'Dessiner à main levée (couleur / épaisseur / stabilisation)',
+      'de': 'Freihand zeichnen (Farbe / Stärke / Stabilisierung)',
+      'pt': 'Desenhar à mão livre (cor / espessura / estabilização)',
+      'ru': 'Рисовать от руки (цвет / толщина / стабилизация)',
     },
     'tip.insertPicture': {
       'ja': '図を挿入',
@@ -43483,13 +43879,30 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Elipse',
       'ru': 'Эллипс',
     },
+    // 図形ごとの言い方 (= ユーザー要望: 図形ごとに違う説明が出るように)。
+    // ★ この 2 つだけ ja / en しか無く、 他の言語では英語のまま出ていたので
+    //   前後の図形と同じく 9 言語そろえた。
     'shape.triangle': {
       'ja': '三角形',
       'en': 'Triangle',
+      'zh': '三角形',
+      'ko': '삼각형',
+      'es': 'Triángulo',
+      'fr': 'Triangle',
+      'de': 'Dreieck',
+      'pt': 'Triângulo',
+      'ru': 'Треугольник',
     },
     'shape.diamond': {
       'ja': 'ひし形',
       'en': 'Diamond',
+      'zh': '菱形',
+      'ko': '마름모',
+      'es': 'Rombo',
+      'fr': 'Losange',
+      'de': 'Raute',
+      'pt': 'Losango',
+      'ru': 'Ромб',
     },
     // ── 追加図形 (= ユーザー要望: 星マークなど挿入できる図形を増やす) ──
     'shape.star': {
@@ -43536,16 +43949,19 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Coração',
       'ru': 'Сердце',
     },
+    // ★ 十字 (＋) は「バツ (×) を置く」 印と形も用途も別物なので、 記号を
+    //   添えて見分けが付くようにする (= ユーザー要望: 図形ごとに違う説明)。
+    //   英語では 'Cross' がそのまま × を指してしまうため 'Plus' にした。
     'shape.cross': {
-      'ja': '十字',
-      'en': 'Cross',
-      'zh': '十字',
-      'ko': '십자',
-      'es': 'Cruz',
-      'fr': 'Croix',
-      'de': 'Kreuz',
-      'pt': 'Cruz',
-      'ru': 'Крест',
+      'ja': '十字 (＋)',
+      'en': 'Plus (+)',
+      'zh': '十字 (＋)',
+      'ko': '십자 (＋)',
+      'es': 'Cruz (+)',
+      'fr': 'Croix (+)',
+      'de': 'Kreuz (+)',
+      'pt': 'Cruz (+)',
+      'ru': 'Крест (+)',
     },
     // ── フリーノート: 輝き (グロー) (= ユーザー要望: 文字や線に輝き) ──
     // ── レイヤー (= ユーザー要望: 選んだレイヤーにだけ消しゴムを効かせる) ──
@@ -51927,53 +52343,56 @@ class MindMapProvider extends ChangeNotifier {
           'JS を走らせない・余計な通信をしない、 という形にしてあります。\n\n'
           'それでも止められる時は、 お使いのセキュリティソフトで '
           'node.exe と npm を許可 (除外) してから、 もう一度お試しください。\n'
-          '※ Gemini は、 設定で API キーを入れておけば CLI を入れなくても'
-          '使えます。',
+          // ★ = ユーザー要望 (2): API キーを入れる画面はもう無いので、
+          //   設定 → API クレジット のチャージへ言い換えた。
+          '※ Gemini は、 設定 → API クレジット でチャージしておけば CLI を'
+          '入れなくても使えます。',
       'en': 'Your security software may be blocking Node.js.\n\n'
           'On our side the install no longer goes through a shell, no longer '
           'runs package clean-up scripts, and makes no extra network calls.\n\n'
           'If it is still blocked, allow (exclude) node.exe and npm in your '
           'security software and try again.\n'
-          'Note: Gemini also works without the CLI — just put an API key in '
-          'Settings.',
+          'Note: Gemini also works without the CLI — just add credit in '
+          'Settings → API credits.',
       'zh': '安全软件可能拦截了 Node.js。\n\n应用侧已不经由 shell、不运行包的'
           '收尾脚本、不做多余的网络请求。\n\n若仍被拦截，请在安全软件中允许'
-          '（排除）node.exe 与 npm 后重试。\n另外，Gemini 在设置中填入 API '
-          '密钥即可免安装 CLI 使用。',
+          '（排除）node.exe 与 npm 后重试。\n另外，在 设置 → API 额度 中充值后，'
+          'Gemini 免安装 CLI 也能使用。',
       'ko': '보안 소프트웨어가 Node.js 를 막고 있을 수 있습니다.\n\n앱 쪽에서는 '
           '셸을 거치지 않고, 패키지 마무리 스크립트를 실행하지 않으며, 불필요한 '
           '통신도 하지 않습니다.\n\n그래도 막힌다면 보안 소프트웨어에서 '
-          'node.exe 와 npm 을 허용(제외)한 뒤 다시 시도하세요.\n참고: Gemini 는 '
-          '설정에 API 키를 넣으면 CLI 없이도 사용할 수 있습니다.',
+          'node.exe 와 npm 을 허용(제외)한 뒤 다시 시도하세요.\n참고: 설정 → '
+          'API 크레딧에서 충전하면 Gemini 는 CLI 없이도 사용할 수 있습니다.',
       'es': 'Tu antivirus puede estar bloqueando Node.js.\n\nPor nuestra parte '
           'la instalacion ya no pasa por un shell, no ejecuta scripts de los '
           'paquetes y no hace peticiones extra.\n\nSi sigue bloqueado, permite '
           '(excluye) node.exe y npm en tu antivirus y vuelve a intentarlo.\n'
-          'Gemini tambien funciona sin la CLI: basta una clave API en Ajustes.',
+          'Gemini tambien funciona sin la CLI: basta recargar en Ajustes → '
+          'Creditos de API.',
       'fr': 'Votre antivirus bloque peut-etre Node.js.\n\nDe notre cote, '
           'l installation ne passe plus par un shell, n execute plus les '
           'scripts des paquets et ne fait aucun appel reseau superflu.\n\n'
           'Si cela reste bloque, autorisez (excluez) node.exe et npm dans '
           'votre antivirus puis reessayez.\nGemini fonctionne aussi sans la '
-          'CLI : il suffit d une cle API dans les reglages.',
+          'CLI : il suffit de recharger dans Reglages → Credits API.',
       'de': 'Ihre Sicherheitssoftware blockiert moglicherweise Node.js.\n\n'
           'Auf unserer Seite lauft die Installation ohne Shell, ohne '
           'Paket-Skripte und ohne zusatzliche Netzwerkaufrufe.\n\nWird sie '
           'weiterhin blockiert, erlauben Sie node.exe und npm in Ihrer '
           'Sicherheitssoftware und versuchen Sie es erneut.\nGemini geht auch '
-          'ohne CLI — ein API-Schlussel in den Einstellungen genugt.',
+          'ohne CLI — Guthaben unter Einstellungen → API-Guthaben genugt.',
       'pt': 'Seu antivirus pode estar bloqueando o Node.js.\n\nDo nosso lado a '
           'instalacao nao passa mais por um shell, nao executa scripts dos '
           'pacotes e nao faz chamadas de rede extras.\n\nSe continuar '
           'bloqueado, permita (exclua) node.exe e npm no antivirus e tente de '
-          'novo.\nO Gemini tambem funciona sem a CLI: basta uma chave de API '
-          'nas configuracoes.',
+          'novo.\nO Gemini tambem funciona sem a CLI: basta recarregar em '
+          'Configuracoes → Creditos de API.',
       'ru': 'Vozmozhno, antivirus blokiruet Node.js.\n\nS nashey storony '
           'ustanovka bolshe ne idyot cherez shell, ne zapuskaet skripty paketov '
           'i ne delaet lishnih setevyh zaprosov.\n\nEsli blokirovka '
           'sohranyaetsya, razreshite (isklyuchite) node.exe i npm v antiviruse '
-          'i poprobuyte snova.\nGemini rabotaet i bez CLI — dostatochno klyucha '
-          'API v nastroykah.',
+          'i poprobuyte snova.\nGemini rabotaet i bez CLI — dostatochno '
+          'popolnit API-kredity v nastroykah.',
     },
     // ── codex の砂箱 (= ユーザー報告: ブロックされましたと時々出る) ──
     // ★ = ユーザー指摘「『どこまで任せるか』 に対して 『任せる』 っておかしく
@@ -52290,6 +52709,72 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Terminal',
       'pt': 'Terminal',
       'ru': 'Терминал',
+    },
+    // ★ = ユーザー報告「ターミナルボタンを押すとセキュリティソフトに
+    //   ブロックされてアプリが落ちてしまう」。 落とさずに理由を出す。
+    'cli.launchFailed': {
+      'ja': '端末を起動できませんでした',
+      'en': 'Could not start the terminal',
+      'zh': '无法启动终端',
+      'ko': '터미널을 시작할 수 없습니다',
+      'es': 'No se pudo iniciar la terminal',
+      'fr': 'Impossible de demarrer le terminal',
+      'de': 'Das Terminal konnte nicht gestartet werden',
+      'pt': 'Nao foi possivel iniciar o terminal',
+      'ru': 'Не удалось запустить терминал',
+    },
+    'cli.launchBlockedHint': {
+      'ja': 'セキュリティソフトに止められている場合があります。 除外設定をお確かめください。',
+      'en': 'Security software may have blocked it. Check your exclusion settings.',
+      'zh': '可能被安全软件拦截。请检查排除设置。',
+      'ko': '보안 소프트웨어가 차단했을 수 있습니다. 예외 설정을 확인해 주세요.',
+      'es': 'Puede que el antivirus lo haya bloqueado. Revise las exclusiones.',
+      'fr': 'Un antivirus l a peut-etre bloque. Verifiez vos exclusions.',
+      'de': 'Eine Sicherheitssoftware hat es moeglicherweise blockiert. Pruefen Sie die Ausnahmen.',
+      'pt': 'O antivirus pode te-lo bloqueado. Verifique as exclusoes.',
+      'ru': 'Возможно, его заблокировала защитная программа. Проверьте исключения.',
+    },
+    // ★ 「何も出さないまま、 起動直後に終わった」 時の言い方。
+    //   セキュリティソフトのせいだと決めつけず、 起きた事だけを出す
+    //   (引数の誤りやログイン切れでも同じ形になる為)。
+    'cli.launchDiedEarly': {
+      'ja': '起動した直後に終了しました',
+      'en': 'It exited right after starting',
+      'zh': '刚启动就结束了',
+      'ko': '시작한 직후에 종료되었습니다',
+      'es': 'Se cerro justo despues de iniciarse',
+      'fr': 'Il s est ferme juste apres le demarrage',
+      'de': 'Es wurde direkt nach dem Start beendet',
+      'pt': 'Encerrou logo apos iniciar',
+      'ru': 'Программа завершилась сразу после запуска',
+    },
+    'cli.launchDiedEarlyHint': {
+      'ja': '何も表示しないまま終わりました。 セキュリティソフトに止められた場合のほか、 引数の誤りやログイン切れでも起きます。',
+      'en':
+          'It ended without printing anything. Security software may have blocked it, but a wrong argument or an expired login can do the same.',
+      'zh': '它没有输出任何内容就结束了。可能被安全软件拦截，也可能是参数有误或登录已过期。',
+      'ko': '아무것도 표시하지 않고 끝났습니다. 보안 소프트웨어가 차단했을 수도 있고, 인수 오류나 로그인 만료일 수도 있습니다.',
+      'es':
+          'Termino sin mostrar nada. Puede ser el antivirus, pero tambien un argumento incorrecto o una sesion caducada.',
+      'fr':
+          'Il s est termine sans rien afficher. Cela peut venir d un antivirus, d un argument errone ou d une session expiree.',
+      'de':
+          'Es endete ohne Ausgabe. Das kann eine Sicherheitssoftware sein, aber auch ein falsches Argument oder eine abgelaufene Anmeldung.',
+      'pt':
+          'Terminou sem mostrar nada. Pode ser o antivirus, mas tambem um argumento errado ou um login expirado.',
+      'ru':
+          'Она завершилась, ничего не выведя. Это может быть защитная программа, а также неверный аргумент или истекший вход.',
+    },
+    'cli.launchRetry': {
+      'ja': 'もう一度',
+      'en': 'Try again',
+      'zh': '再试一次',
+      'ko': '다시 시도',
+      'es': 'Reintentar',
+      'fr': 'Reessayer',
+      'de': 'Erneut versuchen',
+      'pt': 'Tentar de novo',
+      'ru': 'Повторить',
     },
     'cli.openAdmin': {
       'ja': '管理者として開く (別の窓)',
@@ -53150,16 +53635,17 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Digite uma instrução… (Enter para enviar)',
       'ru': 'Введите указание… (Enter — отправить)',
     },
+    // ★ = ユーザー要望: API キーはもう設定しない。 設定 → API クレジット へ誘導。
     'mcp.needKey': {
-      'ja': 'AIキーが設定されていません。設定 → AI設定 からお使いのAIのAPIキーを登録してください。',
-      'en': 'No AI key is set. Please add your AI API key in Settings → AI settings.',
-      'zh': '未设置 AI 密钥。请在 设置 → AI 设置 中添加您的 API 密钥。',
-      'ko': 'AI 키가 설정되지 않았습니다. 설정 → AI 설정에서 API 키를 등록해 주세요.',
-      'es': 'No hay clave de IA. Añádela en Ajustes → Configuración de IA.',
-      'fr': "Aucune clé IA n'est définie. Ajoutez-la dans Réglages → Paramètres IA.",
-      'de': 'Kein KI-Schlüssel gesetzt. Bitte unter Einstellungen → KI-Einstellungen hinzufügen.',
-      'pt': 'Nenhuma chave de IA definida. Adicione em Configurações → Configurações de IA.',
-      'ru': 'Ключ ИИ не задан. Добавьте его в Настройки → Настройки ИИ.',
+      'ja': 'AI がまだ使えません。設定 → API クレジット からチャージしてください。',
+      'en': 'AI is not available yet. Add credit in Settings → API credits.',
+      'zh': 'AI 尚不可用。请在 设置 → API 额度 中充值。',
+      'ko': 'AI를 아직 사용할 수 없습니다. 설정 → API 크레딧에서 충전해 주세요.',
+      'es': 'La IA aún no está disponible. Recarga en Ajustes → Créditos de API.',
+      'fr': 'L’IA n’est pas encore disponible. Rechargez dans Réglages → Crédits API.',
+      'de': 'KI ist noch nicht verfügbar. Bitte unter Einstellungen → API-Guthaben aufladen.',
+      'pt': 'A IA ainda não está disponível. Recarregue em Configurações → Créditos de API.',
+      'ru': 'ИИ пока недоступен. Пополните в Настройки → API-кредиты.',
     },
     'mcp.stopped': {
       'ja': 'MCPサーバーを停止しました',
@@ -56231,6 +56717,52 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Wähle zuerst eine Form oder einen Text',
       'pt': 'Selecione primeiro uma forma ou um texto',
       'ru': 'Сначала выберите фигуру или текст',
+    },
+    // ── フリーハンドのパレット (= ユーザー要望: 色 / 太さ / 手振れ補正の
+    //    設定項目が出てこない) ──
+    'pptx.inkPalette': {
+      'ja': 'フリーハンド',
+      'en': 'Freehand pen',
+      'zh': '手绘画笔',
+      'ko': '자유 곡선 펜',
+      'es': 'Lápiz a mano alzada',
+      'fr': 'Stylo à main levée',
+      'de': 'Freihandstift',
+      'pt': 'Caneta à mão livre',
+      'ru': 'Рисование от руки',
+    },
+    'pptx.tableHeaderRow': {
+      'ja': '見出し行',
+      'en': 'Header row',
+      'zh': '标题行',
+      'ko': '머리글 행',
+      'es': 'Fila de encabezado',
+      'fr': 'Ligne d\'en-tête',
+      'de': 'Kopfzeile',
+      'pt': 'Linha de cabeçalho',
+      'ru': 'Строка заголовка',
+    },
+    'pptx.tableHeaderCol': {
+      'ja': '見出し列',
+      'en': 'Header column',
+      'zh': '标题列',
+      'ko': '머리글 열',
+      'es': 'Columna de encabezado',
+      'fr': 'Colonne d\'en-tête',
+      'de': 'Kopfspalte',
+      'pt': 'Coluna de cabeçalho',
+      'ru': 'Столбец заголовка',
+    },
+    'pptx.tableBanded': {
+      'ja': '縞',
+      'en': 'Banded rows',
+      'zh': '隔行填色',
+      'ko': '줄무늬 행',
+      'es': 'Filas con bandas',
+      'fr': 'Lignes alternées',
+      'de': 'Gebänderte Zeilen',
+      'pt': 'Linhas alternadas',
+      'ru': 'Чередование строк',
     },
     'pptx.paletteApplies': {
       'ja': '選んだ図形にも掛かります',
@@ -59799,16 +60331,18 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Не удалось извлечь текст из этого файла. '
           'Возможно, это скан (PDF только из картинок).',
     },
+    // ★ = ユーザー要望: API キーはもう設定しない。 設定 → API クレジット へ誘導
+    //   (PDF ビューアの desktop / mobile 双子で同じキーを使う)。
     'aiSummary.noApiKey': {
-      'ja': 'AI APIキーが未設定です。設定からキーを登録してください。',
-      'en': 'No AI API key configured. Add a key in Settings.',
-      'zh': '未配置 AI API 密钥。请在设置中添加。',
-      'ko': 'AI API 키가 설정되지 않았습니다. 설정에서 등록하세요.',
-      'es': 'No hay clave de API de IA. Agrégala en Ajustes.',
-      'fr': "Aucune clé d'API IA. Ajoutez-en une dans les paramètres.",
-      'de': 'Kein KI-API-Schlüssel. Bitte in den Einstellungen hinzufügen.',
-      'pt': 'Sem chave de API de IA. Adicione nas Configurações.',
-      'ru': 'Не настроен ключ ИИ API. Добавьте его в настройках.',
+      'ja': 'AI がまだ使えません。設定 → API クレジット からチャージしてください。',
+      'en': 'AI is not available yet. Add credit in Settings → API credits.',
+      'zh': 'AI 尚不可用。请在 设置 → API 额度 中充值。',
+      'ko': 'AI를 아직 사용할 수 없습니다. 설정 → API 크레딧에서 충전하세요.',
+      'es': 'La IA aún no está disponible. Recarga en Ajustes → Créditos de API.',
+      'fr': 'L’IA n’est pas encore disponible. Rechargez dans Paramètres → Crédits API.',
+      'de': 'KI ist noch nicht verfügbar. Bitte unter Einstellungen → API-Guthaben aufladen.',
+      'pt': 'A IA ainda não está disponível. Recarregue em Configurações → Créditos de API.',
+      'ru': 'ИИ пока недоступен. Пополните в Настройки → API-кредиты.',
     },
     // ── AI 用語・概念解説機能 ──
     // ファイルではなく、ユーザーが入力した「用語」や「概念」を AI に解説させて
@@ -65941,16 +66475,18 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Configurações',
       'ru': 'Настройки генерации',
     },
+    // ★ = ユーザー要望: API キーはもう設定しない。 押した先は残高と
+    //   チャージの画面なので 「API クレジット」 と表記 (キー名は互換のため据え置き)。
     'ai.changeApiKey': {
-      'ja': 'APIキーを変更',
-      'en': 'Change API key',
-      'zh': '更改 API 密钥',
-      'ko': 'API 키 변경',
-      'es': 'Cambiar clave API',
-      'fr': 'Changer la clé API',
-      'de': 'API-Schlüssel ändern',
-      'pt': 'Mudar chave da API',
-      'ru': 'Изменить API-ключ',
+      'ja': 'API クレジット',
+      'en': 'API credits',
+      'zh': 'API 额度',
+      'ko': 'API 크레딧',
+      'es': 'Créditos de API',
+      'fr': 'Crédits API',
+      'de': 'API-Guthaben',
+      'pt': 'Créditos de API',
+      'ru': 'API-кредиты',
     },
     'ai.close': {
       'ja': '閉じる',
@@ -66166,12 +66702,13 @@ class MindMapProvider extends ChangeNotifier {
       'ja': '累計: チャージ \${c} ・ 使用 \${s}',
       'en': 'Lifetime: charged \${c} / spent \${s}',
     },
+    // ★ = ユーザー要望「API クレジット」 に表記統一 (設定の項目名と同じ言葉に)。
     'credit.title': {
-      'ja': 'AI クレジット（前払い）', 'en': 'AI credit (prepaid)',
-      'zh': 'AI 额度（预付）', 'ko': 'AI 크레딧 (선불)',
-      'es': 'Credito de IA (prepago)', 'fr': 'Credit IA (prepaye)',
-      'de': 'KI-Guthaben (Prepaid)', 'pt': 'Credito de IA (pre-pago)',
-      'ru': 'Кредит ИИ (предоплата)',
+      'ja': 'API クレジット（前払い）', 'en': 'API credits (prepaid)',
+      'zh': 'API 额度（预付）', 'ko': 'API 크레딧 (선불)',
+      'es': 'Créditos de API (prepago)', 'fr': 'Crédits API (prépayés)',
+      'de': 'API-Guthaben (Prepaid)', 'pt': 'Créditos de API (pré-pago)',
+      'ru': 'API-кредиты (предоплата)',
     },
     'credit.balance': {
       'ja': '残高', 'en': 'Balance', 'zh': '余额', 'ko': '잔액',
@@ -66436,6 +66973,18 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Buscar pelo nome da função (ex.: SUM)',
       'ru': 'Поиск по имени функции (напр. SUM)',
     },
+    // 使える関数の一覧の前書き (= セルの計算の書き方)。
+    'ss.formulaHelpIntro': {
+      'ja': 'セルに = で始めて書くと計算します。 + - * / ^ と ( ) 、 A1 や A1:B5 の指定が使えます。',
+      'en': 'Start a cell with = to calculate. You can use + - * / ^, parentheses, and refs like A1 or A1:B5.',
+      'zh': '在单元格中以 = 开头即可计算。可使用 + - * / ^、括号，以及 A1 或 A1:B5 这样的引用。',
+      'ko': '셀에 = 로 시작해 쓰면 계산합니다. + - * / ^ 와 ( ) , A1 이나 A1:B5 같은 참조를 쓸 수 있습니다.',
+      'es': 'Empieza la celda con = para calcular. Puedes usar + - * / ^, paréntesis y referencias como A1 o A1:B5.',
+      'fr': 'Commencez la cellule par = pour calculer. Vous pouvez utiliser + - * / ^, des parenthèses et des références comme A1 ou A1:B5.',
+      'de': 'Beginne die Zelle mit =, um zu rechnen. Moeglich sind + - * / ^, Klammern und Bezuege wie A1 oder A1:B5.',
+      'pt': 'Comece a célula com = para calcular. Pode usar + - * / ^, parênteses e referências como A1 ou A1:B5.',
+      'ru': 'Начните ячейку с =, чтобы считать. Доступны + - * / ^, скобки и ссылки вида A1 или A1:B5.',
+    },
     'ss.formulaSearchNone': {
       'ja': '見つかりません',
       'en': 'No match',
@@ -66636,7 +67185,7 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'limite de teste do modo de desenvolvedor',
       'ru': 'тестовый лимит режима разработчика',
     },
-    // 設定の「AI とクレジット」 で、 残高がまだ無い時に出す一言。
+    // 設定の「API クレジット」 で、 残高がまだ無い時に出す一言。
     'menu.aiNoCredit': {
       'ja': '未設定',
       'en': 'Not set up',
@@ -66658,6 +67207,54 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Die Tokens sind aufgebraucht. Lade auf, um weiterzumachen.',
       'pt': 'Seus tokens acabaram. Recarregue para continuar.',
       'ru': 'Токены закончились. Пополните, чтобы продолжить.',
+    },
+    // ★ = ユーザー要望 (2): API キー自体はもう設定しないので、 「設定で登録して
+    //   ください」 ではなく 設定 → API クレジット へ誘導する (旧: AI スタジオの
+    //   画像・スライド欄と単語帳のチャットに日本語の直書きが残っていた)。
+    'credit.needForImage': {
+      'ja': '画像生成には API クレジットが必要です（設定 → API クレジット でチャージ）',
+      'en': 'Image generation needs API credits (Settings → API credits).',
+      'zh': '生成图片需要 API 额度（设置 → API 额度 中充值）。',
+      'ko': '이미지 생성에는 API 크레딧이 필요합니다(설정 → API 크레딧에서 충전).',
+      'es':
+          'La generación de imágenes necesita créditos de API (Ajustes → Créditos de API).',
+      'fr':
+          'La génération d’images nécessite des crédits API (Réglages → Crédits API).',
+      'de':
+          'Die Bilderzeugung benötigt API-Guthaben (Einstellungen → API-Guthaben).',
+      'pt':
+          'A geração de imagens precisa de créditos de API (Configurações → Créditos de API).',
+      'ru':
+          'Для генерации изображений нужны API-кредиты (Настройки → API-кредиты).',
+    },
+    'credit.needForSlide': {
+      'ja': 'スライド生成には API クレジットが必要です（設定 → API クレジット でチャージ）',
+      'en': 'Slide generation needs API credits (Settings → API credits).',
+      'zh': '生成幻灯片需要 API 额度（设置 → API 额度 中充值）。',
+      'ko': '슬라이드 생성에는 API 크레딧이 필요합니다(설정 → API 크레딧에서 충전).',
+      'es':
+          'La generación de diapositivas necesita créditos de API (Ajustes → Créditos de API).',
+      'fr':
+          'La génération de diapositives nécessite des crédits API (Réglages → Crédits API).',
+      'de':
+          'Die Folienerstellung benötigt API-Guthaben (Einstellungen → API-Guthaben).',
+      'pt':
+          'A geração de slides precisa de créditos de API (Configurações → Créditos de API).',
+      'ru': 'Для генерации слайдов нужны API-кредиты (Настройки → API-кредиты).',
+    },
+    'credit.needForChat': {
+      'ja': 'AI がまだ使えません。設定 → API クレジット からチャージしてください。',
+      'en': 'AI is not available yet. Add credit in Settings → API credits.',
+      'zh': 'AI 尚不可用。请在 设置 → API 额度 中充值。',
+      'ko': 'AI를 아직 사용할 수 없습니다. 설정 → API 크레딧에서 충전해 주세요.',
+      'es': 'La IA aún no está disponible. Recarga en Ajustes → Créditos de API.',
+      'fr':
+          'L’IA n’est pas encore disponible. Rechargez dans Réglages → Crédits API.',
+      'de':
+          'KI ist noch nicht verfügbar. Bitte unter Einstellungen → API-Guthaben aufladen.',
+      'pt':
+          'A IA ainda não está disponível. Recarregue em Configurações → Créditos de API.',
+      'ru': 'ИИ пока недоступен. Пополните в Настройки → API-кредиты.',
     },
     'credit.entryTitle': {
       'ja': 'キーを用意せずに使う（前払いクレジット）',
@@ -74695,6 +75292,10 @@ class MindMapProvider extends ChangeNotifier {
     'rangeSelect',
     'addNode',
     'switchPage',
+    // ★ = ユーザー要望「モバイル版でも長押ししたら…PC 版の右クリックの項目が
+    //   出るように」。 長押しの貼り付けをメニューの項目に移したので、
+    //   並べ替えの対象にも載せる (モバイルだけに出る項目)。
+    'paste',
     'background',
     'split',
     'cutMode',
@@ -76695,8 +77296,17 @@ class MindMapProvider extends ChangeNotifier {
     if (currentPage.pageType == 'bookshelf') {
       final pc = shelfCellOf(parentNodeId);
       if (pc != null) {
-        _reserveShelfCells(currentPage, pc[1], pc[0] + 1, 1);
-        _shelfCells[node.id] = [pc[0] + 1, pc[1]];
+        // ★ 親が最終列にいる時に右隣へ置くと枠からはみ出し、 格子ごと横に
+        //   広がる (= ユーザー報告: 列が勝手に増えて崩れる)。 右隣を確保
+        //   できない時は、 動画メモと同じく親の直下に行を挿し込んで置く。
+        final cols = _shelfGridCols(currentPage);
+        if (pc[0] + 1 < cols &&
+            _reserveShelfCells(currentPage, pc[1], pc[0] + 1, 1)) {
+          _shelfCells[node.id] = [pc[0] + 1, pc[1]];
+        } else {
+          _insertShelfRow(currentPage, pc[1] + 1);
+          _shelfCells[node.id] = [0, pc[1] + 1];
+        }
         _saveShelfCells();
       }
       _arrangeAsBookshelfBody(currentPage);
@@ -83498,13 +84108,15 @@ Art direction:
       String topic,
       {int slides = 6}) async {
     if (!hasActiveAiKey) {
-      throw Exception('スライド生成には AI APIキーが必要です（設定で登録してください）');
+      // ★ = ユーザー要望 (2): API キーを入れる画面はもう無いので、
+      //   設定 → API クレジット への案内に変え、 翻訳も通す。
+      throw Exception(t('credit.needForSlide'));
     }
-    final t = topic.trim();
-    if (t.isEmpty) throw Exception('トピックを入力してください');
+    final topicText = topic.trim();
+    if (topicText.isEmpty) throw Exception('トピックを入力してください');
     final n = slides.clamp(3, 20);
     final prompt = '''次のトピックについて、見た目の良いビジネス/学習用プレゼンを$n枚作成してください。
-トピック: $t
+トピック: $topicText
 
 出力は次の形式の JSON 配列のみ（前後の説明やマークダウン記号は一切付けない）:
 [{"title":"スライドの見出し","bullets":["要点1","要点2","要点3"]}]
@@ -85275,8 +85887,11 @@ $cleanQ
           return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
         case 'pptx':
           return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+        // ★ jpe / jfif も中身は jpeg (= 利用者の報告)。
         case 'jpg':
         case 'jpeg':
+        case 'jpe':
+        case 'jfif':
           return 'image/jpeg';
         case 'png':
           return 'image/png';
@@ -86592,15 +87207,12 @@ $cleanQ
     final dotIdx = ap.lastIndexOf('.');
     if (dotIdx < 0) return askAi(prompt);
     final ext = ap.substring(dotIdx + 1).toLowerCase();
+    // ★ 絵は共通の一覧から (jpe / jfif も AI に見せられる)。
     const supported = <String>{
       'pdf',
       'docx',
       'pptx',
-      'jpg',
-      'jpeg',
-      'png',
-      'gif',
-      'webp',
+      ...kImageFileExts,
       'heic',
       'heif',
     };
@@ -86619,8 +87231,9 @@ $cleanQ
     }
     // 添付がある旨を AI に明示するための前置きを付ける。
     // 画像かドキュメントかでメッセージを変えると AI が回答方針を立てやすい。
-    final isImage = const {'jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'heif'}
-        .contains(ext);
+    // ★ 絵かどうかは共通の一覧 + heic / heif で (jpe / jfif も含む)。
+    final isImage =
+        isImageFileExt(ext) || const {'heic', 'heif'}.contains(ext);
     final fileName = node.attachmentName ?? ap.split(RegExp(r'[/\\]')).last;
     // 旧バージョンは "画像の内容も踏まえて回答してください" とだけ書いていたが、
     // それだと AI が画像を「説明する」モードに入ってしまい、ユーザーが
@@ -86696,26 +87309,55 @@ $cleanQ
       }
       final dot = path.lastIndexOf('.');
       final ext = dot >= 0 ? path.substring(dot + 1).toLowerCase() : '';
+      // ★ 絵の Content-Type は共通表から (jpe / jfif も image/jpeg)。
+      //   ただし **AI が受け取れる型だけ** (aiImageMimeForExt)。 bmp は各社の
+      //   画像型に入っておらず、 image/bmp のまま送ると相手側で弾かれる。
       const mimeByExt = <String, String>{
-        'png': 'image/png',
-        'jpg': 'image/jpeg',
-        'jpeg': 'image/jpeg',
-        'gif': 'image/gif',
-        'webp': 'image/webp',
         'heic': 'image/heic',
         'heif': 'image/heif',
       };
-      final mime = mimeByExt[ext];
-      if (mime == null) return null;
-      final bytes = await f.readAsBytes();
+      var mime = aiImageMimeForExt(ext) ?? mimeByExt[ext];
+      // 共通一覧には有るが AI が受けない形 (bmp) は、 諦めずに png へ焼き直す
+      // (= 拡張子を広げた結果、 選べるのに AI には見せられない、 を避ける)。
+      final needsPng = mime == null && isImageFileExt(ext);
+      if (mime == null && !needsPng) return null;
+      var bytes = await f.readAsBytes();
       if (bytes.isEmpty) return null;
+      if (needsPng) {
+        final png = await _reencodeImageBytesToPng(bytes);
+        if (png == null || png.isEmpty || png.length > _kAiImageMaxBytes) {
+          debugPrint('AI: $ext を png に直せなかった → 文字だけで送る');
+          return null;
+        }
+        bytes = png;
+        mime = 'image/png';
+      }
       return AiInputImage(
-        mime: mime,
+        mime: mime!,
         base64: base64Encode(bytes),
         name: name ?? path.split(RegExp(r'[/\\]')).last,
       );
     } catch (e) {
       debugPrint('AI: 画像の読み込みに失敗: $e');
+      return null;
+    }
+  }
+
+  /// 絵の中身を png に焼き直す (AI が受け取れない形を渡す時の逃げ道)。
+  ///
+  /// Flutter の復号器は bmp も読めるので、 読み込んでから png で書き出す。
+  /// 読めなかった時は null (呼び出し側は「文字だけ」 に落とす)。
+  Future<Uint8List?> _reencodeImageBytesToPng(Uint8List src) async {
+    try {
+      final completer = Completer<ui.Image>();
+      ui.decodeImageFromList(src, completer.complete);
+      final img = await completer.future.timeout(const Duration(seconds: 10));
+      if (img.width <= 0 || img.height <= 0) return null;
+      final data = await img.toByteData(format: ui.ImageByteFormat.png);
+      if (data == null) return null;
+      return data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+    } catch (e) {
+      debugPrint('AI: png への焼き直しに失敗: $e');
       return null;
     }
   }
@@ -89764,12 +90406,12 @@ $cleanQ
         throw _UploadLimitException(_lastSyncLimitMessage!);
       }
 
-      final ext = fileName.split('.').last.toLowerCase();
+      final ext = fileExtOf(fileName);
       String ct = 'application/octet-stream';
-      if (ext == 'jpg' || ext == 'jpeg')
-        ct = 'image/jpeg';
-      else if (ext == 'png')
-        ct = 'image/png';
+      // ★ 絵の Content-Type は共通表から (jpe / jfif / gif / webp / bmp も)。
+      final imageCt = imageMimeForExt(ext);
+      if (imageCt != null)
+        ct = imageCt;
       else if (ext == 'pdf')
         ct = 'application/pdf';
       else if (ext == 'mp4')
@@ -98055,8 +98697,11 @@ $cleanQ
   /// 拡張子 → MIME タイプの簡易マッピング (画像/PDF/動画/オーディオ)
   String _mimeFromExt(String ext) {
     switch (ext) {
+      // ★ jpe / jfif も中身は jpeg (= 利用者の報告)。
       case 'jpg':
       case 'jpeg':
+      case 'jpe':
+      case 'jfif':
         return 'image/jpeg';
       case 'png':
         return 'image/png';
@@ -98763,11 +99408,22 @@ $cleanQ
     return c == null ? n : n.copyWith(textColor: c.value);
   }
 
-  MindMapNode addNodeAtCenterReturning(Offset position) {
+  /// [avoidOverlap] を false にすると、 既存ノードとの重なり回避
+  /// (= 既存ノードの下へ押し下げる候補探し) を通さず、 **渡した座標に
+  /// そのまま置く** (画面外へ出ないようにする端の丸め込みだけは掛かる)。
+  /// [width] / [height] を渡すと、 既定の大きさの代わりにその大きさで作る。
+  ///
+  /// ★ = ユーザー要望「端子を配置するまでその形にならず、 四角で配置候補が
+  ///   現れるのが気になる」。 端子は引いた四角どおりの位置・大きさで置きたい
+  ///   ので、 この経路 (avoidOverlap: false + 大きさ指定) を使う。
+  ///   既定 (true / null) は今までどおりなので、 他の呼び出し側は変わらない。
+  MindMapNode addNodeAtCenterReturning(Offset position,
+      {bool avoidOverlap = true, double? width, double? height}) {
     // 既定の大きさ (= ユーザー要望: 今の大きさを「これから作る物の既定」
     //   として覚えられるように)。 覚えていなければ今までどおり。
-    final nodeW = effectiveNewNodeWidth;
-    final nodeH = _nodeDefaultHeight > 0 ? _nodeDefaultHeight : 42.0;
+    final nodeW = width ?? effectiveNewNodeWidth;
+    final nodeH =
+        height ?? (_nodeDefaultHeight > 0 ? _nodeDefaultHeight : 42.0);
     const gap = 24.0;
     const canvasW = 20000.0;
     const canvasH = 20000.0;
@@ -98777,7 +99433,8 @@ $cleanQ
       position.dx.clamp(gap, canvasW - nodeW - gap),
       position.dy.clamp(gap, canvasH - nodeH - gap),
     );
-    for (int i = 0; i < 30; i++) {
+    // avoidOverlap が false の時は候補探しを丸ごと飛ばす (= 置きたい所に置く)。
+    for (int i = 0; avoidOverlap && i < 30; i++) {
       bool overlap = false;
       for (final n in nodeMap.values) {
         if (_nodesOverlap(candidate, nodeW, nodeH, n, gap)) {
@@ -106199,6 +106856,9 @@ $cleanQ
   /// 時にその位置へ置く)。
   void setShelfCell(String nodeId, int col, int row) {
     if (!shelfCellWithinLimit(col, row)) return;
+    // ★ 枠 (列数) の外は受け付けない。 受けると格子ごと横に広がる
+    //   (= ユーザー報告: 列が勝手に増えて崩れる)。 段 (row) は増える仕様。
+    if (currentPage.pageType == 'bookshelf' && col >= _shelfGridCols()) return;
     _shelfCells[nodeId] = [col, row];
     _saveShelfCells();
   }
@@ -106211,19 +106871,36 @@ $cleanQ
   /// ★ ずらす相手は [page] の要素だけ。 `_shelfCells` は全ページ共通の控えな
   ///   ので、 ページを見ずにずらすと他のギャラリーの配置まで動いてしまう
   ///   ([_pruneOrphanShelfCells] の覚書と同じ落とし穴)。
-  void _reserveShelfCells(MindMapPage page, int row, int fromCol, int count) {
-    if (count <= 0) return;
-    if (row < 0 ||
-        row >= kShelfMaxGridRows ||
-        fromCol < 0 ||
-        fromCol >= kShelfMaxGridCols) return;
+  /// 戻り値: 確保できたら true。 その行が満杯 (= ずらすと枠の外へ出る) なら
+  /// 何もせず false を返す。 呼ぶ側は行を挿し込む等の逃げ道を取ること。
+  /// ★ = ユーザー報告「列の方向にも増えて崩れる」。 以前は最大列数 (100) まで
+  ///   右へ押していたので、 行の末尾の要素が枠の外へこぼれ、 格子ごと横に
+  ///   広がっていた。
+  bool _reserveShelfCells(MindMapPage page, int row, int fromCol, int count) {
+    if (count <= 0) return true;
+    final cols = _shelfGridCols(page);
+    if (row < 0 || row >= kShelfMaxGridRows || fromCol < 0 || fromCol >= cols) {
+      return false;
+    }
+    // その行で fromCol 以降にある要素を count だけ右へ寄せられるか先に見る。
+    for (final e in _shelfCells.entries) {
+      if (!page.nodes.containsKey(e.key)) continue;
+      final n = page.nodes[e.key];
+      if (n != null && n.hiddenInContainer != null) continue;
+      if (e.value[1] == row &&
+          e.value[0] >= fromCol &&
+          e.value[0] + count >= cols) {
+        return false; // 枠から出るので確保しない
+      }
+    }
     _shelfCells.forEach((id, c) {
       if (!page.nodes.containsKey(id)) return;
       if (c[1] == row && c[0] >= fromCol) {
         final nextCol = c[0] + count;
-        if (nextCol < kShelfMaxGridCols) c[0] = nextCol;
+        if (nextCol < cols) c[0] = nextCol;
       }
     });
+    return true;
   }
 
   /// [row] 以降の行を 1 段ずつ下へずらして、 [row] に空の新しい行を作る。
@@ -106247,13 +106924,29 @@ $cleanQ
     final rowH = _shelfRowH(page);
     final stepX = kShelfTileW + kShelfGap;
     final stepY = rowH + kShelfGap;
-    final dCol = (pixelDelta.dx / stepX).round();
+    var dCol = (pixelDelta.dx / stepX).round();
     final dRow = (pixelDelta.dy / stepY).round();
+    // ★ 枠 (列数) の外へは出さない (= ユーザー報告: 列が勝手に増えて崩れる)。
+    //   요素ごとに最終列で頭打ちにすると選んだ物同士が同じマスに重なるので、
+    //   ずらす量そのものを枠に収まるところまで丸める。 段 (row) は元々
+    //   増える仕様なので従来どおり。
+    final cols = _shelfGridCols(page);
+    var selMinCol = 1 << 30, selMaxCol = -1;
+    for (final id in ids) {
+      final c = _shelfCells[id];
+      if (c == null || c.length < 2) continue;
+      if (c[0] < selMinCol) selMinCol = c[0];
+      if (c[0] > selMaxCol) selMaxCol = c[0];
+    }
+    if (selMaxCol >= 0) {
+      if (dCol > cols - 1 - selMaxCol) dCol = cols - 1 - selMaxCol;
+      if (dCol < -selMinCol) dCol = -selMinCol;
+    }
     if (dCol != 0 || dRow != 0) {
       for (final id in ids) {
         final c = _shelfCells[id];
         if (c != null) {
-          c[0] = (c[0] + dCol).clamp(0, kShelfMaxGridCols - 1).toInt();
+          c[0] = (c[0] + dCol).clamp(0, cols - 1).toInt();
           c[1] = (c[1] + dRow).clamp(0, kShelfMaxGridRows - 1).toInt();
         }
       }
@@ -106287,11 +106980,17 @@ $cleanQ
       // 非 keep を col 昇順に、 予約/使用済みを避けて右へ詰め直す。
       final others = entries.where((e) => !keep.contains(e.key)).toList()
         ..sort((a, b) => a.value[0] - b.value[0]);
+      // ★ 押しのける先も枠 (列数) の中まで。 枠から出すと格子ごと横に
+      //   広がってしまう (= ユーザー報告: 列が勝手に増えて崩れる)。
+      //   入りきらなかった物は直後の整列 (_normalizeShelfCells) が
+      //   下の段の空きへ回す。
+      final cols = _shelfGridCols(page);
       for (final e in others) {
-        int col = e.value[0].clamp(0, kShelfMaxGridCols - 1).toInt();
-        while (taken.contains(col) && col < kShelfMaxGridCols - 1) {
+        int col = e.value[0].clamp(0, cols - 1).toInt();
+        while (taken.contains(col) && col < cols - 1) {
           col++;
         }
+        if (taken.contains(col)) col = cols; // 枠外 = 整えに任せる
         e.value[0] = col;
         taken.add(col);
       }
@@ -106530,10 +107229,65 @@ $cleanQ
       if (_shelfCells.containsKey(id)) continue;
       final n = page.nodes[id];
       if (n != null && n.hiddenInContainer != null) continue; // 隠れメンバーは除外
-      final cell = _nextFreeShelfCell(occ);
+      // ★ 折り返す列数は**このページ**で数える。 引数無しだと `currentPage` の
+      //   列数になり、 別のギャラリー (分割の向こう側 / AI アシスタント /
+      //   ページ間の受け渡し) を並べた時に、 そのページの枠より右へ
+      //   マス目を配ってしまう (= 列が勝手に増える原因)。
+      final cell = _nextFreeShelfCell(occ, gridCols: _shelfGridCols(page));
       if (cell == null) break;
       _shelfCells[id] = [cell[0], cell[1]];
       occ.add('${cell[0]},${cell[1]}');
+      changed = true;
+    }
+    if (changed) _saveShelfCells();
+  }
+
+  /// 枠 (列数) の外へ出てしまったマス目を、 枠の中の空きへ戻す。
+  ///
+  /// ★ = ユーザー報告「ギャラリーは既定では行しか増えないはずなのに、
+  ///   列の方向にも増えてレイアウトが崩れることがある」。
+  ///   位置はマス目 (col,row) から導くので、 col が列数を超えた要素が
+  ///   1 つでもあると [_buildShelfGrid] が格子ごと横に広げてしまう
+  ///   (`cols = maxCol + 1`)。 一方 +ボックス [bookshelfFrontierCells] は
+  ///   設定どおりの列数のままなので、 「列だけ増えて +ボックスが無い帯」 が
+  ///   できていた。 ここで枠の外の物だけを枠内へ戻す。
+  ///   段 (row) は元々増える仕様なので触らない。 枠の中に収まっている要素は
+  ///   1 マスも動かさない (= 既存の配置を勝手に詰め直さない)。
+  ///   利用者が自分で列を増やした時は [_shelfGridCols] がその値を返すので、
+  ///   この整えは何もしない。
+  void _normalizeShelfCells(MindMapPage page) {
+    if (page.pageType != 'bookshelf') return;
+    final cols = _shelfGridCols(page);
+    final occ = <String>{};
+    final strays = <String>[];
+    // 見た目の並び (上→下、 左→右) で見て、 戻す順を安定させる。
+    final ids = page.nodes.keys
+        .where((id) =>
+            page.nodes[id]!.hiddenInContainer == null &&
+            (_shelfCells[id]?.length ?? 0) >= 2)
+        .toList()
+      ..sort((a, b) {
+        final ca = _shelfCells[a]!, cb = _shelfCells[b]!;
+        final dr = ca[1].compareTo(cb[1]);
+        return dr != 0 ? dr : ca[0].compareTo(cb[0]);
+      });
+    for (final id in ids) {
+      final c = _shelfCells[id]!;
+      if (c[0] >= 0 && c[0] < cols && c[1] >= 0) {
+        occ.add('${c[0]},${c[1]}');
+      } else {
+        strays.add(id);
+      }
+    }
+    if (strays.isEmpty) return;
+    var changed = false;
+    for (final id in strays) {
+      final cur = _shelfCells[id]!;
+      final free = _nextFreeShelfCell(occ,
+          fromRow: cur[1] < 0 ? 0 : cur[1], gridCols: cols);
+      if (free == null) continue;
+      _shelfCells[id] = [free[0], free[1]];
+      occ.add('${free[0]},${free[1]}');
       changed = true;
     }
     if (changed) _saveShelfCells();
@@ -107410,22 +108164,9 @@ $cleanQ
 
     const double bw = kShelfTileW; // 統一幅
 
-    bool isImagePath(String? p) {
-      if (p == null || p.isEmpty) return false;
-      var s = p;
-      final q = s.indexOf('?');
-      if (q >= 0) s = s.substring(0, q);
-      final h = s.indexOf('#');
-      if (h >= 0) s = s.substring(0, h);
-      final dot = s.lastIndexOf('.');
-      final ext = dot >= 0 ? s.substring(dot + 1).toLowerCase() : '';
-      return ext == 'jpg' ||
-          ext == 'jpeg' ||
-          ext == 'png' ||
-          ext == 'gif' ||
-          ext == 'webp' ||
-          ext == 'bmp';
-    }
+    // ★ 絵かどうかは共通の一覧で (jpe / jfif も表紙として扱う)。
+    bool isImagePath(String? p) =>
+        p != null && p.isNotEmpty && isImageFilePath(p);
 
     // 「表紙系」 = 動画 / 画像 / PDF・pptx サムネを持つノード。
     bool isCover(MindMapNode n) {
@@ -107539,6 +108280,11 @@ $cleanQ
       // ギャラリー全体: 各ノードのセル (col,row) に従って配置する (= 自由 2D グリッド)。
       // セル未割り当てのもの (= 適当ドロップ等) は下段の右へ順に割り当てる。
       _ensureShelfCells(page);
+      // ★ 枠の外へ出た物を枠内へ戻す (= ユーザー報告: 列の方向にも増えて崩れる)。
+      //   ここは全てのギャラリー操作が必ず通る所なので、 どの経路で外へ出ても
+      //   ここで元に戻る。 開いた直後の reflowBookshelf も通るため、 既に
+      //   崩れているページも開いた時点で直る。
+      _normalizeShelfCells(page);
       // 先にサイズだけ反映 → 可変サイズ格子の列幅/行高を実サイズで算出する (#4/#5)。
       for (final u in updated) {
         page.nodes[u.id] = u;
@@ -107705,7 +108451,19 @@ $cleanQ
     // cell 指定があればその位置へ (1 セル確保して既存を右へずらす = 重なり防止)。
     //   無ければ整列時に下段の右へ割り当てられる。
     if (cell != null) {
-      _reserveShelfCells(currentPage, cell[1], cell[0], 1);
+      // ★ cell は基本 +ボックス (空きマス) なので、 ずらす必要は無い。
+      //   無条件にずらすと穴の右にいた要素が枠の外へ出て、 格子ごと横に
+      //   広がっていた (= ユーザー報告: 列が勝手に増えて崩れる)。
+      final occupied = _shelfCells.entries.any((e) {
+        final n = currentPage.nodes[e.key];
+        return n != null &&
+            n.hiddenInContainer == null &&
+            e.key != node.id &&
+            e.value.length >= 2 &&
+            e.value[0] == cell[0] &&
+            e.value[1] == cell[1];
+      });
+      if (occupied) _reserveShelfCells(currentPage, cell[1], cell[0], 1);
       _shelfCells[node.id] = [cell[0], cell[1]];
     }
     _arrangeAsBookshelfBody(currentPage);
@@ -107802,6 +108560,31 @@ $cleanQ
     _namedGroups[id]![name] = Set.of(nodeIds);
     _saveNamedGroups();
     notifyListeners();
+  }
+
+  /// 付箋 (名前付きグループ) を、 **ページを指定して**作る。
+  /// = ユーザー要望「マーメイドの subgraph を付箋として写す」。
+  ///   setNamedGroup は今開いているページ決め打ちなので、 裏のページへ
+  ///   入れる「+ ページに追加」 からは使えない。
+  /// 同じ名前が既にある時は `_uniqueGroupKey` (見えない印を足す) で分ける。
+  /// 実際に使った内部キーを返す (ページが無い / 中身が空 = null)。
+  String? mcpSetNamedGroup(String pageId, String name, Set<String> nodeIds) {
+    final page = mcpPageById(pageId);
+    if (page == null) return null;
+    final ids = nodeIds.where(page.nodes.containsKey).toSet();
+    if (ids.isEmpty) return null;
+    // 図ひとつで付箋がいくつも出来るので、 取り消しは 1 回にまとめる。
+    _pushUndoForPage(pageId, coalesceKey: 'mcpSetNamedGroup:$pageId');
+    final groups = _namedGroups.putIfAbsent(pageId, () => {});
+    var base = name.trim();
+    if (base.isEmpty) base = '図';
+    final key = _uniqueGroupKey(groups, base);
+    groups[key] = ids;
+    _saveNamedGroups();
+    // 同期の差分に載せる (付箋は namedGroupsJson として上がる)。
+    mcpTouchPage(pageId);
+    notifyListeners();
+    return key;
   }
 
   /// 指定ノードが所属している全てのグループ名を返す
@@ -113552,13 +114335,8 @@ $example
         }
       } else if (att.isNotEmpty) {
         url = att;
-        final lower = att.toLowerCase();
-        final isImage = lower.endsWith('.png') ||
-            lower.endsWith('.jpg') ||
-            lower.endsWith('.jpeg') ||
-            lower.endsWith('.gif') ||
-            lower.endsWith('.webp') ||
-            lower.endsWith('.bmp');
+        // ★ 絵かどうかは共通の一覧で (jpe / jfif も絵として貼る)。
+        final isImage = isImageFilePath(att);
         if (isImage && File(att).existsSync()) {
           thumb = att;
           url = null; // 絵はそのまま貼る (飛ぶ先は無い)

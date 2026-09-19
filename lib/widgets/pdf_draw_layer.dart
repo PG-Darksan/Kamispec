@@ -2605,15 +2605,19 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   /// (= ユーザー要望: 道具ごとに大きさを持つ)。
   double _markerSize = 14.0;
 
-  /// 置く印の種類 (= ユーザー要望: ✓ の所を ○ や × 等に切り替えられるように)。
-  /// 'check' | 'circle' | 'cross' | 'triangle' | 'square'。
+  /// 置く印の種類 (= ユーザー要望: ✓ の所を × や連番等に切り替えられるように)。
+  /// 'check' | 'cross' | 'triangle' | 'number' ([kCheckMarks] の並び)。
+  /// 'circle' / 'square' は帯から外したが、 昔の印を描く時のために
+  /// [_markStrokes] は今までどおり受け付ける。
   /// 形は下の [_markStrokes] が線 (ペン) の並びとして作るので、 どの形でも
   /// 既存の描画 / 焼き込み / 消しゴム / 選択がそのまま効く。
   String _checkMark = 'check';
   static const String _kCheckMarkPrefsKey = 'pdfDrawCheckMark';
 
-  /// 印の一覧を広げているか (= ユーザー要望: カラーと同じく収納できるように)。
-  bool _checksOpen = false;
+  // 印の一覧を畳む仕掛け (_checksOpen) は廃止した。
+  // ★ = ユーザー要望「印のアイコンが選択したものと選択肢で同じものが
+  //   表示されるのも冗長だから PDF の図形描き込みと揃えて欲しい」。
+  //   図形 (線 / 四角 / 楕円…) と同じく、 印も 1 つずつボタンを並べる。
 
   /// 連番 (①②③) の次に置く番号 (= 開始番号でもある)。 固定中は増やさない。
   int _seqNext = 1;
@@ -2628,13 +2632,11 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     return '($n)';
   }
 
-  /// 今選んでいる印のアイコン (道具ボタンに出す)。
-  IconData get _markIcon {
-    for (final m in kCheckMarks) {
-      if (m.id == _checkMark) return m.icon;
-    }
-    return Icons.check_rounded;
-  }
+  // 今選んでいる印の絵だけを返す getter (_markIcon) は廃止した。
+  // ★ = ユーザー要望「印のアイコンが選択したものと選択肢で同じものが
+  //   表示されるのも冗長だから PDF の図形描き込みと揃えて欲しい」。
+  //   印の絵が出る所は道具の帯のボタン列 ([kCheckMarks] を 1 つずつ並べた
+  //   所) だけにした。 どれを選んでいるかはそのボタンの色で分かる。
 
   /// 選んだ印を覚えておく。
   Future<void> _persistCheckMark() async {
@@ -2648,6 +2650,8 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     try {
       final sp = await SharedPreferences.getInstance();
       final v = sp.getString(_kCheckMarkPrefsKey);
+      // 並びから外した丸 / 四角が昔の設定に残っていても、 ここで弾かれて
+      // ✓ に戻る (= 帯に無い印が選ばれたままにならないように)。
       if (v != null && mounted && kCheckMarks.any((m) => m.id == v)) {
         setState(() => _checkMark = v);
       }
@@ -2673,12 +2677,19 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     }
   }
 
+  /// 道具の帯に並べる印。
+  ///
+  /// ★ = ユーザー要望「印から丸や四角を出すのと、 普通に丸や四角を出すので
+  ///   機能が同じだからまとめて欲しい」。 丸 (circle) と 四角 (square) は
+  ///   道具の「楕円」「四角」 と同じ絵・同じ物なので、 この並びからは外した
+  ///   (画像の注釈 _kImgMarks と同じ扱い)。 大きさを決めて 1 押しで置きたい
+  ///   時は、 図形の丸 / 四角を選んで「大きさを固定」 を入れれば同じ事が
+  ///   できる。 昔の設定や、 すでに焼き込んだ circle / square の印は
+  ///   [_markStrokes] がそのまま受け付けるので今までどおり出る。
   static const List<({String id, IconData icon})> kCheckMarks = [
     (id: 'check', icon: Icons.check_rounded),
-    (id: 'circle', icon: Icons.circle_outlined),
     (id: 'cross', icon: Icons.close_rounded),
     (id: 'triangle', icon: Icons.change_history_rounded),
-    (id: 'square', icon: Icons.crop_square_rounded),
     // 連番 (①②③…) = ユーザー要望。 押すたびに次の番号を置く。
     (id: 'number', icon: Icons.looks_one_rounded),
   ];
@@ -3359,11 +3370,17 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
       );
     }
 
-    // 印 (✓○×△□ / 連番) を選ぶボタン。
-    // ★ 選んでも畳まない (= ユーザー要望: 選んだだけで図形の並びが閉じると
-    //   続けて選び直せない)。 畳むのは「>」 を押した時だけ。
+    // 印 (✓ × △ / 連番) のボタン。
+    // ★ 図形のボタン (線 / 四角 / 楕円…) と同じ見せ方にそろえた
+    //   (= ユーザー要望: 印のアイコンが選択したものと選択肢で同じ物が
+    //   出るのは冗長。 PDF の図形描き込みと揃えて)。 押せばその印の道具に
+    //   なり、 今その印で置ける時は色を付ける。 道具が別 (ペン等) の時も、
+    //   前に選んだ印だけうっすら敷いて「次に印を押したらこれ」 が分かる
+    //   ようにしてある。
     Widget markBtn(({String id, IconData icon}) m) {
-      final on = _checkMark == m.id;
+      final on = _tool == PdfDrawTool.check && _checkMark == m.id;
+      // 今の道具は印ではないが、 次に印を置くならこの形、 という控えめな印。
+      final last = !on && _checkMark == m.id;
       return Tooltip(
         // その印に合った言い方にする (= ユーザー報告: ○ を選んでいるのに
         //   「チェックを置く」 と出る)。
@@ -3373,26 +3390,35 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
             setState(() {
               _checkMark = m.id;
               // 種類を選んだら、 そのまま置ける道具に切り替える。
-              _tool = PdfDrawTool.check;
+              // 今その印で置ける時にもう一度押したら解除して素通しに戻す
+              //   (= 他の道具のボタンと同じ作法)。
+              _tool = on ? PdfDrawTool.hand : PdfDrawTool.check;
             });
+            // 印は道具ごとの大きさ (1.0〜5.0) を持つので、 数値欄も入れ替える。
+            _seedSizeField();
             unawaited(_persistCheckMark());
           },
           borderRadius: BorderRadius.circular(6),
           child: Container(
-            width: 28,
+            // ★ 大きさ・塗り方とも図形のボタン (toolBtn) にそろえる
+            //   (= ユーザー要望「PDF の図形描き込みと揃えて欲しい」)。
+            //   印だけ枠付きの小さい箱にしていたので、 同じ帯の中で浮いて
+            //   見えた。 選んでいない時は透かし、 選んだら紫で塗る。
+            width: 30,
             height: 30,
             alignment: Alignment.center,
-            margin: const EdgeInsets.symmetric(horizontal: 1),
             decoration: BoxDecoration(
+              // 次に印を置く時の形 (last) は、 うっすら敷くだけで示す。
+              //   枠を足すと並びの見た目が図形とずれるので足さない。
               color: on
                   ? const Color(0xFF6C63FF)
-                  : Colors.white.withValues(alpha: 0.06),
+                  : last
+                      ? Colors.white.withValues(alpha: 0.10)
+                      : Colors.transparent,
               borderRadius: BorderRadius.circular(6),
-              border: Border.all(
-                  color: on ? const Color(0xFF6C63FF) : Colors.white24),
             ),
             child: Icon(m.icon,
-                size: 16, color: on ? Colors.white : Colors.white70),
+                size: 18, color: on ? Colors.white : Colors.white70),
           ),
         ),
       );
@@ -3569,23 +3595,30 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
             child: eraser
                 ? const _EraserGlyph(size: 16, color: Color(0xFF9FE7FF))
                 : Icon(
+                    // ★ 印 (✓ × △ / 連番) の時も、 図形 (四角 / 楕円) と
+                    //   同じ絵にする (= ユーザー要望「印のアイコンが選択した
+                    //   ものと選択肢で同じものが表示されるのも冗長だから PDF の
+                    //   図形描き込みと揃えて欲しい」)。 ここに今選んでいる印の
+                    //   絵を出していたので、 左のボタン列にある同じ形が同じ帯
+                    //   の中にもう一度並んでいた。 どの印を選んでいるかは
+                    //   ボタンの色で分かり、 ここが何の大きさなのかは吹き出し
+                    //   (pdfdraw.checkSize =「印の大きさ」) が受け持つ。
+                    //   以前の報告「○ の印なのに大きさの所が ✓ のまま」 も、
+                    //   特定の印の絵を出さなくなったので起きない。
                     textTool
                         ? Icons.format_size_rounded
-                        // ★ 今選んでいる印の絵にする (= ユーザー報告: ○ の
-                        //   印なのに大きさの所が ✓ のまま)。
-                        : checkTool
-                            ? _markIcon
-                            : marker
-                                ? Icons.border_color_rounded
-                                : Icons.brush_rounded,
+                        : marker
+                            ? Icons.border_color_rounded
+                            : Icons.brush_rounded,
                     size: 15,
                     color: accent),
           ),
           const SizedBox(width: 6),
           // 見本 (実際の形と大きさ)。
-          //   チェックは見出しと同じ ✓ になって同じ絵が 2 つ並ぶので出さない
-          //   (= ユーザー要望: 左 1 つだけでいい)。 文字の「あ」 も要らない
-          //   と言われたので出さない。
+          //   印は「線の太さ」 ではなく形の大きさ (1.0〜5.0 の倍率) なので、
+          //   線の見本を出すとかえって紛らわしい。 左のボタン列に形そのものが
+          //   並んでいるので、 ここには出さない (= ユーザー要望: 同じ絵を
+          //   2 つ出さない)。 文字の「あ」 も要らないと言われたので出さない。
           // ★ 見本の場所は**いつでも**取る (= ユーザー要望: 消しゴムに
           //   切り替えるとアイコンが 1 つ増えて、 右側の位置がずれる)。
           //   出さない道具の時は中身だけ空にする。
@@ -3740,43 +3773,20 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
             // 文字を置く (= ユーザー要望: 図形を選択と手書きペンの間に)。
             toolBtn(PdfDrawTool.text, Icons.title_rounded, 'pdfdraw.text'),
             toolBtn(PdfDrawTool.pen, Icons.gesture_rounded, 'pdfdraw.pen'),
-            // 消しゴム / チェック (= ユーザー要望)。
+            // 消しゴム (= ユーザー要望)。 印はこの右に 1 つずつ並べる。
             toolBtn(PdfDrawTool.eraser, null, 'pdfdraw.eraser'),
-            // ★ 印の道具ボタンは**いつでも**出す (= ユーザー要望: 消しゴムと
-            //   印を行き来するとボタンの位置が動くのが気になる)。 出したり
-            //   引っ込めたりしていたので、 その度に右側が丸ごとずれていた。
-            toolBtn(PdfDrawTool.check, _markIcon, _markLabelKey(_checkMark)),
-            // ── 置く印の種類 (= ユーザー要望: ✓ の所を ○ や × 連番 等に)。
-            //    ★ 「チェックを置く」 を選んでいなくても種類を選べる
-            //      (= ユーザー報告: 押さないと選択肢が出てこないのは変)。
-            //      畳んである時は展開ボタンだけを出し、 そこから連番などを
-            //      直接選べる。 選ぶとチェックの道具に切り替わる。
-            // ★ 印のまとまりは区切り線ではさむ (= ユーザー要望: 「>」 が
-            //   他の図形と紛らわしい)。
+            // ── 置く印 (✓ × △ / 連番) ──
+            // ★ = ユーザー要望「印のアイコンが選択したものと選択肢で同じ
+            //   ものが表示されるのも冗長だから PDF の図形描き込みと揃えて
+            //   欲しい」。 今選んでいる印を出す道具ボタン + 残りを出す
+            //   「>」 の組み合わせをやめ、 図形のボタンと同じように**印を
+            //   1 つずつ並べる**だけにした。 同じ形が 2 か所に出ることは
+            //   無くなり、 形を選ぶのも 1 手 (押すだけ) で済む。
+            // ★ 印のまとまりは区切り線ではさむ (= ユーザー要望: 他の図形と
+            //   紛らわしい)。 並びはいつでも同じなので、 道具を行き来しても
+            //   ボタンの位置は動かない (= 以前のユーザー要望)。
             sepLine(),
-            // 今の印は左の道具ボタンに出ているので、 ここには重ねて出さない
-            //   (= ユーザー要望: 同じ物が 2 つ並ばないように)。
-            InkWell(
-                onTap: () => setState(() => _checksOpen = !_checksOpen),
-                borderRadius: BorderRadius.circular(6),
-                child: Tooltip(
-                  message: widget.tr('pdfdraw.moreMarks'),
-                  child: SizedBox(
-                    width: 22,
-                    height: 26,
-                    child: Icon(
-                        _checksOpen
-                            ? Icons.chevron_left_rounded
-                            : Icons.chevron_right_rounded,
-                        size: 18,
-                        color: Colors.white70),
-                  ),
-                ),
-              ),
-            if (_checksOpen)
-              for (final m in kCheckMarks)
-                // 今の印は左の道具ボタンが受け持つので、 並びからは外す。
-                if (m.id != _checkMark) markBtn(m),
+            for (final m in kCheckMarks) markBtn(m),
             // 連番を選んでいる時だけ、 開始番号と固定の操作を出す。
             if (_tool == PdfDrawTool.check && _checkMark == 'number')
               seqControls(),

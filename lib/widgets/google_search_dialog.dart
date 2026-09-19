@@ -74,6 +74,8 @@ import 'package:image/image.dart' as img;
 import '../providers/mind_map_provider.dart';
 import 'node_widget.dart' show NodeWidget;
 import '../utils/embedded_oauth_guard.dart';
+// ★ 絵の拡張子の共通一覧 (jpe / jfif 対応)。
+import '../utils/image_file_types.dart';
 import '../utils/google_map_pinch_utils.dart';
 
 enum _GSearchSplitIconFill { left, right, top, bottom }
@@ -2771,9 +2773,8 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       final res = await FilePicker.platform.pickFiles(
         dialogTitle: provider.t('gs.memoAttach'),
         type: FileType.custom,
-        allowedExtensions: const [
-          'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'pdf',
-        ],
+        // ★ 絵の拡張子は共通の一覧から (jpe / jfif も選べる)。
+        allowedExtensions: const [...kImagePickerExts, 'pdf'],
         allowMultiple: true,
       );
       if (res == null || !mounted) return;

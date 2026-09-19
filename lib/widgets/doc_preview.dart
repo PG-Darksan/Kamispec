@@ -4,6 +4,9 @@ import 'dart:io';
 import 'package:archive/archive.dart';
 import 'package:flutter/foundation.dart';
 
+// ★ 絵の拡張子の共通一覧 (jpe / jfif 対応)。
+import '../utils/image_file_types.dart';
+
 /// ギャラリーのタイルに「中身のさわり」を出すための読み取り
 /// (= ユーザー要望: xlsx や docx もサムネイルで中身が見えるように)。
 ///
@@ -586,10 +589,8 @@ class DocPreview {
         final f = _fileOf(zip, part);
         if (f == null) continue;
         final ext2 = part.split('.').last.toLowerCase();
-        if (!const {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'}
-            .contains(ext2)) {
-          continue;
-        }
+        // ★ 絵かどうかは共通の一覧で (jpe / jfif も含む)。
+        if (!isImageFileExt(ext2)) continue;
         final data = f.content as List<int>;
         if (data.length > 1500000) continue;
         imageBytes += data.length;

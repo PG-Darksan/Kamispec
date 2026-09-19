@@ -56,6 +56,8 @@ import 'package:fvp/fvp.dart' as fvp;
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'providers/mind_map_provider.dart';
 import 'screens/mind_map_screen.dart';
+// 端末から `hnb <ファイル / フォルダー>` で開けるようにする薄皮。
+import 'services/hnb_launcher.dart';
 // 自動操作のフロー画面を外の窓 (別プロセス) で出すため (= ユーザー要望)。
 import 'widgets/google_search_dialog.dart' show GoogleSearchAutomationHost;
 import 'services/home_shortcut_service.dart';
@@ -2377,27 +2379,33 @@ class FloatL10n {
       'fr': 'Enregistrer dans la note', 'de': 'In Notiz speichern',
       'pt': 'Salvar na nota', 'ru': 'Сохранить в заметку',
     },
+    // ★ = ユーザー要望: 呼称を「API クレジット」 に統一 (本体の設定の項目名と
+    //   同じ言葉にする)。 サブ窓は provider の _translations を使えないので
+    //   ここにも同じ文言を置いている。
     'ai.noCredit': {
-      'ja': 'AI クレジットの残高が足りません。アプリでチャージしてください。',
-      'en': 'Not enough AI credit. Please add more in the app.',
-      'zh': 'AI 额度不足，请在应用中充值。',
-      'ko': 'AI 크레딧이 부족합니다. 앱에서 충전해 주세요.',
-      'es': 'Credito de IA insuficiente. Recarga en la app.',
-      'fr': 'Credit IA insuffisant. Rechargez dans l application.',
-      'de': 'Nicht genug KI-Guthaben. Bitte in der App aufladen.',
-      'pt': 'Credito de IA insuficiente. Recarregue no app.',
-      'ru': 'Недостаточно кредита ИИ. Пополните в приложении.',
+      'ja': 'API クレジットの残高が足りません。アプリでチャージしてください。',
+      'en': 'Not enough API credits. Please add more in the app.',
+      'zh': 'API 额度不足，请在应用中充值。',
+      'ko': 'API 크레딧이 부족합니다. 앱에서 충전해 주세요.',
+      'es': 'Creditos de API insuficientes. Recarga en la app.',
+      'fr': 'Credits API insuffisants. Rechargez dans l application.',
+      'de': 'Nicht genug API-Guthaben. Bitte in der App aufladen.',
+      'pt': 'Creditos de API insuficientes. Recarregue no app.',
+      'ru': 'Недостаточно API-кредитов. Пополните в приложении.',
     },
+    // ★ = ユーザー要望 (2): API キーを入れる画面はもう無いので、 「API キーを
+    //   登録する」 とは案内しない。 本体の 設定 → API クレジット へ誘導する。
     'ai.needSetup': {
-      'ja': 'AI を使う準備ができていません。アプリで API キーを登録するか、クレジットをチャージしてください。',
-      'en': 'The AI is not set up yet. Register an API key or add credit in the app.',
-      'zh': 'AI 尚未配置。请在应用中注册 API 密钥或充值。',
-      'ko': 'AI 준비가 되지 않았습니다. 앱에서 API 키를 등록하거나 크레딧을 충전해 주세요.',
-      'es': 'La IA no esta configurada. Registra una clave de API o recarga credito en la app.',
-      'fr': 'L IA n est pas configuree. Enregistrez une cle API ou rechargez du credit dans l application.',
-      'de': 'Die KI ist nicht eingerichtet. Registrieren Sie einen API-Schluessel oder laden Sie Guthaben in der App auf.',
-      'pt': 'A IA nao esta configurada. Registre uma chave de API ou recarregue credito no app.',
-      'ru': 'ИИ не настроен. Зарегистрируйте ключ API или пополните кредит в приложении.',
+      'ja': 'AI がまだ使えません。アプリの 設定 → API クレジット からチャージしてください。',
+      'en':
+          'AI is not available yet. Add credit in the app under Settings → API credits.',
+      'zh': 'AI 尚不可用。请在应用的 设置 → API 额度 中充值。',
+      'ko': 'AI를 아직 사용할 수 없습니다. 앱의 설정 → API 크레딧에서 충전해 주세요.',
+      'es': 'La IA aun no esta disponible. Recarga en la app en Ajustes → Creditos de API.',
+      'fr': 'L IA n est pas encore disponible. Rechargez dans l application, Reglages → Credits API.',
+      'de': 'KI ist noch nicht verfuegbar. Bitte in der App unter Einstellungen → API-Guthaben aufladen.',
+      'pt': 'A IA ainda nao esta disponivel. Recarregue no app em Configuracoes → Creditos de API.',
+      'ru': 'ИИ пока недоступен. Пополните в приложении: Настройки → API-кредиты.',
     },
     'ai.switchAi': {
       'ja': 'AI を切り替え', 'en': 'Switch AI', 'zh': '切换 AI',
@@ -2491,17 +2499,42 @@ String? pendingAlarmId;
 
 /// 起動引数から「開くファイル」 を拾う。 オプション (先頭が -) と
 /// 実在しないパスは無視する。
+///
+/// ★ フォルダーも受け取る (= ユーザー要望: `hnb <フォルダー>` で、
+///   そのフォルダーを開いた画面になるように)。 画面側が中身を見て、
+///   フォルダーなら「開いているフォルダー」 として引き出しに出す。
+/// ★ 端末から `hnb 名前.pdf` のように相対で渡されるので、 ここで
+///   絶対の道筋に直しておく (本体へ引き渡す時は作業場所が違うため)。
 List<String> _openFilePathsFromArgs(List<String> args) {
   final out = <String>[];
   for (final a in args) {
     final v = a.trim();
     if (v.isEmpty || v.startsWith('-')) continue;
     if (v == 'multi_window') continue;
-    try {
-      if (File(v).existsSync()) out.add(v);
-    } catch (_) {}
+    final resolved = resolveOpenArgPath(v);
+    if (resolved != null) out.add(resolved);
   }
   return out;
+}
+
+/// 渡された道筋 (ファイル / フォルダー) を絶対の道筋に直す。
+/// 実在しなければ null。 `.` や `..` もここで畳む。
+String? resolveOpenArgPath(String v) {
+  try {
+    final d = Directory(v);
+    if (d.existsSync()) {
+      try {
+        return d.resolveSymbolicLinksSync();
+      } catch (_) {
+        return d.absolute.path;
+      }
+    }
+  } catch (_) {}
+  try {
+    final f = File(v);
+    if (f.existsSync()) return f.absolute.path;
+  } catch (_) {}
+  return null;
 }
 
 // ── 「アプリで開く」 の 1 窓運用 (= ユーザー要望: 既にアプリが起動している
@@ -2864,11 +2897,12 @@ Future<bool> _startOpenWithReceiver() async {
             req.headers.value('x-hisator-token') == _kOpenWithToken) {
           final body = await utf8.decoder.bind(req).join();
           final data = jsonDecode(body) as Map<String, dynamic>;
+          // ★ フォルダーも通す (= ユーザー要望: `hnb <フォルダー>`)。
           final paths = (data['paths'] as List?)
                   ?.whereType<String>()
                   .where((p) {
                 try {
-                  return File(p).existsSync();
+                  return File(p).existsSync() || Directory(p).existsSync();
                 } catch (_) {
                   return false;
                 }
@@ -3841,6 +3875,9 @@ void main(List<String> args) async {
   }
   // ignore: discarded_futures
   _registerWindowsOpenWith();
+  // 端末から `hnb <ファイル / フォルダー>` で開けるようにする (= ユーザー要望)。
+  // ignore: discarded_futures
+  installTerminalLauncher();
   SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.landscapeLeft,

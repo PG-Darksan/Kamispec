@@ -8,6 +8,8 @@ import 'package:path_provider/path_provider.dart';
 import '../main.dart' show automationRequestFromAssistant;
 import '../providers/mind_map_provider.dart';
 import '../utils/build_flags.dart';
+// ★ 絵の拡張子の共通一覧 (jpe / jfif 対応)。
+import '../utils/image_file_types.dart';
 
 /// アプリ内蔵の MCP サーバー (= ユーザー要望: アプリ内蔵型で MCP サーバーを
 /// 実装して Claude から指示を出してマップを編集できるように)。
@@ -1891,9 +1893,8 @@ class McpServer {
 
   /// 絵として貼れる拡張子。 node_widget.dart の isImageAttach と**必ず**
   /// 同じにする (= 広げると、 検査は通るのにタイルに絵が出ない物が増える)。
-  static const Set<String> _kImageExts = {
-    'jpg', 'jpeg', 'jpe', 'png', 'gif', 'webp', 'bmp',
-  };
+  /// ★ 共通の一覧 (utils/image_file_types.dart) を見るようにした。
+  static const Set<String> _kImageExts = kImageFileExts;
 
   /// 絵として貼れないパスなら、 その理由 (英語) を返す。 貼れれば null。
   ///
