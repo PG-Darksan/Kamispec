@@ -433,9 +433,24 @@ String _mapBackgroundTemplatePath(String id) =>
 /// (= ユーザー要望: ブループリント等は既に白の方眼線があるので
 /// 後ろの黒の方眼線は要らない)。 テンプレはそれ自体で完成した見た目に
 /// なるよう、 どのテンプレでも重ね掛けしない。
+/// 背景を敷いている時は方眼を描かない。
+///
+/// ★ = ユーザー要望「ページ背景にマス目線が入らない様にして欲しい」。
+///   以前はテンプレート (木目など) の時だけ消していたが、 自分で選んだ
+///   画像の時も網目が上に乗って汚かった。 **背景が何であれ**消す。
 bool _mapBgHidesGrid(String? backgroundPath) {
-  return _mapBackgroundTemplateId(backgroundPath) != null;
+  return (backgroundPath ?? '').trim().isNotEmpty;
 }
+
+/// 背景の画像を画面より何倍大きく描くか (= 一度に全部を見せないため)。
+const double _kBgZoom = 1.6;
+
+/// パンに対して背景が追う割合 (1.0 = 内容と同じだけ動く)。
+///
+/// ★ 1 対 1 にしない。 キャンバスはいくらでも動かせるので、 同じだけ動かすと
+///   すぐ画像の端が出て壁紙が途切れる。 ゆっくり追わせて、 余白の半分で
+///   頭打ちにする ([_buildInfinitePageBackground])。
+const double _kBgParallax = 0.25;
 
 /// ページ一覧で選べるアイコン (= ユーザー要望: ページごと / 種類ごとに
 /// アイコンを変えられるように)。 保存するのは**この並びの番号**なので、
@@ -10077,9 +10092,13 @@ class _MindMapScreenState extends State<MindMapScreen>
         ..addAll(mates);
     });
     // エッジスクロールタイマー開始
+    // ★ 「境界を跨いでデータを渡す」 モードの間は始めない (= ユーザー要望。
+    //   理由は [_onLongPressNodeMove] の末尾に書いた)。
     _lastDragGlobalPos = globalPos;
     _edgeScrollCtrl = ctrl;
-    _startEdgeScrollTimer();
+    if (!(_splitTransferMode && _mapSplitOpen)) {
+      _startEdgeScrollTimer();
+    }
   }
 
   /// 長押しドラッグ中：位置とスナップ更新
@@ -10207,7 +10226,18 @@ class _MindMapScreenState extends State<MindMapScreen>
     });
 
     // 画面端に近づいたらビューポートを自動スクロール
-    _autoScrollIfNeeded(globalPos, ctrl);
+    //
+    // ★ ただし「境界を跨いでデータを渡す」 モードの間はしない
+    //   (= ユーザー要望:「境界を跨いだデータ転送モードになって要素を掴んだ
+    //   場合、 境界付近での画面追跡は行わずそのまま跨ぐ形にして欲しい」)。
+    //   分割中はペインの縁がそのまま境界なので、 端に寄った途端に画面が
+    //   追って動き出し、 隣へ渡したいだけなのに手元の地図が流れていた。
+    //   渡す事が目的の間は、 画面は動かさず素通りさせる。
+    if (_splitTransferMode && _mapSplitOpen) {
+      _stopEdgeScroll();
+    } else {
+      _autoScrollIfNeeded(globalPos, ctrl);
+    }
   }
 
   /// カーソル位置を更新（onPanUpdateから呼ばれる）
@@ -34539,46 +34569,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                       ),
                     ),
                     const SizedBox(height: 10),
-                    // ── 背景メーカー (= ユーザー要望: 画像を渡すだけでなく、
-                    //    テンプレ風の背景画像を自分で作れる編集画面) ──
-                    SizedBox(
-                      width: double.infinity,
-                      child: OutlinedButton.icon(
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: const Color(0xFFB9AEFF),
-                          side: const BorderSide(color: Color(0xFF6C63FF)),
-                        ),
-                        icon: const Icon(Icons.palette_rounded, size: 18),
-                        label: Text(provider.t('bg.makerOpen')),
-                        onPressed: () {
-                          showDialog<void>(
-                            context: sctx,
-                            useRootNavigator: !inPane,
-                            builder: (_) => _BackgroundMakerDialog(
-                              provider: provider,
-                              onSaved: (path) async {
-                                await provider.setPageBackgroundImage(
-                                    page.id, path,
-                                    applyToAll: applyToAllPages);
-                                if (page.backgroundFit != 'cover') {
-                                  await provider.setPageBackgroundFit(
-                                      page.id, 'cover',
-                                      applyToAll: applyToAllPages);
-                                }
-                                if (page.backgroundOpacityPercent != 100) {
-                                  await provider.setPageBackgroundOpacity(
-                                      page.id, 100,
-                                      applyToAll: applyToAllPages);
-                                }
-                              },
-                            ),
-                          ).then((_) {
-                            if (sctx.mounted) setD(() {});
-                          });
-                        },
-                      ),
-                    ),
-                    const SizedBox(height: 10),
+                    // ★ 「背景を自作」 (背景メーカー) は廃止した
+                    //   (= ユーザー要望:「背景を自作の項目はもう要らないから
+                    //   消して」)。 テンプレートと、 自分で選んだ画像と、
+                    //   AI で作る道が残っているので、 作る口はそちらに寄せる。
+                    //   `_BackgroundMakerDialog` 自体はどこからも開かれない。
                     // ── AI で背景画像を作る (= ユーザー要望: 背景設定に
                     //    AI 生成の項目を追加) ──
                     SizedBox(
@@ -34655,25 +34650,16 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 }
                                 return;
                               }
-                              // ── 背景にする前に見せて、 切り抜きや
-                              //    向きを直せるようにする (= ユーザー要望) ──
-                              //    画像編集はファイルをその場で書き換える
-                              //    ので、 閉じた後の中身をそのまま使う。
-                              if (mounted) {
-                                await showDialog<void>(
-                                  // ペインの中から開いた時は、 ペインの
-                                  //   Navigator に載せる (= 画面全体の
-                                  //   真ん中に出さない)。
-                                  context: inPane ? sctx : context,
-                                  useRootNavigator: !inPane,
-                                  barrierColor:
-                                      Colors.black.withValues(alpha: 0.9),
-                                  builder: (_) => _ImageEditorDialog(
-                                    filePath: destPath,
-                                    fileName: name,
-                                  ),
-                                );
-                              }
+                              // ★ 選んだらそのまま背景にする (= ユーザー要望:
+                              //   「画像編集の画面が出てきて、 閉じると反映
+                              //   される、 というのもおかしいから、 いきなり
+                              //   反映されるように」)。 以前はここで
+                              //   [_ImageEditorDialog] を挟んでいたが、
+                              //   背景を選んだだけの人には**別の画面が出て
+                              //   きて閉じるまで反映されない**という、
+                              //   筋の通らない手順になっていた。 切り抜きや
+                              //   向きを直したい時は、 画像を先に編集して
+                              //   から選べばよい。
                               await provider.setPageBackgroundImage(
                                 page.id,
                                 destPath,
@@ -54781,10 +54767,15 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
     if (_appExitLocked) {
       // ── 解除はタップでは行わない (= ユーザー要望: 解除ボタンは長押し
-      //   しないと解除されないように)。 タップ時は案内トーストだけ出す。
+      //   しないと解除されないように)。 タップ時は今の状態を出す。
       //   実際の解除は長押し (_appExitLockLongPressUnlock) で行う。
-      _showLockToast(
-          context.read<MindMapProvider>().t('applock.longPressUnlock'));
+      //
+      // ★ = ユーザー要望「ロック中に押した場合、 残りロック時間を表示する
+      //   ように。 手動ロック無効なら『長押しで解除できます』 とか表示
+      //   しないで『解除は無効です』 と出るべき」。 以前は設定に関わらず
+      //   「長押ししてください」 としか言わず、 押しても解除できない人に
+      //   出来ない事を案内していた。
+      _showLockToast(_appLockStatusLine(context.read<MindMapProvider>()));
     } else {
       // ── 画面ロックは初回のみ無料、 2 回目以降は Pro 以上 (= ユーザー要望) ──
       final provider = context.read<MindMapProvider>();
@@ -54860,6 +54851,46 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
   }
 
+  /// ロック中にボタンを押した時に出す 1 行 (= ユーザー要望)。
+  ///
+  /// 1 行目 … あと何分ロックされているか (タスク制 / 無期限もここで分ける)
+  /// 2 行目 … 解除の仕方。 **手動解除を切っている時は「無効です」** と出す
+  ///          (出来ない事を案内しない)。
+  String _appLockStatusLine(MindMapProvider provider) {
+    final String head;
+    if (_appExitLockTaskMode) {
+      head = provider.t('applock.remainingTasks');
+    } else {
+      final end = _appExitLockEndAt;
+      if (end == null) {
+        head = provider.t('applock.remainingUnlimited');
+      } else {
+        final left = end.difference(DateTime.now());
+        head = left.isNegative
+            ? provider.t('applock.remainingNone')
+            : provider
+                .t('applock.remaining')
+                .replaceFirst('{t}', _formatAppLockRemaining(left));
+      }
+    }
+    final tail = provider.appLockDisableButtonUnlock
+        ? provider.t('appLock.manualUnlockDisabled')
+        : provider.t('applock.longPressUnlockShort');
+    return '$head\n$tail';
+  }
+
+  /// 残り時間の表し方。 どの言語でも読めるよう、 単位語ではなく数字で出す
+  /// (`1:05:30` / `5:30`)。
+  static String _formatAppLockRemaining(Duration d) {
+    final s = d.inSeconds < 0 ? 0 : d.inSeconds;
+    final h = s ~/ 3600;
+    final m = (s % 3600) ~/ 60;
+    final sec = s % 60;
+    final mm = m.toString().padLeft(2, '0');
+    final ss = sec.toString().padLeft(2, '0');
+    return h > 0 ? '$h:$mm:$ss' : '$m:$ss';
+  }
+
   /// アプリ外脱出ロックを長押しで解除する (= ユーザー要望: 解除は長押し必須)。
   /// ロック中の appLock ボタン長押しから呼ばれる。
   Future<void> _appExitLockLongPressUnlock() async {
@@ -54909,7 +54940,10 @@ class _MindMapScreenState extends State<MindMapScreen>
       });
       _showLockToast('🔒 アプリ固定中 (${_formatAppLockDuration(duration)}で自動解除)');
     } else {
-      _showLockToast('🔒 アプリ固定中 (無制限。ボタン長押しで解除)');
+      // ★ 手動解除を切っている時に「長押しで解除」 と書かない (= ユーザー要望)。
+      final provider = context.read<MindMapProvider>();
+      _showLockToast('${provider.t('applock.remainingUnlimited')}\n'
+          '${provider.appLockDisableButtonUnlock ? provider.t('appLock.manualUnlockDisabled') : provider.t('applock.longPressUnlockShort')}');
     }
   }
 
@@ -76225,6 +76259,58 @@ class _MindMapScreenState extends State<MindMapScreen>
         repeat: repeat,
         errorBuilder: (_, __, ___) => const SizedBox.shrink(),
         gaplessPlayback: true,
+      );
+      // ── 動かしたぶんだけ背景も移す (= ユーザー要望: 「1 度に全て背景画像が
+      //    見えるとイマイチだから、 画面上をスクロールした時に背景が
+      //    映り変わっていくように」) ──
+      //
+      //   ★ 画面より一回り大きく描いて、 パンに合わせて中を滑らせる。
+      //     こうすると (1) 一度に全部は見えない (2) 動かすと違う所が出る
+      //     の両方になる。 テンプレートの方は元から `scrollOffset` で
+      //     同じ事をしているので、 こちらの包みは掛けない (二重になる)。
+      //   ★ 拡大率には追わせない。 追わせると引きで全体が見えてしまい、
+      //     元の不満に戻る。 動かすのは平行移動だけ。
+      //   ★ 滑らせる量は余白の半分で頭打ちにする。 いくらでも動かせる
+      //     キャンバスに 1 対 1 で付いていくと、 すぐ画像の端が出て
+      //     しまうため (= 壁紙として途切れて見える)。
+      // ★ 「全体を表示」 (contain) を選んでいる人には掛けない。 あれは
+      //   **画像を全部見せる**ための指定なので、 大きく描いて切ると選んだ
+      //   意味が無くなる。 既定の「全面を覆う」 と「敷き詰める」 だけ動かす。
+      // ★ 包む前の絵を**別の名前で**掴んでおく。 `bg` は下で包んだ物に
+      //   差し替わるので、 閉包の中でそのまま `bg` を使うと自分自身を
+      //   子に持って無限に入れ子になる。
+      final Widget bgImage = bg;
+      if (page.backgroundFit != 'contain')
+      bg = ClipRect(
+        child: LayoutBuilder(
+          builder: (_, c) {
+            final w = c.maxWidth.isFinite ? c.maxWidth : 0.0;
+            final h = c.maxHeight.isFinite ? c.maxHeight : 0.0;
+            if (w <= 0 || h <= 0) return bgImage;
+            final bw = w * _kBgZoom;
+            final bh = h * _kBgZoom;
+            final ex = (bw - w) / 2;
+            final ey = (bh - h) / 2;
+            return AnimatedBuilder(
+              animation: ctrl,
+              builder: (_, __) {
+                final scene = ctrl.toScene(Offset.zero);
+                final dx = (-scene.dx * _kBgParallax).clamp(-ex, ex);
+                final dy = (-scene.dy * _kBgParallax).clamp(-ey, ey);
+                return Transform.translate(
+                  offset: Offset(dx, dy),
+                  child: OverflowBox(
+                    minWidth: bw,
+                    maxWidth: bw,
+                    minHeight: bh,
+                    maxHeight: bh,
+                    child: bgImage,
+                  ),
+                );
+              },
+            );
+          },
+        ),
       );
     }
     return Positioned.fill(
