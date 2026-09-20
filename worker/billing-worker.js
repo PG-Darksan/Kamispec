@@ -180,6 +180,19 @@ export default {
       return handleInquiryBlock(request, env);
     }
 
+    // ── お知らせ (開発者 → 利用者) ──
+    //    読むのは誰でも (自分のプラン宛て + 送る時刻を過ぎた物だけ)。
+    //    出す / 消すのは開発者だけ。
+    if (url.pathname === '/announce' && request.method === 'GET') {
+      return handleAnnounceList(request, env, url);
+    }
+    if (url.pathname === '/announce' && request.method === 'POST') {
+      return handleAnnouncePut(request, env);
+    }
+    if (url.pathname === '/announce/delete' && request.method === 'POST') {
+      return handleAnnounceDelete(request, env);
+    }
+
     // ── マークダウンのプレビューをネットに公開する (= ユーザー要望) ──
     //    /p/<id> は誰でも見られる普通のページ。 作成・一覧・取り消しは
     //    本人 (Firebase の ID トークン) だけができる。
@@ -977,6 +990,154 @@ async function handleInquiryBlock(request, env) {
     }),
   );
   return json({ ok: true, uid, blocked: true });
+}
+
+// ─── お知らせ (開発者 → 利用者への配信) ───────────────────────────────
+//
+// = ユーザー要望「開発者モードから全ユーザーやプランを指定してユーザーに
+//   アナウンスを送れるように。 何時何分に送るとか設定して置けるように」。
+//
+// ★ Firestore ではなく KV に置く。 規則が閉じていて新しいコレクションには
+//   書けない (実測 403)。 ここなら「書けるのは開発者だけ・読むのは誰でも」
+//   という形が、 規則をコンソールで触らずに作れる。
+// ★ 「送る」 と言っても押し出し (プッシュ通知) はしない。 各端末が起動時に
+//   見に来て、 **送る時刻を過ぎた物**だけを受け取る。 予約はこの時刻の
+//   比較だけで成り立つので、 サーバーに常駐する物は要らない。
+// ★ 期限を必ず付ける (KV の TTL)。 消し忘れが永久に残らないように。
+const ANN_PREFIX = 'ann:';
+const ANN_MAX = 100;
+const ANN_DEFAULT_DAYS = 90;
+const ANN_PLANS = ['all', 'free', 'pro', 'max', 'dev'];
+
+function annKey(id) {
+  return `${ANN_PREFIX}${id}`;
+}
+
+function newAnnId() {
+  const b = new Uint8Array(8);
+  crypto.getRandomValues(b);
+  return [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+}
+
+/// 置いてある物を全部読む (新しい順)。 数は ANN_MAX で頭打ち。
+async function readAllAnnouncements(env) {
+  const out = [];
+  let cursor;
+  do {
+    const page = await env.ENTITLEMENTS.list({ prefix: ANN_PREFIX, cursor });
+    for (const k of page.keys) {
+      const raw = await env.ENTITLEMENTS.get(k.name);
+      if (!raw) continue;
+      try {
+        out.push(JSON.parse(raw));
+      } catch (_) {}
+    }
+    cursor = page.list_complete ? null : page.cursor;
+  } while (cursor);
+  out.sort((a, b) => Number(b.sendAtMs || 0) - Number(a.sendAtMs || 0));
+  return out;
+}
+
+/// 受け取る側。 自分のプラン宛てで、 送る時刻を過ぎた物だけ返す。
+/// `?all=1` は開発者だけ (予約中の物も含めた管理用の一覧)。
+async function handleAnnounceList(request, env, url) {
+  const who = await authIdentity(request, env);
+  if (!who.uid) return unauthorized();
+  const items = await readAllAnnouncements(env);
+  if ((url.searchParams.get('all') || '') === '1') {
+    if (!canIssueDevCodes(env, who.uid, who.developer)) {
+      return json({ error: 'forbidden' }, 403);
+    }
+    return json({ items });
+  }
+  const plan = String(url.searchParams.get('plan') || 'free').toLowerCase();
+  const now = Date.now();
+  const mine = items.filter((it) => {
+    if (Number(it.sendAtMs || 0) > now) return false;
+    const plans = Array.isArray(it.plans) ? it.plans : ['all'];
+    return plans.includes('all') || plans.includes(plan);
+  });
+  return json({ items: mine.slice(0, 20) });
+}
+
+/// 出す / 書き直す。 開発者だけ。
+async function handleAnnouncePut(request, env) {
+  const who = await authIdentity(request, env);
+  if (!who.uid) return unauthorized();
+  if (!canIssueDevCodes(env, who.uid, who.developer)) {
+    return json({ error: 'forbidden' }, 403);
+  }
+  let body;
+  try {
+    body = await request.json();
+  } catch (_) {
+    return json({ error: 'bad request' }, 400);
+  }
+  const title = String(body.title || '').trim().slice(0, 200);
+  const text = String(body.body || '').trim().slice(0, 4000);
+  if (!title && !text) return json({ error: 'bad request' }, 400);
+  let plans = Array.isArray(body.plans)
+    ? body.plans.map((p) => String(p).toLowerCase())
+    : ['all'];
+  plans = plans.filter((p) => ANN_PLANS.includes(p));
+  if (!plans.length) plans = ['all'];
+  const now = Date.now();
+  const sendAtMs = Number(body.sendAtMs) > 0 ? Number(body.sendAtMs) : now;
+  const days = Math.max(
+    1,
+    Math.min(365, Number(body.days) || ANN_DEFAULT_DAYS),
+  );
+  const editing = String(body.id || '').trim();
+  const id = editing || newAnnId();
+  if (!editing) {
+    // 数が増え過ぎないように、 一番古い物から押し出す。
+    const existing = await readAllAnnouncements(env);
+    if (existing.length >= ANN_MAX) {
+      const oldest = existing[existing.length - 1];
+      if (oldest && oldest.id) {
+        await env.ENTITLEMENTS.delete(annKey(oldest.id));
+      }
+    }
+  }
+  const doc = {
+    id,
+    title,
+    body: text,
+    plans,
+    sendAtMs,
+    days,
+    createdAtMs: now,
+    by: who.uid,
+  };
+  // 期限は「送る時刻から days 日」。 予約してある物が送る前に消えないよう、
+  // 先の時刻を指してある分を足しておく。
+  const ttl = Math.max(
+    60,
+    Math.round(Math.max(0, sendAtMs - now) / 1000) + days * 86400,
+  );
+  await env.ENTITLEMENTS.put(annKey(id), JSON.stringify(doc), {
+    expirationTtl: ttl,
+  });
+  return json({ ok: true, item: doc });
+}
+
+/// 消す (予約中でも配信済みでも)。 開発者だけ。
+async function handleAnnounceDelete(request, env) {
+  const who = await authIdentity(request, env);
+  if (!who.uid) return unauthorized();
+  if (!canIssueDevCodes(env, who.uid, who.developer)) {
+    return json({ error: 'forbidden' }, 403);
+  }
+  let body;
+  try {
+    body = await request.json();
+  } catch (_) {
+    return json({ error: 'bad request' }, 400);
+  }
+  const id = String(body.id || '').trim();
+  if (!id) return json({ error: 'bad request' }, 400);
+  await env.ENTITLEMENTS.delete(annKey(id));
+  return json({ ok: true, id });
 }
 
 // ─── マークダウンの公開ページ ─────────────────────────────────────────

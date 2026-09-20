@@ -230,6 +230,8 @@ class AgentCli {
     _inflight.clear();
     _npmPath = null;
     _npmSearched = false;
+    // 宛名は読み直す (控えの値は残す = 読み直すまでの間も札が消えない)。
+    _nameLoads.clear();
   }
 
   /// CLI を探す。
@@ -496,9 +498,12 @@ class AgentCli {
   ///   高くつく。 CLI が自分で置いている控えを**読むだけ**にする。
   /// ★ 合言葉 (トークン) には触れない。 取り出すのは宛名だけ。
   /// ★ 形が変わっていたら黙って null を返す (今までの文言に戻るだけ)。
-  static Future<String?> _accountHint(AgentCliKind kind) async {
+  /// [homeOverride] を渡すとその置き場から読む (= 選んでいない**他の**
+  /// アカウントの宛名を引く時に使う。 [refreshAccountNames])。
+  static Future<String?> _accountHint(AgentCliKind kind,
+      [String? homeOverride]) async {
     // ★ 今選んでいるアカウントの置き場から読む (既定は利用者のホーム)。
-    final home = accountBaseDir(kind);
+    final home = (homeOverride ?? accountBaseDir(kind)).trim();
     if (home.isEmpty) return null;
     final sep = Platform.pathSeparator;
     try {
@@ -973,15 +978,22 @@ class AgentCli {
 
   /// 擬似端末へ「引数として」 渡しても壊れない形の道筋。
   ///
-  /// ★ flutter_pty の Windows 実装は、 実行ファイルと引数を**空白でつなぐ
-  ///   だけ**で、 引用符を一切付けない (`build_command`)。 つまり
-  ///   `C:\Program Files\nodejs\node.exe` のように空白を含む道筋は、 その
-  ///   まま渡すと 2 つの引数に割れて起動に失敗する。 8.3 形式の短い名前
-  ///   (`C:\PROGRA~1\nodejs\node.exe`) は空白も日本語も含まないので、 その
-  ///   形に直して渡す。 直せない時は元のまま返す (今までどおりの挙動)。
+  /// ★ **空白のためには短くしない** (= ユーザー報告: VSCode で codex を
+  ///   動かしても何も言われないのに、 このアプリから動かすと
+  ///   「悪意のある動作はブロックされました」 と出る)。 8.3 形式の短い名前
+  ///   (`C:\PROGRA~1\nodejs\node.exe`) は、 セキュリティソフトの振る舞い
+  ///   検知が**道筋を隠す細工**として真っ先に見る形で、 普通のアプリは
+  ///   まず使わない (VSCode も使わない)。 こちらは毎回 node を
+  ///   `C:\PROGRA~1\…` で起こしていたので、 起こすたびに咎められていた。
+  ///   同梱の `packages/flutter_pty` は `build_command` で空白を含む引数を
+  ///   **引用符で包む**ように直してある (`src/flutter_pty_win.c:63`) ので、
+  ///   空白のために短くする必要はもう無い。
+  /// ★ 日本語などの非 ASCII だけは今も短い名前が要る。 `build_command` は
+  ///   文字を 1 バイトずつ WCHAR へ広げるだけなので、 非 ASCII をそのまま
+  ///   渡すと化けるため。 直せない時は元のまま返す。
   static String ptySafePath(String path) {
     if (path.isEmpty || !Platform.isWindows) return path;
-    if (isAscii(path) && !path.contains(' ')) return path;
+    if (isAscii(path)) return path;
     final src = path.toNativeUtf16();
     final buf = calloc<ffi.Uint16>(1024).cast<Utf16>();
     try {
@@ -1523,6 +1535,13 @@ class AgentCli {
     String workingDir, {
     required String instruction,
     String appGuide = '',
+    // ★ = ユーザー要望「codexCLI などで編集を行う際に参照するフォルダー先を
+    //   画面毎に設定できるようにして欲しい」。 利用者が**自分のプロジェクト**
+    //   を指せるようになったので、 既にある覚書を黙って上書きしてはいけない
+    //   (その人が書いた CLAUDE.md / AGENTS.md が消える)。 自分で選んだ
+    //   フォルダーの時は false で呼ぶ = 既にある物には触らない。
+    //   アプリ専用の作業フォルダーは今までどおり毎回書き直す。
+    bool overwrite = true,
   }) async {
     final sep = Platform.pathSeparator;
     final lang = instruction.trim();
@@ -1556,6 +1575,26 @@ class AgentCli {
         ..writeln('  長いので、 必要になった所だけ読む事。')
         ..writeln();
     }
+    // ★ = ユーザー要望「codexCLI などで編集を行う際に参照するフォルダー先を
+    //   画面毎に設定できるようにして欲しい」。 指す先が**利用者自身の
+    //   プロジェクト**になり得るので、 ここの前置きは 2 通り要る。
+    //   アプリ専用の作業場所 (overwrite == true) は今までどおり。
+    //   自分で選んだフォルダー (overwrite == false) にこの文面を置くと、
+    //   CLI は「利用者の資料は入っていない」「下位フォルダーも作らない」 を
+    //   信じて `lib/` や `src/` を直さなくなる = 頼んだ編集そのものが
+    //   できなくなる。
+    if (!overwrite) {
+      body
+        ..writeln('## このフォルダーについて')
+        ..writeln()
+        ..writeln('利用者が自分で選んだ作業場所 (その人のプロジェクト)。')
+        ..writeln('中の物はその人の資料なので、 **頼まれた事だけ**を直す。')
+        ..writeln('下位フォルダー (`lib/` `src/` など) の中も、 頼まれたなら')
+        ..writeln('読んでよいし直してよい。 新しいファイルもそこへ作ってよい。')
+        // ★ 外へ出さない一線だけは、 アプリ専用の時と同じに残す。
+        ..writeln('置き場を**はっきり指示された時以外**は、 このフォルダーの外に')
+        ..writeln('新しいファイルやフォルダーを作らない (デスクトップや書類の中も含む)。');
+    } else {
     body
       ..writeln('## このフォルダーについて')
       ..writeln()
@@ -1577,16 +1616,24 @@ class AgentCli {
       //   読めず、 外へ**新しく**作るのは良いと取られかねない。
       ..writeln('置き場を**はっきり指示された時以外**は、 このフォルダーの外に')
       ..writeln('新しいファイルやフォルダーを作らない (デスクトップや書類の中も含む)。');
+    }
     final text = body.toString();
     for (final name in const ['CLAUDE.md', 'AGENTS.md', 'GEMINI.md']) {
       try {
-        await File('$workingDir$sep$name').writeAsString(text, flush: true);
+        final f = File('$workingDir$sep$name');
+        // ★ 既にある物は残す (= 利用者が自分で書いた覚書を消さない)。
+        //   無ければ置く。 置いた物はこのアプリの決まりとして効く。
+        if (!overwrite && await f.exists()) continue;
+        await f.writeAsString(text, flush: true);
       } catch (e) {
         debugPrint('writeGuide($name) failed: $e');
       }
     }
     // 詳しい説明書は別置き (読むかどうかは CLI に任せる)。
-    if (appGuide.trim().isNotEmpty) {
+    // ★ 自分で選んだフォルダー (= 利用者のプロジェクト) には `docs/` を
+    //   作らない。 よそのリポジトリに見慣れないフォルダーが生えるため。
+    //   その時のアプリの説明書は、 MCP の `list_app_docs` から読める。
+    if (overwrite && appGuide.trim().isNotEmpty) {
       try {
         final dir = Directory('$workingDir${sep}docs');
         if (!await dir.exists()) await dir.create(recursive: true);
@@ -1661,8 +1708,28 @@ class AgentCli {
     };
     try {
       final f = File('$workingDir${Platform.pathSeparator}.mcp.json');
+      // ★ = ユーザー要望「codexCLI などで編集を行う際に参照するフォルダー先を
+      //   画面毎に設定できるようにして欲しい」。 指す先が利用者のリポジトリに
+      //   なり得るので、 既にある `.mcp.json` を丸ごと書き直してはいけない
+      //   (その人が VSCode で使っている待ち受けが黙って消える)。 読んで、
+      //   `hisator` の 1 つだけを足す / 差し替える。 読めない形だった時だけ、
+      //   今までどおり書き直す。
+      var out = cfg;
+      if (await f.exists()) {
+        try {
+          final cur = jsonDecode(await f.readAsString());
+          if (cur is Map<String, dynamic>) {
+            final servers = cur['mcpServers'];
+            cur['mcpServers'] = <String, dynamic>{
+              if (servers is Map) ...servers.cast<String, dynamic>(),
+              'hisator': (cfg['mcpServers'] as Map)['hisator'],
+            };
+            out = cur;
+          }
+        } catch (_) {}
+      }
       await f.writeAsString(
-          const JsonEncoder.withIndent('  ').convert(cfg),
+          const JsonEncoder.withIndent('  ').convert(out),
           flush: true);
     } catch (e) {
       debugPrint('writeMcpConfig failed: $e');
@@ -1728,6 +1795,48 @@ class AgentCli {
   static bool get _noAsk => autonomy != 'ask';
   static bool get _noLimit => autonomy == 'full';
 
+  // ─── 作業フォルダーの外も読ませる ──────────────────────────────────
+  //
+  //   = ユーザー要望「ユーザー名/.codex フォルダー等に入っている AGENTS.md
+  //     等を読むようにして欲しい。 フォルダー内しか読まなかったら読めない
+  //     のではないか。 フォルダー外のファイルも読めるようにして欲しい」。
+  //
+  //   ★ そのとおりで、 Claude Code と Gemini CLI は**作業フォルダーの中**
+  //     しか触れない。 外を読むには起動時に足す必要がある
+  //     (Claude Code は `--add-dir`、 Gemini CLI は `--include-directories`)。
+  //     codex は砂箱が縛るのは**書き込み**だけなので、 読む方は元から
+  //     どこでもよい (= 何も足さない)。
+  //   ★ 足すのは CLI 自身の設定の置き場 (`~/.claude` `~/.codex` `~/.gemini`
+  //     と、 選んでいるアカウントの置き場) だけ。 ここに AGENTS.md /
+  //     CLAUDE.md / GEMINI.md と設定が入っている。 ホームを丸ごと足すと、
+  //     「確認なし」 の時に書き換えまで届いてしまうので足さない
+  //     (パソコン全体を任せたい人は 「確認なし (パソコン全体)」 を選ぶ)。
+  static List<String> outsideReadDirs(AgentCliKind kind) {
+    final home = userHomeDir();
+    final sep = Platform.pathSeparator;
+    final out = <String>[];
+    void add(String p) {
+      final d = p.trim();
+      if (d.isEmpty) return;
+      try {
+        if (!Directory(d).existsSync()) return;
+      } catch (_) {
+        return;
+      }
+      if (out.any((e) => e.toLowerCase() == d.toLowerCase())) return;
+      out.add(d);
+    }
+
+    if (home.isNotEmpty) {
+      for (final n in const ['.claude', '.codex', '.gemini']) {
+        add('$home$sep$n');
+      }
+    }
+    // 選んでいるアカウントの置き場 (既定なら空 = 上のホーム側が当たる)。
+    add(activeAccountDir(kind));
+    return out;
+  }
+
   static List<String> extraLaunchArgs(
     AgentCliKind kind, {
     String mcpUrl = '',
@@ -1783,14 +1892,27 @@ class AgentCli {
             ...['--permission-mode', 'bypassPermissions']
           else if (_noAsk)
             ...['--permission-mode', 'acceptEdits'],
+          // 作業フォルダーの外 (CLI の設定の置き場) も読めるようにする。
+          // ★ 旗は**1 つずつ**繰り返して渡す。 1 つの旗に道を並べる形
+          //   (`--add-dir A B`) は、 その版が並べ書きを受け付けないと
+          //   B が「最初の指示」 として読まれてしまい、 開いた途端に
+          //   勝手に走り出す。 繰り返しなら、 効かない版でも「最後の 1 つ
+          //   だけ効く」 で済む。
+          for (final d in outsideReadDirs(kind)) ...[
+            '--add-dir',
+            ptySafePath(d),
+          ],
         ];
       case AgentCliKind.gemini:
         // Gemini CLI は `--approval-mode`。
+        final extra = outsideReadDirs(kind).map(ptySafePath).toList();
         return <String>[
           if (_noLimit)
             ...['--approval-mode', 'yolo']
           else if (_noAsk)
             ...['--approval-mode', 'auto_edit'],
+          // Gemini CLI は読み込先を足す旗がこちら (読点で区切って 1 回)。
+          if (extra.isNotEmpty) ...['--include-directories', extra.join(',')],
         ];
     }
   }
@@ -1949,9 +2071,61 @@ class AgentCli {
   static String accountBaseDir(AgentCliKind kind) {
     final d = activeAccountDir(kind);
     if (d.isNotEmpty) return d;
+    return userHomeDir();
+  }
+
+  /// 利用者のホーム (分からなければ空)。
+  static String userHomeDir() {
     final env = Platform.environment;
     return env['USERPROFILE'] ?? env['HOME'] ?? '';
   }
+
+  // ─── アカウントの宛名 (= ユーザー要望: 足す時に名前を打たせない) ─────
+  //
+  //   ★ 名前は**利用者に打たせない**。 置き場ごとに CLI 自身が書いている
+  //     控え (auth.json / .claude.json など) から宛名を読んで札にする。
+  //     ログインが済むまでは分からないので、 その間だけ id (a1 …) を出す。
+  //   ★ ここでも外のプログラムは 1 つも起こさない ([_accountHint] と同じ。
+  //     読むのはファイルだけ・合言葉には触らない)。
+
+  /// 置き場ごとの宛名の控え。 画面から**同期で**引けるようにここへ置く。
+  static final Map<String, String> accountNames = <String, String>{};
+
+  static String accountNameKey(AgentCliKind kind, String id) =>
+      '${kind.name}:$id';
+
+  /// 1 度だけ読み直す約束 ([forget] で作り直す)。
+  static final Map<AgentCliKind, Future<void>> _nameLoads = {};
+
+  /// 宛名を読み直す約束を返す (同じ物を返すので FutureBuilder に渡せる)。
+  static Future<void> ensureAccountNames(AgentCliKind kind) =>
+      _nameLoads[kind] ??= refreshAccountNames(kind);
+
+  /// その種類の全アカウントの宛名を読み直す。
+  static Future<void> refreshAccountNames(AgentCliKind kind) async {
+    await ensureAccountsLoaded();
+    for (final a in accountList(kind)) {
+      final home = a.id.isEmpty ? userHomeDir() : accountDirFor(kind, a.id);
+      if (home.isEmpty) continue;
+      String? n;
+      try {
+        n = await _accountHint(kind, home);
+      } catch (_) {}
+      final key = accountNameKey(kind, a.id);
+      final v = (n ?? '').trim();
+      if (v.isNotEmpty) {
+        accountNames[key] = v;
+      } else {
+        // ★ 消さない。 読めなかっただけの時に札が id へ戻ると、 一覧を
+        //   出し直すたびに名前が入れ替わって見える。
+        accountNames.putIfAbsent(key, () => '');
+      }
+    }
+  }
+
+  /// 画面に出す宛名 (まだ分からなければ空)。
+  static String accountNameFor(AgentCliKind kind, String id) =>
+      accountNames[accountNameKey(kind, id)] ?? '';
 
   /// 起こす時に足す環境変数 (既定なら空)。
   ///
@@ -2014,11 +2188,38 @@ class AgentCli {
       debugPrint('addAccount failed: $e');
       return null;
     }
+    // ★ = ユーザー要望「~/.codex の AGENTS.md 等を読むようにして欲しい」。
+    //   置き場を差し替えると、 CLI が**その置き場**の覚書しか見なくなる
+    //   (codex なら `$CODEX_HOME/AGENTS.md`)。 元の置き場に覚書があれば
+    //   写しておく = 既定のアカウントと同じ決まりで動く。 合言葉
+    //   (auth.json など) と設定は写さない (ログインは分けるのが目的)。
+    await _copyGlobalGuide(kind, dir);
     accounts[kind] = <AgentAccount>[...list, acc];
     activeAccountId[kind] = acc.id;
     await _saveAccounts(kind);
     forget();
     return acc;
+  }
+
+  /// 利用者の置き場にある覚書を、 新しいアカウントの置き場へ写す。
+  static Future<void> _copyGlobalGuide(AgentCliKind kind, String dir) async {
+    final home = userHomeDir();
+    if (home.isEmpty) return;
+    final sep = Platform.pathSeparator;
+    final src = switch (kind) {
+      AgentCliKind.claude => '$home$sep.claude',
+      AgentCliKind.codex => '$home$sep.codex',
+      AgentCliKind.gemini => '$home$sep.gemini',
+    };
+    for (final n in const ['AGENTS.md', 'CLAUDE.md', 'GEMINI.md']) {
+      try {
+        final f = File('$src$sep$n');
+        if (!await f.exists()) continue;
+        await f.copy('$dir$sep$n');
+      } catch (e) {
+        debugPrint('copyGlobalGuide($n) failed: $e');
+      }
+    }
   }
 
   /// 一覧から外す (**フォルダーは消さない** = 合言葉には触らない)。

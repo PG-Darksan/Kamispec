@@ -46005,6 +46005,31 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Dividir à direita',
       'ru': 'Справа',
     },
+    // ── 上下分割 (= ユーザー要望「ターミナルの画面も全画面かフローティング
+    //    か左右分割か上下分割か選べるようにして欲しい」) ──
+    //    今はターミナルの開き方にだけ出す。
+    'openStyle.splitTop': {
+      'ja': '上に分割',
+      'en': 'Split top',
+      'zh': '顶部分屏',
+      'ko': '위쪽 분할',
+      'es': 'Dividir arriba',
+      'fr': 'Diviser en haut',
+      'de': 'Oben teilen',
+      'pt': 'Dividir acima',
+      'ru': 'Сверху',
+    },
+    'openStyle.splitBottom': {
+      'ja': '下に分割',
+      'en': 'Split bottom',
+      'zh': '底部分屏',
+      'ko': '아래쪽 분할',
+      'es': 'Dividir abajo',
+      'fr': 'Diviser en bas',
+      'de': 'Unten teilen',
+      'pt': 'Dividir abaixo',
+      'ru': 'Снизу',
+    },
     'openStyle.floating': {
       'ja': 'フローティング',
       'en': 'Floating',
@@ -52607,6 +52632,58 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Parar de dividir e voltar para uma só',
       'ru': 'Отменить разделение и вернуться к одной',
     },
+    // ── 会話 (AI (API)) と CLI を左右に並べる
+    //    (★ = ユーザー要望「AI(API)と codexCLI を画面分割で開けるように
+    //    して欲しい」) ──
+    'cli.chatSplitTip': {
+      'ja': 'AI (API) の会話と CLI を左右に並べる。 タブを長押しして'
+          '「AI (API)」 の札に落としても並べられます。',
+      'en': 'Show the AI (API) chat and a CLI side by side. You can also '
+          'long-press a tab and drop it onto the AI (API) chip.',
+      'zh': '把 AI (API) 对话与 CLI 左右并排显示。也可以长按标签页并把它放到'
+          '「AI (API)」标签上。',
+      'ko': 'AI (API) 대화와 CLI 를 좌우로 나란히 보여줍니다. 탭을 길게 눌러 '
+          '「AI (API)」 칩 위에 놓아도 됩니다.',
+      'es': 'Muestra el chat de IA (API) y una CLI una al lado de la otra. '
+          'También puedes mantener pulsada una pestaña y soltarla sobre la '
+          'ficha IA (API).',
+      'fr': 'Affiche la conversation IA (API) et un CLI côte à côte. Vous '
+          'pouvez aussi appuyer longuement sur un onglet et le déposer sur la '
+          'pastille IA (API).',
+      'de': 'Zeigt den KI-(API)-Chat und eine CLI nebeneinander. Sie koennen '
+          'auch einen Tab lange druecken und auf die KI-(API)-Marke ziehen.',
+      'pt': 'Mostra a conversa de IA (API) e uma CLI lado a lado. Você também '
+          'pode pressionar uma aba e soltá-la sobre a etiqueta IA (API).',
+      'ru': 'Показывает чат ИИ (API) и CLI рядом. Можно также зажать вкладку '
+          'и отпустить её на метке ИИ (API).',
+    },
+    'cli.chatUnsplit': {
+      'ja': '左右をやめて会話だけに戻す',
+      'en': 'Stop the side-by-side and show only the chat',
+      'zh': '取消并排，只显示对话',
+      'ko': '좌우를 그만두고 대화만 보이기',
+      'es': 'Dejar de mostrar en paralelo y ver solo el chat',
+      'fr': 'Arrêter le côte à côte et afficher seulement la conversation',
+      'de': 'Nebeneinander beenden und nur den Chat zeigen',
+      'pt': 'Parar o lado a lado e mostrar apenas a conversa',
+      'ru': 'Отменить показ рядом и оставить только чат',
+    },
+    'cli.chatSplitNeedCli': {
+      'ja': '並べる CLI がありません。 先に CLI を開いてください。',
+      'en': 'There is no running CLI to place beside the chat. Open a CLI '
+          'first.',
+      'zh': '没有可以并排的 CLI。请先打开一个 CLI。',
+      'ko': '나란히 놓을 CLI 가 없습니다. 먼저 CLI 를 열어 주세요.',
+      'es': 'No hay ninguna CLI en marcha para poner al lado. Abre primero '
+          'una CLI.',
+      'fr': 'Aucun CLI en cours à placer à côté. Ouvrez d’abord un CLI.',
+      'de': 'Es laeuft keine CLI, die daneben passt. Oeffnen Sie zuerst eine '
+          'CLI.',
+      'pt': 'Não há nenhuma CLI em execução para colocar ao lado. Abra '
+          'primeiro uma CLI.',
+      'ru': 'Нет запущенного CLI, чтобы поставить рядом. Сначала откройте '
+          'CLI.',
+    },
     'cli.splitNeedTwo': {
       'ja': '並べる相手がありません。 「新規タブ」 でもう 1 つ立ち上げてください。',
       'en': 'There is no second tab to pair with. Start one more with '
@@ -52952,35 +53029,61 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Sem perguntar (todo o PC)',
       'ru': 'Bez voprosov (ves kompyuter)',
     },
+    // ★ = ユーザーの問い「書き込み権限は開いているフォルダーのファイルにしか
+    //   無いはずなのに、 デスクトップに作ってと頼むと作れるのは何故か」。
+    //   「作業フォルダーの中だけ」 は**壁ではなく呼び鈴の付いた門**だった。
+    //   codex は `--ask-for-approval on-request` の時、 砂箱に弾かれた所で
+    //   「外に出ていいか」 と聞き、 承認されると砂箱の外でやり直す
+    //   (本体の中の `retry without sandbox`)。 しかも codex 自身の指示文に
+    //   「利用者がはっきり頼んだ時だけ昇格を求めてよい」 とあるので、
+    //   場所を名指しするとその条件に当たる。 Claude Code に至っては OS の
+    //   砂箱が無く、 制限は CLI の中の承認ルールだけ。
+    //   ここの文言が「中だけです」 と言い切っていたのが嘘だった。 直す。
     'cli.autonomyAskHint': {
       'ja': '命令やファイルの書き換えを 1 件ずつお尋ねします。'
-          ' 書き換えられるのは端末を開いた作業フォルダーの中だけです。'
+          ' 作業フォルダーの外へ出る時も必ず確認するので、'
+          '「デスクトップに作って」 のように場所を指して頼めば、'
+          ' 承認した上で外にも作れます。'
           ' いちばん安全ですが、 席を外している間は手が止まります。',
-      'en': 'You are asked before each command or file change. It can still '
-          'only write inside the folder the terminal opened in. Safest, but '
-          'it stops and waits while you are away.',
-      'zh': '每条命令执行前都会询问。最安全，但你离开时会停下等待。',
-      'ko': '명령마다 실행 전에 묻습니다. 가장 안전하지만 자리를 비우면 멈춥니다.',
-      'es': 'Se te pregunta antes de cada comando. Lo mas seguro, pero se '
-          'detiene mientras no estas.',
-      'fr': 'On vous demande avant chaque commande. Le plus sur, mais cela '
-          's arrete en votre absence.',
-      'de': 'Vor jedem Befehl wird gefragt. Am sichersten, halt aber an, wenn '
-          'Sie weg sind.',
-      'pt': 'Pergunta antes de cada comando. Mais seguro, mas para enquanto '
-          'voce nao esta.',
-      'ru': 'Sprosit pered kazhdoy komandoy. Bezopasnee vsego, no ostanovitsya '
-          'bez vas.',
+      'en': 'You are asked before each command or file change, including '
+          'anything outside the working folder — so if you name a place '
+          '("put it on the Desktop"), you can approve it and it writes '
+          'there. Safest, but it stops and waits while you are away.',
+      'zh': '每条命令或文件改动前都会询问，走出工作文件夹时也会确认；'
+          '你同意就能写到外面。最安全，但你离开时会停下等待。',
+      'ko': '명령이나 파일 변경마다 묻습니다. 작업 폴더 밖으로 나갈 때도 '
+          '확인하며, 승인하면 밖에도 쓸 수 있습니다. 가장 안전하지만 '
+          '자리를 비우면 멈춥니다.',
+      'es': 'Se te pregunta antes de cada comando, tambien al salir de la '
+          'carpeta de trabajo: si lo apruebas, puede escribir fuera. Lo mas '
+          'seguro, pero se detiene mientras no estas.',
+      'fr': 'On vous demande avant chaque commande, y compris pour sortir du '
+          'dossier de travail : si vous acceptez, il peut ecrire ailleurs. '
+          'Le plus sur, mais cela s arrete en votre absence.',
+      'de': 'Vor jedem Befehl wird gefragt, auch beim Verlassen des '
+          'Arbeitsordners: wenn Sie zustimmen, schreibt es auch dort. Am '
+          'sichersten, halt aber an, wenn Sie weg sind.',
+      'pt': 'Pergunta antes de cada comando, inclusive ao sair da pasta de '
+          'trabalho: se voce aprovar, escreve fora dela. Mais seguro, mas '
+          'para enquanto voce nao esta.',
+      'ru': 'Sprosit pered kazhdoy komandoy, v tom chisle pri vykhode iz '
+          'rabochey papki: esli razreshite, zapishet i vne nee. Bezopasnee '
+          'vsego, no ostanovitsya bez vas.',
     },
     'cli.autonomyAutoHint': {
-      'ja': 'たずねずに進めます。 書き換えるのは作業フォルダーの中だけなので、'
-          'ほかの場所は触りません。\n'
-          '※ Codex は確認を一切しません。 Claude Code は'
-          'ファイルの書き換えだけ自動で、 その他の命令は都度たずねます。',
-      'en': 'Runs without asking. It can only change files inside its work '
-          'folder, so nothing else is touched.\n'
-          'Note: Codex never asks here. Claude Code auto-approves file '
-          'edits only; other commands are still confirmed.',
+      // ★ こちらは言い切ってよい。 `--ask-for-approval never` の時、 codex は
+      //   自分の決まりで昇格を求められない (= 外へ出る道が無い)。
+      'ja': 'たずねずに進めます。 Codex は作業フォルダーの中しか書き換えられず、'
+          ' 外に出る許しも求められないので、 ほかの場所は触りません'
+          ' (外にも作らせたい時は「確認しながら」 を選んでください)。\n'
+          '※ Claude Code はファイルの書き換えだけ自動で、 その他の命令や'
+          'フォルダーの外へ出る時は都度たずねます。',
+      'en': 'Runs without asking. Codex can only change files inside its work '
+          'folder and cannot even ask to step outside, so nothing else is '
+          'touched (choose "Ask each time" if you want it to write '
+          'elsewhere).\n'
+          'Note: Claude Code auto-approves file edits only; other commands, '
+          'and anything outside the folder, are still confirmed.',
       'zh': '不询问直接执行。只能修改工作文件夹内的文件，不会动其他地方。',
       'ko': '묻지 않고 진행합니다. 작업 폴더 안만 고칠 수 있어 다른 곳은 건드리지 않습니다.',
       'es': 'Avanza sin preguntar. Solo puede cambiar archivos de su carpeta '
@@ -53216,6 +53319,21 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Terminal',
       'pt': 'Terminal',
       'ru': 'Терминал',
+    },
+    // ★ = ユーザー要望「txt や json、 markdown などのテキスト編集画面に
+    //   ターミナルを呼び出せるボタンを付けて欲しい」。 既にある
+    //   'cli.terminal' は**どこで**開くかを言わないので、 編集画面の
+    //   ボタン用に「このファイルの場所で開く」 と分かる文言を足す。
+    'cli.terminalHere': {
+      'ja': 'ターミナル (このファイルの場所)',
+      'en': 'Terminal (folder of this file)',
+      'zh': '终端（此文件所在文件夹）',
+      'ko': '터미널 (이 파일의 폴더)',
+      'es': 'Terminal (carpeta de este archivo)',
+      'fr': 'Terminal (dossier de ce fichier)',
+      'de': 'Terminal (Ordner dieser Datei)',
+      'pt': 'Terminal (pasta deste arquivo)',
+      'ru': 'Терминал (папка этого файла)',
     },
     // ★ = ユーザー報告「ターミナルボタンを押すとセキュリティソフトに
     //   ブロックされてアプリが落ちてしまう」。 落とさずに理由を出す。
@@ -60295,6 +60413,30 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Отправить ещё',
     },
     // 共通ボタン
+    // ── 起動時に出す知らせ (= ユーザー要望: 版が上がったら 1 度だけ
+    //    更新内容を出す / 開発者からのお知らせを受け取る) ──
+    'notice.whatsNew': {
+      'ja': '更新内容',
+      'en': "What's new",
+      'zh': '更新内容',
+      'ko': '업데이트 내용',
+      'es': 'Novedades',
+      'fr': 'Nouveautés',
+      'de': 'Neuerungen',
+      'pt': 'Novidades',
+      'ru': 'Что нового',
+    },
+    'notice.announce': {
+      'ja': 'お知らせ',
+      'en': 'Announcement',
+      'zh': '通知',
+      'ko': '공지',
+      'es': 'Aviso',
+      'fr': 'Annonce',
+      'de': 'Mitteilung',
+      'pt': 'Aviso',
+      'ru': 'Объявление',
+    },
     'btn.close': {
       'ja': '閉じる',
       'en': 'Close',
@@ -67988,6 +68130,65 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'In externem Fenster öffnen',
       'pt': 'Abrir em janela externa',
       'ru': 'Открыть во внешнем окне',
+    },
+    // ★ 「このページの置き場」 とは書かない。 実際に引くのは
+    //   [linkedDirectoryForPage] = ページの**フォルダー**の紐付け先で、
+    //   無ければアプリ共通の置き場。 同じフォルダーの 2 ページは同じ所。
+    // ── 端末が見るフォルダー (= ユーザー要望: 開くたびに聞かない) ──
+    'cli.workDir': {
+      'ja': '端末が見るフォルダー',
+      'en': 'Folder the terminal works in',
+      'zh': '终端使用的文件夹',
+      'ko': '터미널이 사용하는 폴더',
+      'es': 'Carpeta en la que trabaja la terminal',
+      'fr': 'Dossier utilisé par le terminal',
+      'de': 'Ordner, in dem das Terminal arbeitet',
+      'pt': 'Pasta em que o terminal trabalha',
+      'ru': 'Папка, в которой работает терминал',
+    },
+    'cli.workDirHint': {
+      'ja': '既定は、 今開いているページの置き場です。 別の場所で使いたい時だけ、 ここで選んでください。 選んだ場所は次からも使われます。',
+      'en': 'By default this is the folder of the page you have open. Pick another one here only when you want to work somewhere else; the choice is kept for next time.',
+      'zh': '默认使用当前打开页面所在的文件夹。只有想在别处工作时才在这里选择，所选位置会一直沿用。',
+      'ko': '기본값은 지금 열려 있는 페이지의 폴더입니다. 다른 곳에서 작업하고 싶을 때만 여기서 고르세요. 고른 위치는 다음에도 사용됩니다.',
+      'es': 'De forma predeterminada es la carpeta de la página abierta. Elige otra aquí solo si quieres trabajar en otro sitio; la elección se conserva.',
+      'fr': 'Par défaut, il s’agit du dossier de la page ouverte. Choisissez-en un autre ici seulement si vous voulez travailler ailleurs ; le choix est conservé.',
+      'de': 'Standardmäßig ist das der Ordner der geöffneten Seite. Wählen Sie hier nur dann einen anderen, wenn Sie woanders arbeiten möchten; die Wahl bleibt erhalten.',
+      'pt': 'Por padrão é a pasta da página aberta. Escolha outra aqui apenas se quiser trabalhar em outro lugar; a escolha fica guardada.',
+      'ru': 'По умолчанию это папка открытой страницы. Выбирайте другую здесь, только если хотите работать в другом месте; выбор сохраняется.',
+    },
+    'cli.tabDirDefault': {
+      'ja': 'ふだんの置き場 (既定)',
+      'en': 'Usual folder (default)',
+      'zh': '常用文件夹 (默认)',
+      'ko': '평소 폴더 (기본)',
+      'es': 'Carpeta habitual (predeterminado)',
+      'fr': 'Dossier habituel (par défaut)',
+      'de': 'Üblicher Ordner (Standard)',
+      'pt': 'Pasta habitual (padrão)',
+      'ru': 'Обычная папка (по умолчанию)',
+    },
+    'cli.tabDirPick': {
+      'ja': 'フォルダーを選ぶ…',
+      'en': 'Choose a folder…',
+      'zh': '选择文件夹…',
+      'ko': '폴더 선택…',
+      'es': 'Elegir una carpeta…',
+      'fr': 'Choisir un dossier…',
+      'de': 'Ordner wählen…',
+      'pt': 'Escolher uma pasta…',
+      'ru': 'Выбрать папку…',
+    },
+    'cli.tabDirGone': {
+      'ja': 'そのフォルダーが見つかりません',
+      'en': 'That folder was not found',
+      'zh': '找不到该文件夹',
+      'ko': '폴더를 찾을 수 없습니다',
+      'es': 'No se encuentra esa carpeta',
+      'fr': 'Dossier introuvable',
+      'de': 'Ordner nicht gefunden',
+      'pt': 'Pasta não encontrada',
+      'ru': 'Папка не найдена',
     },
     'cli.continueTitle': {
       'ja': 'VSCode などの会話を引き継ぐ (プロジェクトのフォルダー)',
@@ -82632,6 +82833,144 @@ class MindMapProvider extends ChangeNotifier {
     } catch (_) {
       return false;
     }
+  }
+
+  // ─── お知らせ (開発者 → 利用者) ─────────────────────────────────────
+  //
+  // = ユーザー要望「開発者モードから全ユーザーやプランを指定してユーザーに
+  //   アナウンスを送れるように。 何時何分に送るとか設定して置けるように」。
+  //
+  // ★ 置き場は Worker + KV (`/announce`)。 Firestore は規則が閉じていて
+  //   新しいコレクションに書けない (実測 403) ため、 送信停止の印と同じ
+  //   決まりでこちらに置く。 書けるのは開発者だけ、 読むのは誰でも。
+  // ★ 押し出し (プッシュ通知) はしない。 起動時に見に行き、 **送る時刻を
+  //   過ぎた物**だけをサーバーが返す。 だから「何時何分に送る」 は、
+  //   その時刻以降に開いた人から順に見える、 という形になる。
+
+  /// 出す時に選べる宛先。 'all' は全員。
+  static const List<String> announcePlans = <String>[
+    'all',
+    'free',
+    'pro',
+    'max',
+    'dev',
+  ];
+
+  /// 自分宛ての、 もう送られているお知らせ (新しい順)。
+  Future<List<Map<String, dynamic>>> fetchAnnouncements(
+      {bool all = false}) async {
+    final base = relayApiBase;
+    if (base.isEmpty) return const [];
+    try {
+      await _ensureFreshToken();
+      if (_idToken == null) return const [];
+      final q = all
+          ? '?all=1'
+          : '?plan=${Uri.encodeComponent(currentPlan.name)}';
+      final res = await http
+          .get(Uri.parse('$base/announce$q'), headers: _relayHeaders())
+          .timeout(const Duration(seconds: 15));
+      if (res.statusCode != 200) return const [];
+      final j = jsonDecode(res.body);
+      final items = (j is Map) ? j['items'] : null;
+      if (items is! List) return const [];
+      return <Map<String, dynamic>>[
+        for (final e in items)
+          if (e is Map) Map<String, dynamic>.from(e),
+      ];
+    } catch (e) {
+      // 通信できない時は黙って何も出さない (起動の邪魔をしない)。
+      debugPrint('お知らせの取得に失敗: $e');
+      return const [];
+    }
+  }
+
+  /// 出す / 書き直す (開発者だけ。 実際に通るかは Worker が決める)。
+  ///
+  /// [sendAtMs] が 0 ならすぐ配信。 先の時刻を入れると、 その時刻を
+  /// 過ぎてから各端末に見えるようになる。
+  Future<bool> sendAnnouncement({
+    String id = '',
+    required String title,
+    required String body,
+    List<String> plans = const ['all'],
+    int sendAtMs = 0,
+    int days = 90,
+  }) async {
+    final base = relayApiBase;
+    if (base.isEmpty) return false;
+    if (title.trim().isEmpty && body.trim().isEmpty) return false;
+    try {
+      await _ensureFreshToken();
+      if (_idToken == null) return false;
+      final res = await http
+          .post(Uri.parse('$base/announce'),
+              headers: _relayHeaders(json: true),
+              body: jsonEncode({
+                if (id.trim().isNotEmpty) 'id': id.trim(),
+                'title': title.trim(),
+                'body': body.trim(),
+                'plans': plans,
+                'sendAtMs': sendAtMs,
+                'days': days,
+              }))
+          .timeout(const Duration(seconds: 20));
+      return res.statusCode == 200;
+    } catch (e) {
+      debugPrint('お知らせの送信に失敗: $e');
+      return false;
+    }
+  }
+
+  /// 消す (予約中でも配信済みでも)。
+  Future<bool> deleteAnnouncement(String id) async {
+    final base = relayApiBase;
+    if (base.isEmpty || id.trim().isEmpty) return false;
+    try {
+      await _ensureFreshToken();
+      if (_idToken == null) return false;
+      final res = await http
+          .post(Uri.parse('$base/announce/delete'),
+              headers: _relayHeaders(json: true),
+              body: jsonEncode({'id': id.trim()}))
+          .timeout(const Duration(seconds: 20));
+      return res.statusCode == 200;
+    } catch (e) {
+      debugPrint('お知らせの削除に失敗: $e');
+      return false;
+    }
+  }
+
+  /// もう読んだお知らせの id (prefs `seen_announcement_ids`)。
+  ///
+  /// ★ 1 度だけ出すための印。 サーバーには置かない (端末ごとに 1 度で
+  ///   よいし、 読んだ事を集める理由が無い)。 増え続けないよう 200 件で
+  ///   頭打ちにする。
+  static const String _kSeenAnnounceKey = 'seen_announcement_ids';
+
+  Future<Set<String>> loadSeenAnnouncementIds() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      return (p.getStringList(_kSeenAnnounceKey) ?? const <String>[]).toSet();
+    } catch (_) {
+      return <String>{};
+    }
+  }
+
+  Future<void> markAnnouncementsSeen(Iterable<String> ids) async {
+    final add = ids.where((e) => e.trim().isNotEmpty).toList();
+    if (add.isEmpty) return;
+    try {
+      final p = await SharedPreferences.getInstance();
+      final list = p.getStringList(_kSeenAnnounceKey) ?? <String>[];
+      for (final id in add) {
+        if (!list.contains(id)) list.add(id);
+      }
+      while (list.length > 200) {
+        list.removeAt(0);
+      }
+      await p.setStringList(_kSeenAnnounceKey, list);
+    } catch (_) {}
   }
 
   Future<String?> sendInquiry(String message) async {

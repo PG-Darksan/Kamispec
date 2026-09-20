@@ -29,6 +29,7 @@ import 'package:provider/provider.dart';
 import 'package:http/http.dart' as http;
 import 'package:vector_math/vector_math_64.dart' show Quad;
 import '../models/mind_map_node.dart';
+import '../data/release_notes.dart';
 import '../providers/mind_map_provider.dart';
 import '../services/google_auth.dart';
 import '../services/billing_service.dart';
@@ -6270,6 +6271,20 @@ class _MindMapScreenState extends State<MindMapScreen>
       if (!mounted) return;
       _showSettingsSheet(ctx, context.read<MindMapProvider>());
     };
+    // ── 編集画面からターミナルを呼ぶ入口 ──
+    // ★ = ユーザー要望「txt や json、 markdown などのテキスト編集画面に
+    //   ターミナルを呼び出せるボタンを付けて欲しい」。
+    //   Pro 以上の関所はここに 1 つだけ置く (= 編集画面ごとに同じ判定を
+    //   書かない)。 ヘッダーのボタン (case 'openTerminal') と同じ扱い。
+    openTerminalFromAnywhere = ({String? baseDir}) async {
+      if (!mounted) return;
+      final p = context.read<MindMapProvider>();
+      if (!p.canUseCliAi) {
+        _showPaywallDialog(p);
+        return;
+      }
+      await _openTerminalFromHeader(p, baseDir: baseDir);
+    };
     // ── 「開いたファイルをページに埋め込む」 入口 (= ユーザー要望: 新規で
     //    埋め込まずに開いたファイルを、 後からページ上に貼れるように) ──
     embedOpenFileFromAnywhere = (path, name, {pageId}) async {
@@ -6507,6 +6522,12 @@ class _MindMapScreenState extends State<MindMapScreen>
           }
           // 名前は Google アカウントから受け取るので、 起動時に
           //   ユーザー名を尋ねる画面は出さない (= ユーザー要望)。
+          //
+          // ── 版が上がった時の更新内容と、 開発者からのお知らせ ──
+          //    (= ユーザー要望: 新バージョンになる度に 1 度だけ出す)
+          //    どちらも「初回設定の後」。 初回導入の人には更新内容を
+          //    出さない ([_maybeShowReleaseNotes] の中で判断する)。
+          unawaited(_showStartupNotices(provider));
         });
       });
     });
@@ -6518,6 +6539,197 @@ class _MindMapScreenState extends State<MindMapScreen>
     // pointerRouter で全 PointerEvent を監視する (= hit test 経由ではない)。
     WidgetsBinding.instance.pointerRouter
         .addGlobalRoute(_globalPointerForMapDrop);
+  }
+
+  // ── 起動時に出す知らせ (= ユーザー要望) ─────────────────────────────
+  //
+  //   1. 版が上がった時の更新内容 (アプリに同梱 = 通信が無くても出る)
+  //   2. 開発者からのお知らせ (Worker から受け取る = 予約配信に対応)
+  //
+  //   ★ どちらも**1 度だけ**。 印は端末に残す (更新内容は版の数、 お知らせは
+  //     読んだ id)。 印は**出す前**に付ける。 途中で閉じたり落ちたりしても
+  //     2 度目が出ないようにするため (= ユーザー要望「1 度のみ」)。
+  //   ★ 初回設定 (言語の選択) と重ならないよう、 入れたばかりの人には
+  //     更新内容を出さない。
+
+  static const String _kSeenReleaseBuildKey = 'release_notes_seen_build';
+
+  Future<void> _showStartupNotices(MindMapProvider provider) async {
+    await _maybeShowReleaseNotes(provider);
+    if (!mounted) return;
+    await _maybeShowAnnouncements(provider);
+  }
+
+  /// 版が上がっていれば更新内容を 1 度だけ出す。
+  Future<void> _maybeShowReleaseNotes(MindMapProvider provider) async {
+    if (kReleaseNotes.isEmpty) return;
+    final current = kCurrentAppBuild;
+    int seen = 0;
+    try {
+      final p = await SharedPreferences.getInstance();
+      seen = p.getInt(_kSeenReleaseBuildKey) ?? 0;
+      if (seen >= current) return;
+      await p.setInt(_kSeenReleaseBuildKey, current);
+    } catch (_) {
+      return;
+    }
+    // 入れたばかりの人には出さない (更新した人にだけ出す)。
+    if (seen == 0 && provider.isFirstLaunch) return;
+    final notes = seen == 0
+        // 印が無いのに初回導入でもない = この仕組みより前から使っている人。
+        //   古い版の分まで遡らず、 今の版の分だけ出す。
+        ? <ReleaseNote>[kReleaseNotes.first]
+        : kReleaseNotes.where((e) => e.build > seen).toList();
+    if (notes.isEmpty || !mounted) return;
+    await _showReleaseNotesDialog(provider, notes);
+  }
+
+  /// 更新内容の画面。 設定からも同じ物を開ける (その時は全部渡す)。
+  Future<void> _showReleaseNotesDialog(
+      MindMapProvider provider, List<ReleaseNote> notes) async {
+    final lang = provider.appLanguage;
+    await showDialog<void>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        title: Row(children: [
+          const Icon(Icons.auto_awesome_rounded,
+              size: 18, color: Color(0xFF9CCC65)),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(provider.t('notice.whatsNew'),
+                style: const TextStyle(color: Colors.white, fontSize: 15)),
+          ),
+        ]),
+        content: SizedBox(
+          width: math.min(520.0,
+              math.max(260.0, MediaQuery.sizeOf(dctx).width - 80.0)),
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (final n in notes) ...[
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4, bottom: 6),
+                    child: Text('$kAppVersionName (${n.build})  ${n.date}',
+                        style: const TextStyle(
+                            color: Color(0xFF9CCC65),
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w700)),
+                  ),
+                  for (final line in n.linesFor(lang))
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Padding(
+                            padding: EdgeInsets.only(top: 6, right: 8),
+                            child: Icon(Icons.circle,
+                                size: 5, color: Colors.white38),
+                          ),
+                          Expanded(
+                            child: Text(line,
+                                style: const TextStyle(
+                                    color: Colors.white70,
+                                    fontSize: 12.5,
+                                    height: 1.6)),
+                          ),
+                        ],
+                      ),
+                    ),
+                  const SizedBox(height: 10),
+                ],
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          ElevatedButton(
+            onPressed: () => Navigator.of(dctx).pop(),
+            child: Text(provider.t('btn.close')),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// まだ読んでいないお知らせがあれば出す。
+  Future<void> _maybeShowAnnouncements(MindMapProvider provider) async {
+    final items = await provider.fetchAnnouncements();
+    if (items.isEmpty || !mounted) return;
+    final seen = await provider.loadSeenAnnouncementIds();
+    if (!mounted) return;
+    final fresh = <Map<String, dynamic>>[
+      for (final e in items)
+        if (!seen.contains('${e['id'] ?? ''}')) e,
+    ];
+    if (fresh.isEmpty) return;
+    await provider
+        .markAnnouncementsSeen([for (final e in fresh) '${e['id'] ?? ''}']);
+    if (!mounted) return;
+    await _showAnnouncementDialog(provider, fresh);
+  }
+
+  /// 受け取ったお知らせを出す (複数あれば続けて 1 枚に並べる)。
+  Future<void> _showAnnouncementDialog(
+      MindMapProvider provider, List<Map<String, dynamic>> items) async {
+    await showDialog<void>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        title: Row(children: [
+          const Icon(Icons.campaign_rounded,
+              size: 18, color: Color(0xFFFFB347)),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(provider.t('notice.announce'),
+                style: const TextStyle(color: Colors.white, fontSize: 15)),
+          ),
+        ]),
+        content: SizedBox(
+          width: math.min(520.0,
+              math.max(260.0, MediaQuery.sizeOf(dctx).width - 80.0)),
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (final e in items) ...[
+                  if ('${e['title'] ?? ''}'.trim().isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4, bottom: 6),
+                      child: Text('${e['title']}',
+                          style: const TextStyle(
+                              color: Color(0xFFFFB347),
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700)),
+                    ),
+                  if ('${e['body'] ?? ''}'.trim().isNotEmpty)
+                    SelectableText('${e['body']}',
+                        style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 12.5,
+                            height: 1.7)),
+                  const SizedBox(height: 14),
+                ],
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          ElevatedButton(
+            onPressed: () => Navigator.of(dctx).pop(),
+            child: Text(provider.t('btn.close')),
+          ),
+        ],
+      ),
+    );
   }
 
   /// ドラッグ中のグローバルポインタ追跡 + drop 検出。
@@ -8395,6 +8607,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     openUrlInAppFromAnywhere = null;
     openPageListFromAnywhere = null;
     openSettingsFromAnywhere = null;
+    openTerminalFromAnywhere = null;
     embedOpenFileFromAnywhere = null;
     isFileEmbeddedFromAnywhere = null;
     commandIdForKeyEventFromAnywhere = null;
@@ -11679,6 +11892,23 @@ class _MindMapScreenState extends State<MindMapScreen>
     'floating', // フローティング
   ];
 
+  /// ★ ターミナルだけが使う開き方 (= ユーザー要望「ターミナルの画面も
+  ///   全画面かフローティングか左右分割か上下分割か選べるように」)。
+  ///
+  ///   わざと `_openStyles` には足さない。 あちらは `_openStylesFor` の
+  ///   既定の戻り値なので、 足すと URL を開くボタン約 20 個の一覧にまで
+  ///   「上下分割」 が生えてしまう (= 頼まれていない所まで変わる)。
+  ///   一覧に出すのは `_openStylesFor('openTerminal')` だけ。
+  static const Set<String> _kStackedOpenStyles = {
+    'splitTop', // 上に分割
+    'splitBottom', // 下に分割
+  };
+
+  /// 今のアプリが知っている開き方か。 prefs から読む時と、 保存済みの値を
+  /// 解釈する時の両方で使う (= 知らない値は既定へ落とす)。
+  static bool _isKnownOpenStyle(String v) =>
+      _openStyles.contains(v) || _kStackedOpenStyles.contains(v);
+
   /// ユーザーが決めた開き方 (id → _openStyles のどれか)。 prefs に残す。
   final Map<String, String> _commandOpenStyle = {};
   static const String _kCommandOpenStyleKey = 'commandOpenStyle_v1';
@@ -11714,7 +11944,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     //   設定が prefs に残っていても、 常に全画面のダイアログで開く。
     if (commandId == 'alarm') return 'full';
     final v = _commandOpenStyle[commandId];
-    if (v != null && _openStyles.contains(v)) return v;
+    // ★ 上下分割も「知っている値」 に含める (= ユーザー要望)。
+    if (v != null && _isKnownOpenStyle(v)) return v;
     // 旧版の 'split' は「右に分割」 として読む (= 設定を引き継ぐ)。
     if (v == 'split') return 'splitRight';
     // ショートカット一覧の既定は今までどおり全画面のダイアログ
@@ -11759,6 +11990,11 @@ class _MindMapScreenState extends State<MindMapScreen>
         return provider.t('openStyle.splitLeft');
       case 'splitRight':
         return provider.t('openStyle.splitRight');
+      // ★ 上下分割 (= ユーザー要望)。 今はターミナルだけが選べる。
+      case 'splitTop':
+        return provider.t('openStyle.splitTop');
+      case 'splitBottom':
+        return provider.t('openStyle.splitBottom');
       case 'floating':
         return provider.t('openStyle.floating');
       default:
@@ -11832,6 +12068,12 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// 開き方を選べるボタンか (= URL を開くボタン + 上の道具ボタン)。
   bool _canChooseOpenStyle(String commandId) =>
+      // ★ ターミナル (= ユーザー要望「ターミナルの画面も全画面か
+      //   フローティングか左右分割か上下分割か選べるように」)。
+      //   `_floatableToolCommands` には足さない ── あれに入れると
+      //   `_openStyleOf` の既定まで「フローティング」 に変わってしまい、
+      //   何も選んでいない人の動きが勝手に変わる。
+      commandId == 'openTerminal' ||
       _webCommandTargets.containsKey(commandId) ||
       _floatableToolCommands.contains(commandId) ||
       // = ユーザー要望: Google 検索と自動化も左右分割 / フローティングで
@@ -11842,6 +12084,19 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// そのボタンで選べる開き方の一覧。 道具ボタンは全画面とフローティングだけ。
   List<String> _openStylesFor(String commandId) {
+    // ★ ターミナルだけ「上下分割」 も選べる (= ユーザー要望「ターミナルの
+    //   画面も全画面かフローティングか左右分割か上下分割か選べるように」)。
+    //   ここで専用の一覧を返し、 他のボタンには一切足さない。
+    if (commandId == 'openTerminal') {
+      return const [
+        'full',
+        'floating',
+        'splitLeft',
+        'splitRight',
+        'splitTop',
+        'splitBottom',
+      ];
+    }
     // ショートカット一覧は分割ペインの中にも入れられる (= ユーザー要望)。
     if (commandId == 'shortcuts' ||
         commandId == 'aiAssistant' ||
@@ -11897,7 +12152,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           //   「右に分割」 として解釈する。
           if (k is String &&
               v is String &&
-              (_openStyles.contains(v) || v == 'split')) {
+              (_isKnownOpenStyle(v) || v == 'split')) {
             _commandOpenStyle[k] = v;
           }
         });
@@ -42080,6 +42335,21 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     }
                                   },
                                 ),
+                                // ── 更新内容 (= ユーザー要望: 版が上がった
+                                //    時に 1 度だけ出す。 後から読み返せる
+                                //    ように、 ここからも開けるようにする) ──
+                                _settingsTile(
+                                  icon: Icons.auto_awesome_rounded,
+                                  color: const Color(0xFF9CCC65),
+                                  title: provider.t('notice.whatsNew'),
+                                  subtitle:
+                                      '$kAppVersionName ($kCurrentAppBuild)',
+                                  onTap: () {
+                                    Navigator.pop(sctx);
+                                    unawaited(_showReleaseNotesDialog(
+                                        provider, kReleaseNotes));
+                                  },
+                                ),
                                 // ── 公式Instagram (= ユーザー要望: 問い合わせ
                                 //    画面の「公式Ig」 をここへ移し、 表記も
                                 //    「公式Instagram」 に直す) ──
@@ -48547,10 +48817,177 @@ class _MindMapScreenState extends State<MindMapScreen>
   //   開く場所は**いま開いているページの置き場**。 盾の印を押すと管理者。
   //   管理者はアプリの中には出せない (昇格は別プロセスでしか得られない)
   //   ので、 その時だけ OS の窓が開く。
-  Future<void> _openTerminalFromHeader(MindMapProvider provider) async {
+  /// ヘッダーの「ターミナル」 で使い回す 1 枚。
+  ///
+  /// ★ 分割ペインや浮遊窓は作り直し (build) のたびに中身を組み直すので、
+  ///   押すたびに `AgentCliRunner.begin` していた昔のままだと、 覗くたびに
+  ///   新しい擬似端末が積み上がる。 走っている物があれば使い回す。
+  AgentCliSession? _headerTerminalSession;
+  String? _headerTerminalDir;
+
+  /// 分割ペインでの下ごしらえを 1 回だけにする掛け金。
+  /// ★ 起こせない端末 (セキュリティソフトに撃たれる / `exit` で終わった) で、
+  ///   組み直すたびに擬似端末が増え続けるのを止める。
+  bool _headerTerminalSpawning = false;
+
+  /// 道具のために分割の「向き」 だけ倒した時の、 元の向き (id → stacked)。
+  /// ★ 閉じた時に戻すため (= 左右分割を倒したまま置き去りにしない)。
+  final Map<String, bool> _splitStackedBefore = {};
+
+  /// 生きている殻を返す。 無ければ [dir] で起こす。
+  AgentCliSession _terminalSessionFor(MindMapProvider provider, String dir) {
+    final s = _headerTerminalSession;
+    if (s != null &&
+        _headerTerminalDir == dir &&
+        AgentCliRunner.active.contains(s)) {
+      return s;
+    }
+    _headerTerminalDir = dir;
+    _headerTerminalSpawning = true;
+    return _headerTerminalSession =
+        AgentCliRunner.begin(buildShellSession(provider, dir));
+  }
+
+  /// ペインに端末を出す前の下ごしらえ (= ボタンをペインへドロップした時など、
+  /// `_openTerminalFromHeader` を通らずに埋め込まれる道)。
+  Future<void> _ensureTerminalSession(MindMapProvider provider) async {
+    final s = _headerTerminalSession;
+    if (s != null && AgentCliRunner.active.contains(s)) return;
     final dir = await terminalBaseDir(provider);
     if (!mounted) return;
-    final session = AgentCliRunner.begin(buildShellSession(provider, dir));
+    _terminalSessionFor(provider, dir);
+    setState(() {});
+  }
+
+  /// ターミナルの中身 (置き場の帯 + 端末)。
+  ///
+  /// ダイアログ / 浮遊窓 / 分割ペインで**同じ物**を使う (= 開き方を変えても
+  /// 見た目と操作が変わらないように。 双子を作ると片方だけ直り続ける)。
+  /// [onClose] が null なら × を出さない (浮遊窓は外枠の × で閉じる)。
+  Widget _buildTerminalPanel(
+      MindMapProvider provider, String dir, AgentCliSession session,
+      {VoidCallback? onClose}) {
+    return ColoredBox(
+      color: const Color(0xFF14141F),
+      child: Column(children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 6, 0),
+          child: Row(children: [
+            const Icon(Icons.terminal_rounded,
+                size: 16, color: Color(0xFF9CCC65)),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(dir,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      color: Colors.white54, fontSize: 11)),
+            ),
+            Tooltip(
+              message: provider.t('cli.openAdmin'),
+              child: IconButton(
+                padding: EdgeInsets.zero,
+                constraints:
+                    const BoxConstraints(minWidth: 30, minHeight: 30),
+                icon: const Icon(Icons.shield_outlined,
+                    size: 17, color: Color(0xFFFFB347)),
+                onPressed: () {
+                  final ok = AgentCli.openAdminTerminal(dir);
+                  if (!mounted) return;
+                  showTopToast(
+                      context,
+                      ok
+                          ? provider.t('cli.adminOpened')
+                          : provider.t('cli.adminFailed'),
+                      ok
+                          ? const Color(0xFF43B97F)
+                          : const Color(0xFFE53935));
+                },
+              ),
+            ),
+            if (onClose != null)
+              IconButton(
+                tooltip: provider.t('btn.close'),
+                padding: EdgeInsets.zero,
+                constraints:
+                    const BoxConstraints(minWidth: 30, minHeight: 30),
+                icon: const Icon(Icons.close_rounded,
+                    size: 18, color: Colors.white70),
+                onPressed: onClose,
+              ),
+          ]),
+        ),
+        Expanded(
+          child: AgentTerminal(session: session, showHeader: false),
+        ),
+      ]),
+    );
+  }
+
+  /// [baseDir] 開く場所。 null なら今までどおり、 今開いているページの置き場。
+  Future<void> _openTerminalFromHeader(MindMapProvider provider,
+      {String? baseDir}) async {
+    // ★ = ユーザー要望「ターミナルの画面も全画面かフローティングか
+    //   左右分割か上下分割か選べるようにして欲しい」。
+    //   開き方の読み込みを待ってから見る (待たないと、 起動直後に押した
+    //   時だけ既定の全画面に落ちる = アシスタントと同じ手当て)。
+    try {
+      await _commandOpenStylesReady;
+    } catch (_) {}
+    if (!mounted) return;
+    // ★ 開き方は置き場を調べる**前**に読む。 `terminalBaseDir` はディスク
+    //   (ページの紐付けフォルダー) を触るので遅れることがあり、 その間に
+    //   `_reopenCommandFullscreen` の印 (`_forceFullCommandId`) が 2 秒で
+    //   消えて、「全画面に戻す」 が浮遊窓に戻ってしまう。
+    // スマホには分割ペインも浮遊窓も無いので、 今までどおりダイアログ。
+    final style = _isDesktop ? _openStyleOf('openTerminal') : 'full';
+    // ★ = ユーザー要望「txt や json、 markdown などのテキスト編集画面に
+    //   ターミナルを呼び出せるボタンを付けて欲しい」。 編集画面から呼ばれた
+    //   時は**今開いているファイルの置き場**を基点にする (= VSCode と同じ
+    //   感覚で、 開いているファイルのフォルダーのまま codex CLI を動かせる)。
+    //   無い所を渡された時は既定へ落とす (消されたファイルを開いていた等)。
+    final want = (baseDir ?? '').trim();
+    final dir = (want.isNotEmpty && Directory(want).existsSync())
+        ? want
+        : await terminalBaseDir(provider);
+    if (!mounted) return;
+    final session = _terminalSessionFor(provider, dir);
+    // ── どの開き方で出す時も、 先に**他所に出ている同じ端末**を畳む ──
+    //    ★ 1 枚の `Terminal` を 2 つの `TerminalView` が描くと、 両方が
+    //      `terminal.onResize` → `pty.resize` を投げ合って桁数を取り合う
+    //      (agent_cli_session.dart の `onResize` は 1 本しか無い)。
+    //      浮遊窓 → 分割 の向きも塞ぐ (片道だけでは足りない)。
+    for (final slot in _mapSplitCellTool.keys.toList()) {
+      if (_mapSplitCellTool[slot] == 'openTerminal') {
+        _closeEmbeddedPaneTool(slot, 'openTerminal');
+      }
+    }
+    _closeFloatingPanelByKey('terminal');
+    if (!mounted) return;
+    // ── 分割 (左右 / 上下) ──
+    if (style.startsWith('split')) {
+      await _openToolInSplitPane(
+        'openTerminal',
+        style == 'splitLeft' || style == 'splitTop',
+        stacked: style == 'splitTop' || style == 'splitBottom',
+      );
+      return;
+    }
+    // ── フローティング ──
+    if (style == 'floating') {
+      _showFloatingPanelWindow(
+        (_) => _buildTerminalPanel(provider, dir, session),
+        width: 860,
+        height: 560,
+        memoryKey: 'terminal',
+        singletonKey: 'terminal',
+        // 中身が自前の帯を持っているので、 外枠は掴む所だけにする。
+        slimChrome: true,
+        onRestoreFull: () => _reopenCommandFullscreen('openTerminal'),
+      );
+      return;
+    }
+    // ── 全画面 (今までどおりのダイアログ) ──
     final size = MediaQuery.sizeOf(context);
     await showDialog<void>(
       context: context,
@@ -48562,57 +48999,8 @@ class _MindMapScreenState extends State<MindMapScreen>
         child: SizedBox(
           width: math.min(880.0, size.width - 48),
           height: math.min(620.0, size.height - 48),
-          child: Column(children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 8, 6, 0),
-              child: Row(children: [
-                const Icon(Icons.terminal_rounded,
-                    size: 16, color: Color(0xFF9CCC65)),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(dir,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                          color: Colors.white54, fontSize: 11)),
-                ),
-                Tooltip(
-                  message: provider.t('cli.openAdmin'),
-                  child: IconButton(
-                    padding: EdgeInsets.zero,
-                    constraints:
-                        const BoxConstraints(minWidth: 30, minHeight: 30),
-                    icon: const Icon(Icons.shield_outlined,
-                        size: 17, color: Color(0xFFFFB347)),
-                    onPressed: () {
-                      final ok = AgentCli.openAdminTerminal(dir);
-                      if (!mounted) return;
-                      showTopToast(
-                          context,
-                          ok
-                              ? provider.t('cli.adminOpened')
-                              : provider.t('cli.adminFailed'),
-                          ok
-                              ? const Color(0xFF43B97F)
-                              : const Color(0xFFE53935));
-                    },
-                  ),
-                ),
-                IconButton(
-                  tooltip: provider.t('btn.close'),
-                  padding: EdgeInsets.zero,
-                  constraints:
-                      const BoxConstraints(minWidth: 30, minHeight: 30),
-                  icon: const Icon(Icons.close_rounded,
-                      size: 18, color: Colors.white70),
-                  onPressed: () => Navigator.pop(dctx),
-                ),
-              ]),
-            ),
-            Expanded(
-              child: AgentTerminal(session: session, showHeader: false),
-            ),
-          ]),
+          child: _buildTerminalPanel(provider, dir, session,
+              onClose: () => Navigator.pop(dctx)),
         ),
       ),
     );
@@ -77305,15 +77693,40 @@ class _MindMapScreenState extends State<MindMapScreen>
     final otherOccupied = _mapSplitCellTool.isNotEmpty ||
         _mapSplitCellWeb.isNotEmpty ||
         _mapSplitCellFile.isNotEmpty;
+    final stackedBefore = _splitStackedBefore.remove(id);
     if (openedByUs && !otherOccupied) {
       _closeMapSplit();
+    } else if (stackedBefore != null &&
+        _mapSplitOpen &&
+        !_mapSplitQuad &&
+        _mapSplitStacked != stackedBefore) {
+      // ★ この道具のために分割の「向き」 だけ倒した時は、 閉じたら戻す
+      //   (= ユーザー要望「上下分割」 のために、 元からあった左右分割を
+      //   倒したまま置き去りにしない)。 分割そのものは畳まない。
+      unawaited(
+          _applyMapSplitMode(panes: 2, stacked: stackedBefore, toggle: false));
     }
   }
 
-  Future<void> _openToolInSplitPane(String id, bool left) async {
+  /// [stacked] = true なら上下に分割する (= ユーザー要望「上下分割」)。
+  /// 既定は false なので、 今までの呼び出しの動きは変わらない。
+  /// `_splitSlotFor` の 0 / 1 は、 上下分割では そのまま 上 / 下 になる
+  /// (`_mapSplitSideSlot` と同じ決め方)。
+  Future<void> _openToolInSplitPane(String id, bool left,
+      {bool stacked = false}) async {
     final wasSplit = _mapSplitOpen;
     if (!_mapSplitOpen) {
-      await _applyMapSplitMode(panes: 2, stacked: false);
+      await _applyMapSplitMode(panes: 2, stacked: stacked);
+      if (!mounted) return;
+    } else if (!_mapSplitQuad && _mapSplitStacked != stacked) {
+      // ★ 既に開いている分割の向きが違う時は、 向きだけ変える。
+      //   `toggle: false` にしないと、 向きが同じだった時に分割ごと
+      //   閉じてしまう (`_applyMapSplitMode` の `already` の道)。
+      //   4 分割中は触らない (= 頼まれていない畳み込みをしない)。
+      //   ★ ここで倒した向きは、 閉じた時に戻せるよう控えておく
+      //     (= 人が作った左右分割を、 上下に倒したまま置き去りにしない)。
+      _splitStackedBefore[id] = _mapSplitStacked;
+      await _applyMapSplitMode(panes: 2, stacked: stacked, toggle: false);
       if (!mounted) return;
     }
     if (!_mapSplitOpen) return;
@@ -77352,7 +77765,10 @@ class _MindMapScreenState extends State<MindMapScreen>
       id == 'inquiry' ||
       // 面接練習 (= ユーザー要望: 左右分割でも開けるように)。
       _isTalkPracticeCommand(id) ||
-      id == 'webAutomation';
+      id == 'webAutomation' ||
+      // ターミナル (= ユーザー要望: 左右分割 / 上下分割でも開けるように)。
+      //   ボタンをペインへドラッグして落とした時もここを通る。
+      id == 'openTerminal';
 
   /// 半分では広すぎる「細い」 ツール (= ユーザー要望: ショートカット一覧は
   /// 半分だと大きすぎる / 計算機とタイマーは左右分割だと表示領域が大きすぎる
@@ -77583,6 +77999,60 @@ class _MindMapScreenState extends State<MindMapScreen>
             _openUrlInSplitPanel(url);
           },
         );
+      // ターミナル (= ユーザー要望: 左右分割 / 上下分割でも開けるように)。
+      // 殻 (擬似端末) は画面の外 (`_headerTerminalSession`) が持っているので、
+      // ペインに出し入れしても走っている物は途切れない。
+      case 'openTerminal':
+        {
+          // ★ CLI は Pro 以上 (= ヘッダーの入口 `_executeHeaderCommand` と
+          //   同じ関門)。 ペインへ落とす道 (`_runPaneHeaderCommand`) は
+          //   あちらを通らないので、 ここで見ないと無料のまま殻が開く。
+          if (!provider.canUseCliAi) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (!mounted) return;
+              close();
+              _showPaywallDialog(provider);
+            });
+            return const SizedBox.shrink();
+          }
+          final s = _headerTerminalSession;
+          if (s != null && AgentCliRunner.active.contains(s)) {
+            return _buildTerminalPanel(provider, _headerTerminalDir ?? '', s,
+                onClose: close);
+          }
+          // ★ 殻がまだ無い / もう終わっている。
+          //   ここで毎回起こし直すと「終わる → 組み直す → また起こす」 の
+          //   輪になり、 擬似端末が際限なく増える (`AgentCliRunner.begin` は
+          //   `finished` で `active` から外すので、 撃たれた時も `exit` した
+          //   時も「終わった」 扱いになる)。 下ごしらえは 1 回だけにして、
+          //   二度目からは押してもらう。
+          if (!_headerTerminalSpawning) {
+            _headerTerminalSpawning = true;
+            WidgetsBinding.instance.addPostFrameCallback(
+                (_) => unawaited(_ensureTerminalSession(provider)));
+            return const ColoredBox(
+              color: Color(0xFF14141F),
+              child: Center(
+                child: SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ),
+            );
+          }
+          return ColoredBox(
+            color: const Color(0xFF14141F),
+            child: Center(
+              child: TextButton.icon(
+                icon: const Icon(Icons.refresh_rounded, size: 18),
+                label: Text(provider.t('cli.reopen')),
+                onPressed: () =>
+                    setState(() => _headerTerminalSpawning = false),
+              ),
+            ),
+          );
+        }
       default:
         return const SizedBox.shrink();
     }
@@ -102137,6 +102607,35 @@ class _MindMapScreenState extends State<MindMapScreen>
                         // ★ 「利用者の属性 (分析用)」 は廃止 (= ユーザー要望)。
                         //   年齢・性別の送信自体も b207 で止めてある。
 
+                        // ── お知らせを配信 (= ユーザー要望: 全ユーザーや
+                        //    プランを指定してアナウンスを送りたい。 何時
+                        //    何分に送るかも決めておけるように) ──
+                        _devSection('お知らせを配信', Icons.campaign_rounded,
+                            const Color(0xFF4FC3F7)),
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF0D1A22),
+                                foregroundColor: Colors.white,
+                                side: const BorderSide(
+                                    color: Color(0xFF4FC3F7), width: 1),
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 10)),
+                            icon: const Icon(Icons.campaign_rounded,
+                                size: 16, color: Color(0xFF4FC3F7)),
+                            label: const Text('お知らせを作る / 予約する',
+                                style: TextStyle(color: Color(0xFF4FC3F7))),
+                            onPressed: () {
+                              Navigator.pop(dctx);
+                              _showAnnounceComposer(ctx, provider);
+                            },
+                          ),
+                        ),
+
+                        const SizedBox(height: 20),
+
                         // ── 問い合わせ受信箱 ──
                         _devSection('問い合わせ受信箱', Icons.inbox_rounded,
                             const Color(0xFFFFB347)),
@@ -102292,6 +102791,394 @@ class _MindMapScreenState extends State<MindMapScreen>
           style: TextStyle(
               color: color, fontSize: 13, fontWeight: FontWeight.w600)),
     ]);
+  }
+
+  /// 開発者モード: お知らせを配信する画面。
+  ///
+  /// = ユーザー要望「開発者モードから全ユーザーやプランを指定してユーザーに
+  ///   アナウンスを送れるように。 何時何分に送るとか設定して置けるように」。
+  ///
+  /// ★ 押し出し (プッシュ通知) ではない。 出した物は Worker に置かれ、
+  ///   **送る時刻を過ぎてから**各端末が起動時に受け取る。 だから予約は
+  ///   「その時刻以降に開いた人から順に見える」 という形になる。
+  /// ★ 実際に出せるかどうかを決めるのは Worker (開発者の claim を見る)。
+  ///   ここで入れた物が弾かれた時は、 その旨だけ出す。
+  void _showAnnounceComposer(BuildContext ctx, MindMapProvider provider) {
+    final titleCtrl = TextEditingController();
+    final bodyCtrl = TextEditingController();
+    // 宛先。 'all' を選んでいる間は他を無効にする (全員が一番強い)。
+    final plans = <String>{'all'};
+    // 送る時刻。 null = すぐ送る。
+    DateTime? sendAt;
+    bool busy = false;
+    bool listLoading = true;
+    // ★ 読みに行くのは 1 回だけ。 描き直しのたびに走らせない
+    //   (= 一覧が空のままだと延々と読み直しに行ってしまう)。
+    bool firstLoadKicked = false;
+    List<Map<String, dynamic>> items = const [];
+
+    String fmt(DateTime d) => '${d.year}/${d.month.toString().padLeft(2, '0')}'
+        '/${d.day.toString().padLeft(2, '0')} '
+        '${d.hour.toString().padLeft(2, '0')}:'
+        '${d.minute.toString().padLeft(2, '0')}';
+
+    showDialog<void>(
+      context: ctx,
+      builder: (dctx) => StatefulBuilder(
+        builder: (sctx, setD) {
+          Future<void> reload() async {
+            final got = await provider.fetchAnnouncements(all: true);
+            if (!sctx.mounted) return;
+            setD(() {
+              items = got;
+              listLoading = false;
+            });
+          }
+
+          if (!firstLoadKicked) {
+            firstLoadKicked = true;
+            unawaited(reload());
+          }
+
+          Widget planChip(String id, String label) {
+            final on = plans.contains(id);
+            return Padding(
+              padding: const EdgeInsets.only(right: 6, bottom: 6),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(7),
+                onTap: () => setD(() {
+                  if (id == 'all') {
+                    plans
+                      ..clear()
+                      ..add('all');
+                    return;
+                  }
+                  plans.remove('all');
+                  if (on) {
+                    plans.remove(id);
+                  } else {
+                    plans.add(id);
+                  }
+                  if (plans.isEmpty) plans.add('all');
+                }),
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: on
+                        ? const Color(0xFF4FC3F7).withValues(alpha: 0.18)
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(7),
+                    border: Border.all(
+                        color:
+                            on ? const Color(0xFF4FC3F7) : Colors.white24),
+                  ),
+                  child: Text(label,
+                      style: TextStyle(
+                          color: on
+                              ? const Color(0xFF4FC3F7)
+                              : Colors.white60,
+                          fontSize: 11.5)),
+                ),
+              ),
+            );
+          }
+
+          return AlertDialog(
+            backgroundColor: const Color(0xFF0D0D1A),
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+            title: Row(children: [
+              const Icon(Icons.campaign_rounded,
+                  size: 18, color: Color(0xFF4FC3F7)),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text('お知らせを配信',
+                    style: TextStyle(color: Colors.white, fontSize: 15)),
+              ),
+              IconButton(
+                icon: const Icon(Icons.close, color: Colors.white54, size: 20),
+                onPressed: () => Navigator.pop(dctx),
+              ),
+            ]),
+            content: SizedBox(
+              width: math.min(620.0,
+                  math.max(280.0, MediaQuery.sizeOf(sctx).width - 80.0)),
+              height: math.min(640.0,
+                  math.max(320.0, MediaQuery.sizeOf(sctx).height - 160.0)),
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    TextField(
+                      controller: titleCtrl,
+                      style: const TextStyle(
+                          color: Colors.white, fontSize: 13),
+                      decoration: const InputDecoration(
+                        labelText: '件名',
+                        labelStyle:
+                            TextStyle(color: Colors.white54, fontSize: 12),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: bodyCtrl,
+                      maxLines: 6,
+                      minLines: 4,
+                      style: const TextStyle(
+                          color: Colors.white, fontSize: 13, height: 1.6),
+                      decoration: const InputDecoration(
+                        labelText: '本文',
+                        alignLabelWithHint: true,
+                        labelStyle:
+                            TextStyle(color: Colors.white54, fontSize: 12),
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    const Text('送る相手',
+                        style:
+                            TextStyle(color: Colors.white60, fontSize: 11.5)),
+                    const SizedBox(height: 6),
+                    Wrap(children: [
+                      planChip('all', '全員'),
+                      planChip('free', 'FREE'),
+                      planChip('pro', 'PRO'),
+                      planChip('max', 'MAX'),
+                      planChip('dev', 'DEV'),
+                    ]),
+                    const SizedBox(height: 8),
+                    const Text('送る時刻',
+                        style:
+                            TextStyle(color: Colors.white60, fontSize: 11.5)),
+                    const SizedBox(height: 6),
+                    Row(children: [
+                      Expanded(
+                        child: Text(
+                            sendAt == null ? 'すぐ送る' : fmt(sendAt!),
+                            style: TextStyle(
+                                color: sendAt == null
+                                    ? Colors.white38
+                                    : const Color(0xFF9CCC65),
+                                fontSize: 12)),
+                      ),
+                      TextButton(
+                        style: TextButton.styleFrom(
+                            foregroundColor: const Color(0xFF4FC3F7),
+                            visualDensity: VisualDensity.compact),
+                        onPressed: () async {
+                          final now = DateTime.now();
+                          final d = await showDatePicker(
+                            context: sctx,
+                            initialDate: sendAt ?? now,
+                            firstDate: now.subtract(const Duration(days: 1)),
+                            lastDate: now.add(const Duration(days: 365)),
+                          );
+                          if (d == null || !sctx.mounted) return;
+                          final t = await showTimePicker(
+                            context: sctx,
+                            initialTime: TimeOfDay.fromDateTime(sendAt ?? now),
+                          );
+                          if (t == null || !sctx.mounted) return;
+                          setD(() => sendAt = DateTime(
+                              d.year, d.month, d.day, t.hour, t.minute));
+                        },
+                        child: const Text('日時を決める',
+                            style: TextStyle(fontSize: 11.5)),
+                      ),
+                      if (sendAt != null)
+                        IconButton(
+                          tooltip: 'すぐ送るに戻す',
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(
+                              minWidth: 26, minHeight: 26),
+                          icon: const Icon(Icons.close_rounded,
+                              size: 15, color: Colors.white38),
+                          onPressed: () => setD(() => sendAt = null),
+                        ),
+                    ]),
+                    const Text(
+                        '押し出しの通知ではありません。 決めた時刻を過ぎてから、'
+                        ' 相手がアプリを開いた時に 1 度だけ出ます。'
+                        ' 置いておける期間は 90 日です。',
+                        style: TextStyle(
+                            color: Colors.white38,
+                            fontSize: 10.5,
+                            height: 1.5)),
+                    const SizedBox(height: 14),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF0D1A22),
+                            foregroundColor: Colors.white,
+                            side: const BorderSide(
+                                color: Color(0xFF4FC3F7), width: 1),
+                            padding:
+                                const EdgeInsets.symmetric(vertical: 10)),
+                        icon: busy
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Color(0xFF4FC3F7)))
+                            : const Icon(Icons.send_rounded,
+                                size: 16, color: Color(0xFF4FC3F7)),
+                        label: Text(sendAt == null ? '今すぐ出す' : '予約する',
+                            style:
+                                const TextStyle(color: Color(0xFF4FC3F7))),
+                        onPressed: busy
+                            ? null
+                            : () async {
+                                setD(() => busy = true);
+                                final ok = await provider.sendAnnouncement(
+                                  title: titleCtrl.text,
+                                  body: bodyCtrl.text,
+                                  plans: plans.toList(),
+                                  sendAtMs:
+                                      sendAt?.millisecondsSinceEpoch ?? 0,
+                                );
+                                if (!sctx.mounted) return;
+                                setD(() => busy = false);
+                                if (!ok) {
+                                  showTopToast(sctx, '出せませんでした',
+                                      const Color(0xFFE53935));
+                                  return;
+                                }
+                                titleCtrl.clear();
+                                bodyCtrl.clear();
+                                setD(() => sendAt = null);
+                                showTopToast(sctx, '出しました',
+                                    const Color(0xFF43B97F));
+                                await reload();
+                              },
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+                    const Divider(color: Color(0xFF333333), height: 1),
+                    const SizedBox(height: 12),
+                    Row(children: [
+                      const Expanded(
+                        child: Text('出した物 / 予約中',
+                            style: TextStyle(
+                                color: Colors.white60, fontSize: 11.5)),
+                      ),
+                      TextButton(
+                        style: TextButton.styleFrom(
+                            foregroundColor: Colors.white54,
+                            visualDensity: VisualDensity.compact),
+                        onPressed: () => unawaited(reload()),
+                        child: const Text('読み直す',
+                            style: TextStyle(fontSize: 11)),
+                      ),
+                    ]),
+                    if (listLoading)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 14),
+                        child: Center(
+                          child: SizedBox(
+                              width: 16,
+                              height: 16,
+                              child:
+                                  CircularProgressIndicator(strokeWidth: 2)),
+                        ),
+                      )
+                    else if (items.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 10),
+                        child: Text('まだありません',
+                            style: TextStyle(
+                                color: Colors.white38, fontSize: 11.5)),
+                      )
+                    else
+                      for (final e in items)
+                        Container(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          padding: const EdgeInsets.fromLTRB(10, 8, 4, 8),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.04),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.white12),
+                          ),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.start,
+                                  children: [
+                                    Text('${e['title'] ?? ''}',
+                                        style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 12.5,
+                                            fontWeight: FontWeight.w600)),
+                                    const SizedBox(height: 3),
+                                    Text(
+                                        '${e['body'] ?? ''}'
+                                            .replaceAll('\n', ' '),
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                            color: Colors.white54,
+                                            fontSize: 11)),
+                                    const SizedBox(height: 4),
+                                    Builder(builder: (_) {
+                                      final at = DateTime
+                                          .fromMillisecondsSinceEpoch(
+                                              (e['sendAtMs'] as num?)
+                                                      ?.toInt() ??
+                                                  0);
+                                      final future =
+                                          at.isAfter(DateTime.now());
+                                      final to = (e['plans'] is List)
+                                          ? (e['plans'] as List).join(' / ')
+                                          : 'all';
+                                      return Text(
+                                          '${future ? '予約' : '配信済み'}  '
+                                          '${fmt(at)}  →  $to',
+                                          style: TextStyle(
+                                              color: future
+                                                  ? const Color(0xFFFFB347)
+                                                  : Colors.white38,
+                                              fontSize: 10.5));
+                                    }),
+                                  ],
+                                ),
+                              ),
+                              IconButton(
+                                tooltip: '消す',
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(
+                                    minWidth: 30, minHeight: 30),
+                                icon: const Icon(Icons.delete_outline_rounded,
+                                    size: 17, color: Color(0xFFFF8A80)),
+                                onPressed: () async {
+                                  final ok = await provider
+                                      .deleteAnnouncement('${e['id'] ?? ''}');
+                                  if (!sctx.mounted) return;
+                                  if (!ok) {
+                                    showTopToast(sctx, '消せませんでした',
+                                        const Color(0xFFE53935));
+                                    return;
+                                  }
+                                  await reload();
+                                },
+                              ),
+                            ],
+                          ),
+                        ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    ).whenComplete(() {
+      titleCtrl.dispose();
+      bodyCtrl.dispose();
+    });
   }
 
   /// 開発者モード: プラン別ユーザー一覧ダイアログ
@@ -149218,6 +150105,22 @@ $body''';
             //  その表の右上に出す。 仕掛けは _kMdPreviewUiJs の
             //  mdTableToPage。 携帯は表を押した時に少しの間だけ出る)
             _btn(Icons.copy_rounded, provider.t('md.copy'), _copyAll),
+            // ── ターミナル (★ = ユーザー要望「txt や json、 markdown などの
+            //    テキスト編集画面にターミナルを呼び出せるボタンを付けて
+            //    欲しい」) ──
+            //    開く場所は、 ファイルとして開いている時は**そのファイルの
+            //    置き場**、 マークダウンのページの時は null を渡して本体の
+            //    既定 (= 今開いているページの置き場) に任せる。
+            //    子プロセスを起こせない所 (スマホ / ストア版) では出さない。
+            if (AgentCli.supported && openTerminalFromAnywhere != null)
+              _btn(Icons.terminal_rounded, provider.t('cli.terminalHere'),
+                  () {
+                final open = openTerminalFromAnywhere;
+                if (open == null) return;
+                final f = (widget.filePath ?? '').trim();
+                unawaited(
+                    open(baseDir: f.isEmpty ? null : File(f).parent.path));
+              }),
             // ネットに公開する (= ユーザー要望: プレビュー画面をサーバーへ)。
             //   公開中はアイコンの形 (塗り) だけで表す。 色は白で統一。
             if (provider.canPublishHtmlPage)
@@ -207969,6 +208872,18 @@ Future<bool> handlePageListShortcut(KeyEvent event) async {
 /// 設定の画面を出す入口 (同上)。
 void Function(BuildContext ctx)? openSettingsFromAnywhere;
 
+/// テキストの編集画面 (txt / json / マークダウン …) からターミナルを開く入口。
+///
+/// ★ = ユーザー要望「txt や json、 markdown などのテキスト編集画面に
+///   ターミナルを呼び出せるボタンを付けて欲しい」。 VSCode の統合
+///   ターミナルと同じ使い方 (= ファイルを直しながら、 その横でコマンドを
+///   打つ / codex CLI に直させる) を想定している。
+/// 編集画面は本体の画面の**上に重ねた別の画面**なので、 本体の
+/// _MindMapScreenState には手が届かない。 設定やページ一覧と同じやり方で、
+/// 本体が initState でここへ関数を預け、 dispose で外す。
+/// [baseDir] 開く場所。 null なら本体の既定 (= 今開いているページの置き場)。
+Future<void> Function({String? baseDir})? openTerminalFromAnywhere;
+
 // ── 「開いたファイルをページに埋め込む」 入口 (= ユーザー要望: 新規で
 //    埋め込まずに開いたファイルを、 後からページ上に貼れるように) ──
 //
@@ -257680,6 +258595,27 @@ $currentText
                   isLeftPanel: false),
             ),
           ],
+          // ── ターミナル (★ = ユーザー要望「txt や json、 markdown などの
+          //    テキスト編集画面にターミナルを呼び出せるボタンを付けて
+          //    欲しい」) ──
+          //    VSCode の統合ターミナルと同じ使い方を想定しているので、
+          //    開く場所は**このファイルの置き場**。 この画面は本体の上に
+          //    重ねて開くので本体の State に手が届かず、 本体が預けた入口
+          //    (openTerminalFromAnywhere) を呼ぶ。
+          //    子プロセスを起こせない所 (スマホ / ストア版) では出さない。
+          if (AgentCli.supported && openTerminalFromAnywhere != null)
+            IconButton(
+              tooltip: context.read<MindMapProvider>().t('cli.terminalHere'),
+              icon: const Icon(Icons.terminal_rounded,
+                  color: Color(0xFF9CCC65)),
+              onPressed: () {
+                final open = openTerminalFromAnywhere;
+                if (open == null) return;
+                final f = _currentFilePath.trim();
+                unawaited(
+                    open(baseDir: f.isEmpty ? null : File(f).parent.path));
+              },
+            ),
           // ── 共同編集 (= ユーザー要望: Max 限定でファイルを共同編集) ──
           _buildFileLiveMenu(
             context,
@@ -280653,6 +281589,17 @@ class _McpChatDialogState extends State<_McpChatDialog>
   ///   持っているので、 ダイアログでも窓でもここが「今使える幅」 になる。
   double get _readingSidePad {
     if (!_isPanelMaximized) return 0;
+    // ★ = ユーザー要望「AI(API)と codexCLI を画面分割で開けるようにして
+    //   欲しい」。 会話の隣に CLI を並べている間は寄せない。 ここが見て
+    //   いるのは**欄ぜんたい**の幅なので、 半分になった会話の側にその
+    //   まま当てると左右を削り過ぎて、 吹き出しの入る幅がほとんど残らない
+    //   (1920px なら片側 410px を、 950px ほどの半分に当ててしまう)。
+    //   端末どうしを並べた時に 0 にしているのと同じ理由
+    //   ([_buildInlineTerminalPane] の pad)。
+    // ★ 生の [_sideCliSession] ではなく [_activeSideSession] を見る。
+    //   相手がタブから外れた直後の 1 描画だけ、 並べていないのに寄せない
+    //   ままになるのを防ぐ。
+    if (_activeSideSession != null) return 0;
     final w = MediaQuery.sizeOf(context).width;
     return math.max(0.0, (w - _kMaxReadingWidth) / 2);
   }
@@ -281041,6 +281988,194 @@ class _McpChatDialogState extends State<_McpChatDialog>
     );
   }
 
+  // ── 会話 (AI (API)) と CLI を左右に並べる ──
+  //    ★ = ユーザー要望「AI(API)と codexCLI を画面分割で開けるようにして
+  //      欲しい」。
+  //
+  //  ★ b421 の左右分割 ([_splitCliSession]) は**端末どうし**だけだった。
+  //    会話は端末ではなく、 この欄そのものの画面 (見出し・タブの帯・
+  //    吹き出し・モデルの帯・書き込み口まで含んだ**列まるごと**) なので、
+  //    あちらの枠 ([_buildCliTerminalArea]) には入らない。
+  //  ★ そこで**列を切り出さずに、 列まるごとを左に置いて右に端末を足す**
+  //    ([_buildChatSideBySide] を build の Column に被せる)。 会話の側の木は
+  //    今までと同じ物をそのまま使うので、 巻き上げ・書き込み口の焦点・
+  //    全画面の寄せ方 (_readingSidePad) を 1 つも写し取らずに済む。
+  //  ★ 並べている間は [_inlineTerminal] が必ず null (= 欄の本体は会話)。
+  //    主の枠に端末を出す道は [_showInlineTerminal] 1 本だけで、 そこで
+  //    必ずこちらを畳む。 よって 1 個の [Terminal] に [TerminalView] が
+  //    2 枚ぶら下がる壊れ方 (xterm-4.0.0/lib/src/ui/render.dart:347 の
+  //    `_terminal.resize(...)` の取り合い) は起こらない。
+  //  ★ **static にしてはいけない** ([_splitCliSession] と同じ理由: この欄は
+  //    浮遊窓とペインで 2 つ同時に開ける)。
+  AgentCliSession? _sideCliSession;
+
+  /// 右に置く端末。 [_inlineTerminal] と同じく**組み上げた物をそのまま**持つ
+  /// (毎回組み直すと、 打っている最中に作り直されて落ち着かない)。
+  Widget? _sideTerminal;
+
+  /// 本当に会話と並べられる相手 (= タブから外れた / 主の枠に端末を出した
+  /// 時は自動で 1 枚に戻る)。
+  AgentCliSession? get _activeSideSession {
+    final s = _sideCliSession;
+    if (s == null) return null;
+    // 主の枠が端末になっている時は並べない (= 同じ物を 2 枚出さない)。
+    if (_inlineTerminal != null) return null;
+    if (!_cliTabs.contains(s)) return null;
+    return s;
+  }
+
+  /// 会話の隣に CLI [s] を置く (= 左が会話、 右が端末)。
+  void _splitChatWith(MindMapProvider provider, AgentCliSession s) {
+    if (!_cliTabs.contains(s)) return;
+    setState(() {
+      // 端末どうしの左右とは同時に出せない (主の枠が会話に戻るので
+      //   あちらは描かれない)。 抱えたままにすると終わった画面を持ち
+      //   続けるので、 ここで手放す。
+      _splitCliSession = null;
+      _splitTerminal = null;
+      // 主の枠は会話に戻す (= [_backToChatView] と同じ後始末。 setState を
+      //   入れ子にしないよう直に書く)。
+      _inlineTerminal = null;
+      _inlineTerminalTitle = '';
+      _inlineIsTerminal = false;
+      _showCapabilityPanel = false;
+      _showMcpInfo = false;
+      _sideCliSession = s;
+      _sideTerminal = _buildCliTerminal(provider, s);
+      // 並べた直後は会話の側を「打ち込みを受けている側」 にする。
+      _splitFocusPane = 0;
+    });
+    // 次に開いた時は会話から始める (欄の本体は会話なので)。
+    _lastViewWasCli = false;
+    _lastViewWasCliList = false;
+    // ★ 端末は焦点が空くと 700 ミリ秒ごとに取り返しに来る。 並べた直後は
+    //   会話の書き込み口に打てて欲しいので、 端末には掛け金を掛ける
+    //   (端末を押せばその場で外れて、 今までどおり打てる)。
+    _releaseCliPanes();
+    // ★ 木の形が変わる (列が [Expanded] の中へ入る) ので、 会話の
+    //   巻き上げ位置と書き込み口の焦点はここで取り直す。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _refocusPrompt();
+      _scrollToEnd();
+    });
+  }
+
+  /// 隣の CLI を畳んで会話だけに戻す。
+  ///
+  /// ★ 走っている CLI は止めない。 タブは残るので、 帯から押せばそのまま
+  ///   全幅で覗き直せる (= 片方を閉じたら残りは全幅の 1 枚)。
+  void _unsplitChat() {
+    if (_sideCliSession == null && _sideTerminal == null) return;
+    setState(() {
+      _sideCliSession = null;
+      _sideTerminal = null;
+      _splitFocusPane = 0;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _refocusPrompt();
+      _scrollToEnd();
+    });
+  }
+
+  /// 並べる / やめる (ヘッダーのボタン)。 相手が決まっていない時は、
+  /// 動いているタブの中で一番新しい物と並べる ([_toggleCliSplit] と同じ)。
+  void _toggleChatSplit(MindMapProvider provider) {
+    if (_activeSideSession != null) {
+      _unsplitChat();
+      return;
+    }
+    AgentCliSession? mate;
+    for (final t in _cliTabs.reversed) {
+      if (!t.running) continue;
+      mate = t;
+      break;
+    }
+    if (mate == null) {
+      showTopToast(context, provider.t('cli.chatSplitNeedCli'),
+          const Color(0xFFE5A23C));
+      return;
+    }
+    // ★ 普段のダイアログは 560px なので、 1 枚ぶん (360px) が 2 つ取れない
+    //   (下の minPane)。 押しても何も出ないのは分かりにくいので、 先に
+    //   全画面にしてから並べる (= 全画面ボタンを押したのと同じ)。 ペインの
+    //   中は入れ物が大きさを持っているので触らない。
+    if (!widget.paneMode && !_isPanelMaximized) _toggleFullscreen();
+    _splitChatWith(provider, mate);
+  }
+
+  /// この欄の中の端末に、 打ち込みの掛け金を掛ける (= キーボードを手放させる)。
+  ///
+  /// ★ [_focusCliPane] の「選ばなかった側」 だけの扱いを、 端末が 1 枚も
+  ///   選ばれていない時 (= 会話に打つ時) のために取り出した物。 掛かって
+  ///   いても端末を押せばその場で外れる (端末の一番外の Listener が拾う)。
+  void _releaseCliPanes() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      for (final t in AgentTerminalState.live.toList()) {
+        if (!t.mounted) continue;
+        // この欄の中の端末だけ。 外の窓で開いている物には触らない。
+        if (t.context.findAncestorStateOfType<_McpChatDialogState>() != this) {
+          continue;
+        }
+        t.releaseKeyboard();
+      }
+    });
+  }
+
+  /// 会話の列 [chat] の右に CLI を足す。 並べていない時は**そのまま返す**
+  /// (= 今までの形を 1 つも変えない)。
+  Widget _buildChatSideBySide(MindMapProvider provider, Widget chat) {
+    final s = _activeSideSession;
+    if (s == null) {
+      _sideCliSession = null;
+      _sideTerminal = null;
+      return chat;
+    }
+    // 欄を開き直した後 (覚えている相手だけ残っている時) もここで組み直す。
+    final cached = _sideTerminal;
+    if (cached is! AgentTerminal || !identical(cached.session, s)) {
+      _sideTerminal = _buildCliTerminal(provider, s);
+    }
+    return LayoutBuilder(builder: (_, cons) {
+      final w = cons.maxWidth;
+      // ★ 1 枚ぶんの幅の下限は端末どうしの左右と同じ理由 (細くすると走って
+      //   いる CLI の桁数がその場で変わり、 広げても元には戻らない =
+      //   agent_cli_session.dart の `pty.resize`)。 足りない時は会話だけを
+      //   出す (覚えている相手は残すので、 広げればまた並ぶ)。
+      const minPane = 360.0;
+      // ★ 左の下限は右と別に取る。 左に入るのは会話**だけ**ではなく、
+      //   見出しの帯も書き込み口も同じ列の中に居る。 帯のボタンを詰めるか
+      //   どうか ([_narrowHeader]) は**欄ぜんたい**の幅で決まるので、
+      //   広い画面のまま左だけ細くすると 48px のボタンが 10 個ほど並んだ
+      //   ままで、 360px には収まらず溢れる (黄黒の縞が出て、 しかも
+      //   押せなくなる)。 560 は普段のダイアログと同じ幅 = 帯が収まると
+      //   分かっている幅。
+      // ★ [_splitRatio] は端末どうしの左右と共通なので、 あちらで左を
+      //   細くしたまま会話と並べると、 何も掴まなくてもこの幅になる。
+      //   だから描く時に必ずここで挟み直す。
+      const minChat = 560.0;
+      if (w < minChat + minPane + 8) return chat;
+      final usable = w - 8;
+      // 取り分は端末どうしの左右と同じ物を使い回すが、 下限は左右で別
+      // (左 = 会話の列、 右 = 端末)。
+      final lo = minChat / usable;
+      final hi = 1 - minPane / usable;
+      final r = _splitRatio.clamp(lo, hi);
+      final lf = (r * 1000).round();
+      // ★ 高さは伸ばし切る (会話の列は mainAxisSize.min なので、 緩い高さ
+      //   を渡すと中の [Expanded] が行き場を失う)。
+      return Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Expanded(flex: lf, child: _buildCliSplitPane(0, chat, true)),
+        _buildCliSplitHandle(w),
+        Expanded(
+            flex: 1000 - lf,
+            child: _buildCliSplitPane(1, _sideTerminal!, true)),
+      ]);
+    });
+  }
+
   static bool _lastViewWasCliList = false;
 
   /// 最後に見ていたのが CLI 側の画面だったか (= 会話へ戻した後に開き直した
@@ -281061,6 +282196,15 @@ class _McpChatDialogState extends State<_McpChatDialog>
       _inlineTerminal = term;
       _inlineTerminalTitle = title;
       _inlineIsTerminal = isTerminal;
+      // ★ 会話の隣に並べていた CLI はここで畳む (= ユーザー要望「AI(API)と
+      //   codexCLI を画面分割で開けるようにして欲しい」)。
+      //   ・主の枠に端末を出すのに右にも残すと、 同じ [Terminal] に
+      //     [TerminalView] が 2 枚ぶら下がり、 xterm の描画側が互いの幅に
+      //     直し合って走っている CLI の画面が壊れる。
+      //   ・「片方を閉じたら残りは全幅の 1 枚」 という決まりにも合う
+      //     (帯のタブを押す = 会話の側を閉じて端末を全幅にする)。
+      _sideCliSession = null;
+      _sideTerminal = null;
       // 説明欄が開いていると端末が隠れるので閉じる。
       _showCapabilityPanel = false;
       _showMcpInfo = false;
@@ -281406,10 +282550,18 @@ class _McpChatDialogState extends State<_McpChatDialog>
       _backToChatView();
       return;
     }
+    // ★ = ユーザー要望「一々 CLI 画面を開こうとする度にどこのフォルダーを
+    //   参照にするか聞かれると不便」。 以前はここで毎回たずねていた。
+    //   やめて、 一覧の下の欄で決めた 1 つ ([_cliWorkDir]。 既定は開いて
+    //   いるページの置き場) を黙って使う。
+    await _ensureCliDirsLoaded();
+    if (!mounted) return;
+    final tabDir = _cliWorkDir;
     if (picked == 'shell') {
       // ★ [_openPlainTerminal] は使わない。 あれは見出しを付け替えられず、
       //   何枚開いても全部「ターミナル」 になって帯で見分けが付かない。
-      final dir = await terminalBaseDir(provider);
+      final dir =
+          tabDir.isNotEmpty ? tabDir : await terminalBaseDir(provider);
       if (!mounted) return;
       final s = buildShellSession(provider, dir);
       final n = _nextCliTabTitle(s.title);
@@ -281443,9 +282595,10 @@ class _McpChatDialogState extends State<_McpChatDialog>
     final acc = AgentCli.activeAccount(found.spec.kind);
     final base = acc.id.isEmpty
         ? found.spec.label
-        : '${found.spec.label} — ${_cliAccountLabel(provider, acc)}';
+        : '${found.spec.label} — '
+            '${_cliAccountLabel(provider, acc, found.spec.kind)}';
     await _openAgentCliTerminal(provider, found,
-        titleOverride: _nextCliTabTitle(base));
+        titleOverride: _nextCliTabTitle(base), dirOverride: tabDir);
   }
 
   /// 同じ物をもう 1 枚開く時の見出し (2 枚目から番号を振る)。
@@ -281463,6 +282616,227 @@ class _McpChatDialogState extends State<_McpChatDialog>
       n++;
     }
     return '$base ($n)';
+  }
+
+  // ── 端末 1 枚ごとの「参照するフォルダー」 ──────────────────────────
+  //
+  //   ★ = ユーザー要望「vscode の様に codexCLI をテキスト編集やコード実行
+  //     目的で使いたいのだけど、 codexCLI などで編集を行う際に参照する
+  //     フォルダー先を画面毎に設定できるようにして欲しい」。
+  //
+  //   ★ **単位はタブ 1 枚 (= AgentCliSession 1 つ)**。 擬似端末の現在地は
+  //     `Pty.start(workingDirectory:)` に渡す 1 回きりで、 走り出した後から
+  //     変える口は OS にも flutter_pty にも無い。 だから「今のタブの
+  //     フォルダーを変える」 という物は作れない。 別のフォルダーで使いたい
+  //     時はもう 1 枚開く、 という形にする (タブはもともと CLI 1 本ごと
+  //     なので無理が無い)。
+  //   ★ タブそのものは再起動を跨がない (走っている物ごと消える) ので、
+  //     「このタブのフォルダー」 は覚えない。 覚えるのは**最近使った
+  //     フォルダーの一覧**だけ = 次に開く時に 1 押しで戻せる。
+  //   ★ 全体の設定 (provider.cliContinueDir =「VSCode などの会話を引き継ぐ」)
+  //     には手を付けない。 あれは 1 回聞く道 (AgentCli.runPrompt) の
+  //     `--continue` / `resume --last` 専用で、 端末には元から効いていない。
+  //     捨てずに、 この一覧の 1 項目として 1 押しで選べる所に出す。
+  static const String _kCliRecentDirsKey = 'cli_tab_recent_dirs_v1';
+  static const int _kCliRecentDirsMax = 6;
+  static List<String> _cliRecentDirs = <String>[];
+  static bool _cliRecentDirsLoaded = false;
+
+  /// 端末を開く時に見るフォルダー ('' = 既定 = 開いているページの置き場)。
+  ///
+  /// ★ = ユーザー要望「一々 CLI 画面を開こうとする度にどこのフォルダーを
+  ///   参照にするか聞かれると不便。 今開かれているページの階層が既定で
+  ///   開くようにして、 後から下のボタンで参照先を選べるように」。
+  ///   以前は**開くたびに**一覧を出してたずねていた。 やめて、 ここに
+  ///   覚えた 1 つを黙って使う。 変えたい人は一覧の下の欄から選ぶ。
+  static const String _kCliWorkDirKey = 'cli_work_dir_v1';
+  static String _cliWorkDir = '';
+
+  /// 控えの読み出しは 1 回だけ (FutureBuilder へ渡せるよう同じ物を返す)。
+  static Future<void>? _cliDirsLoad;
+
+  Future<void> _ensureCliDirsLoaded() =>
+      _cliDirsLoad ??= _loadCliRecentDirs();
+
+  Future<void> _loadCliRecentDirs() async {
+    if (_cliRecentDirsLoaded) return;
+    _cliRecentDirsLoaded = true;
+    try {
+      final p = await SharedPreferences.getInstance();
+      _cliRecentDirs = p.getStringList(_kCliRecentDirsKey) ?? <String>[];
+      final w = (p.getString(_kCliWorkDirKey) ?? '').trim();
+      // 消えたフォルダーを覚えたままだと `CreateProcessW` が転ぶので、
+      // 無ければ既定へ落とす。
+      _cliWorkDir = w.isNotEmpty && Directory(w).existsSync() ? w : '';
+    } catch (_) {}
+  }
+
+  /// 見るフォルダーを決め直す ('' = 既定へ戻す)。
+  Future<void> _setCliWorkDir(String dir) async {
+    _cliWorkDir = dir.trim();
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setString(_kCliWorkDirKey, _cliWorkDir);
+    } catch (_) {}
+  }
+
+  Future<void> _pushCliRecentDir(String dir) async {
+    final d = dir.trim();
+    if (d.isEmpty) return;
+    // 同じ物は上へ寄せる (大文字小文字は Windows では同じ物)。
+    _cliRecentDirs
+      ..removeWhere((e) => e.toLowerCase() == d.toLowerCase())
+      ..insert(0, d);
+    while (_cliRecentDirs.length > _kCliRecentDirsMax) {
+      _cliRecentDirs.removeLast();
+    }
+    await _persistCliRecentDirs();
+  }
+
+  /// 最近のフォルダーの控えを書き出す。
+  ///
+  /// ★ 足す時だけでなく**消した時**にも通す。 でないと、 消えたフォルダーを
+  ///   一覧から外しても控えはそのままで、 次に開いた時にまた出てくる。
+  Future<void> _persistCliRecentDirs() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setStringList(_kCliRecentDirsKey, _cliRecentDirs);
+    } catch (_) {}
+  }
+
+  /// 道筋の末尾だけ (帯や一覧に出す短い名札)。 全体はツールチップで出す。
+  static String _dirLabel(String dir) {
+    final parts = dir
+        .replaceAll('/', r'\')
+        .split(r'\')
+        .where((e) => e.isNotEmpty)
+        .toList();
+    return parts.isEmpty ? dir : parts.last;
+  }
+
+  /// 新しいタブが見るフォルダーを選ぶ。
+  ///
+  /// 返り値 … null = 取り消し / '' = 既定 (開いているページの置き場) /
+  ///          それ以外 = そのフォルダー。
+  Future<String?> _pickCliTabDir(
+      MindMapProvider provider, BuildContext? anchor) async {
+    if (!mounted) return null;
+    await _ensureCliDirsLoaded();
+    if (!mounted) return null;
+    final ctx = anchor ?? context;
+    // ★ 位置の出し方は [_newCliTab] と同じ決まり (その Overlay から見た座標。
+    //   画面ぜんたいの座標を渡すと、 分割ペインや浮かせた窓でずれる)。
+    final nav = Navigator.of(ctx, rootNavigator: !widget.floatingPanel);
+    final overlay = nav.overlay?.context.findRenderObject() as RenderBox?;
+    final box = ctx.findRenderObject() as RenderBox?;
+    final origin = box == null
+        ? const Offset(120, 120)
+        : box.localToGlobal(box.size.bottomLeft(Offset.zero),
+            ancestor: overlay);
+    final maxW =
+        math.max(160.0, math.min(320.0, MediaQuery.sizeOf(ctx).width - 96));
+    final carry = provider.cliContinueDir.trim();
+    final picked = await showMenu<String>(
+      context: ctx,
+      useRootNavigator: !widget.floatingPanel,
+      color: const Color(0xFF1E1E32),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(10),
+        side: BorderSide(color: Colors.white.withValues(alpha: 0.12)),
+      ),
+      position: RelativeRect.fromRect(origin & const Size(1, 1),
+          Offset.zero & (overlay?.size ?? const Size(1920, 1080))),
+      items: <PopupMenuEntry<String>>[
+        // 既定 = 今までどおり (開いているページの置き場 → アプリの作業場所)。
+        PopupMenuItem<String>(
+          value: '',
+          height: 38,
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            const Icon(Icons.article_outlined,
+                size: 15, color: Color(0xFF9CCC65)),
+            const SizedBox(width: 9),
+            ConstrainedBox(
+              constraints: BoxConstraints(maxWidth: maxW),
+              child: Text(provider.t('cli.tabDirDefault'),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.white, fontSize: 12.5)),
+            ),
+          ]),
+        ),
+        // 引き継ぎ用に指してあるフォルダー (= 今ある設定を捨てない)。
+        if (carry.isNotEmpty)
+          PopupMenuItem<String>(
+            value: 'p:$carry',
+            height: 38,
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              const Icon(Icons.history_rounded,
+                  size: 15, color: Colors.white54),
+              const SizedBox(width: 9),
+              ConstrainedBox(
+                constraints: BoxConstraints(maxWidth: maxW),
+                child: Text(_dirLabel(carry),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style:
+                        const TextStyle(color: Colors.white, fontSize: 12.5)),
+              ),
+            ]),
+          ),
+        for (final d in _cliRecentDirs)
+          if (d != carry)
+            PopupMenuItem<String>(
+              value: 'p:$d',
+              height: 38,
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                const Icon(Icons.folder_outlined,
+                    size: 15, color: Colors.white54),
+                const SizedBox(width: 9),
+                ConstrainedBox(
+                  constraints: BoxConstraints(maxWidth: maxW),
+                  child: Text(_dirLabel(d),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          color: Colors.white, fontSize: 12.5)),
+                ),
+              ]),
+            ),
+        const PopupMenuDivider(),
+        PopupMenuItem<String>(
+          value: 'pick',
+          height: 38,
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            const Icon(Icons.folder_open_rounded,
+                size: 15, color: Color(0xFF4FC3F7)),
+            const SizedBox(width: 9),
+            Text(provider.t('cli.tabDirPick'),
+                style: const TextStyle(color: Colors.white, fontSize: 12.5)),
+          ]),
+        ),
+      ],
+    );
+    if (picked == null || !mounted) return null;
+    if (picked.isEmpty) return '';
+    if (picked.startsWith('p:')) {
+      final d = picked.substring(2);
+      // ★ 消えていたら一覧から外して既定へ落とす。 無い所を渡すと
+      //   `CreateProcessW` が転んで「端末を開けませんでした」 で終わる。
+      if (!Directory(d).existsSync()) {
+        _cliRecentDirs.removeWhere((e) => e == d);
+        unawaited(_persistCliRecentDirs());
+        showTopToast(
+            context, provider.t('cli.tabDirGone'), const Color(0xFFE53935));
+        return '';
+      }
+      await _pushCliRecentDir(d);
+      return d;
+    }
+    final d = await FilePicker.platform
+        .getDirectoryPath(dialogTitle: provider.t('cli.tabDirPick'));
+    if (d == null || d.isEmpty || !mounted) return null;
+    await _pushCliRecentDir(d);
+    return d;
   }
 
 
@@ -281520,6 +282894,14 @@ class _McpChatDialogState extends State<_McpChatDialog>
     if (identical(_splitCliSession, s)) {
       _splitCliSession = null;
       _splitTerminal = null;
+    }
+    // ★ 会話の隣に出していた物も同じ (= ユーザー要望「AI(API)と codexCLI を
+    //   画面分割で」)。 並べている間は主の枠が会話なので [wasShown] は
+    //   立たず、 下の「別のタブへ移る」 は通らない。 つまり CLI の側だけが
+    //   消えて、 会話が全幅の 1 枚として残る (= 片方を閉じた時の決まり)。
+    if (identical(_sideCliSession, s)) {
+      _sideCliSession = null;
+      _sideTerminal = null;
     }
     if (!wasShown) {
       if (mounted) setState(() {});
@@ -281588,39 +282970,49 @@ class _McpChatDialogState extends State<_McpChatDialog>
           //    ★ これは [AgentCliSession] ではなく、 この欄そのものの
           //      「会話の画面」。 端末ではないので [_cliTabs] には入れず、
           //      帯の先頭に固定で出して、 押したら会話へ戻す。
-          Padding(
-            padding:
-                const EdgeInsets.only(left: 4, right: 4, top: 3, bottom: 3),
-            child: Material(
-              color: _inlineTerminal == null
-                  ? const Color(0xFF6C63FF).withValues(alpha: 0.22)
-                  : Colors.white.withValues(alpha: 0.04),
-              borderRadius: BorderRadius.circular(6),
-              child: InkWell(
+          // ★ ここへ CLI のタブを落とすと、 会話と左右に並ぶ
+          //   (= ユーザー要望「AI(API)と codexCLI を画面分割で開けるように
+          //   して欲しい」)。 端末どうしを結合する時と同じ手つき (タブを
+          //   長押しで掴んで、 並べたい札の上で放す = b421)。
+          DragTarget<AgentCliSession>(
+            onWillAcceptWithDetails: (d) => _cliTabs.contains(d.data),
+            onAcceptWithDetails: (d) => _splitChatWith(provider, d.data),
+            builder: (_, cand, __) => Padding(
+              padding:
+                  const EdgeInsets.only(left: 4, right: 4, top: 3, bottom: 3),
+              child: Material(
+                color: cand.isNotEmpty
+                    ? const Color(0xFF4FC3F7).withValues(alpha: 0.28)
+                    : _inlineTerminal == null
+                        ? const Color(0xFF6C63FF).withValues(alpha: 0.22)
+                        : Colors.white.withValues(alpha: 0.04),
                 borderRadius: BorderRadius.circular(6),
-                onTap: _inlineTerminal == null ? null : _backToChatView,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    Icon(Icons.auto_awesome_rounded,
-                        size: 12,
-                        color: _inlineTerminal == null
-                            ? Colors.white
-                            : Colors.white38),
-                    const SizedBox(width: 6),
-                    Text(provider.t('cli.newTabAssistant'),
-                        maxLines: 1,
-                        softWrap: false,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                            color: _inlineTerminal == null
-                                ? Colors.white
-                                : Colors.white60,
-                            fontSize: 11.5,
-                            fontWeight: _inlineTerminal == null
-                                ? FontWeight.w700
-                                : FontWeight.w400)),
-                  ]),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(6),
+                  onTap: _inlineTerminal == null ? null : _backToChatView,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      Icon(Icons.auto_awesome_rounded,
+                          size: 12,
+                          color: _inlineTerminal == null
+                              ? Colors.white
+                              : Colors.white38),
+                      const SizedBox(width: 6),
+                      Text(provider.t('cli.newTabAssistant'),
+                          maxLines: 1,
+                          softWrap: false,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              color: _inlineTerminal == null
+                                  ? Colors.white
+                                  : Colors.white60,
+                              fontSize: 11.5,
+                              fontWeight: _inlineTerminal == null
+                                  ? FontWeight.w700
+                                  : FontWeight.w400)),
+                    ]),
+                  ),
                 ),
               ),
             ),
@@ -281637,9 +283029,14 @@ class _McpChatDialogState extends State<_McpChatDialog>
                 // ★ 会話 (AI アシスタント) を出している間は、 どの端末の
                 //   タブも「今見ている物」 ではない (= 2 枚が同時に選ばれて
                 //   見えるのを防ぐ)。
-                final on = (identical(s, _lastCliSession) ||
-                        identical(s, _activeSplitSession)) &&
-                    _inlineTerminal != null;
+                // ★ 会話の隣に出している CLI も「出ている」 印にする
+                //   (= ユーザー要望「AI(API)と codexCLI を画面分割で」)。
+                //   こちらは主の枠が会話 (= [_inlineTerminal] が null) なので、
+                //   上の判定とは別に見る。
+                final on = ((identical(s, _lastCliSession) ||
+                            identical(s, _activeSplitSession)) &&
+                        _inlineTerminal != null) ||
+                    identical(s, _activeSideSession);
                 // ★ タブをタブの上へ落とすと結合する。 帯は横に流れるので
                 //   **長押しで掴む** (すぐ掴む形にすると帯を流せなくなる)。
                 return DragTarget<AgentCliSession>(
@@ -281739,6 +283136,43 @@ class _McpChatDialogState extends State<_McpChatDialog>
               },
             ),
           ),
+          // ★ = ユーザー要望「参照するフォルダー先を画面毎に設定できる
+          //   ようにして欲しい」。 見出しだけでは、 同じ CLI のタブが 2 枚
+          //   ある時にどちらがどのフォルダーを見ているのか分からない。
+          //   今見ている端末のフォルダーの**末尾だけ**を帯の右へ出す
+          //   (道筋ぜんたいはツールチップ)。
+          // ★ 押すと「+」 と同じ一覧が出る。 走っている擬似端末の現在地は
+          //   後から変えられないので、 作れるのは「変える」 ではなく
+          //   「別のフォルダーでもう 1 枚開く」 だけ。
+          if (_inlineIsTerminal && _lastCliSession != null)
+            Builder(builder: (bctx) {
+              final dir = _lastCliSession!.workingDirectory;
+              return Tooltip(
+                message: dir,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(6),
+                  onTap: () => unawaited(_newCliTab(provider, bctx)),
+                  child: Padding(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      const Icon(Icons.folder_outlined,
+                          size: 12, color: Colors.white38),
+                      const SizedBox(width: 4),
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 110),
+                        child: Text(_dirLabel(dir),
+                            maxLines: 1,
+                            softWrap: false,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                color: Colors.white38, fontSize: 10.5)),
+                      ),
+                    ]),
+                  ),
+                ),
+              );
+            }),
           // ★ Builder で包むのは、 押したボタンの位置に一覧を出すため
           //   (= 決め打ちの座標だと、 分割ペインや浮かせた窓で明後日の所に
           //   出る)。
@@ -282097,9 +283531,18 @@ class _McpChatDialogState extends State<_McpChatDialog>
   //      分けて、 起こす時に環境変数でそこを指すだけ。 ログインは、 その
   //      置き場で開いた端末の中で CLI 自身にやってもらう。
 
-  /// アカウントの札 (名前が無ければ id、 既定は「既定」)。
-  String _cliAccountLabel(MindMapProvider provider, AgentAccount a) {
+  /// アカウントの札 (既定は「既定」)。
+  ///
+  /// ★ = ユーザー要望「アカウント追加の名前はログインしたアカウント名に」。
+  ///   出す順は 宛名 (CLI の控えから読んだ物) → 昔に手で付けた名前 → id。
+  ///   ログインが済むまでは宛名が無いので、 その間だけ id (a1 …) が出る。
+  String _cliAccountLabel(MindMapProvider provider, AgentAccount a,
+      [AgentCliKind? kind]) {
     if (a.id.isEmpty) return provider.t('cli.accountDefault');
+    if (kind != null) {
+      final d = AgentCli.accountNameFor(kind, a.id).trim();
+      if (d.isNotEmpty) return d;
+    }
     final n = a.name.trim();
     return n.isEmpty ? a.id : n;
   }
@@ -282157,19 +283600,27 @@ class _McpChatDialogState extends State<_McpChatDialog>
       ),
       const SizedBox(width: 8),
       Expanded(
-        child: Wrap(spacing: 6, runSpacing: 6, children: [
-          for (final a in AgentCli.accountList(kind))
-            chip(_cliAccountLabel(provider, a), _cliAccountActive(kind, a),
-                onTap: _cliAccountActive(kind, a)
-                    ? null
-                    : () => unawaited(_switchCliAccount(provider, kind, a)),
-                onLongPress: a.id.isEmpty
-                    ? null
-                    : () => unawaited(_removeCliAccount(provider, kind, a))),
-          chip(provider.t('cli.accountAdd'), false,
-              icon: Icons.add_rounded,
-              onTap: () => unawaited(_addCliAccount(provider, f))),
-        ]),
+        // ★ 札の名前は CLI が置いた控えから読む (= ユーザー要望: 名前は
+        //   打たせず、 ログインしたアカウント名を出す)。 読み出しは
+        //   [AgentCli.ensureAccountNames] が同じ約束を返すので、 描き直しで
+        //   何度も走ったりはしない (= FutureBuilder の無限ループを避ける)。
+        child: FutureBuilder<void>(
+          future: AgentCli.ensureAccountNames(kind),
+          builder: (_, __) => Wrap(spacing: 6, runSpacing: 6, children: [
+            for (final a in AgentCli.accountList(kind))
+              chip(_cliAccountLabel(provider, a, kind),
+                  _cliAccountActive(kind, a),
+                  onTap: _cliAccountActive(kind, a)
+                      ? null
+                      : () => unawaited(_switchCliAccount(provider, kind, a)),
+                  onLongPress: a.id.isEmpty
+                      ? null
+                      : () => unawaited(_removeCliAccount(provider, kind, a))),
+            chip(provider.t('cli.accountAdd'), false,
+                icon: Icons.add_rounded,
+                onTap: () => unawaited(_addCliAccount(provider, f))),
+          ]),
+        ),
       ),
     ]);
   }
@@ -282190,7 +283641,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
         context,
         provider
             .t('cli.accountSwitched')
-            .replaceFirst('{n}', _cliAccountLabel(provider, a)),
+            .replaceFirst('{n}', _cliAccountLabel(provider, a, kind)),
         const Color(0xFF43B97F));
   }
 
@@ -282199,29 +283650,20 @@ class _McpChatDialogState extends State<_McpChatDialog>
   Future<void> _addCliAccount(
       MindMapProvider provider, AgentCliFound found) async {
     if (!provider.canUseCliAi) return;
-    final ctrl = TextEditingController();
+    // ★ = ユーザー要望「アカウント追加の名前はログインしたアカウント名に
+    //   なるようにして欲しいから、 ユーザーが指定できる必要はない」。
+    //   名前の欄はやめた。 札は、 ログインが済んだ後に CLI 自身が置く控え
+    //   から宛名を読んで出す ([AgentCli.refreshAccountNames])。
     final ok = await _showChatDialogCentered<bool>(
       width: 420,
-      height: 260,
+      height: 210,
       builder: (dctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E1E32),
         title: Text('${found.spec.label} — ${provider.t('cli.accountAdd')}',
             style: const TextStyle(color: Colors.white, fontSize: 14)),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          Text(provider.t('cli.accountAddHint'),
-              style: const TextStyle(
-                  color: Colors.white70, fontSize: 12, height: 1.6)),
-          const SizedBox(height: 10),
-          TextField(
-            controller: ctrl,
-            autofocus: true,
-            style: const TextStyle(color: Colors.white, fontSize: 13),
-            decoration: InputDecoration(
-              labelText: provider.t('cli.accountName'),
-              labelStyle: const TextStyle(color: Colors.white54, fontSize: 12),
-            ),
-          ),
-        ]),
+        content: Text(provider.t('cli.accountAddHint'),
+            style: const TextStyle(
+                color: Colors.white70, fontSize: 12, height: 1.6)),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dctx).pop(false),
@@ -282235,10 +283677,8 @@ class _McpChatDialogState extends State<_McpChatDialog>
         ],
       ),
     );
-    final name = ctrl.text;
-    ctrl.dispose();
     if (ok != true || !mounted) return;
-    final acc = await AgentCli.addAccount(found.spec.kind, name);
+    final acc = await AgentCli.addAccount(found.spec.kind, '');
     if (!mounted) return;
     if (acc == null) {
       showTopToast(context, provider.t('cli.accountAddFailed'),
@@ -282261,7 +283701,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
       height: 250,
       builder: (dctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E1E32),
-        title: Text(_cliAccountLabel(provider, a),
+        title: Text(_cliAccountLabel(provider, a, kind),
             style: const TextStyle(color: Colors.white, fontSize: 14)),
         content: Column(
           mainAxisSize: MainAxisSize.min,
@@ -282302,7 +283742,9 @@ class _McpChatDialogState extends State<_McpChatDialog>
   Widget _buildAgentCliList(MindMapProvider provider) {
     // ★ Pro 以上の特権 (= ユーザー要望)。 入れて画面を開いた時点で、
     //   契約が要る旨と、 CLI 側にも有料の契約が要る旨を出す。
-    if (!provider.canUseCliAi) return _buildCliProRequired(provider);
+    if (!provider.canUseCliAi) {
+      return _centerCliReading(_buildCliProRequired(provider));
+    }
     // npm (= Node.js) が無ければ、 その場で案内できるように調べておく。
     if (AgentCli.npmAvailable == null) {
       unawaited(AgentCli.checkNpm().then((_) {
@@ -282330,7 +283772,14 @@ class _McpChatDialogState extends State<_McpChatDialog>
         //    止めずに覗き直せるように) ──
         final running =
             AgentCliRunner.active.where((s) => s.running).toList();
-        return ListView(
+        // ★ = ユーザー要望「最初の選択画面も左右に広がり過ぎていると
+        //   読みづらいから、 中央寄せ左揃えになるように」。 文字は今まで
+        //   どおり左から並べ、 段ごと真ん中へ寄せる (会話や「できること」
+        //   と同じ決まり = [_kMaxReadingWidth])。
+        // ★ 寄せ幅は [LayoutBuilder] で測る。 この一覧は作った時の widget を
+        //   抱えて描くので、 [_readingSidePad] のように画面の幅を State の
+        //   context から取ると、 全画面に切り替えても寄り直さない。
+        return _centerCliReading(ListView(
           padding: const EdgeInsets.fromLTRB(12, 10, 12, 14),
           children: [
             if (running.isNotEmpty) ...[
@@ -282445,6 +283894,10 @@ class _McpChatDialogState extends State<_McpChatDialog>
                                   : 'cli.login'),
                               style: const TextStyle(
                                   fontSize: 11, color: Colors.white)),
+                          // ★ = ユーザー要望「開く度にフォルダーを聞かれる
+                          //   のは不便」。 たずねずに、 下の欄で決めた
+                          //   フォルダー (既定は開いているページの置き場)
+                          //   でそのまま開く。
                           onPressed: () =>
                               unawaited(_openAgentCliTerminal(provider, f)),
                         )
@@ -282610,6 +284063,96 @@ class _McpChatDialogState extends State<_McpChatDialog>
                   ],
                 ),
               ),
+            // ── 端末が見るフォルダー (= ユーザー要望: 開くたびに聞かれる
+            //    のは不便。 既定は今開いているページの置き場。 変えたい時
+            //    だけ、 この下のボタンから選ぶ) ──
+            if (!kIsWeb) ...[
+              const Divider(height: 18, color: Colors.white12),
+              Row(children: [
+                const Icon(Icons.folder_rounded,
+                    size: 14, color: Colors.white54),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(provider.t('cli.workDir'),
+                      style: const TextStyle(
+                          color: Colors.white60, fontSize: 11, height: 1.5)),
+                ),
+              ]),
+              const SizedBox(height: 4),
+              // ★ 控えの読み出しは 1 回だけ ([_ensureCliDirsLoaded] が同じ
+              //   約束を返すので、 描き直しても読み直しは走らない)。
+              FutureBuilder<void>(
+                future: _ensureCliDirsLoaded(),
+                builder: (_, __) {
+                  final chosen = _cliWorkDir.trim();
+                  // 既定の時は、 今開いているページの置き場をそのまま出す
+                  //   (= 何も選んでいなくても、 どこで動くかが分かる)。
+                  final auto = terminalBaseDirOrNull(provider) ?? '';
+                  final shown = chosen.isNotEmpty
+                      ? chosen
+                      : (auto.isNotEmpty
+                          ? auto
+                          : provider.t('cli.tabDirDefault'));
+                  return Row(children: [
+                    Expanded(
+                      child: Tooltip(
+                        message: shown,
+                        child: Text(shown,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                                color: chosen.isEmpty
+                                    ? Colors.white38
+                                    : const Color(0xFF9CCC65),
+                                fontSize: 11)),
+                      ),
+                    ),
+                    // ★ 押したボタンの近くに一覧を出すため、 ボタン自身の
+                    //   BuildContext を渡す (= このアプリの決まり)。
+                    Builder(
+                      builder: (bctx) => TextButton(
+                        style: TextButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                            foregroundColor: const Color(0xFF4FC3F7)),
+                        onPressed: () async {
+                          final d = await _pickCliTabDir(provider, bctx);
+                          if (d == null || !mounted) return;
+                          await _setCliWorkDir(d);
+                          if (!mounted) return;
+                          // ★ この一覧は作った時の widget を抱えて描いて
+                          //   いるので、 setState では描き直らない
+                          //   (アカウントの切り替えと同じ事情)。 作り直す。
+                          _showInlineTerminal(_buildAgentCliList(provider),
+                              provider.t('cli.title'),
+                              isTerminal: false);
+                        },
+                        child: Text(provider.t('cli.tabDirPick'),
+                            style: const TextStyle(fontSize: 11)),
+                      ),
+                    ),
+                    if (chosen.isNotEmpty)
+                      IconButton(
+                        tooltip: provider.t('cli.tabDirDefault'),
+                        padding: EdgeInsets.zero,
+                        constraints:
+                            const BoxConstraints(minWidth: 26, minHeight: 26),
+                        icon: const Icon(Icons.close_rounded,
+                            size: 15, color: Colors.white38),
+                        onPressed: () async {
+                          await _setCliWorkDir('');
+                          if (!mounted) return;
+                          _showInlineTerminal(_buildAgentCliList(provider),
+                              provider.t('cli.title'),
+                              isTerminal: false);
+                        },
+                      ),
+                  ]);
+                },
+              ),
+              Text(provider.t('cli.workDirHint'),
+                  style: const TextStyle(
+                      color: Colors.white38, fontSize: 10, height: 1.5)),
+            ],
             // ── VSCode などで進めていた会話を引き継ぐ (= ユーザー要望) ──
             //    Claude Code は「そのフォルダーで最後に使った会話」 を
             //    `--continue` で続きから答えられる。 Codex も `resume --last`
@@ -282733,11 +284276,27 @@ class _McpChatDialogState extends State<_McpChatDialog>
                       color: Colors.white38, fontSize: 10.5, height: 1.5)),
             ],
           ],
-        );
+        ));
       },
     ),
     );
   }
+
+  /// 広い画面では中身を真ん中へ寄せる (中の文字は左揃えのまま)。
+  ///
+  /// ★ 幅は入れ物から測る。 普段の大きさや分割ペインでは上限に届かないので
+  ///   余白は 0 = 今までどおりの見た目。
+  Widget _centerCliReading(Widget child) => LayoutBuilder(
+        builder: (_, c) {
+          final pad =
+              math.max(0.0, (c.maxWidth - _kMaxReadingWidth) / 2);
+          return pad <= 0
+              ? child
+              : Padding(
+                  padding: EdgeInsets.symmetric(horizontal: pad),
+                  child: child);
+        },
+      );
 
   /// CLI をその場で入れる (= ユーザー要望: インストールボタンが欲しい)。
   ///
@@ -282896,8 +284455,18 @@ class _McpChatDialogState extends State<_McpChatDialog>
       await prefs.setString('agent_cli_lang', picked);
     } catch (_) {}
     // 作業フォルダーの覚書を書き直す (次に開いた時から効く)。
+    // ★ = ユーザー要望「参照するフォルダー先を画面毎に」 の巻き添えよけ。
+    //   自分で選んだフォルダー (= 最近使った一覧に載っている = その人の
+    //   プロジェクト) では、 既にある CLAUDE.md / AGENTS.md を書き潰さない。
+    //   アプリ専用の作業場所は今までどおり書き直す (でないと言葉が
+    //   切り替わらない)。
+    await _loadCliRecentDirs();
+    final wd = session.workingDirectory.toLowerCase();
+    final userFolder = _cliRecentDirs.any((e) => e.toLowerCase() == wd);
     await AgentCli.writeGuide(session.workingDirectory,
-        instruction: instruction, appGuide: provider.appAgentsGuide);
+        instruction: instruction,
+        appGuide: provider.appAgentsGuide,
+        overwrite: !userFolder);
     // いま走っている相手には、 その場で伝える。
     if (session.running) session.send(instruction);
     if (!mounted) return;
@@ -283070,9 +284639,18 @@ class _McpChatDialogState extends State<_McpChatDialog>
   /// [deviceLogin] … ブラウザを使わないログインを始める (= ユーザー報告:
   /// ログインがセキュリティソフトに止められる)。 合言葉を画面に出すだけの
   /// 方式なので、 127.0.0.1 の待ち受けが立たない。
+  /// [dirOverride] … この 1 枚だけが見るフォルダー (空なら今までどおり)。
+  ///
+  /// ★ = ユーザー要望「codexCLI などで編集を行う際に参照するフォルダー先を
+  ///   画面毎に設定できるようにして欲しい」。 擬似端末の現在地は
+  ///   `Pty.start(workingDirectory:)` に渡す 1 回きりで、 走り出した後から
+  ///   変える口は OS にも flutter_pty にも無い。 だから**開く時に決める**
+  ///   形にする (別のフォルダーで使いたければ、 もう 1 枚開く)。
   Future<void> _openAgentCliTerminal(
       MindMapProvider provider, AgentCliFound found,
-      {bool deviceLogin = false, String titleOverride = ''}) async {
+      {bool deviceLogin = false,
+      String titleOverride = '',
+      String dirOverride = ''}) async {
     // ★ CLI の機能は Pro 以上 (= ユーザー要望)。 どの入口からでも
     //   通さないよう、 実行する側でも止める。
     if (!provider.canUseCliAi) return;
@@ -283081,13 +284659,25 @@ class _McpChatDialogState extends State<_McpChatDialog>
     //   擬似端末から起こせない (CreateProcessW はバッチを扱えない)。
     final exe = found.runExe;
     if (exe == null || exe.isEmpty) return;
+    // ★ = ユーザー要望「開く度に聞かれるのは不便」。 呼び出し側が指定して
+    //   いない時は、 一覧の下の欄で決めたフォルダーを使う (空なら既定 =
+    //   開いているページの置き場)。
+    await _ensureCliDirsLoaded();
+    if (!mounted) return;
+    // 自分で選んだフォルダーか (= 覚書を上書きしてよいかの判断に使う)。
+    final userDir =
+        dirOverride.trim().isNotEmpty ? dirOverride.trim() : _cliWorkDir.trim();
     String workDir;
     try {
       // ★ 開く場所は「いま開いているページの置き場」 (= ふつうのターミナルと
       //   同じ)。 = ユーザー報告の裏返し: 今までアプリの奥 (AppData) で
       //   開いていたので、 作らせたファイルがどこにも見当たらなかった。
       //   連動フォルダーが無いページでは、 今までどおりアプリの作業場所。
-      workDir = await terminalBaseDir(provider);
+      // ★ この 1 枚だけの指定がある時は、 それが最優先。 日本語を含む道筋は
+      //   [AgentCliSession.start] が 8.3 形式の短い名前に直して渡すので
+      //   (agent_cli_session.dart:644)、 ここでは素の道筋のまま渡してよい。
+      workDir =
+          userDir.isNotEmpty ? userDir : await terminalBaseDir(provider);
     } catch (e) {
       if (mounted) {
         showTopToast(context, '$e', const Color(0xFFE53935));
@@ -283115,12 +284705,21 @@ class _McpChatDialogState extends State<_McpChatDialog>
     }
     final url = provider.mcpServerUrl ?? '';
     if (url.isNotEmpty) {
-      await AgentCli.writeMcpConfig(workDir,
-          url: url, token: provider.mcpToken);
-      // ★ 一度「いいえ」 と答えると以後ずっと道具が見えなくなるので、
-      //   起動のたびに許可へ直す (= 実際に「無効化されている」 と
-      //   CLI から言われた)。
-      await AgentCli.allowMcpServer(workDir);
+      // ★ = ユーザー要望「参照するフォルダー先を画面毎に設定できるように
+      //   して欲しい」 の後始末。 `.mcp.json` は Claude Code の書式で、
+      //   codex は読まない (codex には起動時の `-c` で渡している)。
+      //   中身には合言葉が**平文**で入るので (agent_cli.dart の但し書き:
+      //   「作業フォルダーの外には置かないこと」)、 自分で選んだフォルダー
+      //   = 利用者のリポジトリには、 読みもしない codex のためには置かない。
+      //   アプリ専用の作業場所では今までどおり置く。
+      if (userDir.isEmpty || found.spec.kind == AgentCliKind.claude) {
+        await AgentCli.writeMcpConfig(workDir,
+            url: url, token: provider.mcpToken);
+        // ★ 一度「いいえ」 と答えると以後ずっと道具が見えなくなるので、
+        //   起動のたびに許可へ直す (= 実際に「無効化されている」 と
+        //   CLI から言われた)。
+        await AgentCli.allowMcpServer(workDir);
+      }
     }
     // CLI の返事の言葉をそろえる (= ユーザー要望)。 選んだ物があれば
     //   それを、 無ければアプリの言語を使う。
@@ -283138,6 +284737,10 @@ class _McpChatDialogState extends State<_McpChatDialog>
       instruction:
           MindMapProvider.languageInstructionForCode(langCode).trim(),
       appGuide: url.isEmpty ? '' : await provider.loadAppAgentsGuide(),
+      // ★ 自分で選んだフォルダー (= 利用者のプロジェクト) では、 既にある
+      //   CLAUDE.md / AGENTS.md を**上書きしない**。 VSCode で使っている
+      //   プロジェクトを指された時に、 その人の覚書を消してしまうため。
+      overwrite: userDir.isEmpty,
     );
     if (!mounted) return;
     // ★ 起動時の引数。
@@ -283189,7 +284792,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
             : (account.id.isEmpty
                 ? found.spec.label
                 : '${found.spec.label} — '
-                    '${_cliAccountLabel(provider, account)}'),
+                    '${_cliAccountLabel(provider, account, found.spec.kind)}'),
         exePath: launchExe,
         arguments: launchArgs,
         workingDirectory: workDir,
@@ -283405,7 +285008,12 @@ class _McpChatDialogState extends State<_McpChatDialog>
     return Column(children: [
       // 見出し + 会話へ戻る。
       Container(
-        padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
+        // ★ = ユーザー要望「できること一覧なども画面中央寄せの左揃えに
+        //   なるようにして欲しい」。 見出しも本文と同じだけ左右を空けて、
+        //   左端をそろえる (下の区切り線は端まで引いたままにする。 途中で
+        //   切れていると欄が割れて見える)。
+        padding:
+            EdgeInsets.fromLTRB(12 + _readingSidePad, 8, 6 + _readingSidePad, 8),
         decoration: const BoxDecoration(
           border: Border(bottom: BorderSide(color: Colors.white12)),
         ),
@@ -283438,7 +285046,11 @@ class _McpChatDialogState extends State<_McpChatDialog>
           interactive: true,
           child: SingleChildScrollView(
             controller: _capScroll,
-            padding: const EdgeInsets.fromLTRB(14, 12, 14, 16),
+            // ★ 全画面の時は読みやすい幅へ寄せる (= ユーザー要望)。
+            //   文字の並びは左揃えのまま (Column は
+            //   CrossAxisAlignment.start)。
+            padding: EdgeInsets.fromLTRB(
+                14 + _readingSidePad, 12, 14 + _readingSidePad, 16),
             child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -284711,7 +286323,19 @@ class _McpChatDialogState extends State<_McpChatDialog>
             maxWidth: pane || full ? double.infinity : 560,
             minHeight: full ? double.infinity : 0,
             maxHeight: pane || full ? double.infinity : 640),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
+        // ★ = ユーザー要望「AI(API)と codexCLI を画面分割で開けるように
+        //   して欲しい」。 並べている間だけ、 会話の**列まるごと**を左に
+        //   置いて右に端末を足す。 並べていない時はこの列をそのまま返すので、
+        //   今までの形 (吹き出し・モデルの帯・書き込み口・全画面の寄せ方) は
+        //   1 つも変わらない。
+        // ★ 列を切り出さないのは、 会話が 1 本の [Widget] ではなく
+        //   「見出しから書き込み口まで縦に並んだ列そのもの」 だから。
+        //   切り出すと焦点や巻き上げの面倒を丸ごと写し取る事になる。
+        // ★ 列まるごとを左に置くので、 見出しの帯 (窓を掴む所・畳む・
+        //   全画面・閉じる) も左半分に入る。 右半分に帯は出ない。
+        child: _buildChatSideBySide(
+          provider,
+          Column(mainAxisSize: MainAxisSize.min, children: [
           // ── ヘッダー ──
           //   ★ 帯まるごとを掴んで窓を動かせるようにする
           //     (= ユーザー報告: フローティング欄をドラッグしようとしても
@@ -284871,6 +286495,36 @@ class _McpChatDialogState extends State<_McpChatDialog>
                   ),
                 ),
 
+              // ── 会話 (AI (API)) と CLI を左右に並べる
+              //    (★ = ユーザー要望「AI(API)と codexCLI を画面分割で開ける
+              //    ようにして欲しい」) ──
+              //    ★ 会話を出している時だけ出す。 端末を出している時は、
+              //      すぐ下の「左右に分割」 (端末どうし) が同じ場所に出る。
+              //    ★ タブを長押しして「AI (API)」 の札に落としても同じ事が
+              //      できる (帯の落とし先)。
+              //    ★ 右の CLI は**自分の下の帯** (モデル / 推論 / 停止 /
+              //      終了) を持っているので、 その帯はその CLI に効く。
+              //      上のこの帯と書き込み口は左の会話に効く。
+              if (_inlineTerminal == null && AgentCli.supported)
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  constraints: _hdrBtnConstraints(context),
+                  padding: _narrowHeader(context)
+                      ? EdgeInsets.zero
+                      : const EdgeInsets.all(8),
+                  tooltip: _activeSideSession != null
+                      ? provider.t('cli.chatUnsplit')
+                      : provider.t('cli.chatSplitTip'),
+                  icon: Icon(
+                      _activeSideSession != null
+                          ? Icons.close_fullscreen_rounded
+                          : Icons.vertical_split_rounded,
+                      color: _activeSideSession != null
+                          ? const Color(0xFF9CCC65)
+                          : Colors.white54,
+                      size: 19),
+                  onPressed: () => _toggleChatSplit(provider),
+                ),
               // ── 左右に分割 (= ユーザー要望: タブを結合させて左右分割で
               //    出せるように) ──
               //    ★ 走らせている物は止めない。 ただし幅が変わるので、
@@ -285101,7 +286755,9 @@ class _McpChatDialogState extends State<_McpChatDialog>
           if (!_showCapabilityPanel && _showMcpInfo)
             Container(
             width: double.infinity,
-            margin: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+            // ★ 全画面の時は会話と同じ幅へ寄せる (= ユーザー要望)。
+            margin: EdgeInsets.fromLTRB(
+                12 + _readingSidePad, 10, 12 + _readingSidePad, 0),
             padding: const EdgeInsets.all(10),
             decoration: BoxDecoration(
               color: const Color(0xFF43B97F).withValues(alpha: 0.08),
@@ -285699,6 +287355,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
           ),
           ],
         ]),
+        ),
       ),
     );
   }
