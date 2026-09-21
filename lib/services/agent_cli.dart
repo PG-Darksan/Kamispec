@@ -391,7 +391,14 @@ class AgentCli {
         if (base == 'node.exe' || base == 'node') continue;
         if (!File(path).existsSync()) continue;
         if (base.endsWith('.exe')) {
-          exe ??= path;
+          // ★ = ユーザー報告「サポートされていない 16 ビット アプリケーション」。
+          //   `@anthropic-ai/claude-code` の `bin\claude.exe` は、 本体が
+          //   入るまでの**置き札**で、 中身はただの文字
+          //   (`echo "Error: claude native binary not installed."`)。
+          //   拡張子だけ見て起こすと、 Windows が「PE ではない」 と判断して
+          //   あの古い文言の窓を出す。 本物の実行ファイル (先頭が `MZ`) か
+          //   だけ確かめる。 置き札だった時は下の JS へ落ちる。
+          if (_isRealExe(path)) exe ??= path;
         } else if (base.endsWith('.js') ||
             base.endsWith('.mjs') ||
             base.endsWith('.cjs')) {
@@ -405,6 +412,10 @@ class AgentCli {
       if (exe != null) {
         return (exe: ptySafePath(exe), args: const <String>[]);
       }
+      // ★ 置き札しか無かった時は、 同じ package の中の JS の入口を探す
+      //   (`cli-wrapper.cjs` / `cli.js`)。 本体が入っていない環境でも、
+      //   node から起こせば動く物が入っている作りになっている。
+      js ??= _packageJsEntry(hits, dir, sep);
       if (js == null) return null;
       final node = _findNodeExe(dir);
       if (node == null) return null;
@@ -415,6 +426,51 @@ class AgentCli {
       debugPrint('resolveLauncher failed: $e');
       return null;
     }
+  }
+
+  /// 本物の実行ファイルか (先頭が `MZ` = PE)。
+  ///
+  /// ★ 拡張子が `.exe` でも中身が文字だけ、 という置き札がある
+  ///   (= ユーザー報告の「16 ビット アプリケーション」 の正体)。
+  static bool _isRealExe(String path) {
+    try {
+      final f = File(path);
+      if (!f.existsSync()) return false;
+      final raf = f.openSync();
+      try {
+        final head = raf.readSync(2);
+        return head.length == 2 && head[0] == 0x4D && head[1] == 0x5A;
+      } finally {
+        raf.closeSync();
+      }
+    } catch (e) {
+      debugPrint('_isRealExe failed: $e');
+      return false;
+    }
+  }
+
+  /// 薄皮が名指ししていた道筋から package の根を割り出し、 JS の入口を探す。
+  static String? _packageJsEntry(
+      List<String> hits, String dir, String sep) {
+    for (final rel in hits) {
+      final path = '$dir$sep${rel.replaceAll('/', sep)}';
+      // `…/<package>/bin/claude.exe` → `…/<package>/`
+      final binDir = File(path).parent;
+      for (final root in <Directory>[binDir.parent, binDir]) {
+        for (final name in const [
+          'cli-wrapper.cjs',
+          'cli.js',
+          'cli.mjs',
+          'index.js',
+        ]) {
+          final f = File('${root.path}$sep$name');
+          try {
+            if (f.existsSync()) return f.path;
+          } catch (_) {}
+        }
+      }
+    }
+    return null;
   }
 
   /// node.exe を探す (薄皮の隣 → PATH の順)。
@@ -879,12 +935,29 @@ class AgentCli {
   ///
   ///   [preferPowerShell] を立てれば今までどおり PowerShell も選べるが、
   ///   **既定にはしない**。 その時も渡すのは `-NoLogo` だけ。
+  /// [shellId] … この 1 回だけ使う殻 (空なら設定 / おまかせ)。
   static ({String exe, List<String> args, String dir}) shellLaunch(
     String workingDir, {
     bool preferPowerShell = false,
+    String shellId = '',
   }) {
-    final exe = systemShell(preferPowerShell: preferPowerShell);
-    final isPs = exe.toLowerCase().endsWith('powershell.exe');
+    // ★ = ユーザー要望「どの殻で開いているのかはっきりさせて」+「PowerShell
+    //   7 系が 5.1 の上位互換なら 7 系を」。 選ばれている物があればそれ、
+    //   無ければ **pwsh 7 → cmd** の順で決める (7 が入っていれば上位互換な
+    //   ので優先)。 5.1 の隠し起動は昔どおり避ける。
+    String? exe;
+    // その場で指定された物が最優先 (= 一覧から選んで開いた時)。
+    final once = shellId.trim();
+    if (once.isNotEmpty) exe = shellExeFor(once);
+    final want = preferredShellId.trim();
+    if (exe == null && want.isNotEmpty) exe = shellExeFor(want);
+    exe ??= preferPowerShell ? shellExeFor('powershell') : null;
+    exe ??= shellExeFor('pwsh');
+    exe ??= shellExeFor('cmd');
+    exe ??= systemShell(preferPowerShell: preferPowerShell);
+    final low = exe.toLowerCase();
+    final isPs =
+        low.endsWith('powershell.exe') || low.endsWith('pwsh.exe');
     return (
       exe: exe,
       // ★ 起動時に走らせる細工は置かない (= 撃たれる形を作らない)。
@@ -892,6 +965,169 @@ class AgentCli {
       dir: workingDir,
     );
   }
+
+  /// 今その道筋がどの殻かの名札 (画面に出す用)。
+  static String shellLabelOf(String exePath) {
+    // ★ Windows の区切りは `\`。 文字クラスに入れる時は `\\` と書く
+    //   (`[\/]` だとスラッシュだけになり、 道筋が丸ごと名前になる)。
+    final base = exePath.split(RegExp(r'[\\/]')).last.toLowerCase();
+    switch (base) {
+      case 'pwsh.exe':
+      case 'pwsh':
+        return 'PowerShell 7';
+      case 'powershell.exe':
+        return 'Windows PowerShell 5.1';
+      case 'cmd.exe':
+        return 'コマンド プロンプト';
+      case 'bash.exe':
+      case 'bash':
+        return 'Bash';
+      case 'zsh.exe':
+      case 'zsh':
+        return 'Zsh';
+    }
+    return base;
+  }
+
+  // ─── どの殻 (シェル) で開くか ────────────────────────────────────────
+  //
+  //   = ユーザー要望「カスタムボタンからのターミナルはコマンドプロンプトなのか
+  //     powershell なのかはっきりさせた方がよくない?」+「PowerShell 7 系が
+  //     5.1 系の上位互換であるなら 7 系を」+「bash や zsh も使えるように。
+  //     容量が増えるならファイルには含めず、 利用者自身に入れさせる形で」。
+  //
+  //   ★ **何も同梱しない**。 このパソコンに入っている物だけを並べる
+  //     (入っていない物は一覧に出さない = 押して失敗する事が無い)。
+  //   ★ PowerShell 7 (`pwsh.exe`) は 5.1 の後継で、 5.1 と別に入る。
+  //     入っていればそちらを既定にする (= 上位互換)。
+
+  /// 殻 1 つ分の説明。
+  static const List<({String id, String label})> shellChoices = [
+    (id: 'pwsh', label: 'PowerShell 7'),
+    (id: 'powershell', label: 'Windows PowerShell 5.1'),
+    (id: 'cmd', label: 'コマンド プロンプト'),
+    (id: 'bash', label: 'Bash'),
+    (id: 'zsh', label: 'Zsh'),
+  ];
+
+  /// その殻の実行ファイル (入っていなければ null)。
+  static String? shellExeFor(String id) {
+    if (!Platform.isWindows) {
+      // 非 Windows は PATH に任せる。
+      return switch (id) {
+        'bash' => _whichUnix('bash'),
+        'zsh' => _whichUnix('zsh'),
+        _ => Platform.environment['SHELL'],
+      };
+    }
+    final root = Platform.environment['SystemRoot'] ?? r'C:\\Windows';
+    final pf = Platform.environment['ProgramFiles'] ?? r'C:\\Program Files';
+    final pf86 =
+        Platform.environment['ProgramFiles(x86)'] ?? r'C:\\Program Files (x86)';
+    final local = Platform.environment['LOCALAPPDATA'] ?? '';
+    List<String> cands;
+    switch (id) {
+      case 'pwsh':
+        cands = <String>[
+          '$pf\\PowerShell\\7\\pwsh.exe',
+          '$pf86\\PowerShell\\7\\pwsh.exe',
+          if (local.isNotEmpty)
+            '$local\\Microsoft\\WindowsApps\\pwsh.exe',
+        ];
+        break;
+      case 'powershell':
+        cands = <String>[
+          '$root\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+        ];
+        break;
+      case 'cmd':
+        final comspec = (Platform.environment['ComSpec'] ?? '').trim();
+        cands = <String>[
+          if (comspec.isNotEmpty) comspec,
+          '$root\\System32\\cmd.exe',
+        ];
+        break;
+      case 'bash':
+        // Git for Windows / WSL 付属の物。 同梱はしない。
+        cands = <String>[
+          '$pf\\Git\\bin\\bash.exe',
+          '$pf86\\Git\\bin\\bash.exe',
+          if (local.isNotEmpty) '$local\\Programs\\Git\\bin\\bash.exe',
+          '$root\\System32\\bash.exe',
+        ];
+        break;
+      case 'zsh':
+        cands = <String>[
+          '$pf\\Git\\usr\\bin\\zsh.exe',
+          if (local.isNotEmpty)
+            '$local\\Programs\\Git\\usr\\bin\\zsh.exe',
+        ];
+        break;
+      default:
+        return null;
+    }
+    for (final c in cands) {
+      try {
+        if (File(c).existsSync()) return c;
+      } catch (_) {}
+    }
+    // 見つからなければ PATH も見る (入れ方はいろいろあるので)。
+    return _searchPath(id == 'cmd'
+        ? 'cmd.exe'
+        : id == 'powershell'
+            ? 'powershell.exe'
+            : '$id.exe');
+  }
+
+  /// 今このパソコンで選べる殻 (入っている物だけ)。
+  static List<({String id, String label, String exe})> availableShells() {
+    final out = <({String id, String label, String exe})>[];
+    for (final c in shellChoices) {
+      final exe = shellExeFor(c.id);
+      if (exe == null || exe.isEmpty) continue;
+      out.add((id: c.id, label: c.label, exe: exe));
+    }
+    return out;
+  }
+
+  /// 利用者が選んだシェルの id。 画面側が prefs から入れる。
+  ///
+  /// ★ = ユーザー指摘「おまかせって設定は何が開かれるか分からないから
+  ///   辞めて欲しい。 Windows ならデフォルトで PowerShell が選択されている
+  ///   ように」。 空にはしない。 初回は [defaultShellId] で埋める。
+  static String preferredShellId = '';
+
+  /// 何も選ばれていない時に選んでおく物。
+  ///
+  /// Windows は PowerShell。 7 が入っていれば 7、 無ければ 5.1。
+  /// どちらも無い時だけコマンド プロンプト。
+  static String defaultShellId() {
+    if (!Platform.isWindows) {
+      if (shellExeFor('zsh') != null) return 'zsh';
+      if (shellExeFor('bash') != null) return 'bash';
+      return 'bash';
+    }
+    if (shellExeFor('pwsh') != null) return 'pwsh';
+    if (shellExeFor('powershell') != null) return 'powershell';
+    return 'cmd';
+  }
+
+  /// PATH から実行ファイルを探す (無ければ null)。
+  static String? _searchPath(String name) {
+    final sep = Platform.pathSeparator;
+    for (final d in (Platform.environment['PATH'] ?? '')
+        .split(Platform.isWindows ? ';' : ':')) {
+      final dir = d.trim();
+      if (dir.isEmpty) continue;
+      try {
+        final f = File('$dir$sep$name');
+        if (f.existsSync()) return f.path;
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  static String? _whichUnix(String name) => _searchPath(name);
 
   /// OS のシェル。 Windows は **cmd.exe (ComSpec)** が既定。
   ///
@@ -929,11 +1165,22 @@ class AgentCli {
     if (p.isEmpty) return 'executable path is empty';
     if (!p.contains('\\') && !p.contains('/')) return null;
     try {
-      if (File(p).existsSync()) return null;
+      if (!File(p).existsSync()) return 'not found: $p';
     } catch (e) {
       return '$e';
     }
-    return 'not found: $p';
+    // ★ = ユーザー報告「サポートされていない 16 ビット アプリケーション」。
+    //   中身が実行ファイルでない物 (本体が入るまでの置き札など) を起こすと、
+    //   Windows があの古い文言の窓を出す。 こちらで先に止めて、 何が
+    //   起きているか分かる文で返す。
+    if (Platform.isWindows &&
+        p.toLowerCase().endsWith('.exe') &&
+        !_isRealExe(p)) {
+      return 'その CLI の実行ファイルが壊れています (中身が実行ファイルでは'
+          'ありません): $p / 入れ直すと直ります'
+          ' (npm install -g でもう一度入れてください)。';
+    }
+    return null;
   }
 
   /// 英数字だけで出来ているか。
@@ -2140,9 +2387,14 @@ class AgentCli {
   ///   短い名前に直す必要が無い。 ここで直そうとして失敗すると
   ///   「切り替えたつもりで既定のアカウントを使う」 という**一番たちの悪い
   ///   嘘**になるので、 直さずそのまま渡す。
+  /// [accountId] を渡すと、 **今選んでいる物ではなくその垢**の置き場を指す
+  /// (= ユーザー要望: タブごとにログインする垢を分けて、 別々の垢で codex を
+  ///  2 枚開けるように)。 null なら今までどおり「今選んでいる垢」。
   static Map<String, String> accountEnvironment(AgentCliKind kind,
-      {bool forPty = false}) {
-    var dir = activeAccountDir(kind);
+      {bool forPty = false, String? accountId}) {
+    var dir = accountId == null
+        ? activeAccountDir(kind)
+        : accountDirFor(kind, accountId);
     if (dir.isEmpty) return const <String, String>{};
     try {
       final d = Directory(dir);

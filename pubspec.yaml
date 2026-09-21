@@ -5,7 +5,7 @@ description: >-
 publish_to: 'none'
 # ビルド番号 (b205 …) を正として揃える。 msix_version も同じ番号にする
 #   (= ストア用は 4 桁・末尾 0)。 リリースのたびに両方を上げること。
-version: 1.0.0+426
+version: 1.0.0+427
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -383,6 +383,11 @@ flutter:
   #    で日本語が □ にならず正しく描画される。 ──
   assets:
     - assets/fonts/NotoSansJP-Regular.ttf
+    # ページ背景のテンプレート (= ユーザー要望: 手描きの模様ではなく写真を
+    #   テンプレートとして選べるように)。 2048px 幅 / JPEG 品質 80 に
+    #   落としてある (9 枚で約 2.7MB)。 ファイル名がそのままテンプレートの
+    #   id なので、 足す / 消す時は `_mapBackgroundTemplates` も直す事。
+    - assets/backgrounds/
     # 見本の壁紙 (= ユーザー要望: テンプレートとして選べるように)。
     #   ディスプレイ設定の「壁紙」 から 1 押しで貼れる。
     - assets/wallpapers/Desktop.jpg

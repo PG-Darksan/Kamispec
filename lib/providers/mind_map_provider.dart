@@ -393,6 +393,15 @@ class MindMapPage {
   /// 調整可能。
   int backgroundOpacityPercent;
 
+  /// 背景を画面の何 % の大きさで描くか (100〜300)。 既定 100。
+  ///
+  /// ★ = ユーザー要望「背景の拡大倍率を変えられるようにして欲しい、
+  ///   デフォルトでは全体が入るようにして欲しい」。 b426 は 160% 決め打ちで
+  ///   描いていたので、 既定で画像の端が切れていた。 100 なら画面と同じ
+  ///   大きさ = 表示モードが「全体が収まる」 なら全部見える。
+  ///   100 より大きくすると、 その分だけ動かした時に中が滑る。
+  int backgroundZoomPercent;
+
   /// 背景画像の表示モード:
   ///   'cover' = キャンバス全体を覆う (アスペクト比を維持して中央クロップ)
   ///   'contain' = アスペクト比を維持して全体が収まるよう縮小 (余白あり)
@@ -434,6 +443,7 @@ class MindMapPage {
     this.backgroundImagePath,
     this.backgroundStorageUrl,
     this.backgroundOpacityPercent = 50,
+    this.backgroundZoomPercent = 100,
     this.backgroundFit = 'cover',
     this.backgroundHueDegrees = 0,
     this.backgroundSaturationPercent = 100,
@@ -466,6 +476,8 @@ class MindMapPage {
           'backgroundStorageUrl': backgroundStorageUrl,
         if (backgroundImagePath != null)
           'backgroundOpacityPercent': backgroundOpacityPercent,
+        if (backgroundImagePath != null && backgroundZoomPercent != 100)
+          'backgroundZoomPercent': backgroundZoomPercent,
         if (backgroundImagePath != null && backgroundFit != 'cover')
           'backgroundFit': backgroundFit,
         if (backgroundImagePath != null && backgroundHueDegrees != 0)
@@ -497,6 +509,10 @@ class MindMapPage {
       backgroundStorageUrl: json['backgroundStorageUrl'] as String?,
       backgroundOpacityPercent:
           (json['backgroundOpacityPercent'] as int?) ?? 50,
+      backgroundZoomPercent:
+          ((json['backgroundZoomPercent'] as num?)?.round() ?? 100)
+              .clamp(100, 300)
+              .toInt(),
       backgroundFit: (json['backgroundFit'] as String?) ?? 'cover',
       backgroundHueDegrees:
           ((json['backgroundHueDegrees'] as num?)?.round() ?? 0)
@@ -10870,15 +10886,15 @@ class MindMapProvider extends ChangeNotifier {
     },
     // ── AI で背景画像を作る (= ユーザー要望: 背景設定に AI 生成の項目) ──
     'bg.aiGenerate': {
-      'ja': '✨ AIで背景画像を作る',
-      'en': '✨ Generate a background with AI',
-      'zh': '✨ 用 AI 生成背景图片',
-      'ko': '✨ AI로 배경 이미지 만들기',
-      'es': '✨ Generar un fondo con IA',
-      'fr': '✨ Générer un fond avec l\'IA',
-      'de': '✨ Hintergrund mit KI erzeugen',
-      'pt': '✨ Gerar um fundo com IA',
-      'ru': '✨ Создать фон с помощью ИИ',
+      'ja': 'AIで背景画像を作る',
+      'en': 'Generate a background with AI',
+      'zh': '用 AI 生成背景图片',
+      'ko': 'AI로 배경 이미지 만들기',
+      'es': 'Generar un fondo con IA',
+      'fr': 'Générer un fond avec l\'IA',
+      'de': 'Hintergrund mit KI erzeugen',
+      'pt': 'Gerar um fundo com IA',
+      'ru': 'Создать фон с помощью ИИ',
     },
     'bg.aiPromptHint': {
       'ja': 'どんな背景? (例: 星空と静かな森、水彩風)',
@@ -12158,6 +12174,159 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Quadro-negro',
       'ru': 'Классная доска',
     },
+    // ── テンプレートの出し入れ (= ユーザー要望: 削除や新規登録も) ──
+    'bg.addTemplate': {
+      'ja': '画像を登録',
+      'en': 'Add an image',
+      'zh': '添加图片',
+      'ko': '이미지 등록',
+      'es': 'Anadir una imagen',
+      'fr': 'Ajouter une image',
+      'de': 'Bild hinzufuegen',
+      'pt': 'Adicionar imagem',
+      'ru': 'Dobavit izobrazhenie',
+    },
+    'bg.addTemplateFailed': {
+      'ja': '登録できませんでした',
+      'en': 'Could not add it',
+      'zh': '添加失败',
+      'ko': '등록하지 못했습니다',
+      'es': 'No se pudo anadir',
+      'fr': 'Impossible de l ajouter',
+      'de': 'Konnte nicht hinzugefuegt werden',
+      'pt': 'Nao foi possivel adicionar',
+      'ru': 'Ne udalos dobavit',
+    },
+    'bg.myTemplate': {
+      'ja': '自分の背景',
+      'en': 'My background',
+      'zh': '我的背景',
+      'ko': '내 배경',
+      'es': 'Mi fondo',
+      'fr': 'Mon arriere-plan',
+      'de': 'Mein Hintergrund',
+      'pt': 'Meu fundo',
+      'ru': 'Moy fon',
+    },
+    'bg.restoreTemplates': {
+      'ja': '消したテンプレートを戻す',
+      'en': 'Restore removed templates',
+      'zh': '恢复已删除的模板',
+      'ko': '지운 템플릿 되돌리기',
+      'es': 'Restaurar plantillas quitadas',
+      'fr': 'Restaurer les modeles retires',
+      'de': 'Entfernte Vorlagen zuruckholen',
+      'pt': 'Restaurar modelos removidos',
+      'ru': 'Vernut udalennye shablony',
+    },
+    'bg.template.appWallpaper': {
+      'ja': 'アプリの壁紙',
+      'en': 'App wallpaper',
+      'zh': '应用壁纸',
+      'ko': '앱 배경화면',
+      'es': 'Fondo de la app',
+      'fr': 'Fond de l application',
+      'de': 'App-Hintergrund',
+      'pt': 'Papel de parede do app',
+      'ru': 'Oboi prilozheniya',
+    },
+    'bg.zoom': {
+      'ja': '拡大倍率: {n}%',
+      'en': 'Zoom: {n}%',
+      'zh': '缩放: {n}%',
+      'ko': '확대 배율: {n}%',
+      'es': 'Zoom: {n}%',
+      'fr': 'Zoom : {n}%',
+      'de': 'Zoom: {n}%',
+      'pt': 'Zoom: {n}%',
+      'ru': 'Masshtab: {n}%',
+    },
+    'bg.zoomHint': {
+      'ja': '100% なら画面と同じ大きさ (表示モードが「全体が収まる」 なら全部見えます)。'
+          ' 上げると画面からはみ出し、 動かすと違う所が見えます。',
+      'en': 'At 100% it is the size of the screen (with "fit whole" you see all of it). '
+          'Above that it overflows the screen, and moving around reveals other parts.',
+      'zh': '100% 时与屏幕等大（显示模式为“完整显示”时可看到全部）。调大后会超出屏幕，移动时会看到别处。',
+      'ko': '100% 면 화면과 같은 크기입니다 (표시 모드가 "전체 표시" 면 전부 보입니다). '
+          '더 키우면 화면을 넘치고, 움직이면 다른 곳이 보입니다.',
+      'es': 'Al 100% ocupa lo mismo que la pantalla (con "que quepa entero" se ve todo). '
+          'Por encima se sale de la pantalla y al moverte ves otras partes.',
+      'fr': 'A 100%, il fait la taille de l ecran (avec "tout afficher", on voit tout). '
+          'Au-dela, il deborde et le deplacement revele d autres parties.',
+      'de': 'Bei 100% so gross wie der Bildschirm (mit "ganz einpassen" sieht man alles). '
+          'Darueber ragt es hinaus, und beim Bewegen sieht man andere Stellen.',
+      'pt': 'A 100% fica do tamanho da tela (com "caber inteiro" voce ve tudo). '
+          'Acima disso ultrapassa a tela e ao mover voce ve outras partes.',
+      'ru': 'Pri 100% razmer ekrana (pri "vmestit tselikom" vidno vse). '
+          'Vyshe on vykhodit za ekran, i pri peremeshchenii vidno drugie chasti.',
+    },
+    // ── b426 で入れ替えた写真のテンプレート (= ユーザー要望) ──
+    'bg.template.starryLake': {
+      'ja': '星空の湖',
+      'en': 'Starry lake',
+      'zh': '星空湖泊',
+      'ko': '별하늘 호수',
+      'es': 'Lago estrellado',
+      'fr': 'Lac etoile',
+      'de': 'Sternensee',
+      'pt': 'Lago estrelado',
+      'ru': 'Zvezdnoe ozero',
+    },
+    'bg.template.gems': {
+      'ja': '宝石',
+      'en': 'Gemstones',
+      'zh': '宝石',
+      'ko': '보석',
+      'es': 'Gemas',
+      'fr': 'Pierres precieuses',
+      'de': 'Edelsteine',
+      'pt': 'Pedras preciosas',
+      'ru': 'Dragotsennye kamni',
+    },
+    'bg.template.autumn': {
+      'ja': '紅葉',
+      'en': 'Autumn leaves',
+      'zh': '红叶',
+      'ko': '단풍',
+      'es': 'Hojas de otono',
+      'fr': 'Feuilles d automne',
+      'de': 'Herbstlaub',
+      'pt': 'Folhas de outono',
+      'ru': 'Osennie listya',
+    },
+    'bg.template.watercolor': {
+      'ja': '水彩',
+      'en': 'Watercolour',
+      'zh': '水彩',
+      'ko': '수채화',
+      'es': 'Acuarela',
+      'fr': 'Aquarelle',
+      'de': 'Aquarell',
+      'pt': 'Aquarela',
+      'ru': 'Akvarel',
+    },
+    'bg.template.greenery': {
+      'ja': '新緑',
+      'en': 'Greenery',
+      'zh': '新绿',
+      'ko': '새싹',
+      'es': 'Vegetacion',
+      'fr': 'Verdure',
+      'de': 'Gruen',
+      'pt': 'Vegetacao',
+      'ru': 'Zelen',
+    },
+    'bg.template.sumie': {
+      'ja': '水墨画',
+      'en': 'Ink wash',
+      'zh': '水墨画',
+      'ko': '수묵화',
+      'es': 'Tinta sumi-e',
+      'fr': 'Lavis a l encre',
+      'de': 'Tuschemalerei',
+      'pt': 'Pintura a tinta',
+      'ru': 'Tush',
+    },
     'bg.template.ocean': {
       'ja': '海中',
       'en': 'Ocean',
@@ -12192,9 +12361,10 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Fogos de artifício',
       'ru': 'Фейерверк',
     },
+    // ★ b426 で絵を「夜桜と城」 に差し替えたので、 名前もそれに合わせた。
     'bg.template.castle': {
-      'ja': 'お城',
-      'en': 'Castle',
+      'ja': '夜桜の城',
+      'en': 'Castle at night',
       'zh': '城堡',
       'ko': '성',
       'es': 'Castillo',
@@ -52629,15 +52799,17 @@ class MindMapProvider extends ChangeNotifier {
     // ── 「+」 から何を開くか選ぶ (= ユーザー要望: claudecode / codex /
     //    AI アシスタントなど、 別の種類も選べるように) ──
     'cli.newTabPick': {
-      'ja': '開く物を選ぶ (Claude Code / Codex / AI (API))',
-      'en': 'Choose what to open (Claude Code / Codex / AI (API))',
-      'zh': '选择要打开的内容（Claude Code / Codex / AI (API)）',
-      'ko': '무엇을 열지 고르기 (Claude Code / Codex / AI (API))',
-      'es': 'Elige que abrir (Claude Code / Codex / IA (API))',
-      'fr': 'Choisir quoi ouvrir (Claude Code / Codex / IA (API))',
-      'de': 'Waehlen, was geoeffnet wird (Claude Code / Codex / KI (API))',
-      'pt': 'Escolha o que abrir (Claude Code / Codex / IA (API))',
-      'ru': 'Выберите, что открыть (Claude Code / Codex / ИИ (API))',
+      // ★ = ユーザー指摘「開く物を選ぶはタブの新規作成に表記変更して、
+      //   () は付けなくてよい」。
+      'ja': 'タブの新規作成',
+      'en': 'New tab',
+      'zh': '新建标签页',
+      'ko': '새 탭',
+      'es': 'Nueva pestana',
+      'fr': 'Nouvel onglet',
+      'de': 'Neuer Tab',
+      'pt': 'Nova aba',
+      'ru': 'Novaya vkladka',
     },
     // ★ AI アシスタントは端末ではないので、 帯では固定の札として出す。
     'cli.newTabAssistant': {
@@ -52654,29 +52826,27 @@ class MindMapProvider extends ChangeNotifier {
     // ── タブの結合 / 左右分割 (= ユーザー要望: タブを結合させて左右分割で
     //    出せるように) ──
     'cli.splitTip': {
-      'ja': '左右に分割。 いまのタブともう 1 枚を並べて出します。 タブを長押しで'
-          '掴んで別のタブの上に落としても結合できます。',
-      'en': 'Split left/right. Shows this tab and one more side by side. You '
-          'can also long-press a tab and drop it onto another to pair them.',
-      'zh': '左右分屏。将当前标签页与另一个并排显示。也可以长按标签页并把它放到'
-          '另一个标签页上来配对。',
-      'ko': '좌우 분할. 지금 탭과 다른 한 개를 나란히 보여줍니다. 탭을 길게 눌러 '
-          '다른 탭 위에 놓아도 짝지을 수 있습니다.',
-      'es': 'Dividir en izquierda y derecha. Muestra esta pestaña y otra una '
-          'al lado de la otra. También puedes mantener pulsada una pestaña y '
-          'soltarla sobre otra para emparejarlas.',
-      'fr': 'Partager en gauche/droite. Affiche cet onglet et un autre côte à '
-          'côte. Vous pouvez aussi appuyer longuement sur un onglet et le '
-          'déposer sur un autre pour les associer.',
-      'de': 'Links/rechts teilen. Zeigt diesen Tab und einen weiteren '
-          'nebeneinander. Sie koennen auch einen Tab lange druecken und auf '
-          'einen anderen ziehen, um beide zu paaren.',
-      'pt': 'Dividir em esquerda e direita. Mostra esta aba e outra lado a '
-          'lado. Você também pode pressionar uma aba e soltá-la sobre outra '
-          'para emparelhá-las.',
-      'ru': 'Разделить на левую и правую. Показывает эту вкладку и ещё одну '
-          'рядом. Можно также зажать вкладку и отпустить её на другой, чтобы '
-          'объединить их.',
+      'ja': '左右分割',
+      'en': 'Split left and right',
+      'zh': '左右分屏',
+      'ko': '좌우 분할',
+      'es': 'Dividir en dos',
+      'fr': 'Partager en deux',
+      'de': 'Links und rechts teilen',
+      'pt': 'Dividir em dois',
+      'ru': 'Razdelit na dve chasti',
+    },
+    // 帯の右クリックの一覧に出す短い名札 (= ユーザー要望)。
+    'cli.split': {
+      'ja': '左右に並べる',
+      'en': 'Split left and right',
+      'zh': '左右分屏',
+      'ko': '좌우로 나누기',
+      'es': 'Dividir en dos',
+      'fr': 'Partager en deux',
+      'de': 'Links und rechts teilen',
+      'pt': 'Dividir em dois',
+      'ru': 'Razdelit na dve chasti',
     },
     'cli.unsplit': {
       'ja': '分割をやめて 1 枚に戻す',
@@ -52693,26 +52863,15 @@ class MindMapProvider extends ChangeNotifier {
     //    (★ = ユーザー要望「AI(API)と codexCLI を画面分割で開けるように
     //    して欲しい」) ──
     'cli.chatSplitTip': {
-      'ja': 'AI (API) の会話と CLI を左右に並べる。 タブを長押しして'
-          '「AI (API)」 の札に落としても並べられます。',
-      'en': 'Show the AI (API) chat and a CLI side by side. You can also '
-          'long-press a tab and drop it onto the AI (API) chip.',
-      'zh': '把 AI (API) 对话与 CLI 左右并排显示。也可以长按标签页并把它放到'
-          '「AI (API)」标签上。',
-      'ko': 'AI (API) 대화와 CLI 를 좌우로 나란히 보여줍니다. 탭을 길게 눌러 '
-          '「AI (API)」 칩 위에 놓아도 됩니다.',
-      'es': 'Muestra el chat de IA (API) y una CLI una al lado de la otra. '
-          'También puedes mantener pulsada una pestaña y soltarla sobre la '
-          'ficha IA (API).',
-      'fr': 'Affiche la conversation IA (API) et un CLI côte à côte. Vous '
-          'pouvez aussi appuyer longuement sur un onglet et le déposer sur la '
-          'pastille IA (API).',
-      'de': 'Zeigt den KI-(API)-Chat und eine CLI nebeneinander. Sie koennen '
-          'auch einen Tab lange druecken und auf die KI-(API)-Marke ziehen.',
-      'pt': 'Mostra a conversa de IA (API) e uma CLI lado a lado. Você também '
-          'pode pressionar uma aba e soltá-la sobre a etiqueta IA (API).',
-      'ru': 'Показывает чат ИИ (API) и CLI рядом. Можно также зажать вкладку '
-          'и отпустить её на метке ИИ (API).',
+      'ja': '左右分割',
+      'en': 'Split left and right',
+      'zh': '左右分屏',
+      'ko': '좌우 분할',
+      'es': 'Dividir en dos',
+      'fr': 'Partager en deux',
+      'de': 'Links und rechts teilen',
+      'pt': 'Dividir em dois',
+      'ru': 'Razdelit na dve chasti',
     },
     'cli.chatUnsplit': {
       'ja': '左右をやめて会話だけに戻す',
@@ -53130,11 +53289,11 @@ class MindMapProvider extends ChangeNotifier {
     'cli.autonomyAutoHint': {
       // ★ こちらは言い切ってよい。 `--ask-for-approval never` の時、 codex は
       //   自分の決まりで昇格を求められない (= 外へ出る道が無い)。
-      'ja': 'たずねずに進めます。 Codex は作業フォルダーの中しか書き換えられず、'
+      'ja': '尋ねずに進めます。 Codex は作業フォルダーの中しか書き換えられず、'
           ' 外に出る許しも求められないので、 ほかの場所は触りません'
           ' (外にも作らせたい時は「確認しながら」 を選んでください)。\n'
           '※ Claude Code はファイルの書き換えだけ自動で、 その他の命令や'
-          'フォルダーの外へ出る時は都度たずねます。',
+          'フォルダーの外へ出る時は都度尋ねます。',
       'en': 'Runs without asking. Codex can only change files inside its work '
           'folder and cannot even ask to step outside, so nothing else is '
           'touched (choose "Ask each time" if you want it to write '
@@ -53152,12 +53311,18 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Rabotaet bez voprosov. Menyat mozhet tolko rabochuyu papku.',
     },
     'cli.autonomyFullHint': {
-      'ja': 'たずねずに進め、 場所の縛りもありません。 手は止まりませんが、'
+      // ★ = ユーザー指摘「この文脈で『あれが』 はおかしい。『これが』 では?」。
+      //   直前に名前を出した物を指すので「これが」 が正しい。 あわせて、
+      //   漢字で書ける所は漢字にする (= 表記の好み)。
+      'ja': '尋ねずに進め、 場所の縛りもありません。 手は止まりませんが、'
           'このパソコンのファイルを読み書きしたり、 命令を実行したりできます。'
           ' 心当たりのない指示は渡さないでください。\n'
           '※ この時だけ、 Codex は権限を落とすための実行ファイル'
-          ' (codex-command-….exe) を使いません。 あれがセキュリティソフトに'
-          '止められていた正体です。',
+          ' (codex-command-….exe) を使いません。 これがセキュリティソフトに'
+          '止められていた正体です。\n'
+          '※ Claude Code はこの設定の時、「Bypass Permissions mode」 の確認を'
+          '自分で出します。 Claude Code 側の安全確認なので、 承諾すれば'
+          '先へ進みます。',
       'en': 'Runs without asking and without a location limit. Nothing stops, '
           'but it can read and write files on this PC and run commands. Only '
           'give it instructions you understand.\n'
@@ -53656,6 +53821,44 @@ class MindMapProvider extends ChangeNotifier {
     },
     // ── ログインするアカウントを分ける (= ユーザー要望: codex や Claude Code を
     //    複数垢でログインして切り替えられるように) ──
+    // ★ = ユーザー要望「codex や claudecode のタブを右クリックした時に
+    //   ログインしているアカウントが分かるようにして欲しいのと、 切り替え
+    //   られるようにして欲しい」。 札の右クリックの一覧の見出し。
+    // シェルで「フォルダーを選ぶ」 を押した時の知らせ (cd で移る)。
+    'cli.tabDirMoved': {
+      'ja': 'そのフォルダーへ移動しました',
+      'en': 'Moved to that folder',
+      'zh': '已切换到该文件夹',
+      'ko': '해당 폴더로 이동했습니다',
+      'es': 'Se movio a esa carpeta',
+      'fr': 'Deplace vers ce dossier',
+      'de': 'In diesen Ordner gewechselt',
+      'pt': 'Movido para essa pasta',
+      'ru': 'Pereshli v etu papku',
+    },
+    'cli.tabAccount': {
+      'ja': 'ログイン中のアカウント',
+      'en': 'Signed-in account',
+      'zh': '已登录的账号',
+      'ko': '로그인 중인 계정',
+      'es': 'Cuenta con sesion iniciada',
+      'fr': 'Compte connecte',
+      'de': 'Angemeldetes Konto',
+      'pt': 'Conta conectada',
+      'ru': 'Uchetnaya zapis v seanse',
+    },
+    // 切り替えは「開き直し」 になる (走っている擬似端末の垢は変えられない)。
+    'cli.tabAccountSwitchNote': {
+      'ja': '選ぶと同じフォルダーでもう 1 枚開きます',
+      'en': 'Picking one opens another tab in the same folder',
+      'zh': '选择后会在同一文件夹中再打开一个标签',
+      'ko': '고르면 같은 폴더에서 한 장 더 엽니다',
+      'es': 'Al elegir se abre otra pestana en la misma carpeta',
+      'fr': 'Choisir en ouvre un autre dans le meme dossier',
+      'de': 'Eine Auswahl offnet einen weiteren Tab im selben Ordner',
+      'pt': 'Escolher abre outra aba na mesma pasta',
+      'ru': 'Vybor otkroet eshche odnu vkladku v toy zhe papke',
+    },
     'cli.account': {
       'ja':
           'アカウント',
@@ -60472,9 +60675,11 @@ class MindMapProvider extends ChangeNotifier {
     // 共通ボタン
     // ── 起動時に出す知らせ (= ユーザー要望: 版が上がったら 1 度だけ
     //    更新内容を出す / 開発者からのお知らせを受け取る) ──
+    // ★ = ユーザー要望「更新内容というのが何の更新内容か分からないから
+    //   アップデート情報とかそういうのにして欲しい」。
     'notice.whatsNew': {
-      'ja': '更新内容',
-      'en': "What's new",
+      'ja': 'アップデート情報',
+      'en': "What's new in this update",
       'zh': '更新内容',
       'ko': '업데이트 내용',
       'es': 'Novedades',
@@ -68214,16 +68419,19 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Por padrão é a pasta da página aberta. Escolha outra aqui apenas se quiser trabalhar em outro lugar; a escolha fica guardada.',
       'ru': 'По умолчанию это папка открытой страницы. Выбирайте другую здесь, только если хотите работать в другом месте; выбор сохраняется.',
     },
+    // ★ = ユーザー指摘「『ふだんの置き場』 というのもよく分からない。
+    //   アプリで開いているフォルダーとかに名前を変えて」。 何を指している
+    //   のかが伝わる名前にする (= 今アプリで開いているページの置き場)。
     'cli.tabDirDefault': {
-      'ja': 'ふだんの置き場 (既定)',
-      'en': 'Usual folder (default)',
-      'zh': '常用文件夹 (默认)',
-      'ko': '평소 폴더 (기본)',
-      'es': 'Carpeta habitual (predeterminado)',
-      'fr': 'Dossier habituel (par défaut)',
-      'de': 'Üblicher Ordner (Standard)',
-      'pt': 'Pasta habitual (padrão)',
-      'ru': 'Обычная папка (по умолчанию)',
+      'ja': 'アプリで開いているフォルダー',
+      'en': 'The folder open in the app',
+      'zh': '应用中打开的文件夹',
+      'ko': '앱에서 열려 있는 폴더',
+      'es': 'La carpeta abierta en la app',
+      'fr': 'Le dossier ouvert dans l application',
+      'de': 'Der in der App geoeffnete Ordner',
+      'pt': 'A pasta aberta no app',
+      'ru': 'Papka, otkrytaya v prilozhenii',
     },
     'cli.tabDirPick': {
       'ja': 'フォルダーを選ぶ…',
@@ -68235,6 +68443,119 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Ordner wählen…',
       'pt': 'Escolher uma pasta…',
       'ru': 'Выбрать папку…',
+    },
+    // ── AI (API) に編集を許すフォルダー (= ユーザー要望) ──
+    'mcp.editDir': {
+      'ja': 'AI が読み書きするフォルダー',
+      'en': 'Folder the AI may read and write',
+      'zh': 'AI 可读写的文件夹',
+      'ko': 'AI 가 읽고 쓰는 폴더',
+      'es': 'Carpeta que la IA puede leer y escribir',
+      'fr': 'Dossier que l IA peut lire et ecrire',
+      'de': 'Ordner, den die KI lesen und schreiben darf',
+      'pt': 'Pasta que a IA pode ler e escrever',
+      'ru': 'Papka, dostupnaya AI dlya chteniya i zapisi',
+    },
+    'mcp.editDirClear': {
+      'ja': '既定に戻す (ページの置き場)',
+      'en': 'Back to default (the page folder)',
+      'zh': '恢复默认（页面所在文件夹）',
+      'ko': '기본값으로 (페이지 폴더)',
+      'es': 'Volver al valor por defecto (carpeta de la pagina)',
+      'fr': 'Revenir par defaut (dossier de la page)',
+      'de': 'Zurueck zum Standard (Seitenordner)',
+      'pt': 'Voltar ao padrao (pasta da pagina)',
+      'ru': 'Vernut po umolchaniyu (papka stranitsy)',
+    },
+    'cli.closeTab': {
+      'ja': 'このタブを閉じる',
+      'en': 'Close this tab',
+      'zh': '关闭此标签页',
+      'ko': '이 탭 닫기',
+      'es': 'Cerrar esta pestana',
+      'fr': 'Fermer cet onglet',
+      'de': 'Diesen Tab schliessen',
+      'pt': 'Fechar esta aba',
+      'ru': 'Zakryt etu vkladku',
+    },
+    // ── ターミナルで使う殻 (= ユーザー要望) ──
+    // ボタンの右クリックの一覧に出す短い見出し (= 行の左端の名札)。
+    'cli.shellShort': {
+      'ja': 'シェル',
+      'en': 'Shell',
+      'zh': 'Shell',
+      'ko': '셸',
+      'es': 'Shell',
+      'fr': 'Shell',
+      'de': 'Shell',
+      'pt': 'Shell',
+      'ru': 'Obolochka',
+    },
+    'cli.shell': {
+      'ja': 'ターミナルで使うシェル',
+      'en': 'Shell used by the terminal',
+      'zh': '终端使用的 Shell',
+      'ko': '터미널이 사용하는 셸',
+      'es': 'Shell que usa la terminal',
+      'fr': 'Shell utilise par le terminal',
+      'de': 'Shell, die das Terminal nutzt',
+      'pt': 'Shell usado pelo terminal',
+      'ru': 'Obolochka dlya terminala',
+    },
+    'cli.shellOpen': {
+      'ja': 'このシェルをタブで開く',
+      'en': 'Open this shell in a tab',
+      'zh': '在标签页中打开此 Shell',
+      'ko': '이 셸을 탭으로 열기',
+      'es': 'Abrir este shell en una pestana',
+      'fr': 'Ouvrir ce shell dans un onglet',
+      'de': 'Diese Shell in einem Tab oeffnen',
+      'pt': 'Abrir este shell em uma aba',
+      'ru': 'Otkryt etu obolochku vo vkladke',
+    },
+    'cli.shellAuto': {
+      'ja': 'おまかせ',
+      'en': 'Automatic',
+      'zh': '自动',
+      'ko': '자동',
+      'es': 'Automatico',
+      'fr': 'Automatique',
+      'de': 'Automatisch',
+      'pt': 'Automatico',
+      'ru': 'Avtomaticheski',
+    },
+    'cli.shellHint': {
+      'ja': 'このパソコンに入っている物だけを並べています。 アプリはシェルを'
+          '同梱しないので、 Bash や Zsh を使いたい時はご自身で入れてください'
+          ' (Git for Windows などに付いてきます)。',
+      'en': 'Only shells already installed on this PC are listed. The app '
+          'bundles none of them, so install Bash or Zsh yourself if you want '
+          'them (they come with Git for Windows, for example).',
+      'zh': '仅列出本机已安装的 Shell。应用不内置任何 Shell，若要使用 Bash 或 '
+          'Zsh 请自行安装（例如随 Git for Windows 附带）。',
+      'ko': '이 PC 에 설치된 것만 나열합니다. 앱은 셸을 포함하지 않으므로 Bash 나 '
+          'Zsh 를 쓰려면 직접 설치해 주세요 (Git for Windows 등에 포함됩니다).',
+      'es': 'Solo se listan los shells ya instalados. La app no incluye '
+          'ninguno, asi que instala Bash o Zsh por tu cuenta si los quieres.',
+      'fr': 'Seuls les shells deja installes sont listes. L application n en '
+          'fournit aucun : installez Bash ou Zsh vous-meme si vous les voulez.',
+      'de': 'Es werden nur bereits installierte Shells gelistet. Die App '
+          'bringt keine mit; installieren Sie Bash oder Zsh bei Bedarf selbst.',
+      'pt': 'Somente shells ja instalados aparecem. O app nao inclui nenhum, '
+          'entao instale Bash ou Zsh por conta propria se quiser.',
+      'ru': 'Perechisleny tolko ustanovlennye obolochki. Prilozhenie ikh ne '
+          'postavlyaet, poetomu Bash ili Zsh ustanovite sami.',
+    },
+    'cli.tabDirSaved': {
+      'ja': '次からこのフォルダーで開きます',
+      'en': 'It will open in this folder from now on',
+      'zh': '今后将在该文件夹中打开',
+      'ko': '다음부터 이 폴더에서 엽니다',
+      'es': 'A partir de ahora se abrira en esta carpeta',
+      'fr': 'Il s ouvrira desormais dans ce dossier',
+      'de': 'Wird ab jetzt in diesem Ordner geoeffnet',
+      'pt': 'A partir de agora abrira nesta pasta',
+      'ru': 'Dalshe budet otkryvatsya v etoy papke',
     },
     'cli.tabDirGone': {
       'ja': 'そのフォルダーが見つかりません',
@@ -68270,7 +68591,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Без продолжения (работает в рабочей папке приложения)',
     },
     'cli.continuePick': {
-      'ja': 'フォルダーを選ぶ',
+      'ja': 'フォルダーを選ぶ…',
       'en': 'Choose folder',
       'zh': '选择文件夹',
       'ko': '폴더 선택',
@@ -84702,6 +85023,61 @@ class MindMapProvider extends ChangeNotifier {
     } catch (_) {}
   }
 
+  // ── ターミナルで使う殻 (= ユーザー要望: どれで開くかはっきりさせる /
+  //    PowerShell 7 / bash / zsh も選べるように) ──
+  //    ★ **何も同梱しない**。 入っている物だけを一覧に出す。
+
+  String get terminalShellId => AgentCli.preferredShellId;
+
+  Future<void> setTerminalShellId(String v) async {
+    AgentCli.preferredShellId = v;
+    notifyListeners();
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setString('terminalShellId', v);
+    } catch (_) {}
+  }
+
+  Future<void> _loadTerminalShellId() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      final saved = (p.getString('terminalShellId') ?? '').trim();
+      // ★ = ユーザー指摘「おまかせは何が開かれるか分からないから辞めて。
+      //   Windows なら既定で PowerShell が選ばれているように」。 保存が
+      //   無ければ既定 (PowerShell 7 → 5.1 → コマンド プロンプト) を入れる。
+      AgentCli.preferredShellId =
+          saved.isEmpty ? AgentCli.defaultShellId() : saved;
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  // ── AI (API) に編集を許すフォルダー (= ユーザー要望: AI(API) にも
+  //    編集権限を渡すフォルダーを設定できないのはおかしい) ──
+  //
+  //    空なら今までどおり (ページの連動先 → アプリの置き場)。 入れておくと、
+  //    AI が作るファイルはそこへ書かれ、 読み込みも許される。
+  String _aiEditDir = '';
+  String get aiEditDir => _aiEditDir;
+
+  Future<void> setAiEditDir(String v) async {
+    _aiEditDir = v.trim();
+    if (_aiEditDir.isNotEmpty) mcpAllowReadDir(_aiEditDir);
+    notifyListeners();
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setString('aiEditDir', _aiEditDir);
+    } catch (_) {}
+  }
+
+  Future<void> _loadAiEditDir() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      _aiEditDir = (p.getString('aiEditDir') ?? '').trim();
+      if (_aiEditDir.isNotEmpty) mcpAllowReadDir(_aiEditDir);
+      notifyListeners();
+    } catch (_) {}
+  }
+
   Future<void> _loadCodexSandbox() async {
     try {
       final p = await SharedPreferences.getInstance();
@@ -89374,6 +89750,8 @@ $cleanQ
     // どの AI に頼むか (API / PC 内 CLI) の控え。
     unawaited(loadAiAssistantMode());
     unawaited(_loadCodexSandbox());
+    unawaited(_loadTerminalShellId());
+    unawaited(_loadAiEditDir());
     // npm を使わずに入れた CLI の置き場を思い出す。
     unawaited(AgentCli.loadManualInstalls());
     // どのアカウントで CLI を使うか (= ユーザー要望: 複数垢の切り替え)。
@@ -91450,6 +91828,132 @@ $cleanQ
   ///   カスタマイズ」) ────────────────────────────────────────────────
   /// 指定ページの背景画像パスをセットして永続化する。 `path` が null なら
   /// 背景画像を解除 (= グリッドのみに戻す)。
+  // ─── 背景テンプレートの出し入れ (= ユーザー要望: テンプレート画像の
+  //     削除や新規登録もできるように) ───────────────────────────────
+  //
+  // ★ 同梱の 9 枚は消せない (アプリの中の物なので)。 代わりに**隠す**印を
+  //   持ち、 一覧に出さない。 押し間違えても「元に戻す」 で戻せる。
+  // ★ 自分で足した物は、 選んだ画像をアプリの置き場へ写して覚える。
+  //   写すのは、 元のファイルが動いたり消えたりしても困らないようにするため
+  //   (背景そのものと同じ考え方)。
+
+  static const String _kCustomBgTemplatesKey = 'custom_bg_templates_v1';
+  static const String _kHiddenBgTemplatesKey = 'hidden_bg_templates_v1';
+
+  List<Map<String, String>> _customBgTemplates = <Map<String, String>>[];
+  Set<String> _hiddenBgTemplates = <String>{};
+  bool _bgTemplatesLoaded = false;
+
+  /// 自分で足したテンプレート ({'id','name','path'} の並び)。
+  List<Map<String, String>> get customBgTemplates =>
+      List<Map<String, String>>.unmodifiable(_customBgTemplates);
+
+  /// 一覧から隠してある同梱テンプレートの id。
+  Set<String> get hiddenBgTemplateIds =>
+      Set<String>.unmodifiable(_hiddenBgTemplates);
+
+  Future<void> loadBgTemplates() async {
+    if (_bgTemplatesLoaded) return;
+    _bgTemplatesLoaded = true;
+    try {
+      final p = await SharedPreferences.getInstance();
+      final raw = p.getString(_kCustomBgTemplatesKey) ?? '[]';
+      final j = jsonDecode(raw);
+      if (j is List) {
+        _customBgTemplates = <Map<String, String>>[
+          for (final e in j)
+            if (e is Map && '${e['path'] ?? ''}'.trim().isNotEmpty)
+              <String, String>{
+                'id': '${e['id'] ?? ''}',
+                'name': '${e['name'] ?? ''}',
+                'path': '${e['path'] ?? ''}',
+              },
+        ];
+      }
+      _hiddenBgTemplates =
+          (p.getStringList(_kHiddenBgTemplatesKey) ?? const <String>[]).toSet();
+    } catch (e) {
+      debugPrint('背景テンプレートの読み出しに失敗: $e');
+    }
+    notifyListeners();
+  }
+
+  Future<void> _saveBgTemplates() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setString(
+          _kCustomBgTemplatesKey, jsonEncode(_customBgTemplates));
+      await p.setStringList(
+          _kHiddenBgTemplatesKey, _hiddenBgTemplates.toList());
+    } catch (e) {
+      debugPrint('背景テンプレートの書き出しに失敗: $e');
+    }
+  }
+
+  /// 選んだ画像をテンプレートとして覚える。 覚えた道筋を返す (失敗なら null)。
+  Future<String?> addCustomBgTemplate(String srcPath, String name) async {
+    await loadBgTemplates();
+    final src = srcPath.trim();
+    if (src.isEmpty) return null;
+    try {
+      final dir = Directory(
+          '${(await getApplicationDocumentsDirectory()).path}/bgtemplates');
+      if (!await dir.exists()) await dir.create(recursive: true);
+      final dot = src.lastIndexOf('.');
+      final ext = dot >= 0 ? src.substring(dot + 1).toLowerCase() : 'img';
+      final id = 'u${DateTime.now().millisecondsSinceEpoch}';
+      final dest = '${dir.path}/$id.$ext';
+      await File(src).copy(dest);
+      _customBgTemplates = <Map<String, String>>[
+        ..._customBgTemplates,
+        <String, String>{'id': id, 'name': name.trim(), 'path': dest},
+      ];
+      await _saveBgTemplates();
+      notifyListeners();
+      return dest;
+    } catch (e) {
+      debugPrint('背景テンプレートの登録に失敗: $e');
+      return null;
+    }
+  }
+
+  /// 自分で足したテンプレートを消す (写したファイルも消す)。
+  Future<void> removeCustomBgTemplate(String id) async {
+    await loadBgTemplates();
+    final hit = _customBgTemplates.where((e) => e['id'] == id).toList();
+    _customBgTemplates =
+        _customBgTemplates.where((e) => e['id'] != id).toList();
+    for (final e in hit) {
+      try {
+        final f = File(e['path'] ?? '');
+        if (await f.exists()) await f.delete();
+      } catch (_) {}
+    }
+    await _saveBgTemplates();
+    notifyListeners();
+  }
+
+  /// 同梱テンプレートを一覧から隠す / 戻す。
+  Future<void> setBuiltinBgTemplateHidden(String id, bool hidden) async {
+    await loadBgTemplates();
+    if (hidden) {
+      _hiddenBgTemplates.add(id);
+    } else {
+      _hiddenBgTemplates.remove(id);
+    }
+    await _saveBgTemplates();
+    notifyListeners();
+  }
+
+  /// 隠した同梱テンプレートを全部戻す。
+  Future<void> restoreHiddenBgTemplates() async {
+    await loadBgTemplates();
+    if (_hiddenBgTemplates.isEmpty) return;
+    _hiddenBgTemplates = <String>{};
+    await _saveBgTemplates();
+    notifyListeners();
+  }
+
   Future<void> setPageBackgroundImage(String pageId, String? path,
       {bool applyToAll = false}) async {
     // ★「全ページに適用」 でも、 背景を描かないページ (マークダウン /
@@ -91487,6 +91991,27 @@ $cleanQ
     final now = DateTime.now();
     for (final page in targets) {
       page.backgroundOpacityPercent = clamped;
+      page.lastModifiedAt = now;
+    }
+    notifyListeners();
+    await _saveToStorageLocal();
+    _triggerAutoSync();
+  }
+
+  /// 指定ページの背景の拡大倍率 (100〜300%) をセットして永続化する。
+  ///
+  /// ★ = ユーザー要望「背景の拡大倍率を変えられるようにして欲しい」。
+  Future<void> setPageBackgroundZoom(String pageId, int percent,
+      {bool applyToAll = false}) async {
+    final targets = applyToAll
+        ? _pages
+        : _pages.where((page) => page.id == pageId).toList();
+    if (targets.isEmpty) return;
+    final clamped = percent.clamp(100, 300).toInt();
+    if (targets.every((p) => p.backgroundZoomPercent == clamped)) return;
+    final now = DateTime.now();
+    for (final page in targets) {
+      page.backgroundZoomPercent = clamped;
       page.lastModifiedAt = now;
     }
     notifyListeners();
@@ -100941,6 +101466,28 @@ $cleanQ
   List<Map<String, dynamic>> get mcpSessions => List.unmodifiable(_mcpSessions);
   String? get mcpCurrentSessionId => _mcpCurrentSessionId;
 
+  /// その会話の見出し (無ければ最初の発言の頭、 それも無ければ空)。
+  ///
+  /// ★ = ユーザー要望: 会話をタブとして並べるので、 札に出す名前が要る。
+  String mcpSessionTitle(String id) {
+    for (final s in _mcpSessions) {
+      if ('${s['id']}' != id) continue;
+      final t = '${s['title'] ?? ''}'.trim();
+      if (t.isNotEmpty) return t;
+      final msgs = s['msgs'];
+      if (msgs is List) {
+        for (final m in msgs) {
+          if (m is! Map) continue;
+          final text = '${m['text'] ?? ''}'.trim().replaceAll('\n', ' ');
+          if (text.isEmpty) continue;
+          return text.length > 18 ? '${text.substring(0, 18)}…' : text;
+        }
+      }
+      return '';
+    }
+    return '';
+  }
+
   Map<String, dynamic>? get _currentSession {
     if (_mcpCurrentSessionId == null) return null;
     for (final s in _mcpSessions) {
@@ -100950,6 +101497,25 @@ $cleanQ
   }
 
   /// 今のセッションのやり取り。
+  /// 指定した会話の履歴 ([id] が null なら今の会話)。
+  ///
+  /// ★ = ユーザー要望「API 画面同士でも画面分割できるようにして」。 並べた
+  ///   もう一方の欄は**今の会話ではない**会話を映すので、 id で引ける口が要る。
+  List<Map<String, dynamic>> mcpChatHistoryOf(String? id) {
+    if (id == null || id.isEmpty) return mcpChatHistory;
+    for (final e in _mcpSessions) {
+      if ('${e['id']}' != id) continue;
+      final m = e['msgs'];
+      return m is List
+          ? [
+              for (final x in m)
+                if (x is Map) x.cast<String, dynamic>()
+            ]
+          : const [];
+    }
+    return const [];
+  }
+
   List<Map<String, dynamic>> get mcpChatHistory {
     final s = _currentSession;
     if (s == null) return const [];
@@ -100976,6 +101542,9 @@ $cleanQ
         }
       }
       _mcpCurrentSessionId = prefs.getString('mcp_chat_current_v1');
+      // ★ 溜まっていた空の会話を掃除する (= ユーザー要望: 履歴が肥大化する)。
+      //   今開いている 1 本だけは残す。
+      _pruneEmptyMcpSessions(keep: _mcpCurrentSessionId);
       if (_currentSession == null) {
         // 保存が無い / 壊れている時は新しい会話から始める。
         if (_mcpSessions.isNotEmpty) {
@@ -101248,8 +101817,36 @@ $cleanQ
     } catch (_) {}
   }
 
+  /// まだ 1 通も無い、 題名も付いていない会話か。
+  static bool _isEmptyMcpSession(Map e) {
+    final m = e['msgs'];
+    final n = m is List ? m.length : 0;
+    return n == 0 && '${e['title'] ?? ''}'.trim().isEmpty;
+  }
+
+  /// 空の会話を片付ける ([keep] の 1 本だけ残す)。
+  ///
+  /// ★ = ユーザー要望「AI(API) を立ち上げる度に新しい会話が立ち上がって
+  ///   いないか。 履歴が肥大化するから、 新しい会話を押すまで新規で
+  ///   立ち上げないで欲しい」。 空のまま放っておかれた会話が一覧に溜まって
+  ///   いたので、 作る時と読み出す時に掃除する。
+  void _pruneEmptyMcpSessions({String? keep}) {
+    _mcpSessions.removeWhere(
+        (e) => '${e['id']}' != keep && _isEmptyMcpSession(e));
+  }
+
   /// 新しい会話を始める。
+  ///
+  /// ★ 今の会話がまだ空なら**作らない** (それがそのまま「新しい会話」)。
+  ///   でないと、 開くたび / 押すたびに空の会話が増えていく。
   Future<void> newMcpSession({bool save = true}) async {
+    final cur = _currentSession;
+    if (cur != null && _isEmptyMcpSession(cur)) {
+      _pruneEmptyMcpSessions(keep: _mcpCurrentSessionId);
+      if (save) await _saveMcpSessions();
+      notifyListeners();
+      return;
+    }
     final id = _uuid.v4();
     _mcpSessions.add({
       'id': id,
@@ -101262,6 +101859,8 @@ $cleanQ
       _mcpSessions = _mcpSessions.sublist(_mcpSessions.length - 30);
     }
     _mcpCurrentSessionId = id;
+    // 前に残っていた空の会話は片付ける (= 履歴を肥大化させない)。
+    _pruneEmptyMcpSessions(keep: id);
     if (save) await _saveMcpSessions();
     notifyListeners();
   }
@@ -101286,8 +101885,24 @@ $cleanQ
     notifyListeners();
   }
 
-  Future<void> appendMcpChat(String role, String text) async {
-    var s = _currentSession;
+  Future<void> appendMcpChat(String role, String text) =>
+      appendMcpChatTo(null, role, text);
+
+  /// [id] の会話へ書き足す (null なら今の会話)。
+  ///
+  /// ★ = ユーザー要望「API 画面同士でも画面分割」。 並べたもう一方の欄で
+  ///   打った物は、 その欄が映している会話へ入れる (今の会話ではない)。
+  Future<void> appendMcpChatTo(String? id, String role, String text) async {
+    Map<String, dynamic>? s;
+    if (id != null && id.isNotEmpty) {
+      for (final e in _mcpSessions) {
+        if ('${e['id']}' == id) {
+          s = e;
+          break;
+        }
+      }
+    }
+    s ??= _currentSession;
     if (s == null) {
       await newMcpSession(save: false);
       s = _currentSession;

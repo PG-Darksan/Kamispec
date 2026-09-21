@@ -394,26 +394,49 @@ List<Map<String, String>> _readAiImagePayloads(List<String> paths) {
 
 const String _mapBackgroundTemplatePrefix = 'builtin-map-background:';
 
+/// 同梱しているテンプレートの絵 (id → アセットの道筋)。
+///
+/// ★ = ユーザー要望「background に背景画像のテンプレート画像として使う画像を
+///   置いたから、 今アプリ内で設定できるテンプレート画像を全て消して
+///   これらに置き変えて欲しい」。 以前は 15 種類を**その場で描いて**いた
+///   (`_MapBackgroundTemplatePainter`)。 一覧からは全部下ろし、 この 9 枚の
+///   写真に入れ替えた。
+/// ★ 描く方の case は**消さない**。 前の版で木目などを貼ったページが
+///   まだ有るので、 消すとそのページの背景が無くなる。 一覧に出ないだけで、
+///   貼ってある物は今までどおり描かれる。
+/// ★ `fireworks` / `ocean` / `castle` は前と同じ id をそのまま使っている
+///   (= 貼ってあったページが、 黙って新しい絵に入れ替わる)。
+const Map<String, String> _mapBackgroundTemplateAssets = <String, String>{
+  // ★ = ユーザー要望「デスクトップに設定できる自分のアプリの絵も、 ページ
+  //   背景に設定可能にして欲しい。 初回起動時はそれが選ばれている状態に」。
+  //   ディスプレイ設定の「壁紙」 で使っている物と**同じ 1 枚**を指している
+  //   (二重に持たない)。 初回に貼るのは [_kFirstLaunchBackgroundId]。
+  'appWallpaper': 'assets/wallpapers/Desktop.jpg',
+  'starryLake': 'assets/backgrounds/starryLake.jpg',
+  'fireworks': 'assets/backgrounds/fireworks.jpg',
+  'gems': 'assets/backgrounds/gems.jpg',
+  'ocean': 'assets/backgrounds/ocean.jpg',
+  'autumn': 'assets/backgrounds/autumn.jpg',
+  'castle': 'assets/backgrounds/castle.jpg',
+  'watercolor': 'assets/backgrounds/watercolor.jpg',
+  'greenery': 'assets/backgrounds/greenery.jpg',
+  'sumie': 'assets/backgrounds/sumie.jpg',
+};
+
+/// 初回起動で貼る背景 (= ユーザー要望)。
+const String _kFirstLaunchBackgroundId = 'appWallpaper';
+
 const List<({String id, String labelKey})> _mapBackgroundTemplates = [
-  // ── よりリアル寄りの新テンプレート (= ユーザー要望) ──
-  (id: 'wood', labelKey: 'bg.template.wood'),
-  (id: 'chalkboard', labelKey: 'bg.template.chalkboard'),
-  (id: 'ocean', labelKey: 'bg.template.ocean'),
-  (id: 'sakura', labelKey: 'bg.template.sakura'),
-  // ── 花火 / お城 (= ユーザー要望) ──
+  (id: 'appWallpaper', labelKey: 'bg.template.appWallpaper'),
+  (id: 'starryLake', labelKey: 'bg.template.starryLake'),
   (id: 'fireworks', labelKey: 'bg.template.fireworks'),
+  (id: 'gems', labelKey: 'bg.template.gems'),
+  (id: 'ocean', labelKey: 'bg.template.ocean'),
+  (id: 'autumn', labelKey: 'bg.template.autumn'),
   (id: 'castle', labelKey: 'bg.template.castle'),
-  // 'paper' (ノート用紙) はユーザー要望で一覧から削除。 既存ページの互換の
-  //   ため painter 側の case は残している。
-  (id: 'aurora', labelKey: 'bg.template.aurora'),
-  (id: 'nightSky', labelKey: 'bg.template.nightSky'),
-  (id: 'galaxy', labelKey: 'bg.template.galaxy'),
-  (id: 'rain', labelKey: 'bg.template.rain'),
-  (id: 'nature', labelKey: 'bg.template.nature'),
-  (id: 'blueprint', labelKey: 'bg.template.blueprint'),
-  (id: 'midnight', labelKey: 'bg.template.midnight'),
-  (id: 'sage', labelKey: 'bg.template.sage'),
-  (id: 'sunset', labelKey: 'bg.template.sunset'),
+  (id: 'watercolor', labelKey: 'bg.template.watercolor'),
+  (id: 'greenery', labelKey: 'bg.template.greenery'),
+  (id: 'sumie', labelKey: 'bg.template.sumie'),
 ];
 
 String? _mapBackgroundTemplateId(String? path) {
@@ -421,9 +444,11 @@ String? _mapBackgroundTemplateId(String? path) {
     return null;
   }
   final id = path.substring(_mapBackgroundTemplatePrefix.length);
-  return _mapBackgroundTemplates.any((template) => template.id == id)
-      ? id
-      : null;
+  // ★ 一覧に無い id も通す。 一覧は b426 で 9 枚の写真に入れ替えたが、
+  //   前の版で木目などを貼ったページはその id を持ったままなので、
+  //   ここで弾くと「ファイルの道筋」 と誤解されて背景が消える。
+  //   描く方 (`_MapBackgroundTemplatePainter`) は古い id も知っている。
+  return id.isEmpty ? null : id;
 }
 
 String _mapBackgroundTemplatePath(String id) =>
@@ -442,15 +467,13 @@ bool _mapBgHidesGrid(String? backgroundPath) {
   return (backgroundPath ?? '').trim().isNotEmpty;
 }
 
-/// 背景の画像を画面より何倍大きく描くか (= 一度に全部を見せないため)。
-const double _kBgZoom = 1.6;
-
-/// パンに対して背景が追う割合 (1.0 = 内容と同じだけ動く)。
+/// 背景の拡大倍率の既定 (= 画面と同じ大きさ)。
 ///
-/// ★ 1 対 1 にしない。 キャンバスはいくらでも動かせるので、 同じだけ動かすと
-///   すぐ画像の端が出て壁紙が途切れる。 ゆっくり追わせて、 余白の半分で
-///   頭打ちにする ([_buildInfinitePageBackground])。
-const double _kBgParallax = 0.25;
+/// ★ = ユーザー要望「デフォルトでは全体が入るようにして欲しい」。 b426 は
+///   1.6 倍の決め打ちで、 既定で画像の端が切れていた。 いまはページごとの
+///   設定 (`backgroundZoomPercent`) で、 既定は等倍。
+const double _kBgZoomDefault = 1.0;
+
 
 /// ページ一覧で選べるアイコン (= ユーザー要望: ページごと / 種類ごとに
 /// アイコンを変えられるように)。 保存するのは**この並びの番号**なので、
@@ -6534,6 +6557,15 @@ class _MindMapScreenState extends State<MindMapScreen>
           _onboardingShown = true;
           if (provider.isFirstLaunch) {
             _showInitialLanguagePicker(provider);
+            // ★ = ユーザー要望「初回起動時はアプリの絵が背景画像に選択されて
+            //   いる状態にして欲しい」。 初めての人にだけ貼る (既に使って
+            //   いる人のページには触らない)。 全ページに掛けるのは、
+            //   この時点では最初の 1 枚しか無いため。
+            unawaited(provider.setPageBackgroundImage(
+              provider.currentPage.id,
+              _mapBackgroundTemplatePath(_kFirstLaunchBackgroundId),
+              applyToAll: true,
+            ));
           }
           // 名前は Google アカウントから受け取るので、 起動時に
           //   ユーザー名を尋ねる画面は出さない (= ユーザー要望)。
@@ -12552,6 +12584,81 @@ class _MindMapScreenState extends State<MindMapScreen>
                     ]),
                   ),
                 ),
+                // ── どのシェルで開くか (= ユーザー要望「ターミナルの所で
+                //    クリックした際に開くシェルをどれにするか選択できる
+                //    ように」)。 ターミナルのボタンにだけ出す。
+                //    入っている物だけを並べる (同梱はしない)。
+                if (commandId == 'openTerminal') ...[
+                  StatefulBuilder(
+                    builder: (shCtx, setSh) => Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 4, 12, 8),
+                      child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Padding(
+                              padding: EdgeInsets.only(top: 6),
+                              child: Icon(Icons.terminal_rounded,
+                                  color: Color(0xFF9CCC65), size: 18),
+                            ),
+                            const SizedBox(width: 10),
+                            Padding(
+                              padding: const EdgeInsets.only(top: 5),
+                              child: Text(provider.t('cli.shellShort'),
+                                  style: const TextStyle(
+                                      color: Colors.white, fontSize: 13)),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Wrap(
+                                alignment: WrapAlignment.end,
+                                spacing: 4,
+                                runSpacing: 4,
+                                children: [
+                                  for (final sh in AgentCli.availableShells())
+                                    InkWell(
+                                      borderRadius: BorderRadius.circular(7),
+                                      onTap: () async {
+                                        await provider
+                                            .setTerminalShellId(sh.id);
+                                        setSh(() {});
+                                      },
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 9, vertical: 4),
+                                        decoration: BoxDecoration(
+                                          color: provider.terminalShellId ==
+                                                  sh.id
+                                              ? const Color(0xFF9CCC65)
+                                                  .withValues(alpha: 0.18)
+                                              : Colors.transparent,
+                                          borderRadius:
+                                              BorderRadius.circular(7),
+                                          border: Border.all(
+                                              color:
+                                                  provider.terminalShellId ==
+                                                          sh.id
+                                                      ? const Color(
+                                                          0xFF9CCC65)
+                                                      : Colors.white24),
+                                        ),
+                                        child: Text(sh.label,
+                                            style: TextStyle(
+                                                color:
+                                                    provider.terminalShellId ==
+                                                            sh.id
+                                                        ? const Color(
+                                                            0xFF9CCC65)
+                                                        : Colors.white60,
+                                                fontSize: 11)),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          ]),
+                    ),
+                  ),
+                ],
                 // ── AI を選ぶ (= 統合 AI ボタンだけ)。 その場のチップで
                 //    切り替えられる (= ユーザー要望: アイコンや開き方の設定と
                 //    同じメニューにまとめる)。 ──
@@ -34331,6 +34438,240 @@ class _MindMapScreenState extends State<MindMapScreen>
     return ok == true;
   }
 
+  // ── 背景テンプレートの並び (= ユーザー要望: テンプレート画像の削除や
+  //    新規登録もできるように) ──
+  //
+  //   並びは [同梱 (隠していない物)] → [自分で足した物] → [＋ 登録] の順。
+  //   同梱の物はアプリの中にあるので消せない。 代わりに**隠す**
+  //   (`provider.hiddenBgTemplateIds`)。 全部隠した時だけ「戻す」 を出す。
+
+  List<({String id, String labelKey})> _visibleBgBuiltins(
+          MindMapProvider provider) =>
+      _mapBackgroundTemplates
+          .where((t) => !provider.hiddenBgTemplateIds.contains(t.id))
+          .toList();
+
+  int _bgTileCount(MindMapProvider provider) =>
+      _visibleBgBuiltins(provider).length +
+      provider.customBgTemplates.length +
+      1; // 末尾の「＋ 登録」
+
+  /// テンプレート 1 枚分の札。
+  Widget _buildBgTemplateTile(
+    BuildContext sctx,
+    MindMapProvider provider,
+    int index, {
+    required MindMapPage page,
+    required String selectedPath,
+    required String? selectedTemplateId,
+    required int hue,
+    required int saturation,
+    required int brightness,
+    required bool applyToAll,
+    required bool inPane,
+    required VoidCallback onChanged,
+  }) {
+    final builtins = _visibleBgBuiltins(provider);
+    final customs = provider.customBgTemplates;
+
+    /// 札の入れ物 (選択中の枠・右上のチェック・左上の × はここで共通)。
+    Widget tile({
+      required Widget preview,
+      required String label,
+      required bool selected,
+      required VoidCallback onTap,
+      VoidCallback? onDelete,
+    }) =>
+        SizedBox(
+          width: 128,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(10),
+            onTap: onTap,
+            child: Container(
+              clipBehavior: Clip.antiAlias,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: selected ? const Color(0xFF8C7CFF) : Colors.white24,
+                  width: selected ? 2 : 1,
+                ),
+              ),
+              child: Stack(fit: StackFit.expand, children: [
+                preview,
+                Align(
+                  alignment: Alignment.bottomCenter,
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 7, vertical: 5),
+                    color: Colors.black54,
+                    child: Text(label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            color: Colors.white, fontSize: 11)),
+                  ),
+                ),
+                if (selected)
+                  const Positioned(
+                    top: 5,
+                    right: 5,
+                    child: Icon(Icons.check_circle_rounded,
+                        color: Colors.white, size: 18),
+                  ),
+                // ★ 消す口は**左上**に置く (右上は選択中の印が使う)。
+                if (onDelete != null)
+                  Positioned(
+                    top: 2,
+                    left: 2,
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(12),
+                      onTap: onDelete,
+                      child: Container(
+                        padding: const EdgeInsets.all(3),
+                        decoration: const BoxDecoration(
+                          color: Colors.black54,
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(Icons.close_rounded,
+                            size: 13, color: Colors.white),
+                      ),
+                    ),
+                  ),
+              ]),
+            ),
+          ),
+        );
+
+    // ── 同梱のテンプレート ──
+    if (index < builtins.length) {
+      final t = builtins[index];
+      return tile(
+        preview: _MapBackgroundTemplateView(
+          templateId: t.id,
+          hueDegrees: hue,
+          saturationPercent: saturation,
+          brightnessPercent: brightness,
+        ),
+        label: provider.t(t.labelKey),
+        selected: t.id == selectedTemplateId,
+        onTap: () async {
+          if (t.id == selectedTemplateId) return;
+          await provider.setPageBackgroundImage(
+              page.id, _mapBackgroundTemplatePath(t.id),
+              applyToAll: applyToAll);
+          // ★ 既定は「全体が収まる」 (= ユーザー要望: デフォルトでは全体が
+          //   入るように)。 選んだ時に毎回ここへ戻す。
+          if (page.backgroundFit != 'contain') {
+            await provider.setPageBackgroundFit(page.id, 'contain',
+                applyToAll: applyToAll);
+          }
+          if (page.backgroundZoomPercent != 100) {
+            await provider.setPageBackgroundZoom(page.id, 100,
+                applyToAll: applyToAll);
+          }
+          // テンプレートは常に不透明度 100% で使う (= ユーザー要望)。
+          if (page.backgroundOpacityPercent != 100) {
+            await provider.setPageBackgroundOpacity(page.id, 100,
+                applyToAll: applyToAll);
+          }
+          onChanged();
+        },
+        onDelete: () async {
+          await provider.setBuiltinBgTemplateHidden(t.id, true);
+          onChanged();
+        },
+      );
+    }
+
+    // ── 自分で足したテンプレート ──
+    final ci = index - builtins.length;
+    if (ci < customs.length) {
+      final c = customs[ci];
+      final path = c['path'] ?? '';
+      final file = File(path);
+      return tile(
+        preview: file.existsSync()
+            ? Image.file(file, fit: BoxFit.cover, gaplessPlayback: true)
+            : Container(color: Colors.black26),
+        label: (c['name'] ?? '').trim().isEmpty
+            ? provider.t('bg.myTemplate')
+            : c['name']!,
+        selected: selectedPath == path,
+        onTap: () async {
+          await provider.setPageBackgroundImage(page.id, path,
+              applyToAll: applyToAll);
+          // ★ 既定は「全体が収まる」 (= ユーザー要望: デフォルトでは全体が
+          //   入るように)。 選んだ時に毎回ここへ戻す。
+          if (page.backgroundFit != 'contain') {
+            await provider.setPageBackgroundFit(page.id, 'contain',
+                applyToAll: applyToAll);
+          }
+          if (page.backgroundZoomPercent != 100) {
+            await provider.setPageBackgroundZoom(page.id, 100,
+                applyToAll: applyToAll);
+          }
+          onChanged();
+        },
+        onDelete: () async {
+          await provider.removeCustomBgTemplate(c['id'] ?? '');
+          onChanged();
+        },
+      );
+    }
+
+    // ── 末尾: 新しく登録する ──
+    return SizedBox(
+      width: 128,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: () async {
+          final result = await FilePicker.platform.pickFiles(
+            type: FileType.image,
+            dialogTitle: provider.t('bg.addTemplate'),
+          );
+          final src = result?.files.first.path;
+          if (src == null || src.isEmpty) return;
+          // 名前は聞かない (= アカウントの名前と同じ考え方: 打たせずに済む所は
+          // 打たせない)。 ファイル名をそのまま札にする。
+          final base = src.split(RegExp(r'[/\\]')).last;
+          final dot = base.lastIndexOf('.');
+          final name = dot > 0 ? base.substring(0, dot) : base;
+          final added = await provider.addCustomBgTemplate(src, name);
+          if (!sctx.mounted) return;
+          if (added == null) {
+            showTopToast(sctx, provider.t('bg.addTemplateFailed'),
+                const Color(0xFFE53935));
+            return;
+          }
+          onChanged();
+        },
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: Colors.white24),
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.add_photo_alternate_outlined,
+                  color: Colors.white54, size: 26),
+              const SizedBox(height: 6),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+                child: Text(provider.t('bg.addTemplate'),
+                    textAlign: TextAlign.center,
+                    maxLines: 2,
+                    style: const TextStyle(
+                        color: Colors.white54, fontSize: 10.5)),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   /// ページ背景 (壁紙) の設定ダイアログ。
   ///
   /// ★ ペインの中 (`_PaneDialogHost`) からも開けるように、 閉じるまで待てる
@@ -34351,6 +34692,11 @@ class _MindMapScreenState extends State<MindMapScreen>
       return;
     }
     var applyToAllPages = false;
+    // 足した / 隠したテンプレートの控えを**開く前に**読む (= ユーザー要望:
+    //   テンプレート画像の削除や新規登録)。 中は StatefulBuilder なので
+    //   provider の知らせでは描き直らない。 出す前に揃えておく。
+    await provider.loadBgTemplates();
+    if (!ctx.mounted) return;
     // テンプレート一覧のスクロールバー用 (= ユーザー要望: スクロールバーを
     // 入れて欲しい)。 ダイアログを閉じたら破棄する。
     final templateScroll = ScrollController();
@@ -34486,88 +34832,45 @@ class _MindMapScreenState extends State<MindMapScreen>
                         controller: templateScroll,
                         padding: const EdgeInsets.only(bottom: 12),
                         scrollDirection: Axis.horizontal,
-                        itemCount: _mapBackgroundTemplates.length,
+                        itemCount: _bgTileCount(provider),
                         separatorBuilder: (_, __) => const SizedBox(width: 8),
-                        itemBuilder: (_, index) {
-                          final template = _mapBackgroundTemplates[index];
-                          final selected = template.id == templateId;
-                          return SizedBox(
-                            width: 128,
-                            child: InkWell(
-                              borderRadius: BorderRadius.circular(10),
-                              onTap: () async {
-                                if (selected) return;
-                                await provider.setPageBackgroundImage(page.id,
-                                    _mapBackgroundTemplatePath(template.id),
-                                    applyToAll: applyToAllPages);
-                                if (page.backgroundFit != 'cover') {
-                                  await provider.setPageBackgroundFit(
-                                      page.id, 'cover',
-                                      applyToAll: applyToAllPages);
-                                }
-                                // テンプレートは常に不透明度 100% で使う
-                                // (= ユーザー要望: 不透明度の項目は不要)。
-                                if (page.backgroundOpacityPercent != 100) {
-                                  await provider.setPageBackgroundOpacity(
-                                      page.id, 100,
-                                      applyToAll: applyToAllPages);
-                                }
-                                setD(() {});
-                              },
-                              child: Container(
-                                clipBehavior: Clip.antiAlias,
-                                decoration: BoxDecoration(
-                                  borderRadius: BorderRadius.circular(10),
-                                  border: Border.all(
-                                    color: selected
-                                        ? const Color(0xFF8C7CFF)
-                                        : Colors.white24,
-                                    width: selected ? 2 : 1,
-                                  ),
-                                ),
-                                child: Stack(
-                                  fit: StackFit.expand,
-                                  children: [
-                                    _MapBackgroundTemplateView(
-                                      templateId: template.id,
-                                      hueDegrees: hue,
-                                      saturationPercent: saturation,
-                                      brightnessPercent: brightness,
-                                    ),
-                                    Align(
-                                      alignment: Alignment.bottomCenter,
-                                      child: Container(
-                                        width: double.infinity,
-                                        padding: const EdgeInsets.symmetric(
-                                            horizontal: 7, vertical: 5),
-                                        color: Colors.black54,
-                                        child: Text(
-                                          provider.t(template.labelKey),
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: const TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 11),
-                                        ),
-                                      ),
-                                    ),
-                                    if (selected)
-                                      const Positioned(
-                                        top: 5,
-                                        right: 5,
-                                        child: Icon(Icons.check_circle_rounded,
-                                            color: Colors.white, size: 18),
-                                      ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          );
-                        },
+                        itemBuilder: (_, index) => _buildBgTemplateTile(
+                          sctx,
+                          provider,
+                          index,
+                          page: page,
+                          selectedPath: backgroundPath,
+                          selectedTemplateId: templateId,
+                          hue: hue,
+                          saturation: saturation,
+                          brightness: brightness,
+                          applyToAll: applyToAllPages,
+                          inPane: inPane,
+                          onChanged: () => setD(() {}),
+                        ),
                       ),
                       ),
                       ),
                     ),
+                    // ── 隠した同梱テンプレートを戻す (= 消せるようにした
+                    //    以上、 戻す口も要る) ──
+                    if (provider.hiddenBgTemplateIds.isNotEmpty)
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: TextButton.icon(
+                          style: TextButton.styleFrom(
+                            foregroundColor: Colors.white54,
+                            visualDensity: VisualDensity.compact,
+                          ),
+                          icon: const Icon(Icons.restore_rounded, size: 15),
+                          label: Text(provider.t('bg.restoreTemplates'),
+                              style: const TextStyle(fontSize: 11)),
+                          onPressed: () async {
+                            await provider.restoreHiddenBgTemplates();
+                            setD(() {});
+                          },
+                        ),
+                      ),
                     const SizedBox(height: 10),
                     // ★ 「背景を自作」 (背景メーカー) は廃止した
                     //   (= ユーザー要望:「背景を自作の項目はもう要らないから
@@ -34665,6 +34968,13 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 destPath,
                                 applyToAll: applyToAllPages,
                               );
+                              // ★ 既定は「全体が収まる」 + 等倍
+                              //   (= ユーザー要望: デフォルトでは全体が入る)。
+                              await provider.setPageBackgroundFit(
+                                  page.id, 'contain',
+                                  applyToAll: applyToAllPages);
+                              await provider.setPageBackgroundZoom(page.id, 100,
+                                  applyToAll: applyToAllPages);
                               setD(() {});
                             },
                           ),
@@ -34726,6 +35036,48 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 setD(() {});
                               },
                       ),
+                    ],
+                    // ── 拡大倍率 (= ユーザー要望: 背景の拡大倍率を変えられる
+                    //    ように。 既定は 100% = 全体が入る) ──
+                    //    100% の時は画面と同じ大きさなので、 表示モードが
+                    //    「全体が収まる」 なら画像が全部見える。 上げると
+                    //    その分はみ出し、 動かすと中が滑る。
+                    if (hasBg) ...[
+                      Row(
+                        children: [
+                          const Icon(Icons.zoom_in_rounded,
+                              color: Colors.white54, size: 18),
+                          const SizedBox(width: 6),
+                          Text(
+                              provider.t('bg.zoom').replaceFirst(
+                                  '{n}', '${page.backgroundZoomPercent}'),
+                              style: const TextStyle(color: Colors.white)),
+                        ],
+                      ),
+                      Slider(
+                        value: page.backgroundZoomPercent
+                            .clamp(100, 300)
+                            .toDouble(),
+                        min: 100,
+                        max: 300,
+                        divisions: 40,
+                        activeColor: const Color(0xFF6C63FF),
+                        label: '${page.backgroundZoomPercent}%',
+                        onChanged: (v) async {
+                          await provider.setPageBackgroundZoom(
+                            page.id,
+                            v.round(),
+                            applyToAll: applyToAllPages,
+                          );
+                          setD(() {});
+                        },
+                      ),
+                      Text(provider.t('bg.zoomHint'),
+                          style: const TextStyle(
+                              color: Colors.white38,
+                              fontSize: 10.5,
+                              height: 1.5)),
+                      const SizedBox(height: 6),
                     ],
                     if (templateId != null) ...[
                       const SizedBox(height: 8),
@@ -48856,7 +49208,26 @@ class _MindMapScreenState extends State<MindMapScreen>
     return ColoredBox(
       color: const Color(0xFF14141F),
       child: Column(children: [
-        Padding(
+        // ★ = ユーザー報告「ターミナルのウィンドウを移動させることができない
+        //   + window を閉じるボタンが存在しない」。 浮かせた窓は外枠を
+        //   `slimChrome` (掴む所だけの細い線) にしてあるので、 掴める所が
+        //   実質無く、 閉じるボタンも出ていなかった。 この見出しの帯を
+        //   そのまま掴む板にして、 × も出す (AI アシスタントの窓と同じ形)。
+        // ★ 実機で確かめたら**動かせなかった**。 ここで使う `context` は
+        //   この関数を持っている画面 (_MindMapScreenState) の物で、 浮かせた
+        //   窓は Overlay の中 = 先祖ではないため、
+        //   `findAncestorStateOfType` が必ず null を返していた。
+        //   Builder で**この帯自身の context** を作り、 そこから辿る。
+        Builder(
+          builder: (bctx) => GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onPanUpdate: (d) => bctx
+              .findAncestorStateOfType<_FloatingPanelWindowState>()
+              ?.dragWindowBy(d.delta),
+          onPanEnd: (_) => bctx
+              .findAncestorStateOfType<_FloatingPanelWindowState>()
+              ?.dragWindowEnd(),
+          child: Padding(
           padding: const EdgeInsets.fromLTRB(12, 8, 6, 0),
           child: Row(children: [
             const Icon(Icons.terminal_rounded,
@@ -48902,6 +49273,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                 onPressed: onClose,
               ),
           ]),
+          ),
+          ),
         ),
         Expanded(
           child: AgentTerminal(session: session, showHeader: false),
@@ -48937,6 +49310,16 @@ class _MindMapScreenState extends State<MindMapScreen>
         ? want
         : await terminalBaseDir(provider);
     if (!mounted) return;
+    // ★ = ユーザー要望「カスタムボタンのターミナルを AI アシスタントの
+    //   タブとして開くようにしてよい」。 タブも左右分割も、 その仕組みは
+    //   AI アシスタントの画面が既に持っている。 ここで同じ物をもう一式
+    //   作らず、 そちらへ**殻のタブを 1 枚足して開く**。
+    //   開き方 (全画面 / フローティング / 分割) は AI アシスタント側の
+    //   設定に従う (ターミナル単独の窓ではなくなるため)。
+    _McpChatDialogState.openShellDirOnStart = dir;
+    await _openMcpChat(provider);
+    return;
+    // ignore: dead_code
     final session = _terminalSessionFor(provider, dir);
     // ── どの開き方で出す時も、 先に**他所に出ている同じ端末**を畳む ──
     //    ★ 1 枚の `Terminal` を 2 つの `TerminalView` が描くと、 両方が
@@ -48962,7 +49345,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     // ── フローティング ──
     if (style == 'floating') {
       _showFloatingPanelWindow(
-        (_) => _buildTerminalPanel(provider, dir, session),
+        (_) => _buildTerminalPanel(provider, dir, session,
+            // ★ 外枠が細い線なので、 閉じる口をここに出す (= ユーザー報告)。
+            onClose: () => _closeFloatingPanelByKey('terminal')),
         width: 860,
         height: 560,
         memoryKey: 'terminal',
@@ -67894,6 +68279,13 @@ class _MindMapScreenState extends State<MindMapScreen>
       // ★ = 動作検証レポート「明示した対象ページは別フォルダーなのに、
       //   生成物は一覧で開いている『913』 の連動先へ保存された」。
       //   名指しされたページのフォルダーが先、 一覧で開いているフォルダーは控え。
+      // ★ = ユーザー要望「AI(API) にも編集権限を渡すフォルダーを設定
+      //   できるように」。 設定してあれば、 そこへ書く (ページに貼ってある
+      //   物の隣、 という上の判定だけは残す = 書き直しが別の所へ散らない)。
+      if (dir == null && provider.aiEditDir.trim().isNotEmpty) {
+        final d = Directory(provider.aiEditDir.trim());
+        if (await d.exists()) dir = d;
+      }
       dir ??= await _newFileDirForPage(provider, rawPageId,
           fallbackName: 'mcp_files');
       provider.mcpAllowReadDir(dir.path);
@@ -76225,7 +76617,25 @@ class _MindMapScreenState extends State<MindMapScreen>
     final templateId = _mapBackgroundTemplateId(path);
     final opacity = (page.backgroundOpacityPercent.clamp(0, 100)) / 100.0;
     Widget bg;
-    if (templateId != null) {
+    // 同梱の写真を持つテンプレートは、 自分で選んだ画像と**同じ扱い**にする
+    //   (= 画面より大きく描いて、 動かすと違う所が見える)。 描いて作る古い
+    //   テンプレートだけ、 今までどおり scrollOffset を渡す道に残す。
+    final assetTemplate =
+        templateId != null && _mapBackgroundTemplateAssets[templateId] != null;
+    if (assetTemplate) {
+      bg = _wrapScrollingBackground(
+        _MapBackgroundTemplateView(
+          templateId: templateId,
+          hueDegrees: page.backgroundHueDegrees,
+          saturationPercent: page.backgroundSaturationPercent,
+          brightnessPercent: page.backgroundBrightnessPercent,
+        ),
+        ctrl,
+        provider,
+        pageOverride: pageOverride,
+        zoom: page.backgroundZoomPercent / 100.0,
+      );
+    } else if (templateId != null) {
       bg = AnimatedBuilder(
         animation: ctrl,
         builder: (_, __) => _MapBackgroundTemplateView(
@@ -76260,62 +76670,86 @@ class _MindMapScreenState extends State<MindMapScreen>
         errorBuilder: (_, __, ___) => const SizedBox.shrink(),
         gaplessPlayback: true,
       );
-      // ── 動かしたぶんだけ背景も移す (= ユーザー要望: 「1 度に全て背景画像が
-      //    見えるとイマイチだから、 画面上をスクロールした時に背景が
-      //    映り変わっていくように」) ──
-      //
-      //   ★ 画面より一回り大きく描いて、 パンに合わせて中を滑らせる。
-      //     こうすると (1) 一度に全部は見えない (2) 動かすと違う所が出る
-      //     の両方になる。 テンプレートの方は元から `scrollOffset` で
-      //     同じ事をしているので、 こちらの包みは掛けない (二重になる)。
-      //   ★ 拡大率には追わせない。 追わせると引きで全体が見えてしまい、
-      //     元の不満に戻る。 動かすのは平行移動だけ。
-      //   ★ 滑らせる量は余白の半分で頭打ちにする。 いくらでも動かせる
-      //     キャンバスに 1 対 1 で付いていくと、 すぐ画像の端が出て
-      //     しまうため (= 壁紙として途切れて見える)。
-      // ★ 「全体を表示」 (contain) を選んでいる人には掛けない。 あれは
+      // ── 動かしたぶんだけ背景も移す (= ユーザー要望) ──
+      //   「全体を表示」 (contain) を選んでいる人には掛けない。 あれは
       //   **画像を全部見せる**ための指定なので、 大きく描いて切ると選んだ
-      //   意味が無くなる。 既定の「全面を覆う」 と「敷き詰める」 だけ動かす。
-      // ★ 包む前の絵を**別の名前で**掴んでおく。 `bg` は下で包んだ物に
-      //   差し替わるので、 閉包の中でそのまま `bg` を使うと自分自身を
-      //   子に持って無限に入れ子になる。
-      final Widget bgImage = bg;
-      if (page.backgroundFit != 'contain')
-      bg = ClipRect(
-        child: LayoutBuilder(
-          builder: (_, c) {
-            final w = c.maxWidth.isFinite ? c.maxWidth : 0.0;
-            final h = c.maxHeight.isFinite ? c.maxHeight : 0.0;
-            if (w <= 0 || h <= 0) return bgImage;
-            final bw = w * _kBgZoom;
-            final bh = h * _kBgZoom;
-            final ex = (bw - w) / 2;
-            final ey = (bh - h) / 2;
-            return AnimatedBuilder(
-              animation: ctrl,
-              builder: (_, __) {
-                final scene = ctrl.toScene(Offset.zero);
-                final dx = (-scene.dx * _kBgParallax).clamp(-ex, ex);
-                final dy = (-scene.dy * _kBgParallax).clamp(-ey, ey);
-                return Transform.translate(
-                  offset: Offset(dx, dy),
-                  child: OverflowBox(
-                    minWidth: bw,
-                    maxWidth: bw,
-                    minHeight: bh,
-                    maxHeight: bh,
-                    child: bgImage,
-                  ),
-                );
-              },
-            );
-          },
-        ),
-      );
+      //   意味が無くなる。
+      // 「全体を表示」 でも倍率を上げたら滑らせる (= 倍率を足したので、
+      //   contain を外す理由が無くなった。 等倍の時は包み自体が素通りする)。
+      bg = _wrapScrollingBackground(bg, ctrl, provider,
+          pageOverride: pageOverride,
+          zoom: page.backgroundZoomPercent / 100.0);
     }
     return Positioned.fill(
       child: IgnorePointer(
         child: Opacity(opacity: opacity, child: bg),
+      ),
+    );
+  }
+
+  /// 背景を画面より一回り大きく描き、 動かした所に合わせて中を滑らせる。
+  ///
+  /// ★ = ユーザー要望「1 度に全て背景画像が見えるとイマイチだから、 画面上を
+  ///   スクロールした時に背景が映り変わっていくように」 +「スクロールバーを
+  ///   一番上まで持っていっても画像の一番上が表示できない」。
+  ///
+  /// ★ **キャンバスの端が画像の端になる**ように写す。 前は「動かした量 ×
+  ///   決め打ちの割合」 で滑らせていたので、 どれだけ上へ寄せても画像の
+  ///   上端まで届かなかった。 いまは画面左上が指すキャンバス座標を
+  ///   キャンバス全体で割った 0〜1 を、 そのまま余白の端から端へ写す。
+  ///   一番上まで持っていけば画像の一番上が、 一番下なら一番下が出る。
+  /// ★ 拡大率には追わせない。 追わせると引いた時に全体が見えてしまい、
+  ///   「一度に全部見えるのはイマイチ」 に逆戻りする。
+  Widget _wrapScrollingBackground(
+      Widget image, TransformationController ctrl, MindMapProvider provider,
+      {MindMapPage? pageOverride, double zoom = _kBgZoomDefault}) {
+    // ★ 包む前の絵は**引数で受け取った物**を使う。 包んだ結果を入れた変数を
+    //   閉包から参照すると、 自分自身を子に持って無限に入れ子になる。
+    return ClipRect(
+      child: LayoutBuilder(
+        builder: (_, c) {
+          final w = c.maxWidth.isFinite ? c.maxWidth : 0.0;
+          final h = c.maxHeight.isFinite ? c.maxHeight : 0.0;
+          if (w <= 0 || h <= 0) return image;
+          // 等倍なら包まない (= 余白が無いので滑らせる所も無い)。
+          if (zoom <= 1.0) return image;
+          final bw = w * zoom;
+          final bh = h * zoom;
+          final ex = (bw - w) / 2;
+          final ey = (bh - h) / 2;
+          // スクロールバーが動ける範囲と同じ物差しを使う (= バーを端まで
+          //   持っていった時に、 画像も端まで来るように)。
+          final extent =
+              _canvasDimensionForScrollbars(provider, pageOverride: pageOverride);
+          return AnimatedBuilder(
+            animation: ctrl,
+            builder: (_, __) {
+              final scene = ctrl.toScene(Offset.zero);
+              double shift(double pos, double span, double extra) {
+                if (extra <= 0) return 0;
+                if (span <= 0) return 0;
+                final t = (pos / span).clamp(0.0, 1.0);
+                // t=0 (左上の端) → +extra = 画像の左上が出る
+                // t=1 (右下の端) → -extra = 画像の右下が出る
+                return extra - t * 2 * extra;
+              }
+
+              return Transform.translate(
+                offset: Offset(
+                  shift(scene.dx, extent.width, ex),
+                  shift(scene.dy, extent.height, ey),
+                ),
+                child: OverflowBox(
+                  minWidth: bw,
+                  maxWidth: bw,
+                  minHeight: bh,
+                  maxHeight: bh,
+                  child: image,
+                ),
+              );
+            },
+          );
+        },
       ),
     );
   }
@@ -78982,12 +79416,15 @@ class _MindMapScreenState extends State<MindMapScreen>
   void _closeFloatingPanelByKey(String key) {
     final e = _floatingPanelSingletons.remove(key);
     if (e == null) return;
-    if (_floatingVideoEntries.contains(e)) {
-      try {
-        e.remove();
-      } catch (_) {}
-      _floatingVideoEntries.remove(e);
-    }
+    // ★ = ユーザー報告「閉じても枠が残り続ける / 操作不能になる」。
+    //   以前は**動画の窓の時だけ** `remove()` していたので、 それ以外
+    //   (端末など) は名簿から外れるだけで **Overlay に残り続け**、 中身の
+    //   無い枠が画面に居座って、 その下は触れなくなっていた。
+    //   どの窓でも必ず Overlay から外す。
+    try {
+      e.remove();
+    } catch (_) {}
+    _floatingVideoEntries.remove(e);
   }
 
   void _showFloatingPanelWindow(WidgetBuilder builder,
@@ -83706,8 +84143,25 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 onDoubleTap: (isMoveMode || isRangeMode)
                                     ? null
                                     : () => _startInlineTitleEdit(context, node),
+                                // ★ = ユーザー報告「要素を配置した後の 1
+                                //   ステップ後は要素をドラッグすることが
+                                //   できない」。 以前はここが **null** で、
+                                //   直前のドラッグの状態 (`_moveModeNodeId`)
+                                //   が残っている間は**他の要素の長押し口
+                                //   ごと塞いで**いた。 隣のペインへ渡した時
+                                //   のように、 指を離した所がこの欄でないと
+                                //   終わりの合図が届かず状態が残るので、
+                                //   その次の 1 回が丸ごと死んでいた。
+                                //   塞がずに、 残っていたら捨ててから掴み
+                                //   直す (本当に掴んでいる最中なら、 同じ指
+                                //   では別の要素を長押しできないので害は
+                                //   無い)。
                                 onLongPressStart: (isMoveMode && !isMove)
-                                    ? null
+                                    ? (globalPos) {
+                                        _cancelInterruptedCanvasGesture();
+                                        _onLongPressNodeStart(
+                                            node.id, globalPos, ctrl);
+                                      }
                                     : isRangeMode
                                         ? (isRangeSelected &&
                                                 _rangeSelectedIds.length > 1
@@ -183439,10 +183893,19 @@ class _MapBackgroundTemplateView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    Widget result = CustomPaint(
-      painter: _MapBackgroundTemplatePainter(templateId, scrollOffset),
-      child: const SizedBox.expand(),
-    );
+    // ★ b426 から、 同梱の写真を持つ id は**その絵**を出す (= ユーザー要望で
+    //   一覧を写真に入れ替えた)。 持たない古い id は今までどおり描く。
+    final asset = _mapBackgroundTemplateAssets[templateId];
+    Widget result = asset != null
+        ? Image.asset(
+            asset,
+            fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => const SizedBox.expand(),
+          )
+        : CustomPaint(
+            painter: _MapBackgroundTemplatePainter(templateId, scrollOffset),
+            child: const SizedBox.expand(),
+          );
     final brightness = brightnessPercent.clamp(50, 150) / 100.0;
     if ((brightness - 1.0).abs() > 0.001) {
       result = ColorFiltered(
@@ -208862,7 +209325,14 @@ int _appSnackGeneration = 0;
 /// (ガントチャートなど) を開いている間はその**裏**に隠れて見えない
 /// (= 点検で判明)。 これは根っこの Overlay に直接差すので必ず見える。
 void showTopToast(BuildContext ctx, String message, Color color) {
-  final overlay = Overlay.maybeOf(ctx, rootOverlay: true);
+  // ★ = ユーザー要望「フローティングモードで分割ボタンを押した際の伝言は、
+  //   フローティング画面の上部に出るように」。 以前は必ず**根っこ**の
+  //   Overlay へ入れていたので、 浮かせた窓の中で押しても本体画面の天辺に
+  //   出ていた (窓のずっと外)。 一番近い Overlay を先に探し、 無い時だけ
+  //   根っこへ落とす。 浮かせた窓も分割ペインも自前の Overlay を持つので、
+  //   これでその枠の上部に出る。
+  final overlay =
+      Overlay.maybeOf(ctx) ?? Overlay.maybeOf(ctx, rootOverlay: true);
   if (overlay == null) return;
   late OverlayEntry entry;
   var removed = false;
@@ -208875,10 +209345,14 @@ void showTopToast(BuildContext ctx, String message, Color color) {
   }
 
   entry = OverlayEntry(
+    // ★ = ユーザー要望「メッセージは画面上部に出るようにして」。 名前は
+    //   `showTopToast` なのに、 中は `bottom:` で**下**に出していた。
+    //   AI (API) の欄では入力欄のすぐ上に被って読みにくかった。 名前どおり
+    //   上に出す (この関数を使っている所は全部まとめて上へ移る)。
     builder: (c) => Positioned(
       left: 16,
       right: 16,
-      bottom: 28 + MediaQuery.of(c).padding.bottom,
+      top: 16 + MediaQuery.of(c).padding.top,
       child: IgnorePointer(
         child: Center(
           child: Material(
@@ -279149,6 +279623,24 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
   bool _pushed = false;
   late Offset _pos = widget.initialRect?.topLeft ?? const Offset(100, 70);
   late double _w = widget.initialRect?.width ?? widget.initialWidth;
+
+  /// 窓を少なくとも [want] の幅まで広げる (狭い時だけ。 広い時は触らない)。
+  ///
+  /// ★ = ユーザー要望「左右分割しても横幅が一定の大きさにならないと両方
+  ///   出てこないなら、 その最低限の大きさまで自動で拡大されるように」。
+  ///   全画面にするのは止めた代わりに、 **足りないぶんだけ**広げる。
+  ///   画面からはみ出さないよう、 右端で止めて位置も戻す。
+  void ensureWidthAtLeast(double want) {
+    if (!mounted || _w >= want) return;
+    final screen = MediaQuery.sizeOf(context);
+    final w = want.clamp(0.0, screen.width);
+    setState(() {
+      _w = w;
+      // 広げた結果が画面の外へ出るなら、 左へ寄せて収める。
+      final maxX = screen.width - w;
+      if (_pos.dx > maxX) _pos = Offset(maxX < 0 ? 0 : maxX, _pos.dy);
+    });
+  }
   late double _h = widget.initialRect?.height ?? widget.initialHeight;
 
   /// 大きさ・位置の保存は、 動かすたびに書かず少し待ってからまとめて行う。
@@ -280632,8 +281124,34 @@ bool looksLikeToolCallForTest(String reply) =>
     _McpChatDialogState._looksLikeToolCall(reply);
 
 class _McpChatSession extends ChangeNotifier {
-  _McpChatSession._();
-  static final _McpChatSession instance = _McpChatSession._();
+  _McpChatSession._(this.boundSessionId);
+
+  /// この欄が張り付いている会話の id。
+  ///
+  /// ★ null = 今までどおりの**主の欄** (provider の「今の会話」 に追随する)。
+  ///   値が入っている = 並べたもう一方の欄で、 その会話だけを見る
+  ///   (= ユーザー要望「API 画面同士でも画面分割できるようにして」)。
+  ///   以前はプロセスに 1 個の singleton だったので、 欄を 2 枚出しても
+  ///   **同じ会話が 2 つ映るだけ**だった。
+  final String? boundSessionId;
+
+  /// 主の欄 (= 以前の `instance`。 呼び出し側はそのまま)。
+  static final _McpChatSession instance = _McpChatSession._(null);
+
+  /// 会話 id に張り付いた欄。 同じ id なら同じ物を返すので、 閉じて開き
+  /// 直しても走っている処理は途切れない (singleton の時と同じ約束)。
+  static final Map<String, _McpChatSession> _bound =
+      <String, _McpChatSession>{};
+
+  static _McpChatSession forSession(String id) =>
+      _bound.putIfAbsent(id, () => _McpChatSession._(id));
+
+  /// その会話の欄を手放す (会話を消した時)。 走っている最中は残す。
+  static void dropSession(String id) {
+    final s = _bound[id];
+    if (s == null || s.busy) return;
+    _bound.remove(id);
+  }
 
   final List<_McpChatMsg> _msgs = [];
   List<_McpChatMsg> get msgs => _msgs;
@@ -280702,7 +281220,7 @@ class _McpChatSession extends ChangeNotifier {
       _msgs.add(_McpChatMsg('user', shown, raw: raw));
       _steeredCount++;
       notifyListeners();
-      unawaited(provider.appendMcpChat('user', shown));
+      unawaited(provider.appendMcpChatTo(boundSessionId, 'user', shown));
       return;
     }
     _queued.add(_McpPending(shown: shown, raw: raw, images: images));
@@ -280738,7 +281256,7 @@ class _McpChatSession extends ChangeNotifier {
     _msgs.add(_McpChatMsg('user', p.shown, raw: p.raw));
     _steeredCount++;
     notifyListeners();
-    unawaited(provider.appendMcpChat('user', p.shown));
+    unawaited(provider.appendMcpChatTo(boundSessionId, 'user', p.shown));
   }
 
   /// 順番待ちを全部「割り込み」 に変える。
@@ -280813,7 +281331,7 @@ class _McpChatSession extends ChangeNotifier {
     _emptyNudges = 0;
     _msgs.add(_McpChatMsg('user', shown, raw: raw));
     notifyListeners();
-    unawaited(provider.appendMcpChat('user', shown));
+    unawaited(provider.appendMcpChatTo(boundSessionId, 'user', shown));
     final photos = images ?? const <AiInputImage>[];
     try {
       // ── エージェントループ ──
@@ -280882,7 +281400,8 @@ class _McpChatSession extends ChangeNotifier {
               ? provider.t('mcp.tooManySteps')
               : stripToolEchoFromReply(reply);
           add(_McpChatMsg('ai', answer));
-          unawaited(provider.appendMcpChat('ai', answer));
+          unawaited(
+              provider.appendMcpChatTo(boundSessionId, 'ai', answer));
           await provider.refreshCreditBalance();
           add(_McpChatMsg('meta', aiRemainText(provider)));
           break;
@@ -280952,7 +281471,8 @@ class _McpChatSession extends ChangeNotifier {
         // 止めた時も、 そこまでに作った物は並べ直しておく。
         _tidyTouched();
         add(_McpChatMsg('ai', provider.t('mcp.runStopped')));
-        unawaited(provider.appendMcpChat('ai', provider.t('mcp.runStopped')));
+        unawaited(provider.appendMcpChatTo(
+            boundSessionId, 'ai', provider.t('mcp.runStopped')));
       }
     } catch (e) {
       add(_McpChatMsg('ai', '⚠ $e'));
@@ -281486,9 +282006,17 @@ class _McpChatDialog extends StatefulWidget {
   /// 開いた後は見出しのボタンで切り替えられる (その時はこの値ではなく
   /// `_McpChatDialogState._fullscreen` が効く)。
   final bool fullscreen;
+
+  /// この欄が映す会話の id (null = 今の会話)。
+  ///
+  /// ★ = ユーザー要望「API 画面同士でも画面分割」。 並べた右側だけがこれを
+  ///   持ち、 左 (主の欄) は今までどおり null。
+  final String? boundSessionId;
   const _McpChatDialog(
-      {required this.provider,
+      {super.key,
+      required this.provider,
       this.fullscreen = false,
+      this.boundSessionId,
       this.onOpenAiSettings,
       this.extractFileText,
       this.initialTask,
@@ -281505,7 +282033,9 @@ class _McpChatDialogState extends State<_McpChatDialog>
     with WidgetsBindingObserver {
   // 会話と実行中のループは画面の外 (_McpChatSession) が持つ。
   //   = ユーザー要望: チャット欄を閉じても処理が続くように。
-  final _McpChatSession _session = _McpChatSession.instance;
+  late final _McpChatSession _session = widget.boundSessionId == null
+      ? _McpChatSession.instance
+      : _McpChatSession.forSession(widget.boundSessionId!);
   List<_McpChatMsg> get _msgs => _session.msgs;
   bool get _busy => _session.busy;
   final TextEditingController _input = TextEditingController();
@@ -281845,6 +282375,10 @@ class _McpChatDialogState extends State<_McpChatDialog>
         onPickLanguage: s.supportsSlashCommands
             ? () => unawaited(_pickAgentCliLanguage(provider, s))
             : null,
+        // ★ = ユーザー要望「codexCLI の本文中で右クリックすることは無いから、
+        //   画面分割や新規タブ作成などの項目を出すように割り当てられないか」。
+        //   帯の右クリックと同じ一覧を出す。
+        onContextMenu: (pos) => unawaited(_showTabStripMenu(provider, pos)),
       );
 
   /// どちらの端末に打ち込むかを決める。
@@ -281876,10 +282410,16 @@ class _McpChatDialogState extends State<_McpChatDialog>
   void _splitWithTab(MindMapProvider provider, AgentCliSession s) {
     if (identical(s, _lastCliSession)) return;
     if (!_cliTabs.contains(s)) return;
+    // ★ 札を札へ落として並べる道 ([_pairCliTabs]) はここしか通らないので、
+    //   幅を確かめるのもここへ置く (押すボタンごとに書かない)。
+    _ensureSplitWidth(cliPair: true);
     setState(() {
       _splitCliSession = s;
       _splitTerminal = _buildCliTerminal(provider, s);
       _splitFocusPane = 1;
+      // 札の並びを画面の左右に合わせる (= ユーザー要望)。
+      final left = _lastCliSession;
+      if (left != null) _orderTabsForSplit(left, s);
     });
     // 並べた直後は、 後から出した側に打てるようにする。
     _focusCliPane(s);
@@ -281912,6 +282452,17 @@ class _McpChatDialogState extends State<_McpChatDialog>
       break;
     }
     if (mate == null) {
+      // ★ = ユーザー指摘「API 側から CLI 画面を分割で横に出すことはできても、
+      //   CLI 画面から分割ボタンを押すと API を横に出すことができない」。
+      //   並べる相手の CLI が無い時は、 **会話 (AI (API)) と並べる**。
+      //   [_splitChatWith] が主の枠を会話へ戻し、 今見ていた端末を右へ置く
+      //   ので、 API 側から並べた時とまったく同じ形になる。
+      final self = _lastCliSession;
+      if (self != null && _cliTabs.contains(self)) {
+        _ensureSplitWidth();
+        _splitChatWith(provider, self);
+        return;
+      }
       showTopToast(
           context, provider.t('cli.splitNeedTwo'), const Color(0xFFE5A23C));
       return;
@@ -281947,17 +282498,51 @@ class _McpChatDialogState extends State<_McpChatDialog>
       _focusCliPane(s);
       return;
     }
-    final mate = _activeSplitSession;
-    if (mate != null && identical(s, mate)) {
-      final old = _lastCliSession;
-      _splitCliSession = null;
-      _splitTerminal = null;
-      _showRunningCliTerminal(provider, s);
-      if (old != null) _splitWithTab(provider, old);
+    // ── 会話と並べている時 (左 = 会話 / 右 = 端末) ──
+    // ★ = ユーザー指摘「左右分割を押した状態で他のタブを開くと分割が終了
+    //   するのは使い辛い。 切り替えた際にアクティブだった側の画面が
+    //   切り替わるようにして欲しい」。 以前はここで [_showRunningCliTerminal]
+    //   を呼んでいたので主の枠が端末になり、 [_activeSideSession] が
+    //   null を返して**並べた形ごと消えて**いた。 右だけ差し替える。
+    if (_activeSideSession != null) {
+      if (identical(_sideCliSession, s)) {
+        _focusCliPane(s);
+        return;
+      }
+      setState(() {
+        _sideCliSession = s;
+        _sideTerminal = _buildCliTerminal(provider, s);
+        _splitFocusPane = 1;
+      });
       _focusCliPane(s);
       return;
     }
-    // 右はそのままで、 左だけ差し替える。
+    final mate = _activeSplitSession;
+    if (mate != null) {
+      if (identical(s, mate)) {
+        // 右の札を押した = 左右を入れ替える (今までどおり)。
+        final old = _lastCliSession;
+        _splitCliSession = null;
+        _splitTerminal = null;
+        _showRunningCliTerminal(provider, s);
+        if (old != null) _splitWithTab(provider, old);
+        _focusCliPane(s);
+        return;
+      }
+      // ★ アクティブだった側だけ差し替える (= ユーザー要望)。
+      if (_splitFocusPane == 1) {
+        setState(() {
+          _splitCliSession = s;
+          _splitTerminal = _buildCliTerminal(provider, s);
+        });
+        _focusCliPane(s);
+        return;
+      }
+      // 左を差し替える (右はそのまま)。
+      _showRunningCliTerminal(provider, s);
+      _focusCliPane(s);
+      return;
+    }
     _showRunningCliTerminal(provider, s);
     _focusCliPane(s);
   }
@@ -282010,6 +282595,38 @@ class _McpChatDialogState extends State<_McpChatDialog>
     });
   }
 
+  /// 左右に並べるのに足りる幅まで、 入れ物を広げる。
+  ///
+  /// ★ = ユーザー要望「横幅が一定の大きさにならないと両方出てこないなら、
+  ///   その最低限の大きさまで自動で拡大されるように」。 全画面にはしない
+  ///   (それは別のご要望で止めた)。 足りないぶんだけ広げる。
+  /// ★ 浮かせた窓は窓自身を広げる。 普段のダイアログは幅の上限が決まって
+  ///   いて広げる口が無いので、 その時だけ全画面にする (= 並ばないよりは
+  ///   よい)。 分割ペインの中は入れ物が大きさを持つので触らない。
+  /// [cliPair] は端末どうしを並べる時。
+  ///
+  /// ★ = ユーザー報告「powershell どうしのタブを出して左右分割ボタンを
+  ///   押しても、 画面が左右幅の関係で 2 つにならない」。 ここが広げる幅を
+  ///   **会話と並べる時の数** (330+300) で決め打ちしていたのが原因。
+  ///   端末どうしは 1 枚 360 必要 ( :282571 の minPane) なので、 642 まで
+  ///   広げても 728 に届かず、 広げたのに並ばないという形になっていた。
+  void _ensureSplitWidth({bool cliPair = false}) {
+    if (widget.paneMode) return;
+    // 会話 + 相手 + 境目の板。 [_buildChatSideBySide] の下限と同じ数。
+    // 端末どうしは 1 枚 360 (細くすると CLI の桁数がその場で変わるため)。
+    final need =
+        cliPair ? 360.0 * 2 + 8.0 + 4.0 : 330.0 + 300.0 + 8.0 + 4.0;
+    final win = context.findAncestorStateOfType<_FloatingPanelWindowState>();
+    if (win != null) {
+      win.ensureWidthAtLeast(need);
+      return;
+    }
+    if (!_isPanelMaximized && MediaQuery.sizeOf(context).width >= need) {
+      // ダイアログは 560px 上限。 広げる口が無いので全画面にする。
+      _toggleFullscreen();
+    }
+  }
+
   /// 端末 1 枚の包み。 どちらが打ち込みを受けているか縁で判るようにする
   /// (= 左右に出すと、 打った字がどちらへ行くのか見えないため)。
   Widget _buildCliSplitPane(int index, Widget term, bool split) {
@@ -282025,7 +282642,34 @@ class _McpChatDialogState extends State<_McpChatDialog>
         if (_splitFocusPane == index) return;
         setState(() => _splitFocusPane = index);
       },
-      child: Container(
+      // ★ = ユーザー報告「アクティブ側を切り替えることができない」。
+      //   以前は**焦点が動いた時**しか切り替わらなかった。 会話の側は
+      //   書き込み口を押さない限り焦点が動かないので、 端末から会話へ
+      //   戻せなかった。 枠のどこを押しても、 押した側を打ち込み先にする。
+      //   `translucent` なので、 中の端末や書き込み口へはそのまま通る。
+      child: Listener(
+        behavior: HitTestBehavior.translucent,
+        onPointerDown: (_) {
+          if (!split || !mounted) return;
+          if (_splitFocusPane != index) {
+            setState(() => _splitFocusPane = index);
+          }
+          // ★ = ユーザー報告「powershell と codex を分割で開くと powershell
+          //   側がアクティブに切り替えることができない」。 印を動かすだけ
+          //   では足りない。 端末は焦点が空くと 700 ミリ秒ごとに取り返しに
+          //   来るので、 **選ばなかった側に掛け金を掛け直す**まで打ち込み先
+          //   が変わらなかった。 押した側を選び直す。
+          final pick = index == 0
+              ? (_activeSideSession != null ? null : _lastCliSession)
+              : (_activeSplitSession ?? _activeSideSession);
+          if (pick != null) {
+            _focusCliPane(pick);
+          } else {
+            // 左が会話の時は、 端末をすべて手放して会話に打てるようにする。
+            _releaseCliPanes();
+          }
+        },
+        child: Container(
         // 太さは常に同じにして色だけ変える (寸法が変わると端末の桁数が
         // 変わって、 CLI の画面が組み直される)。
         decoration: BoxDecoration(
@@ -282034,6 +282678,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
               width: 1.5),
         ),
         child: term,
+      ),
       ),
     );
   }
@@ -282095,6 +282740,13 @@ class _McpChatDialogState extends State<_McpChatDialog>
   //    浮遊窓とペインで 2 つ同時に開ける)。
   AgentCliSession? _sideCliSession;
 
+  /// 右に置く**会話**の id (= ユーザー要望「API 画面同士でも画面分割」)。
+  ///
+  /// ★ 端末を右に置く [_sideCliSession] と同時には立たない (どちらか一方)。
+  /// ★ static にしない理由は [_sideCliSession] と同じ (浮遊窓とペインで
+  ///   2 つ同時に開ける)。
+  String? _sideChatSessionId;
+
   /// 右に置く端末。 [_inlineTerminal] と同じく**組み上げた物をそのまま**持つ
   /// (毎回組み直すと、 打っている最中に作り直されて落ち着かない)。
   Widget? _sideTerminal;
@@ -282110,10 +282762,128 @@ class _McpChatDialogState extends State<_McpChatDialog>
     return s;
   }
 
+  /// 右の枠に出す「もう 1 本の会話」。
+  ///
+  /// ★ 中身はこの欄と同じ [_McpChatDialog]。 ただし [boundSessionId] を
+  ///   渡すので、 器 (`_McpChatSession`) も読み書きする会話も**別物**に
+  ///   なる (= 左右で同じ会話が映る、 という事にはならない)。
+  /// ★ `paneMode: true` で、 ダイアログの殻を着けずに枠いっぱいに広げる
+  ///   (マップの分割ペインに出す時と同じ指定)。
+  Widget _buildSideChatPane(MindMapProvider provider, String id) {
+    return _McpChatDialog(
+      key: ValueKey<String>('sidechat:$id'),
+      provider: provider,
+      paneMode: true,
+      boundSessionId: id,
+      onClosePane: _unsplitChat,
+      onOpenAiSettings: widget.onOpenAiSettings,
+      extractFileText: widget.extractFileText,
+      onOpenBrowserAi: widget.onOpenBrowserAi,
+    );
+  }
+
+  /// 本当に並べられる会話の id (消えた / 主の枠が端末になった時は null)。
+  String? _activeSideChatId(MindMapProvider provider) {
+    final id = _sideChatSessionId;
+    if (id == null || id.isEmpty) return null;
+    // 張り付いた欄が更に分割する事は無い (入れ子を作らない)。
+    if (widget.boundSessionId != null) return null;
+    if (_inlineTerminal != null) return null;
+    if (id == provider.mcpCurrentSessionId) return null;
+    if (!provider.mcpSessions.any((e) => '${e['id']}' == id)) return null;
+    return id;
+  }
+
+  /// 会話の隣に**別の会話** [id] を置く (= ユーザー要望)。
+  void _splitChatWithChat(MindMapProvider provider, String id) {
+    if (id.isEmpty || id == provider.mcpCurrentSessionId) return;
+    setState(() {
+      _splitCliSession = null;
+      _splitTerminal = null;
+      _sideCliSession = null;
+      _sideTerminal = null;
+      _inlineTerminal = null;
+      _inlineTerminalTitle = '';
+      _inlineIsTerminal = false;
+      _showCapabilityPanel = false;
+      _showMcpInfo = false;
+      _sideChatSessionId = id;
+      _splitFocusPane = 0;
+    });
+    if (!_openChatTabIds.contains(id)) _openChatTabIds.add(id);
+    _lastViewWasCli = false;
+    _lastViewWasCliList = false;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _refocusPrompt();
+      _scrollToEnd();
+    });
+  }
+
+  /// 札を掴んでいる最中か (= 受け口を広げるため)。
+  bool _draggingCliTab = false;
+
+  /// 札と札の間に挟む、 細い「ここへ落とす」 受け口。
+  ///
+  /// ★ = ユーザー要望「ドラッグで位置を入れ替えられるようにして欲しい」。
+  ///   札の上に落とすと**結合** (今までどおり) なので、 並べ替えは
+  ///   この隙間で受ける。 掴んでいる間だけ光らせて、 落とせる所を示す。
+  Widget _buildTabDropGap(int index) {
+    // ★ 会話 (String) も端末 (AgentCliSession) も同じ受け口で受ける。
+    return DragTarget<Object>(
+      onWillAcceptWithDetails: (d) =>
+          _tabOrder.any((e) => identical(e, d.data) || e == d.data),
+      onAcceptWithDetails: (d) {
+        final from = _tabOrder.indexWhere(
+            (e) => identical(e, d.data) || e == d.data);
+        if (from < 0) return;
+        var to = index;
+        if (from < to) to -= 1;
+        if (from == to) return;
+        setState(() {
+          final moved = _tabOrder.removeAt(from);
+          _tabOrder.insert(to.clamp(0, _tabOrder.length), moved);
+        });
+      },
+      // ★ 実機で試したら**狭すぎて当たらなかった** (4px では、 狙っても
+      //   隣の札に落ちて結合になる)。 掴んでいない時でも指 1 本ぶんは
+      //   空けておく。
+      builder: (_, cand, __) => Container(
+        width: cand.isNotEmpty
+            ? 26
+            : (_draggingCliTab || _draggingChatTab)
+                ? 20
+                : 6,
+        margin: const EdgeInsets.symmetric(vertical: 5),
+        decoration: BoxDecoration(
+          color: cand.isEmpty
+              ? Colors.transparent
+              : const Color(0xFF4FC3F7).withValues(alpha: 0.7),
+          borderRadius: BorderRadius.circular(3),
+        ),
+      ),
+    );
+  }
+
+  /// 札の並びを「左の枠 → 右の枠」 に揃える (= ユーザー要望:
+  /// 「タブの左右の順序と、 左右分割で開かれている画面が一致していない」)。
+  ///
+  /// ★ 並べた時に札の順が入れ替わらないよう、 左に出す物を右に出す物の
+  ///   すぐ手前へ動かす。 他の札の相対の並びは変えない。
+  void _orderTabsForSplit(AgentCliSession left, AgentCliSession right) {
+    final li = _cliTabs.indexOf(left);
+    final ri = _cliTabs.indexOf(right);
+    if (li < 0 || ri < 0 || li < ri) return;
+    _cliTabs.removeAt(li);
+    _cliTabs.insert(_cliTabs.indexOf(right), left);
+  }
+
   /// 会話の隣に CLI [s] を置く (= 左が会話、 右が端末)。
   void _splitChatWith(MindMapProvider provider, AgentCliSession s) {
     if (!_cliTabs.contains(s)) return;
     setState(() {
+      // 会話どうしで並べていたら、 そちらは畳む (右は 1 枚だけ)。
+      _sideChatSessionId = null;
       // 端末どうしの左右とは同時に出せない (主の枠が会話に戻るので
       //   あちらは描かれない)。 抱えたままにすると終わった画面を持ち
       //   続けるので、 ここで手放す。
@@ -282152,10 +282922,15 @@ class _McpChatDialogState extends State<_McpChatDialog>
   /// ★ 走っている CLI は止めない。 タブは残るので、 帯から押せばそのまま
   ///   全幅で覗き直せる (= 片方を閉じたら残りは全幅の 1 枚)。
   void _unsplitChat() {
-    if (_sideCliSession == null && _sideTerminal == null) return;
+    if (_sideCliSession == null &&
+        _sideTerminal == null &&
+        _sideChatSessionId == null) {
+      return;
+    }
     setState(() {
       _sideCliSession = null;
       _sideTerminal = null;
+      _sideChatSessionId = null;
       _splitFocusPane = 0;
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -282172,6 +282947,18 @@ class _McpChatDialogState extends State<_McpChatDialog>
       _unsplitChat();
       return;
     }
+    // ★ = ユーザー要望「API 画面同士でも画面分割できるようにして」。
+    //   会話の札が 2 枚以上ある時は、 会話どうしで並べる (2 枚目を開いたのは
+    //   利用者のはっきりした意思なので、 それを優先してよい)。 1 枚しか
+    //   無い時は今までどおり CLI と並べる。
+    final others = _openChatIds(provider)
+        .where((e) => e != provider.mcpCurrentSessionId)
+        .toList();
+    if (others.isNotEmpty) {
+      _ensureSplitWidth();
+      _splitChatWithChat(provider, others.last);
+      return;
+    }
     AgentCliSession? mate;
     for (final t in _cliTabs.reversed) {
       if (!t.running) continue;
@@ -282183,11 +282970,11 @@ class _McpChatDialogState extends State<_McpChatDialog>
           const Color(0xFFE5A23C));
       return;
     }
-    // ★ 普段のダイアログは 560px なので、 1 枚ぶん (360px) が 2 つ取れない
-    //   (下の minPane)。 押しても何も出ないのは分かりにくいので、 先に
-    //   全画面にしてから並べる (= 全画面ボタンを押したのと同じ)。 ペインの
-    //   中は入れ物が大きさを持っているので触らない。
-    if (!widget.paneMode && !_isPanelMaximized) _toggleFullscreen();
+    // ★ = ユーザー要望「分割画面にすると自動的に全画面になるのは辞めて
+    //   欲しい」+「横幅が一定の大きさにならないと両方出てこないなら、
+    //   その最低限の大きさまで自動で拡大されるように」。 全画面にはせず、
+    //   **足りないぶんだけ**広げる。
+    _ensureSplitWidth();
     _splitChatWith(provider, mate);
   }
 
@@ -282213,16 +283000,27 @@ class _McpChatDialogState extends State<_McpChatDialog>
   /// 会話の列 [chat] の右に CLI を足す。 並べていない時は**そのまま返す**
   /// (= 今までの形を 1 つも変えない)。
   Widget _buildChatSideBySide(MindMapProvider provider, Widget chat) {
+    // ★ 張り付いた欄 (= 右側そのもの) は更に分割しない (入れ子を作らない)。
+    if (widget.boundSessionId != null) return chat;
     final s = _activeSideSession;
-    if (s == null) {
+    final chatId = _activeSideChatId(provider);
+    if (s == null && chatId == null) {
       _sideCliSession = null;
       _sideTerminal = null;
+      _sideChatSessionId = null;
       return chat;
     }
-    // 欄を開き直した後 (覚えている相手だけ残っている時) もここで組み直す。
-    final cached = _sideTerminal;
-    if (cached is! AgentTerminal || !identical(cached.session, s)) {
-      _sideTerminal = _buildCliTerminal(provider, s);
+    // 右に置く物。 会話が指定されていればそちら、 無ければ端末。
+    late final Widget rightPane;
+    if (chatId != null) {
+      rightPane = _buildSideChatPane(provider, chatId);
+    } else {
+      // 欄を開き直した後 (覚えている相手だけ残っている時) もここで組み直す。
+      final cached = _sideTerminal;
+      if (cached is! AgentTerminal || !identical(cached.session, s!)) {
+        _sideTerminal = _buildCliTerminal(provider, s!);
+      }
+      rightPane = _sideTerminal!;
     }
     return LayoutBuilder(builder: (_, cons) {
       final w = cons.maxWidth;
@@ -282230,7 +283028,12 @@ class _McpChatDialogState extends State<_McpChatDialog>
       //   いる CLI の桁数がその場で変わり、 広げても元には戻らない =
       //   agent_cli_session.dart の `pty.resize`)。 足りない時は会話だけを
       //   出す (覚えている相手は残すので、 広げればまた並ぶ)。
-      const minPane = 360.0;
+      // ★ = ユーザー要望「フローティングモードなどでも分割画面にできる
+      //   ように」。 全画面へ勝手に広げるのをやめた代わりに、 並べられる
+      //   下限を下げる (浮かせた窓の既定 860x560 でも並ぶように)。
+      //   端末どうしの左右 (上の 360) は、 走っている CLI の桁数が変わる
+      //   ので下げない。
+      const minPane = 300.0;
       // ★ 左の下限は右と別に取る。 左に入るのは会話**だけ**ではなく、
       //   見出しの帯も書き込み口も同じ列の中に居る。 帯のボタンを詰めるか
       //   どうか ([_narrowHeader]) は**欄ぜんたい**の幅で決まるので、
@@ -282241,7 +283044,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
       // ★ [_splitRatio] は端末どうしの左右と共通なので、 あちらで左を
       //   細くしたまま会話と並べると、 何も掴まなくてもこの幅になる。
       //   だから描く時に必ずここで挟み直す。
-      const minChat = 560.0;
+      const minChat = 330.0;
       if (w < minChat + minPane + 8) return chat;
       final usable = w - 8;
       // 取り分は端末どうしの左右と同じ物を使い回すが、 下限は左右で別
@@ -282256,8 +283059,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
         Expanded(flex: lf, child: _buildCliSplitPane(0, chat, true)),
         _buildCliSplitHandle(w),
         Expanded(
-            flex: 1000 - lf,
-            child: _buildCliSplitPane(1, _sideTerminal!, true)),
+            flex: 1000 - lf, child: _buildCliSplitPane(1, rightPane, true)),
       ]);
     });
   }
@@ -282271,6 +283073,11 @@ class _McpChatDialogState extends State<_McpChatDialog>
   /// 開いた直後に「パソコンに入れた AI を使う」 の一覧から始めるか
   /// (= ユーザー要望: API から呼ぶのと項目を分ける)。
   static bool openCliListOnStart = false;
+
+  /// 開いた直後に、 ここのフォルダーで殻のタブを 1 枚足す
+  /// (= ユーザー要望: カスタムボタンのターミナルを AI アシスタントの
+  ///  タブとして開く)。 使ったら null に戻す。
+  static String? openShellDirOnStart;
 
   void _showInlineTerminal(Widget term, String title,
       {bool isTerminal = true}) {
@@ -282468,6 +283275,10 @@ class _McpChatDialogState extends State<_McpChatDialog>
         onPickLanguage: session.supportsSlashCommands
             ? () => unawaited(_pickAgentCliLanguage(provider, session))
             : null,
+        // ★ 本文の右クリックに一覧を出す (= ユーザー要望)。 実機で確かめたら
+        //   **主の枠の端末には付いていなかった** (付けたのは左右に並べた時に
+        //   使う [_buildCliTerminal] だけで、 端末は 3 か所で組んでいる)。
+        onContextMenu: (pos) => unawaited(_showTabStripMenu(provider, pos)),
       ),
       session.title,
     );
@@ -282507,8 +283318,12 @@ class _McpChatDialogState extends State<_McpChatDialog>
   /// ★ AI アシスタントは [AgentCliSession] ではないので、 タブの並び
   ///   ([_cliTabs]) には入れられない。 選ばれたら欄を会話へ戻す
   ///   (帯の先頭に固定で出している札と同じ動き)。
+  /// [at] … 一覧を出す画面座標。 渡されるとこちらが優先
+  ///   (= ユーザー指摘「押したボタンの位置に項目が出るように。 現状
+  ///   左下から出てくるのはおかしい」。 右クリックから呼ぶ時は掴む
+  ///   ボタンが無いので、 押した所をそのまま渡す)。
   Future<void> _newCliTab(MindMapProvider provider,
-      [BuildContext? anchor]) async {
+      [BuildContext? anchor, Offset? at]) async {
     if (!mounted) return;
     // 探索の結果は控え (_cache) から返るので、 ふつうは待たずに返る。
     final list = AgentCli.supported
@@ -282525,15 +283340,20 @@ class _McpChatDialogState extends State<_McpChatDialog>
     final nav = Navigator.of(ctx, rootNavigator: !widget.floatingPanel);
     final overlay = nav.overlay?.context.findRenderObject() as RenderBox?;
     final box = ctx.findRenderObject() as RenderBox?;
-    final origin = box == null
-        ? const Offset(120, 120)
-        : box.localToGlobal(box.size.bottomLeft(Offset.zero),
-            ancestor: overlay);
+    // ★ 画面座標が渡された時はそこに出す。 渡されない時だけ、 掴んだ
+    //   ボタンの左下から出す (= 今までどおり)。 anchor も無い時に
+    //   `context` の左下を使うと、 欄ぜんたいの左下 = 画面の隅に出る。
+    final origin = at != null
+        ? (overlay == null ? at : overlay.globalToLocal(at))
+        : (box == null
+            ? const Offset(120, 120)
+            : box.localToGlobal(box.size.bottomLeft(Offset.zero),
+                ancestor: overlay));
     // ★ 狭い所 (浮かせた窓・分割ペイン) では、 決め打ちの幅だと札がはみ出す。
     final maxW =
         math.max(160.0, math.min(260.0, MediaQuery.sizeOf(ctx).width - 96));
     final pro = provider.canUseCliAi;
-    final picked = await showMenu<String>(
+    var picked = await showMenu<String>(
       context: ctx,
       // ★ この欄の他の窓 (_showInstallBlockedDialog など) と同じ決まりに
       //   そろえる。 浮かせた窓の中では根っこへ押し込まない。
@@ -282546,6 +283366,23 @@ class _McpChatDialogState extends State<_McpChatDialog>
       position: RelativeRect.fromRect(origin & const Size(1, 1),
           Offset.zero & (overlay?.size ?? const Size(1920, 1080))),
       items: <PopupMenuEntry<String>>[
+        // ── 新しい会話 (= ユーザー要望: 「新しい会話」 から CLI の
+        //    セッションも呼べるように)。 この一覧は元から CLI を並べて
+        //    いるので、 会話を始める口をここへ足して 1 か所にまとめる。 ──
+        // ★ = ユーザー指摘「新しい会話って項目自体が押せるのっておかしく
+        //   ない? 押せないようにして、 その下の項目から押せるようにしなきゃ」。
+        //   これは**何の一覧か**を言う見出しで、 選ぶ物ではない。
+        //   `enabled: false` で押せなくし、 小さな灰色の字にする。
+        PopupMenuItem<String>(
+          value: 'newchat',
+          enabled: false,
+          height: 26,
+          child: Text(provider.t('mcp.newSession'),
+              style: const TextStyle(
+                  color: Colors.white38,
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.w700)),
+        ),
         // ── AI アシスタント (= この欄そのものの会話の画面) ──
         PopupMenuItem<String>(
           value: 'chat',
@@ -282560,7 +283397,11 @@ class _McpChatDialogState extends State<_McpChatDialog>
         ),
         if (list.isNotEmpty) const PopupMenuDivider(),
         // ── パソコンに入れた AI (入っていない物は押せない札で出す) ──
-        for (final f in list)
+        //    ★ = ユーザー要望「タブ毎にログインするアカウントを分けて、
+        //      別々の垢で codex を 2 タブ開けるように」。 垢を 2 つ以上
+        //      持っている CLI は、 **垢ごとの項目**も下に並べる。
+        //      1 つしか無い CLI は今までどおり 1 項目だけ。
+        for (final f in list) ...[
           PopupMenuItem<String>(
             value: 'cli:${f.spec.kind.name}',
             height: f.installed && pro ? 38 : 56,
@@ -282606,34 +283447,75 @@ class _McpChatDialogState extends State<_McpChatDialog>
               ),
             ]),
           ),
+          if (f.installed && pro)
+            for (final a in AgentCli.accountList(f.spec.kind))
+              if (AgentCli.accountList(f.spec.kind).length > 1)
+                PopupMenuItem<String>(
+                  value: 'cliacc:${f.spec.kind.name}:${a.id}',
+                  height: 32,
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    const SizedBox(width: 24),
+                    const Icon(Icons.switch_account_rounded,
+                        size: 13, color: Colors.white38),
+                    const SizedBox(width: 7),
+                    ConstrainedBox(
+                      constraints: BoxConstraints(maxWidth: maxW),
+                      child: Text(
+                          _cliAccountLabel(provider, a, f.spec.kind),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              color: Colors.white70, fontSize: 11.5)),
+                    ),
+                  ]),
+                ),
+        ],
         const PopupMenuDivider(),
-        // ── ただのターミナル ──
-        PopupMenuItem<String>(
-          value: 'shell',
-          height: 38,
-          enabled: pro && AgentCli.supported,
-          child: Row(mainAxisSize: MainAxisSize.min, children: [
-            Icon(Icons.terminal_rounded,
-                size: 15,
-                color: pro && AgentCli.supported
-                    ? Colors.white54
-                    : Colors.white24),
-            const SizedBox(width: 9),
-            Text(provider.t('cli.terminal'),
-                style: TextStyle(
-                    color: pro && AgentCli.supported
-                        ? Colors.white
-                        : Colors.white38,
-                    fontSize: 12.5)),
-          ]),
-        ),
+        // ── 殻 (= ユーザー要望「コマンドプロンプトや bash、 zsh も選択
+        //    できるように。 その環境で動作しないのであれば別だけど」)。
+        //    **入っている物だけ**を並べる (入っていない物は出さないので、
+        //    押して失敗する事が無い)。 同梱はしない。
+        for (final sh in AgentCli.availableShells())
+          PopupMenuItem<String>(
+            value: 'shell:${sh.id}',
+            height: 38,
+            enabled: pro && AgentCli.supported,
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(Icons.terminal_rounded,
+                  size: 15,
+                  color: pro && AgentCli.supported
+                      ? Colors.white54
+                      : Colors.white24),
+              const SizedBox(width: 9),
+              Text(sh.label,
+                  style: TextStyle(
+                      color: pro && AgentCli.supported
+                          ? Colors.white
+                          : Colors.white38,
+                      fontSize: 12.5)),
+            ]),
+          ),
       ],
     );
     if (picked == null || !mounted) return;
+    // 見出しは押せないので届かないが、 念のため素通りさせる。
+    if (picked == 'newchat') return;
     if (picked == 'chat') {
-      // ★ 会話は端末ではないので、 タブを増やすのではなく欄を会話へ戻す。
-      //   走っている CLI は止めない (_cliTabs はそのまま残る)。
+      // ★ = ユーザー指摘「AI(API) を開いた状態から AI(API) を押したら
+      //   新しいタブが開くようになってなくない?」。 この一覧は「新しい会話」
+      //   の見出しの下なので、 押されたら**必ず新しい札を開く**。
+      //   今出している会話へ戻りたい時は、 帯の札を押す。
       _backToChatView();
+      await provider.newMcpSession();
+      if (!mounted) return;
+      final fresh = provider.mcpCurrentSessionId;
+      if (fresh != null && !_openChatTabIds.contains(fresh)) {
+        _openChatTabIds.add(fresh);
+      }
+      setState(() {
+        _msgs.clear();
+        _attachments.clear();
+      });
       return;
     }
     // ★ = ユーザー要望「一々 CLI 画面を開こうとする度にどこのフォルダーを
@@ -282643,13 +283525,18 @@ class _McpChatDialogState extends State<_McpChatDialog>
     await _ensureCliDirsLoaded();
     if (!mounted) return;
     final tabDir = _cliWorkDir;
-    if (picked == 'shell') {
+    if (picked.startsWith('shell')) {
       // ★ [_openPlainTerminal] は使わない。 あれは見出しを付け替えられず、
       //   何枚開いても全部「ターミナル」 になって帯で見分けが付かない。
+      // ★ どの殻かは選ばれた項目で決まる (= ユーザー要望: コマンドプロンプト
+      //   や bash、 zsh も選べるように)。 その場限りなので、 設定として
+      //   覚えている物 ([provider.terminalShellId]) は書き換えない。
+      final shellId =
+          picked.startsWith('shell:') ? picked.substring(6) : '';
       final dir =
           tabDir.isNotEmpty ? tabDir : await terminalBaseDir(provider);
       if (!mounted) return;
-      final s = buildShellSession(provider, dir);
+      final s = buildShellSession(provider, dir, shellId: shellId);
       final n = _nextCliTabTitle(s.title);
       _runAgentCliSession(
           provider,
@@ -282662,6 +283549,15 @@ class _McpChatDialogState extends State<_McpChatDialog>
                   workingDirectory: s.workingDirectory,
                   isShell: true));
       return;
+    }
+    // 垢を指定して開く (= ユーザー要望: 別々の垢で 2 タブ)。
+    String? accountWanted;
+    if (picked.startsWith('cliacc:')) {
+      final rest = picked.substring(7);
+      final at = rest.indexOf(':');
+      if (at < 0) return;
+      accountWanted = rest.substring(at + 1);
+      picked = 'cli:${rest.substring(0, at)}';
     }
     if (!picked.startsWith('cli:')) return;
     final key = picked.substring(4);
@@ -282678,13 +283574,19 @@ class _McpChatDialogState extends State<_McpChatDialog>
     //   ([_openAgentCliTerminal] :281826 と同じ組み立て)。 ここを
     //   spec.label だけにすると、 アカウント名入りの 1 枚目を数えた上で
     //   2 枚目からアカウント名が落ちて、 どの垢のタブか分からなくなる。
-    final acc = AgentCli.activeAccount(found.spec.kind);
+    final acc = accountWanted == null
+        ? AgentCli.activeAccount(found.spec.kind)
+        : AgentCli.accountList(found.spec.kind).firstWhere(
+            (e) => e.id == accountWanted,
+            orElse: () => AgentCli.activeAccount(found.spec.kind));
     final base = acc.id.isEmpty
         ? found.spec.label
         : '${found.spec.label} — '
             '${_cliAccountLabel(provider, acc, found.spec.kind)}';
     await _openAgentCliTerminal(provider, found,
-        titleOverride: _nextCliTabTitle(base), dirOverride: tabDir);
+        titleOverride: _nextCliTabTitle(base),
+        dirOverride: tabDir,
+        accountOverride: accountWanted);
   }
 
   /// 同じ物をもう 1 枚開く時の見出し (2 枚目から番号を振る)。
@@ -282804,8 +283706,11 @@ class _McpChatDialogState extends State<_McpChatDialog>
   ///
   /// 返り値 … null = 取り消し / '' = 既定 (開いているページの置き場) /
   ///          それ以外 = そのフォルダー。
+  /// [at] … 一覧を出す画面座標 (= ユーザー指摘「フォルダーを選ぶで左下から
+  ///   出てくるのはおかしい。 押したボタンの位置に出して」)。 右クリックの
+  ///   一覧から呼ぶ時は掴むボタンが無いので、 押した所をそのまま渡す。
   Future<String?> _pickCliTabDir(
-      MindMapProvider provider, BuildContext? anchor) async {
+      MindMapProvider provider, BuildContext? anchor, [Offset? at]) async {
     if (!mounted) return null;
     await _ensureCliDirsLoaded();
     if (!mounted) return null;
@@ -282815,10 +283720,12 @@ class _McpChatDialogState extends State<_McpChatDialog>
     final nav = Navigator.of(ctx, rootNavigator: !widget.floatingPanel);
     final overlay = nav.overlay?.context.findRenderObject() as RenderBox?;
     final box = ctx.findRenderObject() as RenderBox?;
-    final origin = box == null
-        ? const Offset(120, 120)
-        : box.localToGlobal(box.size.bottomLeft(Offset.zero),
-            ancestor: overlay);
+    final origin = at != null
+        ? (overlay == null ? at : overlay.globalToLocal(at))
+        : (box == null
+            ? const Offset(120, 120)
+            : box.localToGlobal(box.size.bottomLeft(Offset.zero),
+                ancestor: overlay));
     final maxW =
         math.max(160.0, math.min(320.0, MediaQuery.sizeOf(ctx).width - 96));
     final carry = provider.cliContinueDir.trim();
@@ -283017,17 +283924,378 @@ class _McpChatDialogState extends State<_McpChatDialog>
         isTerminal: false);
   }
 
+  /// 帯のフォルダーの札から、 見るフォルダーを選び直す。
+  ///
+  /// ★ = ユーザー指摘「フォルダーボタンを開いても新しい会話の項目が出てくる
+  ///   のはおかしい。 どのフォルダーの中の要素を編集するかという話だから、
+  ///   フォルダー選択ができないとおかしい」。
+  /// ★ 走っている擬似端末の現在地は後から変えられない
+  ///   (`Pty.start(workingDirectory:)` に渡す 1 回きり) ので、 選んだ先では
+  ///   **同じ CLI をもう 1 枚開く**。 選んだ場所は次からの既定にもなる。
+  /// 帯に出す「フォルダーの札」 の相手 (最大 2 つ = 左右の端末)。
+  ///
+  /// ★ = ユーザー要望「分割画面毎に別のフォルダーが開いているのが分かる
+  ///   ように 2 つ分出して欲しい」。 主の枠と、 右に並べている物を見る
+  ///   (会話は置き場を持たないので出ない)。
+  List<AgentCliSession> _tabStripDirSessions() {
+    final out = <AgentCliSession>[];
+    if (_inlineIsTerminal && _lastCliSession != null) out.add(_lastCliSession!);
+    final sp = _activeSplitSession;
+    if (sp != null && !out.contains(sp)) out.add(sp);
+    final sd = _activeSideSession;
+    if (sd != null && !out.contains(sd)) out.add(sd);
+    return out;
+  }
+
+  Future<void> _pickCliTabDirAndReopen(
+      MindMapProvider provider, BuildContext anchor,
+      [AgentCliSession? forSession, Offset? at]) async {
+    final dir = await _pickCliTabDir(provider, anchor, at);
+    if (dir == null || !mounted) return;
+    await _setCliWorkDir(dir);
+    if (!mounted) return;
+    final target = forSession ?? _lastCliSession;
+    final key = target?.cliKey ?? '';
+    if (key.isEmpty) {
+      // ★ = ユーザー要望「シェルを開いた状態でフォルダーを開くを押して
+      //   フォルダーを選択したら、 cd コマンドでそのフォルダーに移動される
+      //   ようにして欲しい」。 シェルは起こし直さなくても `cd` で移れる
+      //   (CLI と違い、 会話の続きを抱えていないため)。
+      if (target != null && target.isShell && target.running) {
+        target.send(_cdCommandFor(target, dir));
+        target.noteDirectoryChanged(dir);
+        _focusCliPane(target);
+        if (mounted) setState(() {});
+        showTopToast(context, provider.t('cli.tabDirMoved'),
+            const Color(0xFF43B97F));
+        return;
+      }
+      // 素のターミナルなど、 CLI の種類が分からない物。 覚えるだけにする。
+      showTopToast(context, provider.t('cli.tabDirSaved'),
+          const Color(0xFF43B97F));
+      return;
+    }
+    final list = await AgentCli.findAll();
+    if (!mounted) return;
+    for (final f in list) {
+      if (f.spec.kind.name != key || !f.installed) continue;
+      final acc = AgentCli.activeAccount(f.spec.kind);
+      final base = acc.id.isEmpty
+          ? f.spec.label
+          : '${f.spec.label} — '
+              '${_cliAccountLabel(provider, acc, f.spec.kind)}';
+      await _openAgentCliTerminal(provider, f,
+          titleOverride: _nextCliTabTitle(base), dirOverride: dir);
+      return;
+    }
+    if (mounted) {
+      showTopToast(
+          context, provider.t('cli.tabDirSaved'), const Color(0xFF43B97F));
+    }
+  }
+
+  /// CLI の札を右クリックした時の一覧。
+  ///
+  /// ★ = ユーザー要望「codex や claudecode のタブを右クリックした時に
+  ///   ログインしているアカウントが分かるようにして欲しいのと、 切り替え
+  ///   られるようにして欲しい」。 見出しに垢名が出るのは既定以外の垢で
+  ///   開いた時だけなので、 札を見ただけでは分からなかった。
+  /// ★ 走っている擬似端末の垢は後から変えられない (置き場は環境変数で
+  ///   `Pty.start` に渡す 1 回きり) ので、 選んだ垢では**同じフォルダーで
+  ///   開き直す**。 元の札は、 何もしていなければそのまま畳む。
+  Future<void> _showCliTabMenu(
+      MindMapProvider provider, AgentCliSession s, Offset globalPos) async {
+    if (!mounted) return;
+    AgentCliKind? found;
+    for (final k in AgentCliKind.values) {
+      if (k.name == s.cliKey) found = k;
+    }
+    final AgentCliKind? kind = found;
+    // 垢の宛名 (CLI が置いた控えから読む) を先に用意する。 待たずに出すと
+    // 置き場の id のまま一瞬表示されてしまう。
+    if (kind != null) {
+      try {
+        await AgentCli.ensureAccountNames(kind);
+      } catch (_) {}
+    }
+    if (!mounted) return;
+    // ★ = ユーザー指摘「ログイン中のアカウントの『既定』 は何のアカウント
+    //   か分からないから辞めて」。 既定の置き場は、 宛名が読めた時だけ
+    //   (= 実際にその垢でログインしている時だけ) 並べる。
+    final accounts = <AgentAccount>[];
+    if (kind != null) {
+      for (final a in AgentCli.accountList(kind)) {
+        if (a.id.isEmpty &&
+            AgentCli.accountNameFor(kind, a.id).trim().isEmpty) {
+          continue;
+        }
+        accounts.add(a);
+      }
+    }
+    final nav = Navigator.of(context, rootNavigator: !widget.floatingPanel);
+    final overlay = nav.overlay?.context.findRenderObject() as RenderBox?;
+    final pos = overlay == null ? globalPos : overlay.globalToLocal(globalPos);
+    // 今なにか並べているか (帯の右クリックと同じ判定)。
+    final split = _activeSplitSession != null ||
+        _activeSideSession != null ||
+        _activeSideChatId(provider) != null;
+    final picked = await showMenu<String>(
+      context: context,
+      useRootNavigator: !widget.floatingPanel,
+      color: const Color(0xFF1E1E32),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(10),
+        side: BorderSide(color: Colors.white.withValues(alpha: 0.12)),
+      ),
+      position: RelativeRect.fromRect(
+          pos & const Size(1, 1),
+          Offset.zero & (overlay?.size ?? const Size(1920, 1080))),
+      items: <PopupMenuEntry<String>>[
+        // ★ = ユーザー指摘「右クリックした時に項目が 4 つ出る時と 2 つしか
+        //   出ない時があるから、 4 つ出るようにして」。 帯の何も無い所を
+        //   右クリックした時 ([_showTabStripMenu]) と同じ顔ぶれにする。
+        PopupMenuItem<String>(
+          value: 'new',
+          height: 38,
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            const Icon(Icons.add_rounded, size: 15, color: Color(0xFF6C63FF)),
+            const SizedBox(width: 9),
+            Text(provider.t('cli.newTabPick'),
+                style: const TextStyle(color: Colors.white, fontSize: 12.5)),
+          ]),
+        ),
+        if (accounts.isNotEmpty) ...[
+          const PopupMenuDivider(height: 8),
+          PopupMenuItem<String>(
+            enabled: false,
+            height: 30,
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              const Icon(Icons.switch_account_rounded,
+                  size: 13, color: Colors.white38),
+              const SizedBox(width: 8),
+              Text(provider.t('cli.tabAccount'),
+                  style:
+                      const TextStyle(color: Colors.white38, fontSize: 10.5)),
+            ]),
+          ),
+          for (final a in accounts)
+            PopupMenuItem<String>(
+              value: 'acc:${a.id}',
+              height: 34,
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(
+                    a.id == s.accountId
+                        ? Icons.check_circle_rounded
+                        : Icons.circle_outlined,
+                    size: 14,
+                    color: a.id == s.accountId
+                        ? const Color(0xFF9CCC65)
+                        : Colors.white24),
+                const SizedBox(width: 9),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 220),
+                  child: Text(_cliAccountLabel(provider, a, kind),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          color: a.id == s.accountId
+                              ? const Color(0xFF9CCC65)
+                              : Colors.white,
+                          fontSize: 12.5)),
+                ),
+              ]),
+            ),
+          PopupMenuItem<String>(
+            value: 'accadd',
+            height: 34,
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              const Icon(Icons.add_rounded, size: 14, color: Color(0xFF4FC3F7)),
+              const SizedBox(width: 9),
+              Text(provider.t('cli.accountAdd'),
+                  style: const TextStyle(color: Colors.white, fontSize: 12.5)),
+            ]),
+          ),
+          PopupMenuItem<String>(
+            enabled: false,
+            height: 26,
+            child: Text(provider.t('cli.tabAccountSwitchNote'),
+                style: const TextStyle(color: Colors.white24, fontSize: 10)),
+          ),
+          const PopupMenuDivider(height: 8),
+        ],
+        if (accounts.isEmpty && kind != null)
+          PopupMenuItem<String>(
+            value: 'accadd',
+            height: 38,
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              const Icon(Icons.switch_account_rounded,
+                  size: 15, color: Color(0xFF4FC3F7)),
+              const SizedBox(width: 9),
+              Text(provider.t('cli.accountAdd'),
+                  style: const TextStyle(color: Colors.white, fontSize: 12.5)),
+            ]),
+          ),
+        PopupMenuItem<String>(
+          value: 'dir',
+          height: 38,
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            const Icon(Icons.folder_open_rounded,
+                size: 15, color: Color(0xFF4FC3F7)),
+            const SizedBox(width: 9),
+            Text(provider.t('cli.tabDirPick'),
+                style: const TextStyle(color: Colors.white, fontSize: 12.5)),
+          ]),
+        ),
+        PopupMenuItem<String>(
+          value: 'close',
+          height: 38,
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            const Icon(Icons.close_rounded, size: 15, color: Color(0xFFFF8A80)),
+            const SizedBox(width: 9),
+            Text(provider.t('cli.closeTab'),
+                style: const TextStyle(color: Colors.white, fontSize: 12.5)),
+          ]),
+        ),
+        PopupMenuItem<String>(
+          value: split ? 'unsplit' : 'split',
+          height: 38,
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Icon(
+                split
+                    ? Icons.close_fullscreen_rounded
+                    : Icons.vertical_split_rounded,
+                size: 15,
+                color: const Color(0xFF7CD992)),
+            const SizedBox(width: 9),
+            Text(provider.t(split ? 'cli.unsplit' : 'cli.split'),
+                style: const TextStyle(color: Colors.white, fontSize: 12.5)),
+          ]),
+        ),
+      ],
+    );
+    if (picked == null || !mounted) return;
+    if (picked == 'new') {
+      await _newCliTab(provider, null, globalPos);
+      return;
+    }
+    if (picked == 'split') {
+      // 右クリックした札が今出ていないなら、 まずそれを出してから並べる。
+      if (!identical(s, _lastCliSession) || _inlineTerminal == null) {
+        _onCliTabTap(provider, s);
+      }
+      if (!mounted) return;
+      _toggleCliSplit(provider);
+      return;
+    }
+    if (picked == 'unsplit') {
+      if (_activeSideSession != null || _activeSideChatId(provider) != null) {
+        _unsplitChat();
+      } else {
+        _unsplitCli();
+      }
+      return;
+    }
+    if (picked == 'close') {
+      _closeCliTab(provider, s);
+      return;
+    }
+    if (picked == 'dir') {
+      await _pickCliTabDirAndReopen(provider, context, s, globalPos);
+      return;
+    }
+    if (picked == 'accadd') {
+      if (kind == null) return;
+      final list = await AgentCli.findAll();
+      if (!mounted) return;
+      for (final f in list) {
+        if (f.spec.kind == kind && f.installed) {
+          await _addCliAccount(provider, f);
+          return;
+        }
+      }
+      return;
+    }
+    if (!picked.startsWith('acc:')) return;
+    final want = picked.substring(4);
+    if (want == s.accountId) return;
+    await _reopenCliTabWithAccount(provider, s, want);
+  }
+
+  /// 同じフォルダーのまま、 別のアカウントで開き直す。
+  Future<void> _reopenCliTabWithAccount(
+      MindMapProvider provider, AgentCliSession s, String accountId) async {
+    final list = await AgentCli.findAll();
+    if (!mounted) return;
+    for (final f in list) {
+      if (f.spec.kind.name != s.cliKey || !f.installed) continue;
+      // ★ 「切り替え」 なので札は増やさない。 ただし仕事の途中の物は残す
+      //   (勝手に止めると、 走らせていた指示が消える)。
+      if (!(s.running && (s.busy || s.queued.isNotEmpty))) {
+        _closeCliTab(provider, s);
+        if (!mounted) return;
+      }
+      final acc = AgentCli.accountList(f.spec.kind).firstWhere(
+          (e) => e.id == accountId,
+          orElse: () => AgentCli.activeAccount(f.spec.kind));
+      final base = acc.id.isEmpty
+          ? f.spec.label
+          : '${f.spec.label} — '
+              '${_cliAccountLabel(provider, acc, f.spec.kind)}';
+      await _openAgentCliTerminal(provider, f,
+          titleOverride: _nextCliTabTitle(base),
+          dirOverride: s.shownDirectory,
+          accountOverride: accountId);
+      return;
+    }
+  }
+
+  /// シェルに「そのフォルダーへ移れ」 と打ち込む一行を作る。
+  ///
+  /// ★ 引用の仕方はシェルごとに違う。 二重引用符だと PowerShell も Bash も
+  ///   中の `$` を展開してしまい、 Bash では `\` が逃がし記号になるので
+  ///   Windows の道がそのまま壊れる。 どちらも**単引用符**を使う。
+  String _cdCommandFor(AgentCliSession s, String dir) {
+    final low = s.exePath.toLowerCase().replaceAll('\\', '/');
+    final name = low.contains('/') ? low.split('/').last : low;
+    if (name == 'cmd.exe' || name == 'cmd') {
+      // コマンドプロンプトは単引用符を知らない。 ドライブも跨ぐので /d。
+      return 'cd /d "$dir"';
+    }
+    if (name.startsWith('bash') ||
+        name.startsWith('zsh') ||
+        name.startsWith('sh.') ||
+        name == 'sh') {
+      final posix = dir.replaceAll('\\', '/');
+      return "cd '" + posix.replaceAll("'", "'" + r"\'" + "'") + "'";
+    }
+    // PowerShell (既定)。
+    return "Set-Location -LiteralPath '" + dir.replaceAll("'", "''") + "'";
+  }
+
   /// タブを閉じる。 走っている物は一度たずねてから終わらせる。
   ///
   /// [anchor] は押した×ボタン自身の BuildContext。 確認をそのボタンの
   /// 近くに出すためだけに使う (= ユーザー要望)。
   void _closeCliTab(MindMapProvider provider, AgentCliSession s,
       [BuildContext? anchor]) {
-    if (s.running) {
+    // ★ = ユーザー要望「処理中のタスクが無い場合は確認なしで閉じれるように
+    //   して欲しい」。 以前は**生きてさえいれば**必ずたずねていたので、
+    //   ただ促し記号が出ているだけのシェルや、 待ち状態の CLI を閉じる時も
+    //   毎回 1 手増えていた。 本当に走っている時
+    //   (出力が続いている = [busy] / 順番待ちが残っている) だけたずねる。
+    if (s.running && (s.busy || s.queued.isNotEmpty)) {
       // たずねた後の後始末 (並びから外す・画面を移す) は [_endCliSession]
       // が [_dropCliTab] を通してやるので、 ここでは並びをいじらない。
       unawaited(_endCliSession(provider, s, anchor));
       return;
+    }
+    // ★ 走ってはいるが何もしていない物は、 ここで**止めてから**畳む。
+    //   [_dropCliTab] は並びから外すだけで擬似端末は止めないので、 これが
+    //   無いと画面から消えた後も裏で生き続ける (= 見えない居残り)。
+    if (s.running) {
+      try {
+        s.kill();
+      } catch (_) {}
     }
     // 終わっている物は、 たずねずにそのまま畳む。
     _dropCliTab(provider, s);
@@ -283038,6 +284306,276 @@ class _McpChatDialogState extends State<_McpChatDialog>
   ///
   /// ★ どのタブも [AgentCliSession] が ChangeNotifier なので、 どれかの
   ///   様子が変わったら描き直す (動いている / 終わった の印のため)。
+  // ── AI (API) の会話を「タブ」 として並べる (= ユーザー要望) ──────────
+  //
+  //   会話そのものは provider が持っている (`mcpSessions`)。 ここが覚えて
+  //   いるのは**帯に出しておく会話の id** だけ。 × で閉じても会話は消えない
+  //   (一覧からまた開ける = 端末のタブと同じ考え方)。
+  //   ★ 端末のタブ (`_cliTabs`) と同じく static。 欄を開き直しても並びが
+  //     残るようにするため。
+  static final List<String> _openChatTabIds = <String>[];
+
+  /// 帯に出す会話の id (今の会話は必ず入る)。
+  List<String> _openChatIds(MindMapProvider provider) {
+    final cur = provider.mcpCurrentSessionId;
+    // 消えた会話の札は落とす。
+    _openChatTabIds.removeWhere(
+        (id) => !provider.mcpSessions.any((e) => '${e['id']}' == id));
+    // ★ 実機で分かった不具合: × で閉じても、 ここが**今の会話を入れ直して
+    //   いた**ので札が消えなかった。 会話の画面を出している時 (= 札が
+    //   無いと戻る所が無い時) と、 他に出す物が何も無い時だけ入れ直す。
+    final needChip = _inlineTerminal == null || _cliTabs.isEmpty;
+    if (needChip &&
+        cur != null &&
+        cur.isNotEmpty &&
+        !_openChatTabIds.contains(cur)) {
+      _openChatTabIds.add(cur);
+    }
+    // ★ この行が犯人だった: 上の判定を通り抜けても、 ここが無条件で
+    //   入れ直すので × を押しても札が消えなかった (実機で判明)。
+    //   戻る所が本当に無い時だけにする。
+    if (needChip && _openChatTabIds.isEmpty && cur != null) {
+      _openChatTabIds.add(cur);
+    }
+    return List<String>.unmodifiable(_openChatTabIds);
+  }
+
+  /// 会話 1 本ぶんの札。
+  Widget _buildChatTabChip(MindMapProvider provider, String id) {
+    final on = _inlineTerminal == null && provider.mcpCurrentSessionId == id;
+    final title = provider.mcpSessionTitle(id);
+    // ★ = ユーザー要望「AI(API) のタブ自体も動かせるようにして、 削除できる
+    //   ようにして」。 × は**他に行き先がある時**だけ出す (最後の 1 枚を
+    //   閉じると戻る所が無くなるため)。 会話は消さず、 帯から外すだけ。
+    final many = _openChatTabIds.length > 1 || _cliTabs.isNotEmpty;
+    // ★ 端末のタブをここへ落とすと、 会話と左右に並ぶ (= 今までどおり)。
+    return DragTarget<AgentCliSession>(
+      onWillAcceptWithDetails: (d) => _cliTabs.contains(d.data),
+      onAcceptWithDetails: (d) => _splitChatWith(provider, d.data),
+      builder: (_, cand, __) => LongPressDraggable<String>(
+        data: id,
+        dragAnchorStrategy: pointerDragAnchorStrategy,
+        onDragStarted: () {
+          if (mounted) setState(() => _draggingChatTab = true);
+        },
+        onDragEnd: (_) {
+          if (mounted) setState(() => _draggingChatTab = false);
+        },
+        onDraggableCanceled: (_, __) {
+          if (mounted) setState(() => _draggingChatTab = false);
+        },
+        feedback: Material(
+          color: Colors.transparent,
+          child: Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: const Color(0xFF3C3C6E),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Text(
+                title.isEmpty ? provider.t('cli.newTabAssistant') : title,
+                style: const TextStyle(color: Colors.white, fontSize: 11.5)),
+          ),
+        ),
+        child: Padding(
+        padding: const EdgeInsets.only(left: 0, right: 0, top: 3, bottom: 3),
+        child: Material(
+          color: cand.isNotEmpty
+              ? const Color(0xFF4FC3F7).withValues(alpha: 0.28)
+              : on
+                  ? const Color(0xFF6C63FF).withValues(alpha: 0.22)
+                  : Colors.white.withValues(alpha: 0.04),
+          borderRadius: BorderRadius.circular(6),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(6),
+            onTap: () async {
+              // 端末を出していたら会話へ戻し、 押した会話へ切り替える。
+              _backToChatView();
+              if (provider.mcpCurrentSessionId != id) {
+                await provider.switchMcpSession(id);
+                if (!mounted) return;
+                _reloadFromSession();
+              }
+              if (mounted) setState(() {});
+            },
+            child: Padding(
+              padding: EdgeInsets.only(left: 8, right: many ? 2 : 8),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(Icons.auto_awesome_rounded,
+                    size: 12, color: on ? Colors.white : Colors.white38),
+                const SizedBox(width: 6),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 140),
+                  child: Text(
+                      title.isEmpty
+                          ? provider.t('cli.newTabAssistant')
+                          : title,
+                      maxLines: 1,
+                      softWrap: false,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          color: on ? Colors.white : Colors.white60,
+                          fontSize: 11.5,
+                          fontWeight:
+                              on ? FontWeight.w700 : FontWeight.w400)),
+                ),
+                // ★ 1 本しか無い時は × を出さない (閉じると会話の画面へ
+                //   戻る道が無くなるため)。
+                if (many)
+                  IconButton(
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints(minWidth: 22, minHeight: 22),
+                    iconSize: 13,
+                    icon: Icon(Icons.close_rounded,
+                        size: 13,
+                        color: on ? Colors.white70 : Colors.white38),
+                    onPressed: () =>
+                        unawaited(_closeChatTab(provider, id)),
+                  ),
+              ]),
+            ),
+          ),
+        ),
+      ),
+      ),
+    );
+  }
+
+  /// 会話の札を帯から外す (会話そのものは消さない = 一覧から開き直せる)。
+  ///
+  /// ★ 札の × と Ctrl+W の両方から呼ぶので、 中身をここへ 1 つにまとめる。
+  Future<void> _closeChatTab(MindMapProvider provider, String id) async {
+    _openChatTabIds.remove(id);
+    if (provider.mcpCurrentSessionId == id && _openChatTabIds.isNotEmpty) {
+      await provider.switchMcpSession(_openChatTabIds.last);
+      if (!mounted) return;
+      _reloadFromSession();
+    } else if (_openChatTabIds.isEmpty && _cliTabs.isNotEmpty) {
+      // 会話の札が無くなったら、 走っている端末へ移る。
+      final next = _cliTabs.last;
+      _showRunningCliTerminal(provider, next);
+      _focusCliPane(next);
+      return;
+    }
+    if (mounted) setState(() {});
+  }
+
+  // ── Ctrl+W で今のタブを閉じる (= ユーザー要望) ────────────────────
+  //
+  //   ★ 端末 (xterm) はキーを自分で受け取ってしまうので、 焦点の連なりを
+  //     さかのぼる Shortcuts では届かない。 [HardwareKeyboard] の受け口は
+  //     焦点へ配る**前**に呼ばれるので、 ここで横取りする。
+  //   ★ この欄はいくつも開ける (埋め込み / 浮遊窓 / 右に並べた物) ので、
+  //     **焦点がこの欄の中にある時**だけ受け取る。 焦点を持っている
+  //     widget の BuildContext から親をたどって、 自分かどうかを見る。
+  //     キャンバスに焦点がある時は他人になるので、 本体側の Ctrl+W
+  //     (天気) とはぶつからない。
+  static final List<_McpChatDialogState> _livePanels =
+      <_McpChatDialogState>[];
+
+  bool _onPanelHotkey(KeyEvent e) {
+    if (e is! KeyDownEvent || !mounted) return false;
+    if (e.logicalKey != LogicalKeyboardKey.keyW) return false;
+    if (!HardwareKeyboard.instance.isControlPressed) return false;
+    final fctx = FocusManager.instance.primaryFocus?.context;
+    final owner = fctx?.findAncestorStateOfType<_McpChatDialogState>();
+    if (owner == null) {
+      // どこにも焦点が無い時だけ、 最後に開いた欄が引き受ける。
+      if (_livePanels.isEmpty || !identical(_livePanels.last, this)) {
+        return false;
+      }
+    } else if (!identical(owner, this)) {
+      return false;
+    }
+    _closeActiveTab(provider);
+    return true;
+  }
+
+  /// 今見ているタブを閉じる (Ctrl+W)。
+  ///
+  /// 左右に並べている時は、 焦点のある側の札を閉じる。
+  void _closeActiveTab(MindMapProvider provider) {
+    if (_inlineTerminal != null && _inlineIsTerminal) {
+      final mate = _activeSplitSession;
+      final target =
+          (mate != null && _splitFocusPane == 1) ? mate : _lastCliSession;
+      if (target != null) {
+        _closeCliTab(provider, target);
+        return;
+      }
+    }
+    // 会話の右に端末を並べていて、 焦点が右にある時は端末の方。
+    final side = _activeSideSession;
+    if (side != null && _splitFocusPane == 1) {
+      _closeCliTab(provider, side);
+      return;
+    }
+    // 会話の札。 最後の 1 枚で戻る所が無い時は閉じない (× と同じ決まり)。
+    final id = provider.mcpCurrentSessionId;
+    if (id == null || id.isEmpty) return;
+    if (_openChatTabIds.length <= 1 && _cliTabs.isEmpty) return;
+    unawaited(_closeChatTab(provider, id));
+  }
+
+  /// 会話の札を掴んでいる最中か。
+  bool _draggingChatTab = false;
+
+  /// 帯に出す札の並び (会話の id = String / 端末 = AgentCliSession)。
+  ///
+  /// ★ = ユーザー要望「AI(API) のタブも動かせるように」。 会話と端末を
+  ///   別々の並びで持っていた間は、 会話の札を端末の札の間へ動かせなかった。
+  ///   1 本にまとめて、 どちらも同じ受け口で並べ替えられるようにする。
+  static final List<Object> _tabOrder = <Object>[];
+
+  List<Object> _orderedTabs(MindMapProvider provider) {
+    final chat = _openChatIds(provider);
+    // 消えた物は落とす。
+    _tabOrder.removeWhere((e) =>
+        e is String ? !chat.contains(e) : !_cliTabs.contains(e));
+    // 新しく出来た物は末尾へ (会話 → 端末の順)。
+    for (final id in chat) {
+      if (!_tabOrder.contains(id)) _tabOrder.add(id);
+    }
+    for (final t in _cliTabs) {
+      if (!_tabOrder.any((e) => identical(e, t))) _tabOrder.add(t);
+    }
+    return List<Object>.unmodifiable(_tabOrder);
+  }
+
+  /// 会話の札と札の間に挟む受け口 (= 並べ替え)。
+  Widget _buildChatDropGap(int index) {
+    return DragTarget<String>(
+      onWillAcceptWithDetails: (d) => _openChatTabIds.contains(d.data),
+      onAcceptWithDetails: (d) {
+        final from = _openChatTabIds.indexOf(d.data);
+        if (from < 0) return;
+        var to = index;
+        if (from < to) to -= 1;
+        if (from == to) return;
+        setState(() {
+          final moved = _openChatTabIds.removeAt(from);
+          _openChatTabIds.insert(to.clamp(0, _openChatTabIds.length), moved);
+        });
+      },
+      builder: (_, cand, __) => Container(
+        width: cand.isNotEmpty
+            ? 26
+            : _draggingChatTab
+                ? 20
+                : 4,
+        margin: const EdgeInsets.symmetric(vertical: 5),
+        decoration: BoxDecoration(
+          color: cand.isEmpty
+              ? Colors.transparent
+              : const Color(0xFF4FC3F7).withValues(alpha: 0.7),
+          borderRadius: BorderRadius.circular(3),
+        ),
+      ),
+    );
+  }
+
   Widget _buildCliTabStrip(MindMapProvider provider) {
     return ListenableBuilder(
       // ★ その場の控えを渡す (= 生の並びをそのまま渡すと、 外した後の
@@ -283045,7 +284583,15 @@ class _McpChatDialogState extends State<_McpChatDialog>
       //   渡された並びを**参照のまま**持ち、 足す時も外す時もその時の
       //   中身をなぞるため)。
       listenable: Listenable.merge(List<Listenable?>.of(_cliTabs)),
-      builder: (_, __) => Container(
+      // ★ = ユーザー要望「右クリックに何も割り当てられていないのなら、
+      //   右クリックしたら画面分割や分割解除、 新しいタブを開くを選択
+      //   できるようにして欲しい」。 帯の何も無い所で受ける (札や +
+      //   ボタンの上では、 そちらが先に受け取る)。
+      builder: (_, __) => GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onSecondaryTapDown: (d) =>
+            unawaited(_showTabStripMenu(provider, d.globalPosition)),
+        child: Container(
         height: 30,
         decoration: const BoxDecoration(
           border: Border(bottom: BorderSide(color: Colors.white12)),
@@ -283060,56 +284606,37 @@ class _McpChatDialogState extends State<_McpChatDialog>
           //   (= ユーザー要望「AI(API)と codexCLI を画面分割で開けるように
           //   して欲しい」)。 端末どうしを結合する時と同じ手つき (タブを
           //   長押しで掴んで、 並べたい札の上で放す = b421)。
-          DragTarget<AgentCliSession>(
-            onWillAcceptWithDetails: (d) => _cliTabs.contains(d.data),
-            onAcceptWithDetails: (d) => _splitChatWith(provider, d.data),
-            builder: (_, cand, __) => Padding(
-              padding:
-                  const EdgeInsets.only(left: 4, right: 4, top: 3, bottom: 3),
-              child: Material(
-                color: cand.isNotEmpty
-                    ? const Color(0xFF4FC3F7).withValues(alpha: 0.28)
-                    : _inlineTerminal == null
-                        ? const Color(0xFF6C63FF).withValues(alpha: 0.22)
-                        : Colors.white.withValues(alpha: 0.04),
-                borderRadius: BorderRadius.circular(6),
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(6),
-                  onTap: _inlineTerminal == null ? null : _backToChatView,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                    child: Row(mainAxisSize: MainAxisSize.min, children: [
-                      Icon(Icons.auto_awesome_rounded,
-                          size: 12,
-                          color: _inlineTerminal == null
-                              ? Colors.white
-                              : Colors.white38),
-                      const SizedBox(width: 6),
-                      Text(provider.t('cli.newTabAssistant'),
-                          maxLines: 1,
-                          softWrap: false,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                              color: _inlineTerminal == null
-                                  ? Colors.white
-                                  : Colors.white60,
-                              fontSize: 11.5,
-                              fontWeight: _inlineTerminal == null
-                                  ? FontWeight.w700
-                                  : FontWeight.w400)),
-                    ]),
-                  ),
-                ),
-              ),
-            ),
-          ),
+          // ★ = ユーザー要望「AI(API) の新しい会話が機能していないから、
+          //   新しい会話セッションのタブが開かれるようにして」。 以前は
+          //   「AI (API)」 の札が 1 枚だけで、 新しい会話を始めても札は
+          //   増えず、 画面の中身が黙って入れ替わるだけだった (= 何も
+          //   起きていないように見える)。 開いている会話のぶんだけ札を出す。
+          // ★ 会話の札は**横に流せる**入れ物に入れる。 直に並べると、 会話を
+          //   何本か開いた時に帯からはみ出して黄黒の縞 (overflow) が出る
+          //   (= 札の数は利用者が増やせるので、 上限が無い)。
+          // ★ = ユーザー要望「AI(API) のタブ動かせないから動かせるように」
+          //   +「タブ名が入り切らなくなったらスクロール方式で」。
+          //   会話の札と端末の札を**1 本の並び**にして、 まるごと横に流せる
+          //   入れ物へ入れる。 こうすると会話の札も端末の札の間へ動かせるし、
+          //   入り切らない時はこの中だけが流れる (「+」 は外に残るので、
+          //   いつでも右端で待っている)。
           Expanded(
             child: ListView.builder(
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 4),
-              itemCount: _cliTabs.length,
-              itemBuilder: (_, i) {
-                final s = _cliTabs[i];
+              // ★ = ユーザー要望「ドラッグで位置を入れ替えられるように」。
+              //   札と札の**間**に細い受け口を挟む (偶数 = 受け口 /
+              //   奇数 = 札)。 札の上に落とした時は今までどおり結合なので、
+              //   どちらの操作も残る。
+              itemCount: _orderedTabs(provider).length * 2 + 1,
+              itemBuilder: (_, raw) {
+                if (raw.isEven) return _buildTabDropGap(raw ~/ 2);
+                final entry = _orderedTabs(provider)[raw ~/ 2];
+                // 会話の札 (id は String)。
+                if (entry is String) {
+                  return _buildChatTabChip(provider, entry);
+                }
+                final s = entry as AgentCliSession;
                 // ★ 左右に出している時は、 両方のタブを「出ている」 印に
                 //   する (= ユーザー要望: タブを結合させて左右分割)。
                 // ★ 会話 (AI アシスタント) を出している間は、 どの端末の
@@ -283119,10 +284646,26 @@ class _McpChatDialogState extends State<_McpChatDialog>
                 //   (= ユーザー要望「AI(API)と codexCLI を画面分割で」)。
                 //   こちらは主の枠が会話 (= [_inlineTerminal] が null) なので、
                 //   上の判定とは別に見る。
-                final on = ((identical(s, _lastCliSession) ||
-                            identical(s, _activeSplitSession)) &&
-                        _inlineTerminal != null) ||
-                    identical(s, _activeSideSession);
+                // ★ = ユーザー要望「アクティブになっているタブだけ色を
+                //   変えて欲しい」。 以前は左右に並べている間、 **両方**を
+                //   「出ている」 印にしていたので、 どちらに打っているのか
+                //   札からは分からなかった。 並べている時は
+                //   [_splitFocusPane] が指す側だけを色付きにする。
+                final mate = _activeSplitSession;
+                final side = _activeSideSession;
+                final bool on;
+                if (_inlineTerminal != null && mate != null) {
+                  // 端末どうしの左右: 左 = _lastCliSession / 右 = mate。
+                  final isLeft = identical(s, _lastCliSession);
+                  final isRight = identical(s, mate);
+                  on = (isLeft && _splitFocusPane == 0) ||
+                      (isRight && _splitFocusPane == 1);
+                } else if (side != null) {
+                  // 会話と端末の左右: 端末は右なので、 右に焦点がある時だけ。
+                  on = identical(s, side) && _splitFocusPane == 1;
+                } else {
+                  on = identical(s, _lastCliSession) && _inlineTerminal != null;
+                }
                 // ★ タブをタブの上へ落とすと結合する。 帯は横に流れるので
                 //   **長押しで掴む** (すぐ掴む形にすると帯を流せなくなる)。
                 return DragTarget<AgentCliSession>(
@@ -283141,6 +284684,18 @@ class _McpChatDialogState extends State<_McpChatDialog>
                       child: LongPressDraggable<AgentCliSession>(
                         data: s,
                         dragAnchorStrategy: pointerDragAnchorStrategy,
+                        // ★ 掴んでいる間だけ、 札の間の受け口を広げる
+                        //   (= 実機で試したら 10px では狙っても隣の札に
+                        //   落ちて結合になった)。 落とせる所を大きく見せる。
+                        onDragStarted: () {
+                          if (mounted) setState(() => _draggingCliTab = true);
+                        },
+                        onDragEnd: (_) {
+                          if (mounted) setState(() => _draggingCliTab = false);
+                        },
+                        onDraggableCanceled: (_, __) {
+                          if (mounted) setState(() => _draggingCliTab = false);
+                        },
                         feedback: Material(
                           color: Colors.transparent,
                           child: Container(
@@ -283166,6 +284721,12 @@ class _McpChatDialogState extends State<_McpChatDialog>
                         child: InkWell(
                           borderRadius: BorderRadius.circular(6),
                           onTap: () => _onCliTabTap(provider, s),
+                          // ★ = ユーザー要望「codex や claudecode のタブを
+                          //   右クリックした時にログインしているアカウントが
+                          //   分かるようにして欲しいのと、 切り替えられる
+                          //   ようにして欲しい」。
+                          onSecondaryTapDown: (d) => unawaited(
+                              _showCliTabMenu(provider, s, d.globalPosition)),
                           child: Padding(
                             padding: const EdgeInsets.fromLTRB(8, 0, 2, 0),
                             child:
@@ -283191,6 +284752,33 @@ class _McpChatDialogState extends State<_McpChatDialog>
                                             ? FontWeight.w700
                                             : FontWeight.w400)),
                               ),
+                              // ★ = ユーザー要望「タブと開いているフォルダーを
+                              //   セットにしたタブって作れないの? どのタブが
+                              //   どのフォルダーを開いているのかまとめてくれる
+                              //   と使いやすい」。 帯の右に離して置いていた
+                              //   ので、 札が 2 枚以上ある時にどちらの物か
+                              //   分からなかった。 札の中へ入れる。
+                              if (_dirLabel(s.shownDirectory).isNotEmpty) ...[
+                                const SizedBox(width: 5),
+                                const Icon(Icons.folder_outlined,
+                                    size: 10, color: Colors.white38),
+                                const SizedBox(width: 2),
+                                ConstrainedBox(
+                                  constraints:
+                                      const BoxConstraints(maxWidth: 90),
+                                  child: Tooltip(
+                                    message: s.shownDirectory,
+                                    child: Text(
+                                        _dirLabel(s.shownDirectory),
+                                        maxLines: 1,
+                                        softWrap: false,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                            color: Colors.white38,
+                                            fontSize: 10)),
+                                  ),
+                                ),
+                              ],
                               // ★ Builder で包むのは、 押した×ボタン自身の
                               //   位置を取るため (= ユーザー要望「セッションを
                               //   終える確認画面は×ボタンの近くに出して
@@ -283230,14 +284818,29 @@ class _McpChatDialogState extends State<_McpChatDialog>
           // ★ 押すと「+」 と同じ一覧が出る。 走っている擬似端末の現在地は
           //   後から変えられないので、 作れるのは「変える」 ではなく
           //   「別のフォルダーでもう 1 枚開く」 だけ。
-          if (_inlineIsTerminal && _lastCliSession != null)
+          // ★ = ユーザー要望「分割画面毎に別のフォルダーが開いているのが
+          //   分かるように 2 つ分出して欲しい」。 左右で違うフォルダーを
+          //   見ている事が、 札 1 つでは分からなかった。 出ている端末の数
+          //   だけ並べる (最大 2 つ)。
+          // ★ フォルダーは札の中に入れたので、 ここでは出さない
+          //   (= ユーザー要望「タブとフォルダーをセットに」)。 選び直しは
+          //   帯の右クリック →「このタブのフォルダーを選ぶ…」 から。
+          for (final t in const <AgentCliSession>[])
             Builder(builder: (bctx) {
-              final dir = _lastCliSession!.workingDirectory;
+              final dir = t.workingDirectory;
               return Tooltip(
                 message: dir,
                 child: InkWell(
                   borderRadius: BorderRadius.circular(6),
-                  onTap: () => unawaited(_newCliTab(provider, bctx)),
+                  // ★ = ユーザー指摘「フォルダーボタンを開いても新しい会話
+                  //   項目が出てくるのはおかしい。 どのフォルダーの中の要素を
+                  //   編集するかという話だから、 フォルダー選択ができないと
+                  //   おかしい」。 その通りなので、 ここは**フォルダーの
+                  //   一覧**を出す。 走っている擬似端末の現在地は後から
+                  //   変えられないので、 選んだら同じ CLI をそのフォルダーで
+                  //   もう 1 枚開く (= 変えるのではなく開き直す)。
+                  onTap: () =>
+                      unawaited(_pickCliTabDirAndReopen(provider, bctx, t)),
                   child: Padding(
                     padding:
                         const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
@@ -283278,7 +284881,124 @@ class _McpChatDialogState extends State<_McpChatDialog>
           const SizedBox(width: 4),
         ]),
       ),
+      ),
     );
+  }
+
+  /// 帯を右クリックした時の一覧 (= ユーザー要望)。
+  ///
+  ///   ・新しいタブを開く … [_newCliTab] と同じ一覧を出す
+  ///   ・左右に並べる / やめる … 今出している物に合わせて切り替える
+  Future<void> _showTabStripMenu(
+      MindMapProvider provider, Offset globalPos) async {
+    if (!mounted) return;
+    final nav = Navigator.of(context, rootNavigator: !widget.floatingPanel);
+    final overlay = nav.overlay?.context.findRenderObject() as RenderBox?;
+    final pos = overlay == null
+        ? globalPos
+        : overlay.globalToLocal(globalPos);
+    // 今なにか並べているか (会話 + 端末 / 端末どうし / 会話どうし)。
+    final split = _activeSplitSession != null ||
+        _activeSideSession != null ||
+        _activeSideChatId(provider) != null;
+    final picked = await showMenu<String>(
+      context: context,
+      useRootNavigator: !widget.floatingPanel,
+      color: const Color(0xFF1E1E32),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(10),
+        side: BorderSide(color: Colors.white.withValues(alpha: 0.12)),
+      ),
+      position: RelativeRect.fromRect(
+          pos & const Size(1, 1),
+          Offset.zero & (overlay?.size ?? const Size(1920, 1080))),
+      items: <PopupMenuEntry<String>>[
+        PopupMenuItem<String>(
+          value: 'new',
+          height: 38,
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            const Icon(Icons.add_rounded, size: 15, color: Color(0xFF6C63FF)),
+            const SizedBox(width: 9),
+            Text(provider.t('cli.newTabPick'),
+                style: const TextStyle(color: Colors.white, fontSize: 12.5)),
+          ]),
+        ),
+        // ★ フォルダーを札の中へ入れたので、 選び直す口をここに置く
+        //   (= 帯の右にあった札の代わり)。 端末を出している時だけ。
+        if (_inlineIsTerminal && _lastCliSession != null)
+          PopupMenuItem<String>(
+            value: 'dir',
+            height: 38,
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              const Icon(Icons.folder_open_rounded,
+                  size: 15, color: Color(0xFF4FC3F7)),
+              const SizedBox(width: 9),
+              Text(provider.t('cli.tabDirPick'),
+                  style: const TextStyle(color: Colors.white, fontSize: 12.5)),
+            ]),
+          ),
+        // ★ = ユーザー要望「タブを削除のボタンを付けて欲しい」。 札の × と
+        //   同じ事を、 右クリックからもできるようにする。
+        if (_inlineIsTerminal && _lastCliSession != null)
+          PopupMenuItem<String>(
+            value: 'close',
+            height: 38,
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              const Icon(Icons.close_rounded,
+                  size: 15, color: Color(0xFFFF8A80)),
+              const SizedBox(width: 9),
+              Text(provider.t('cli.closeTab'),
+                  style: const TextStyle(color: Colors.white, fontSize: 12.5)),
+            ]),
+          ),
+        PopupMenuItem<String>(
+          value: split ? 'unsplit' : 'split',
+          height: 38,
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Icon(
+                split
+                    ? Icons.close_fullscreen_rounded
+                    : Icons.vertical_split_rounded,
+                size: 15,
+                color: const Color(0xFF7CD992)),
+            const SizedBox(width: 9),
+            Text(provider.t(split ? 'cli.unsplit' : 'cli.split'),
+                style: const TextStyle(color: Colors.white, fontSize: 12.5)),
+          ]),
+        ),
+      ],
+    );
+    if (picked == null || !mounted) return;
+    if (picked == 'new') {
+      await _newCliTab(provider, null, globalPos);
+      return;
+    }
+    if (picked == 'dir') {
+      await _pickCliTabDirAndReopen(
+          provider, context, _lastCliSession, globalPos);
+      return;
+    }
+    if (picked == 'close') {
+      final s = _lastCliSession;
+      if (s != null) _closeCliTab(provider, s);
+      return;
+    }
+    if (picked == 'unsplit') {
+      // 会話と並べている / 会話どうしなら会話側を畳む。 端末どうしなら
+      // 端末側を畳む。
+      if (_activeSideSession != null || _activeSideChatId(provider) != null) {
+        _unsplitChat();
+      } else {
+        _unsplitCli();
+      }
+      return;
+    }
+    // 並べる。 端末を出しているなら端末側、 会話を出しているなら会話側。
+    if (_inlineTerminal != null) {
+      _toggleCliSplit(provider);
+    } else {
+      _toggleChatSplit(provider);
+    }
   }
 
   /// CLI 側の画面を出す。 まだ走っている端末があればそれを覗き直し、
@@ -283296,6 +285016,21 @@ class _McpChatDialogState extends State<_McpChatDialog>
 
   /// 開き直した時に、 前に見ていた画面へ戻す (= ユーザー要望)。
   void _restoreLastInlineView(MindMapProvider provider) {
+    // ★ ターミナルのボタンから開いた時は、 殻のタブを 1 枚足して始める
+    //   (= ユーザー要望)。 既に走っている同じフォルダーの殻があれば、
+    //   それを覗き直すだけにする (押すたびに増やさない)。
+    final shellDir = openShellDirOnStart;
+    if (shellDir != null) {
+      openShellDirOnStart = null;
+      for (final t in _cliTabs) {
+        if (t.isShell && t.running && t.workingDirectory == shellDir) {
+          _showRunningCliTerminal(provider, t);
+          return;
+        }
+      }
+      _runAgentCliSession(provider, buildShellSession(provider, shellDir));
+      return;
+    }
     // ★ 「パソコンに入れた AI」 を選んで開いた時は、 その一覧から始める。
     if (openCliListOnStart) {
       openCliListOnStart = false;
@@ -283624,11 +285359,14 @@ class _McpChatDialogState extends State<_McpChatDialog>
   ///   ログインが済むまでは宛名が無いので、 その間だけ id (a1 …) が出る。
   String _cliAccountLabel(MindMapProvider provider, AgentAccount a,
       [AgentCliKind? kind]) {
-    if (a.id.isEmpty) return provider.t('cli.accountDefault');
+    // ★ = ユーザー指摘「ログイン中のアカウントの『既定』 は何のアカウント
+    //   か分からないから辞めて」。 既定の置き場 (= 利用者のホーム) でも、
+    //   CLI が置いた控えから宛名が読めていればそちらを出す。
     if (kind != null) {
       final d = AgentCli.accountNameFor(kind, a.id).trim();
       if (d.isNotEmpty) return d;
     }
+    if (a.id.isEmpty) return provider.t('cli.accountDefault');
     final n = a.name.trim();
     return n.isEmpty ? a.id : n;
   }
@@ -284149,6 +285887,104 @@ class _McpChatDialogState extends State<_McpChatDialog>
                   ],
                 ),
               ),
+            // ── ターミナルで使う殻 (= ユーザー要望: コマンドプロンプト
+            //    なのか PowerShell なのかはっきりさせる / PowerShell 7 や
+            //    bash・zsh も選べるように) ──
+            //    ★ 何も同梱しない。 **このパソコンに入っている物だけ**を
+            //      並べる (入っていない物は出さないので、 押して失敗しない)。
+            if (!kIsWeb && AgentCli.supported) ...[
+              const Divider(height: 18, color: Colors.white12),
+              Row(children: [
+                const Icon(Icons.terminal_rounded,
+                    size: 14, color: Colors.white54),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(provider.t('cli.shell'),
+                      style: const TextStyle(
+                          color: Colors.white60, fontSize: 11, height: 1.5)),
+                ),
+              ]),
+              const SizedBox(height: 6),
+              Wrap(spacing: 6, runSpacing: 6, children: [
+                // ★ 「おまかせ」 は廃止 (= ユーザー指摘: 何が開かれるか
+                //   分からない)。 入っている物だけを並べ、 既定は
+                //   PowerShell が選ばれた状態で始まる。
+                for (final e in AgentCli.availableShells()
+                    .map((x) => (id: x.id, label: x.label)))
+                  InkWell(
+                    borderRadius: BorderRadius.circular(7),
+                    onTap: () =>
+                        unawaited(provider.setTerminalShellId(e.id).then((_) {
+                      if (mounted) {
+                        _showInlineTerminal(_buildAgentCliList(provider),
+                            provider.t('cli.title'),
+                            isTerminal: false);
+                      }
+                    })),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 9, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: provider.terminalShellId == e.id
+                            ? const Color(0xFF9CCC65).withValues(alpha: 0.16)
+                            : Colors.transparent,
+                        borderRadius: BorderRadius.circular(7),
+                        border: Border.all(
+                            color: provider.terminalShellId == e.id
+                                ? const Color(0xFF9CCC65)
+                                : Colors.white24),
+                      ),
+                      child: Text(e.label,
+                          style: TextStyle(
+                              color: provider.terminalShellId == e.id
+                                  ? const Color(0xFF9CCC65)
+                                  : Colors.white54,
+                              fontSize: 11)),
+                    ),
+                  ),
+              ]),
+              const SizedBox(height: 8),
+              // ★ = ユーザー要望「この画面から shell を開けるようにして
+              //   欲しい」。 選んでいるシェルを、 下の欄で決めたフォルダーで
+              //   タブとして開く。
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFF9CCC65),
+                    side: const BorderSide(color: Color(0xFF4C6B33)),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  icon: const Icon(Icons.play_arrow_rounded, size: 16),
+                  label: Text(provider.t('cli.shellOpen'),
+                      style: const TextStyle(fontSize: 11.5)),
+                  onPressed: () async {
+                    await _ensureCliDirsLoaded();
+                    if (!mounted) return;
+                    final dir = _cliWorkDir.trim().isNotEmpty
+                        ? _cliWorkDir.trim()
+                        : await terminalBaseDir(provider);
+                    if (!mounted) return;
+                    final sh = buildShellSession(provider, dir);
+                    final n = _nextCliTabTitle(sh.title);
+                    _runAgentCliSession(
+                        provider,
+                        n.isEmpty
+                            ? sh
+                            : AgentCliSession(
+                                title: n,
+                                exePath: sh.exePath,
+                                arguments: sh.arguments,
+                                workingDirectory: sh.workingDirectory,
+                                isShell: true));
+                  },
+                ),
+              ),
+              const SizedBox(height: 5),
+              Text(provider.t('cli.shellHint'),
+                  style: const TextStyle(
+                      color: Colors.white38, fontSize: 10.5, height: 1.5)),
+            ],
             // ── 端末が見るフォルダー (= ユーザー要望: 開くたびに聞かれる
             //    のは不便。 既定は今開いているページの置き場。 変えたい時
             //    だけ、 この下のボタンから選ぶ) ──
@@ -284580,6 +286416,8 @@ class _McpChatDialogState extends State<_McpChatDialog>
         onPickLanguage: session.supportsSlashCommands
             ? () => unawaited(_pickAgentCliLanguage(provider, session))
             : null,
+        // ★ 本文の右クリックに一覧を出す (= ユーザー要望。 上と同じ理由)。
+        onContextMenu: (pos) => unawaited(_showTabStripMenu(provider, pos)),
         onRunAgain: () => _runAgentCliSession(
           provider,
           AgentCliSession(
@@ -284736,7 +286574,11 @@ class _McpChatDialogState extends State<_McpChatDialog>
       MindMapProvider provider, AgentCliFound found,
       {bool deviceLogin = false,
       String titleOverride = '',
-      String dirOverride = ''}) async {
+      String dirOverride = '',
+      // ★ = ユーザー要望「タブ毎にログインするアカウントを分けて、 別々の
+      //   垢で codex を 2 タブ開けるように」。 null なら今までどおり
+      //   「今選んでいる垢」。
+      String? accountOverride}) async {
     // ★ CLI の機能は Pro 以上 (= ユーザー要望)。 どの入口からでも
     //   通さないよう、 実行する側でも止める。
     if (!provider.canUseCliAi) return;
@@ -284858,9 +286700,14 @@ class _McpChatDialogState extends State<_McpChatDialog>
     //   書き出されてしまう (= 点検で判明)。
     // ★ 使うアカウントの置き場をここで指す (= ユーザー要望: 複数垢で
     //   ログインして切り替えたい)。 既定のアカウントなら空 = 今までどおり。
-    final account = AgentCli.activeAccount(found.spec.kind);
+    final account = accountOverride == null
+        ? AgentCli.activeAccount(found.spec.kind)
+        : AgentCli.accountList(found.spec.kind).firstWhere(
+            (e) => e.id == accountOverride,
+            orElse: () => AgentCli.activeAccount(found.spec.kind));
     final env = <String, String>{
-      ...AgentCli.accountEnvironment(found.spec.kind, forPty: true),
+      ...AgentCli.accountEnvironment(found.spec.kind,
+          forPty: true, accountId: account.id),
       ...provider.cliAiEnvironment(),
       if (url.isNotEmpty && provider.mcpToken.isNotEmpty)
         AgentCli.kMcpTokenEnvVar: provider.mcpToken,
@@ -284883,6 +286730,10 @@ class _McpChatDialogState extends State<_McpChatDialog>
         arguments: launchArgs,
         workingDirectory: workDir,
         cliKey: found.spec.kind.name,
+        // ★ = ユーザー要望「codex や claudecode のタブを右クリックした時に
+        //   ログインしているアカウントが分かるように」。 右クリックの一覧で
+        //   印を付けるために、 起こした時の垢を覚えておく。
+        accountId: account.id,
         extraEnvironment: env,
         // ★ 使える状態の時は何も出さない (= ユーザー要望: 「そのまま指示を
         //   打てます」 は要らない)。 ログインが要る時だけ案内を出す。
@@ -285195,6 +287046,9 @@ class _McpChatDialogState extends State<_McpChatDialog>
     super.initState();
     // 窓が前面に戻った時に焦点を返せるように、 画面の出入りを見ておく。
     WidgetsBinding.instance.addObserver(this);
+    // Ctrl+W (= ユーザー要望: タブを閉じる)。
+    _livePanels.add(this);
+    HardwareKeyboard.instance.addHandler(_onPanelHotkey);
     _promptFocus.addListener(() {
       if (_promptFocus.hasFocus) _hadPromptFocus = true;
     });
@@ -285211,7 +287065,11 @@ class _McpChatDialogState extends State<_McpChatDialog>
     // ★ 前に見ていた画面 (端末 / CLI の一覧) に戻す (= ユーザー要望:
     //   開き直すと毎回 API の会話になって使いにくい)。
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _restoreLastInlineView(provider);
+      // ★ 張り付いた欄 (= 並べた右側) は、 前に見ていた端末などを
+      //   復元しない。 自分の会話だけを出す (= ユーザー要望の分割)。
+      if (mounted && widget.boundSessionId == null) {
+        _restoreLastInlineView(provider);
+      }
     });
     // 使えるモデルと残高を取り直す (= ユーザー要望: モデル切替と残量表示)。
     unawaited(provider.refreshRelayModels());
@@ -285220,7 +287078,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await provider.loadMcpChatHistory();
       if (!mounted) return;
-      final saved = provider.mcpChatHistory;
+      final saved = provider.mcpChatHistoryOf(widget.boundSessionId);
       if (saved.isNotEmpty && _msgs.isEmpty) {
         setState(() {
           for (final e in saved) {
@@ -285276,6 +287134,8 @@ class _McpChatDialogState extends State<_McpChatDialog>
   @override
   void dispose() {
     // ★ セッションは止めない (= ユーザー要望: 閉じても処理は続ける)。
+    HardwareKeyboard.instance.removeHandler(_onPanelHotkey);
+    _livePanels.remove(this);
     WidgetsBinding.instance.removeObserver(this);
     _session.removeListener(_onSessionChanged);
     _promptFocus.dispose();
@@ -285580,6 +287440,13 @@ class _McpChatDialogState extends State<_McpChatDialog>
             for (var k = lo; k <= hi && k < list.length; k++) {
               _sessionSel.add('${list[k]['id']}');
             }
+            // ★ = ユーザー報告「Shift を押しながらクリックしたら、 始点と
+            //   終点の間の会話履歴を全て選択できるように」。 始点を**誰も
+            //   置いていなかった**のが原因。 [toggle] しか始点を置かないので、
+            //   Shift だけで使うと毎回 `from == i` = その行 1 つしか選べず、
+            //   押した所が飛び飛びに選ばれていた。 最初の 1 回をここで
+            //   始点にし、 以後はその始点から伸ばす (動かさない)。
+            if (_sessionAnchor < 0) _sessionAnchor = i;
           });
         }
 
@@ -285628,7 +287495,27 @@ class _McpChatDialogState extends State<_McpChatDialog>
                 },
               ),
           ]),
-          content: SizedBox(
+          // ★ = ユーザー要望「del や backspace で削除できるようにして」。
+          //   一覧に焦点を置き、 選んでいる時だけ Delete / Backspace を
+          //   受ける (選んでいない時は何もしない = 誤爆を避ける)。
+          content: Focus(
+            autofocus: true,
+            onKeyEvent: (node, event) {
+              if (event is! KeyDownEvent) return KeyEventResult.ignored;
+              final k = event.logicalKey;
+              if (k != LogicalKeyboardKey.delete &&
+                  k != LogicalKeyboardKey.backspace) {
+                return KeyEventResult.ignored;
+              }
+              if (_sessionSel.isEmpty) return KeyEventResult.ignored;
+              final ids = _sessionSel.toList();
+              unawaited(() async {
+                if (!await _confirmDeleteSessions(ids.length, dctx)) return;
+                await deleteMany(ids);
+              }());
+              return KeyEventResult.handled;
+            },
+            child: SizedBox(
             width: 380,
             child: list.isEmpty
                 ? Text(provider.t('mcp.noSessions'),
@@ -285703,6 +287590,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
                       );
                     },
                   ),
+          ),
           ),
           actions: [
             if (selecting)
@@ -285838,7 +287726,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
       _msgs
         ..clear()
         ..addAll([
-          for (final e in provider.mcpChatHistory)
+          for (final e in provider.mcpChatHistoryOf(widget.boundSessionId))
             _McpChatMsg('${e['role']}', '${e['text']}')
         ]);
       _attachments.clear();
@@ -286432,6 +288320,16 @@ class _McpChatDialogState extends State<_McpChatDialog>
             Padding(
             padding: EdgeInsets.fromLTRB(_narrowHeader(context) ? 10 : 14, 10,
                 _narrowHeader(context) ? 2 : 6, 4),
+            // ★ = ユーザー指摘「タブを切り替えた時に項目の高さが違うせいで
+            //   ぐわんぐわんなるのが気持ち悪い」。 帯の高さは**一番背の高い
+            //   ボタン**で決まるのに、 出るボタンがタブによって変わる
+            //   (会話の時だけ出る物がある = `_inlineTerminal == null`)。
+            //   そのため切り替えるたびに帯が伸び縮みしていた。 高さを決め打ち
+            //   にして、 何が出ていても動かないようにする。 数は
+            //   IconButton の既定の最小寸 (広い時 48 / 狭い時 32) に合わせて
+            //   あるので、 見た目は今までと変わらない。
+            child: SizedBox(
+            height: _narrowHeader(context) ? 32 : 48,
             child: Row(children: [
               // 印の上でも掴んで動かせるように、 当たりは後ろの板へ通す。
               const IgnorePointer(
@@ -286454,21 +288352,41 @@ class _McpChatDialogState extends State<_McpChatDialog>
                   // ★ 1 行に収める (= ユーザー報告: スマホで見出しが
                   //   縦書きになる)。 横幅が足りないと 1 文字ずつ折り返して
                   //   縦に積まれてしまうので、 折り返しを止めて「…」 にする。
-                  // ★ CLI を開いている間は、 その名前を見出しにする
-                  //   (= ユーザー要望: 見出しが二段になるのをやめて 1 本に)。
-                  child: Text(
-                      _inlineTerminal != null && _inlineTerminalTitle.isNotEmpty
-                          ? _inlineTerminalTitle
-                          : provider.t('mcp.chatTitle'),
-                      maxLines: 1,
-                      softWrap: false,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                          color: _inlineTerminal != null
-                              ? const Color(0xFF9CCC65)
-                              : Colors.white,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w700)),
+                  // ★ CLI を 1 枚だけ出している時は、 その名前を見出しに
+                  //   する (= 見出しが二段になるのをやめて 1 本に)。
+                  // ★ = ユーザー指摘「複数タブ開いている時は CodexCLI とか
+                  //   上に表示しないで。 AI(API) のタブだって開いているのだし」。
+                  //   札が 2 枚以上ある時、 見出しに 1 本の名前を出すと
+                  //   「今はこれだけ」 と読めてしまう。 どれが出ているかは
+                  //   帯の札が示しているので、 その時は欄の名前に戻す。
+                  child: Builder(builder: (_) {
+                    // ★ = ユーザー指摘「そもそもヘッダーに AI(API) って書く
+                    //   必要がないし、 PC内AI を選択してもヘッダーに AI(API)
+                    //   と書かれているのはおかしい」。 見出しは**今この枠に
+                    //   出している物**を言う。 札の帯が名前を示している時は
+                    //   何も書かない (二度言わない)。
+                    final tabs = _openChatTabIds.length + _cliTabs.length;
+                    final showCliName = tabs <= 1 &&
+                        _inlineTerminal != null &&
+                        _inlineTerminalTitle.isNotEmpty;
+                    final title = showCliName
+                        ? _inlineTerminalTitle
+                        : (_inlineTerminal != null && !_inlineIsTerminal)
+                            // CLI の一覧を出している時はその名前。
+                            ? provider.t('cli.title')
+                            : (tabs > 1 ? '' : provider.t('mcp.chatTitle'));
+                    return Text(
+                        title,
+                        maxLines: 1,
+                        softWrap: false,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            color: showCliName
+                                ? const Color(0xFF9CCC65)
+                                : Colors.white,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700));
+                  }),
                 ),
               ),
               // (ブラウザ版 AI を開くボタンは削除 = ユーザー要望:
@@ -286717,9 +288635,22 @@ class _McpChatDialogState extends State<_McpChatDialog>
                 color: const Color(0xFF23233A),
                 icon: const Icon(Icons.tune_rounded,
                     color: Colors.white54, size: 19),
-                onSelected: (v) {
+                onSelected: (v) async {
                   if (v == 'queue') provider.setMcpSteerNext(false);
                   if (v == 'steer') provider.setMcpSteerNext(true);
+                  // ★ = ユーザー要望「AI(API) にも編集権限を渡すフォルダーを
+                  //   設定できるように」。
+                  if (v == 'editdir') {
+                    final d = await FilePicker.platform.getDirectoryPath(
+                        dialogTitle: provider.t('mcp.editDir'));
+                    if (d == null || d.isEmpty) return;
+                    await provider.setAiEditDir(d);
+                    if (mounted) setState(() {});
+                  }
+                  if (v == 'editdirClear') {
+                    await provider.setAiEditDir('');
+                    if (mounted) setState(() {});
+                  }
                 },
                 itemBuilder: (_) => [
                   PopupMenuItem<String>(
@@ -286751,6 +288682,46 @@ class _McpChatDialogState extends State<_McpChatDialog>
                                 color: Colors.white, fontSize: 12.5)),
                       ]),
                     ),
+                  const PopupMenuDivider(),
+                  PopupMenuItem<String>(
+                    enabled: false,
+                    height: 30,
+                    child: Text(provider.t('mcp.editDir'),
+                        style: const TextStyle(
+                            color: Colors.white38, fontSize: 11)),
+                  ),
+                  PopupMenuItem<String>(
+                    value: 'editdir',
+                    height: 36,
+                    child: Row(children: [
+                      const Icon(Icons.folder_open_rounded,
+                          size: 15, color: Color(0xFF4FC3F7)),
+                      const SizedBox(width: 8),
+                      Flexible(
+                        child: Text(
+                            provider.aiEditDir.trim().isEmpty
+                                ? provider.t('cli.tabDirPick')
+                                : _dirLabel(provider.aiEditDir),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 12.5)),
+                      ),
+                    ]),
+                  ),
+                  if (provider.aiEditDir.trim().isNotEmpty)
+                    PopupMenuItem<String>(
+                      value: 'editdirClear',
+                      height: 32,
+                      child: Row(children: [
+                        const Icon(Icons.close_rounded,
+                            size: 14, color: Colors.white38),
+                        const SizedBox(width: 8),
+                        Text(provider.t('mcp.editDirClear'),
+                            style: const TextStyle(
+                                color: Colors.white60, fontSize: 11.5)),
+                      ]),
+                    ),
                 ],
               ),
               // 会話の一覧 (= ユーザー要望: セッションを分けて保存)。
@@ -286774,26 +288745,24 @@ class _McpChatDialogState extends State<_McpChatDialog>
                 },
               )),
               // 新しい会話を始める。
+              // ★ = ユーザー要望「新しい会話から CLI のセッションも呼べる
+              //   ようにして欲しい」。 直に会話を作るのをやめ、
+              //   [_newCliTab] の一覧 (新しい会話 / 会話へ戻る / 各 CLI /
+              //   ターミナル) を出す。 先頭が「新しい会話」 なので、 今まで
+              //   どおりの使い方なら 1 押し増えるだけ。
               if (_inlineTerminal == null)
-              IconButton(
-                visualDensity: VisualDensity.compact,
-                constraints: _hdrBtnConstraints(context),
-                padding: _narrowHeader(context)
-                    ? EdgeInsets.zero
-                    : const EdgeInsets.all(8),
-                tooltip: provider.t('mcp.newSession'),
-                icon: const Icon(Icons.add_comment_outlined,
-                    color: Colors.white54, size: 19),
-                onPressed: () async {
-                  // 新しい会話を始めるなら、 まず会話の画面へ戻す。
-                  _backToChatView();
-                  await provider.newMcpSession();
-                  if (!mounted) return;
-                  setState(() {
-                    _msgs.clear();
-                    _attachments.clear();
-                  });
-                },
+              Builder(
+                builder: (bctx) => IconButton(
+                  visualDensity: VisualDensity.compact,
+                  constraints: _hdrBtnConstraints(context),
+                  padding: _narrowHeader(context)
+                      ? EdgeInsets.zero
+                      : const EdgeInsets.all(8),
+                  tooltip: provider.t('mcp.newSession'),
+                  icon: const Icon(Icons.add_comment_outlined,
+                      color: Colors.white54, size: 19),
+                  onPressed: () => unawaited(_newCliTab(provider, bctx)),
+                ),
               ),
               // 今の会話の中身を消す。
               if (_inlineTerminal == null)
@@ -286829,6 +288798,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
                     : Navigator.of(context).pop(),
               ),
             ]),
+            ),
           )),
           const Divider(height: 1, color: Colors.white12),
           // ── MCP の説明 (= ユーザー要望: 初回だけ出し、 閉じたらヘッダーの
@@ -286924,9 +288894,12 @@ class _McpChatDialogState extends State<_McpChatDialog>
           //    「+」 の選択肢の 1 つとして行き来できるように) ──
           //    ★ 端末を 1 枚も持っていない人の画面は今までどおり (帯を足すと
           //      使わない人の狭い欄が 30px 削られるだけになる)。
-          if (_inlineTerminal == null &&
+          // ★ 会話の札が 2 枚以上ある時も帯を出す (= 会話をタブにしたので、
+          //   端末を 1 枚も持っていなくても行き来が要る)。
+          if (widget.boundSessionId == null &&
+              _inlineTerminal == null &&
               !_showCapabilityPanel &&
-              _cliTabs.isNotEmpty)
+              (_cliTabs.isNotEmpty || _openChatTabIds.length > 1))
             // ★ 全画面の時は下の会話・入力欄と左端をそろえる
             //   (= ユーザー要望「…全画面の時は中央に寄せた上で左揃えに」)。
             Padding(
@@ -288314,10 +290287,17 @@ Future<String> terminalBaseDir(MindMapProvider provider) async {
 /// ★ 既定は cmd.exe (= ユーザー報告: ターミナルボタンを押すとセキュリティ
 ///   ソフトにブロックされてアプリが落ちる)。 隠し PowerShell に base64 を
 ///   渡す形は撃たれるので止めた。
-AgentCliSession buildShellSession(MindMapProvider provider, String dir) {
-  final launch = AgentCli.shellLaunch(dir);
+/// [shellId] を渡すと、 その殻で開く (空なら設定 / おまかせ)。
+AgentCliSession buildShellSession(MindMapProvider provider, String dir,
+    {String shellId = ''}) {
+  final launch = AgentCli.shellLaunch(dir, shellId: shellId);
+  // ★ = ユーザー指摘「カスタムボタンからのターミナルはコマンドプロンプトなのか
+  //   powershell なのかはっきりさせた方がよくない?」。 見出しに殻の名前を
+  //   入れて、 どれで開いているか一目で分かるようにする。
+  // ★ = ユーザー要望「ターミナルではなく、 powershell や bash、 zsh など
+  //   shell 名で表記するように」。 見出しは殻の名前そのものにする。
   return AgentCliSession(
-    title: provider.t('cli.terminal'),
+    title: AgentCli.shellLabelOf(launch.exe),
     exePath: launch.exe,
     arguments: launch.args,
     workingDirectory: launch.dir,

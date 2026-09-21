@@ -26,6 +26,8 @@
 //   ので、 本物の端末と同じ見え方になる (= ユーザー報告: 日本語が打てない)。
 import 'dart:async';
 
+import 'package:flutter/gestures.dart'
+    show PointerDeviceKind, kSecondaryMouseButton;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -77,6 +79,7 @@ class AgentTerminal extends StatefulWidget {
     this.showHeader = true,
     this.onRunAgain,
     this.onPickLanguage,
+    this.onContextMenu,
   });
 
   /// 走らせている物。 この widget は覗くだけで、 止めたりはしない。
@@ -90,6 +93,11 @@ class AgentTerminal extends StatefulWidget {
 
   /// 「言語」 を押した時 (= CLI が返事をする言葉を選び直す)。
   final VoidCallback? onPickLanguage;
+
+  /// 本文の上で右クリックされた時 (= ユーザー要望:「codexCLI の本文中で
+  /// 右クリックすることは無いから、 画面分割や新規タブ作成などの項目を
+  /// 出すように割り当てられないか」)。 渡されなければ今までどおり何もしない。
+  final void Function(Offset globalPosition)? onContextMenu;
 
   @override
   State<AgentTerminal> createState() => AgentTerminalState();
@@ -1304,7 +1312,13 @@ class AgentTerminalState extends State<AgentTerminal> {
                   .clamp(0.0, (cons.maxWidth - inputW).clamp(0.0, 4000.0));
               final cy = ((_cursorPos?.dy ?? (cons.maxHeight - 24)))
                   .clamp(0.0, (cons.maxHeight - 18).clamp(0.0, 4000.0));
-              return Stack(key: _stackKey, children: [
+              // ★ 右クリックは端末自身が使っていないので、 ここで受ける
+              //   (= ユーザー要望「codexCLI の本文中で右クリックすることは
+              //   無いから、 画面分割や新規タブ作成などの項目を出すように
+              //   割り当てられないか」)。 包む形にすると、 中の端末が先に
+              //   当たり判定を取り、 左クリックや文字選びは今までどおり
+              //   端末が受ける。 右ボタンは誰も名乗り出ないのでここへ来る。
+              final body = Stack(key: _stackKey, children: [
                 Positioned.fill(
                   // ★ 掴んで動かせる棒を出す (= ユーザー要望: 画面の外へ
                   //   流れた会話を遡りたい)。 ホイールでも遡れる。
@@ -1449,6 +1463,23 @@ class AgentTerminalState extends State<AgentTerminal> {
                     ),
                   ),
               ]);
+              final cb = widget.onContextMenu;
+              if (cb == null) return body;
+              // ★ 実機で確かめたら **GestureDetector では出なかった**。
+              //   端末 (xterm) が自前の判定を持っていて、 押した瞬間に
+              //   ジェスチャーの取り合いへ入るため、 こちらの「右で叩いた」
+              //   は勝てずに捨てられていた。 [Listener] は取り合いに参加
+              //   しないので、 押した事だけは必ず届く。 右ボタンの時だけ
+              //   拾い、 左は今までどおり端末が使う。
+              return Listener(
+                behavior: HitTestBehavior.deferToChild,
+                onPointerDown: (e) {
+                  if (e.kind != PointerDeviceKind.mouse) return;
+                  if (e.buttons != kSecondaryMouseButton) return;
+                  cb(e.position);
+                },
+                child: body,
+              );
             }),
           ),
         ),
@@ -1524,6 +1555,29 @@ class AgentTerminalState extends State<AgentTerminal> {
                       tip: 'プランの使用量と残りを出す (/usage)',
                       command: '/usage',
                       enabled: running),
+                  // ── キュー / ステアの切り替え (codex だけ) ──
+                  //    ★ = ユーザー要望「codex の画面の下に、 キューとステア
+                  //      を入れ替えるボタンを付けて欲しい」。 codex は自前の
+                  //      順番待ちを持っていて、 **Tab** で「後で渡す
+                  //      (キュー)」 と「今すぐ割り込む (ステア)」 を行き来
+                  //      する。 その Tab をここから送るだけ (アプリ側で
+                  //      状態は持たない = codex の表示が正)。
+                  if (_s.cliKey == 'codex')
+                    _panelButton(
+                      label: 'キュー / ステア',
+                      icon: Icons.swap_horiz_rounded,
+                      tip: 'codex の「後で渡す (キュー)」 と「今すぐ割り込む '
+                          '(ステア)」 を切り替えます (Tab と同じ)。 '
+                          '今どちらかは codex の画面に出ます',
+                      open: false,
+                      color: const Color(0xFFFFB347),
+                      enabled: running,
+                      onTap: () {
+                        // Tab (0x09)。 見えない文字を直に置かない。
+                        _s.sendRaw(String.fromCharCode(0x09));
+                        _grabInput();
+                      },
+                    ),
                   // ── 順番待ち (= ユーザー要望: 5 件まで貯めておける) ──
                   //    ★ 上限に当たったら、 ここに溜めた分は消さずに
                   //      解けるまで待ってから渡る (上の帯に様子が出る)。

@@ -50,6 +50,47 @@ const String kAppVersionName = '1.0.0';
 /// **新しい順**に並べる (先頭が今の版)。
 const List<ReleaseNote> kReleaseNotes = <ReleaseNote>[
   ReleaseNote(
+    build: 427,
+    date: '2026-09-21',
+    lines: <String, List<String>>{
+      'ja': [
+        'AI アシスタントのタブを 1 本の帯にまとめました。 会話のタブも端末の'
+            'タブと同じように動かせて、 入り切らない時は帯の中が横に流れます。',
+        'タブを増やす「+」 を帯の右端に固定しました。',
+        'ターミナルのボタンを右クリックすると、 開くシェルを選べます'
+            ' (このパソコンに入っている物だけを並べます)。',
+        'シェルのタブで「フォルダーを選ぶ」 を押すと、 その場で cd して'
+            'そのフォルダーへ移ります。',
+        'CLI のタブを右クリックすると、 ログイン中のアカウントが分かり、'
+            '別のアカウントで開き直せます。',
+        'Ctrl+W でタブを閉じられるようにしました。 処理をしていないタブは'
+            '確認なしで閉じます。',
+        '左右に並べる時、 足りない幅を自動で広げるようにしました'
+            ' (端末どうしでも両方が出ます)。',
+        'AI (API) にも、 編集を許すフォルダーを渡せるようにしました。',
+        'codex の画面の下に、 キューとステアを入れ替えるボタンを付けました。',
+      ],
+      'en': [
+        'The assistant tabs are now one strip. Conversation tabs can be '
+            'dragged like terminal tabs, and the strip scrolls when they no '
+            'longer fit.',
+        'The "+" for a new tab is pinned to the right edge of the strip.',
+        'Right-clicking the terminal button lets you pick which shell opens '
+            '(only the ones installed on this PC are listed).',
+        'Picking a folder from a shell tab now runs cd and moves that shell '
+            'into the folder.',
+        'Right-clicking a CLI tab shows which account is signed in and lets '
+            'you reopen the tab with another one.',
+        'Ctrl+W closes the current tab. Tabs with nothing running close '
+            'without asking.',
+        'Splitting left and right now widens the panel to the width it needs, '
+            'so both panes really appear (terminals included).',
+        'AI (API) can now be given a folder it is allowed to edit.',
+        'A button to swap queue and steer was added below the codex view.',
+      ],
+    },
+  ),
+  ReleaseNote(
     build: 426,
     date: '2026-09-20',
     lines: <String, List<String>>{

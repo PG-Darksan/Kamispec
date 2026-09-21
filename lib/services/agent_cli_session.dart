@@ -36,6 +36,7 @@ class AgentCliSession extends ChangeNotifier {
     this.isInstall = false,
     this.isShell = false,
     this.cliKey = '',
+    this.accountId = '',
     this.extraEnvironment = const <String, String>{},
   });
 
@@ -58,6 +59,36 @@ class AgentCliSession extends ChangeNotifier {
   /// どの CLI か ('claude' / 'codex' / 'gemini'、 シェルなら空)。
   /// 出すボタンを決めるのに使う (Codex は自前で順番待ちを持っている)。
   final String cliKey;
+
+  // ── 今いるフォルダー (= ユーザー要望: シェルで「フォルダーを選ぶ」 を
+  //    押したら cd でそこへ移る) ──
+  //
+  //    ★ [workingDirectory] は `Pty.start` に渡した**起こした時の場所**で、
+  //      後から変える口が OS にも flutter_pty にも無い。 `cd` を打ち込めば
+  //      シェルの現在地は変わるが、 こちらの値は変わらないので、 札の
+  //      フォルダー名が古いまま残ってしまう。 打ち込んだ先をここに覚えて、
+  //      画面はこちらを出す (起こし直す時の既定にもこちらを使う)。
+  String? _shownDir;
+
+  String get shownDirectory {
+    final d = (_shownDir ?? '').trim();
+    return d.isEmpty ? workingDirectory : d;
+  }
+
+  void noteDirectoryChanged(String dir) {
+    final d = dir.trim();
+    if (d.isEmpty || d == _shownDir) return;
+    _shownDir = d;
+    notifyListeners();
+  }
+
+  /// どのアカウントで開いたか (既定の垢なら空)。
+  ///
+  /// ★ = ユーザー要望「codex や claudecode のタブを右クリックした時に、
+  ///   ログインしているアカウントが分かるようにして欲しい」。 見出しには
+  ///   既定の垢の時だけ何も出ないので、 札だけでは判別できなかった。
+  ///   起こした時の垢をそのまま覚えておいて、 右クリックの一覧で見せる。
+  final String accountId;
 
   /// この実行にだけ足す環境変数。
   ///
