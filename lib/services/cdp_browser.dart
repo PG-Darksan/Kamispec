@@ -289,7 +289,18 @@ class CdpBrowser {
           mode: ProcessStartMode.detached, runInShell: false);
       _rememberLaunched(dataDir, p.pid, exe);
     } catch (e) {
-      throw Exception('${kind.label} を起動できませんでした: $e');
+      // ★ = ユーザー要望「セキュリティソフトがあっても chrome を立ち上げて
+      //   操作したりできるか確認取って、 実装で直せるなら直して欲しい」。
+      //   起こす形そのものは既に素直 (`Process.start` へ道筋と引数を直に
+      //   渡すだけ。 cmd も PowerShell も 8.3 形式の短い道も使わない) なので、
+      //   止められるとすればセキュリティソフトか会社の設定しかない。
+      //   その時に「起動できませんでした」 だけでは打つ手が分からないので、
+      //   何を見ればよいかまで書く。
+      throw Exception('${kind.label} を起動できませんでした: $e\n'
+          '道筋: $exe\n'
+          'セキュリティソフトが止めている事があります。 その場合は '
+          '${kind.label} の実行ファイルと、 このアプリの実行ファイルを'
+          '許可の一覧へ入れてください。');
     }
     CdpBrowser b;
     try {
@@ -313,9 +324,23 @@ class CdpBrowser {
         alt.downgradedFromOwnProfile = true;
         return alt;
       }
-      throw Exception(
-          '${kind.label} の操作口につながりませんでした (ポート $port)。\n'
-          '${kind.label} を閉じてから試すか、 別のポートでお試しください。');
+      // ★ 起きなかったのか、 起きたのに口が開かなかったのかで直し方が
+      //   まるで違う。 置き場が出来ているかで見分ける (Chrome は起きた
+      //   時点で --user-data-dir の中身を作る。 作られていなければ、
+      //   そもそも走っていない = 止められた可能性が高い)。
+      var started = false;
+      try {
+        final d = Directory(dataDir);
+        started = d.existsSync() && d.listSync().isNotEmpty;
+      } catch (_) {}
+      throw Exception(started
+          ? '${kind.label} は起動しましたが、 操作口につながりませんでした '
+              '(ポート $port)。\n'
+              '${kind.label} を閉じてから試すか、 別のポートでお試しください。'
+          : '${kind.label} が起動しませんでした (ポート $port)。\n'
+              '置き場が作られていないので、 セキュリティソフトか会社の設定が'
+              '止めている可能性があります。\n'
+              '道筋: $exe\n置き場: $dataDir');
     }
     b.ownWindow = true;
     b.openedAsGuest = wantGuest;

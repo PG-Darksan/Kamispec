@@ -5721,6 +5721,36 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   }
 
   /// WebView 本体 + 座標ピック用オーバーレイ。
+  /// ヘッダーを隠している間にモバイルで出す、 戻すためだけの細い帯。
+  ///
+  /// ★ webview の外 (AppBar の場所) に置くのが肝。 重ねると Android では
+  ///   触りを webview に奪われて押せない。
+  PreferredSizeWidget _buildHiddenHeaderStrip(MindMapProvider provider) =>
+      PreferredSize(
+        preferredSize: const Size.fromHeight(30),
+        child: Container(
+          height: 30,
+          color: const Color(0xFF1A1A1A),
+          alignment: Alignment.center,
+          child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+            InkWell(
+              onTap: () => setState(() => _gsHeaderHidden = false),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 18),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  const Icon(Icons.keyboard_arrow_down_rounded,
+                      color: Colors.white70, size: 20),
+                  const SizedBox(width: 6),
+                  Text(provider.t('gs.showHeader'),
+                      style: const TextStyle(
+                          color: Colors.white70, fontSize: 11.5)),
+                ]),
+              ),
+            ),
+          ]),
+        ),
+      );
+
   Widget _buildWebView() {
     final picking = !_autoPanelHiddenForShot &&
         (_pickPointCompleter != null || _pickRectCompleter != null);
@@ -7323,9 +7353,21 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                 ? Colors.transparent
                 : const Color(0xFF121212),
             // ヘッダーを隠している間は AppBar ごと出さない (= ユーザー要望)。
-            appBar: (widget.hideAppBar || _gsHeaderHidden || _browserHidden)
+            //
+            // ★ = ユーザー報告「モバイル版の google 検索のヘッダー項目を
+            //   非表示にすると、 ヘッダー項目を戻すことができない」。
+            //   戻す山形は本文の上に**重ねて**置いていたが、 Android の
+            //   InAppWebView は画面に貼り付いた OS の部品なので、 その矩形に
+            //   重ねた Flutter の部品は**見えているのに押せない**
+            //   (触りが webview に吸われる)。 だからモバイルでは重ねずに、
+            //   webview の外側である AppBar の場所へ細い帯を出す。
+            appBar: (widget.hideAppBar || _browserHidden)
                 ? null
-                : AppBar(
+                : (_gsHeaderHidden && !_gsHoverCapable)
+                    ? _buildHiddenHeaderStrip(provider)
+                    : _gsHeaderHidden
+                        ? null
+                        : AppBar(
                     backgroundColor: const Color(0xFF1A1A1A),
                     elevation: 0,
                     automaticallyImplyLeading: false,
@@ -7849,7 +7891,9 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                     ),
                   ),
                 ),
-              if (_gsHeaderHidden && !widget.hideAppBar)
+              // ★ 重ねて出す戻し口は、 触りを奪われないパソコンだけ
+              //   (モバイルは上の細い帯で戻す)。
+              if (_gsHeaderHidden && !widget.hideAppBar && _gsHoverCapable)
                 Positioned(
                   left: 0,
                   right: 0,

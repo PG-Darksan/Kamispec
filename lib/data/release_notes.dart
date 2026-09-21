@@ -50,6 +50,48 @@ const String kAppVersionName = '1.0.0';
 /// **新しい順**に並べる (先頭が今の版)。
 const List<ReleaseNote> kReleaseNotes = <ReleaseNote>[
   ReleaseNote(
+    build: 428,
+    date: '2026-09-21',
+    lines: <String, List<String>>{
+      'ja': [
+        'オートクリッカーを動作パレットにしました。 クリック・スワイプ・'
+            'ホイール・連打・スクショなどを札にして、 押すだけで出せます。',
+        'パレットを常に手前の別窓へ出せるようにしました。 他のアプリを'
+            '触っている間も消えずに押せます。',
+        '押す先は座標で指定する形に一本化しました (カーソルから取り込む口も'
+            '残してあります)。',
+        '端末や AI の画面を、 左右 3 枚・4 枚まで並べられるようにしました。',
+        '背景が画面の比率に入り切らない時、 動かすと少しずつ違う所が'
+            '見えるようになりました (モバイルの縦長画面向け)。',
+        'モバイルで Google 検索のヘッダーを隠した後、 上の細い帯から'
+            '戻せるようにしました。',
+        '「クリック手順」 のボタンを廃止しました (手順を組む所は自動操作の'
+            'ページです)。 仮想デスクトップの項目も無くしました。',
+        '自動操作のページを、 広い画面では左右 2 列で使えるようにしました。',
+        'ログイン中のアカウントが同じ名前で並んだ時に、 番号で見分けが'
+            '付くようにしました。',
+      ],
+      'en': [
+        'The auto clicker is now an action palette. Click, swipe, wheel, '
+            'repeat click and screenshot become cards you can fire with a tap.',
+        'The palette can be sent to its own always-on-top window, so it stays '
+            'usable while another app has focus.',
+        'Targets are now given as coordinates (a button to read them from the '
+            'cursor is still there).',
+        'Terminals and AI panes can now be placed three and four across.',
+        'When a background does not fit the screen ratio, moving around now '
+            'reveals the rest of it (for tall phone screens).',
+        'After hiding the Google search header on mobile, a slim bar at the '
+            'top brings it back.',
+        'The "click steps" button was removed (steps are built on the '
+            'automation page). The virtual desktop entry is gone too.',
+        'The automation page now uses two columns on a wide screen.',
+        'Accounts that resolve to the same name are now numbered so they can '
+            'be told apart.',
+      ],
+    },
+  ),
+  ReleaseNote(
     build: 427,
     date: '2026-09-21',
     lines: <String, List<String>>{

@@ -285,6 +285,43 @@ class DesktopInput {
     return _sendRaw(w);
   }
 
+  /// 押したまま引きずる (= スワイプ)。
+  ///
+  /// ★ = ユーザー要望「スワイプや指定したボタン位置をクリックするなどの
+  ///   動作を割り当てられるように」。 始点で押し下げ、 途中を何度かに
+  ///   分けて動かし、 終点で放す。 一足飛びに動かすと、 相手のアプリが
+  ///   「引きずった」 と受け取らずただの click になる事がある
+  ///   (地図やスクロール領域で特にそうなる) ので、 必ず刻んで送る。
+  /// [steps] は刻む回数、 [holdMs] は押し下げてから動かし始めるまでの待ち。
+  static Future<bool> drag(int x1, int y1, int x2, int y2,
+      {MouseButton button = MouseButton.left,
+      int steps = 24,
+      int holdMs = 60}) async {
+    if (!_ready) return false;
+    if (!moveTo(x1, y1)) return false;
+    final (down, up) = switch (button) {
+      MouseButton.right => (_kMouseRightDown, _kMouseRightUp),
+      MouseButton.middle => (_kMouseMiddleDown, _kMouseMiddleUp),
+      MouseButton.left => (_kMouseLeftDown, _kMouseLeftUp),
+    };
+    if (!_sendRaw([_mouse(flags: down)])) return false;
+    if (holdMs > 0) {
+      await Future<void>.delayed(Duration(milliseconds: holdMs));
+    }
+    final n = steps.clamp(2, 200);
+    for (var i = 1; i <= n; i++) {
+      final x = x1 + ((x2 - x1) * i / n).round();
+      final y = y1 + ((y2 - y1) * i / n).round();
+      moveTo(x, y);
+      // 1 コマずつ間を空ける (詰めて送ると 1 回の跳躍として扱われる)。
+      await Future<void>.delayed(const Duration(milliseconds: 8));
+    }
+    if (holdMs > 0) {
+      await Future<void>.delayed(Duration(milliseconds: holdMs));
+    }
+    return _sendRaw([_mouse(flags: up)]);
+  }
+
   /// 縦に転がす。 [notches] 正で上、 負で下。
   static bool scroll(int notches) {
     if (!_ready) return false;

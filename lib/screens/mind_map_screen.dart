@@ -71,6 +71,7 @@ import '../widgets/agent_terminal.dart';
 import '../widgets/connection_painter.dart';
 import '../widgets/node_widget.dart';
 import '../widgets/google_search_dialog.dart';
+import '../widgets/auto_click_palette.dart' show AutoClickPalette;
 import '../widgets/auto_clicker.dart';
 import '../widgets/paywall_hook.dart';
 import '../widgets/read_aloud.dart';
@@ -37881,61 +37882,6 @@ class _MindMapScreenState extends State<MindMapScreen>
     }));
   }
 
-  /// 仮想デスクトップを切り替える (= ユーザー要望)。
-  ///
-  /// ★ = ユーザー報告「デスクトップの切り替えが動作していない」。
-  ///   原因は 2 つあった。 (1) 矢印キーに拡張キーの印を立てずに送っていたので
-  ///   Windows が**テンキーの 4 / 6** として受け取り、 シェルの組み合わせに
-  ///   当たらなかった (os_quick_toggles 側で修正)。 (2) そもそも隣に
-  ///   デスクトップが無い時も「送れた」 = 成功として黙っていた。
-  ///   ここでは動いたかどうかまで見て、 動かなかった理由を伝える。
-  /// ★ = ユーザー要望「デスクトップの切り替えではなく仮想デスクトップって
-  ///   項目にして、 切り替えに加えて作成 / 削除に他の起動中のアプリ window の
-  ///   転送なども行えるように」。 ヘッダーのボタンはこの窓を出す。
-  void _showVirtualDesktopPanel(MindMapProvider provider) {
-    if (!OsQuickToggles.isSupported) {
-      _appSnack(
-          context,
-          SnackBar(
-              backgroundColor: const Color(0xFFE57373),
-              content: Text(provider.t('power.windowsOnly'))));
-      return;
-    }
-    // ★ = ユーザー要望「windows本家の様に仮想デスクトップに window を
-    //   送ったりできるようにして欲しい」。 デスクトップの一覧と
-    //   「このアプリ」 の段が増えたぶん、 窓を高くする。
-    unawaited(_showNearDialogMain<void>(
-      width: 460,
-      height: 640,
-      builder: (dctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E32),
-        contentPadding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
-        title: Row(children: [
-          const Icon(Icons.desktop_windows_rounded,
-              color: Color(0xFF64B5F6), size: 20),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(provider.t('pcPower.desktopTitle'),
-                style: const TextStyle(color: Colors.white, fontSize: 15)),
-          ),
-        ]),
-        // ★ _showNearDialogMain が既に巻物にしているので、 ここで重ねて
-        //   巻かない (高さが無限の中に巻物を入れると例外になる)。
-        content: SizedBox(
-          width: 420,
-          child: _VirtualDesktopInline(provider: provider),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dctx),
-            child: Text(provider.t('btn.close'),
-                style: const TextStyle(color: Colors.white54)),
-          ),
-        ],
-      ),
-    ));
-  }
-
   /// 渡し先のペインを光らせる印。
   ///
   /// ★ = ユーザー要望「境界を飛び越えてデータを転送」。 どこへ渡るのかが
@@ -46584,20 +46530,13 @@ class _MindMapScreenState extends State<MindMapScreen>
       'color': Color(0xFF26A69A),
     },
     {
-      // クリック手順 (= 旧「自動操作」。 Google 検索のヘッダーにある自動化を
-      //   カスタムボタンとしても置けるように)。 押すと検索画面を
-      //   クリック手順のパネル付きで開く。
-      // ★ = ユーザー要望「自動操作はカスタムボタンから呼び出す際は
-      //   オートクリッカーとかそういう名前にして欲しい」。 表示名は鍵を
-      //   足さず 'auto.title' の値ごと変えている (パネルの見出しも同じ鍵
-      //   なので、 ボタンの名前と中身の名前がずれない)。 単純な連打は
-      //   下の 'autoClicker' (=「オートクリッカー」) の方。
-      'id': 'webAutomation',
-      'labelKey': 'auto.title',
-      'icon': Icons.play_circle_outline_rounded,
-      'color': Color(0xFF80CBC4),
-    },
-    {
+      // ★ = ユーザー要望「クリック手順というかオートクリッカーって名前に
+      //   して、 自動操作ページとは別物にして欲しい」。 ボタンは
+      //   「オートクリッカー」 (= 押すと動作パレットが出る) の 1 つだけに
+      //   した。 手順を組む方はページ (pageType 'automation') が本拠地。
+      //   ★ 'webAutomation' の id 自体は残してある (アシスタントからの
+      //     呼び出しと、 既に道具棚へ置いている人のボタンのため)。 この
+      //     一覧から外して、 新たに選べなくするだけ。
       // オートクリッカー (= ユーザー要望:「画面タップなどの操作は
       //   オートクリッカーって名前でボタン項目として別で作って欲しい」)。
       //   自動操作の中の「画面を押す手順」 だけを切り出した小さな道具。
@@ -46667,16 +46606,6 @@ class _MindMapScreenState extends State<MindMapScreen>
       'labelKey': 'hdr.powerMode',
       'icon': Icons.battery_saver_rounded,
       'color': Color(0xFF7CD992),
-    },
-    {
-      // 仮想デスクトップの切り替え (= ユーザー要望:「デスクトップの
-      //   切り替えボタンも欲しい」)。 押すと右隣のデスクトップへ移る。
-      //   ★ ヘッダーのボタンは右クリックを受けない作りなので、 戻る方は
-      //     用意していない (Ctrl+Win+← が今までどおり使える)。
-      'id': 'switchDesktop',
-      'labelKey': 'hdr.switchDesktop',
-      'icon': Icons.desktop_windows_rounded,
-      'color': Color(0xFF64B5F6),
     },
     {
       // 無音カメラ (= ユーザー要望)。
@@ -46893,9 +46822,9 @@ class _MindMapScreenState extends State<MindMapScreen>
       'icon': Icons.language_rounded,
       'commandIds': <String>[
         'googleSearch',
-        // 自動化 (= ユーザー要望)。
-        'webAutomation',
-        // オートクリッカー (= ユーザー要望: 別のボタン項目として)。
+        // オートクリッカー (= ユーザー要望: 動作パレットとして)。
+        //   'webAutomation' (旧「クリック手順」) はここから外した
+        //   (= ユーザー要望: 自動操作ページとは別物にして欲しい)。
         'autoClicker',
         // 'sharePageLan' (LAN 共有) は廃止 (= ユーザー要望)。
         'openGmail',
@@ -49887,6 +49816,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           height: 560,
           floating: (_) => AutoClickerView(
             provider: provider,
+            onPopOut: _isDesktop ? _openClickerPaletteWindow : null,
             onRequestClose: () => _closeFloatingPanelByKey('autoClicker'),
           ),
         ).then((handled) async {
@@ -49901,6 +49831,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                 borderRadius: BorderRadius.circular(12),
                 child: AutoClickerView(
                   provider: provider,
+                  onPopOut: _isDesktop ? _openClickerPaletteWindow : null,
                   onRequestClose: () => Navigator.pop(dctx),
                 ),
               ),
@@ -50106,10 +50037,6 @@ class _MindMapScreenState extends State<MindMapScreen>
         // 電源モードを 1 段回す (= ユーザー要望)。 何になったかを必ず出す
         //   (見た目が変わらないので、 出さないと効いたか分からない)。
         _cyclePowerMode(provider);
-        break;
-      case 'switchDesktop':
-        // 右隣のデスクトップへ (= ユーザー要望)。
-        _showVirtualDesktopPanel(provider);
         break;
       case 'silentCamera':
         // 無音カメラ (= ユーザー要望)。 撮影して写真をマップに追加。
@@ -67478,6 +67405,42 @@ class _MindMapScreenState extends State<MindMapScreen>
   }
 
 
+  /// 動作パレットを、 常に手前の別窓へ出す。
+  ///
+  /// ★ = ユーザー要望「パレットが出てきて、 他の箇所がアクティブでも
+  ///   消えずに押せるみたいなものを想定していた」。 アプリの中の枠は、
+  ///   他のアプリを前に出すと一緒に後ろへ回ってしまう。 別の窓なら、
+  ///   常に手前に居続けられる。
+  /// ★ 窓は 1 つだけ。 既に出ているなら、 前へ出し直すだけにする
+  ///   (= 録画窓と同じ作法。 いくつも開くと止め忘れの元になる)。
+  int? _clickerWinId;
+
+  void _openClickerPaletteWindow() {
+    unawaited(() async {
+      final existing = _clickerWinId;
+      if (existing != null) {
+        try {
+          final w = WindowController.fromWindowId(existing);
+          await w.show();
+          return;
+        } catch (_) {
+          _clickerWinId = null;
+        }
+      }
+      try {
+        final win = await DesktopMultiWindow.createWindow(
+            jsonEncode({'kind': 'clicker'}));
+        _clickerWinId = win.windowId;
+        await win.setFrame(const Offset(80, 80) & const Size(420, 460));
+        await win.setTitle('HisatorNotebook Clicker');
+        await win.show();
+      } catch (e) {
+        _clickerWinId = null;
+        if (mounted) _showLockToast('$e');
+      }
+    }());
+  }
+
   /// アプリの機能ボタンと文書ファイル作成を MCP へ預ける。
   ///
   /// 実行はどちらも画面側でしかできないので、 画面から渡す必要がある。
@@ -76623,13 +76586,22 @@ class _MindMapScreenState extends State<MindMapScreen>
     final assetTemplate =
         templateId != null && _mapBackgroundTemplateAssets[templateId] != null;
     if (assetTemplate) {
-      bg = _wrapScrollingBackground(
-        _MapBackgroundTemplateView(
+      // ★ 比率が違って切れているぶんは、 動かすと見えるようにする
+      //   (= ユーザー要望: モバイルで入り切らない)。 倍率を上げた時の
+      //   滑らせ方は今までどおり外側の包みが受け持つ。
+      bg = AnimatedBuilder(
+        animation: ctrl,
+        builder: (_, __) => _MapBackgroundTemplateView(
           templateId: templateId,
           hueDegrees: page.backgroundHueDegrees,
           saturationPercent: page.backgroundSaturationPercent,
           brightnessPercent: page.backgroundBrightnessPercent,
+          alignment:
+              _bgAlignmentFor(ctrl, provider, pageOverride: pageOverride),
         ),
+      );
+      bg = _wrapScrollingBackground(
+        bg,
         ctrl,
         provider,
         pageOverride: pageOverride,
@@ -76663,12 +76635,20 @@ class _MindMapScreenState extends State<MindMapScreen>
         default:
           fit = BoxFit.cover;
       }
-      bg = Image.file(
-        file,
-        fit: fit,
-        repeat: repeat,
-        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-        gaplessPlayback: true,
+      // ★ 覆う形で切られたぶんを、 動かした所に合わせて見せる
+      //   (= ユーザー要望: モバイルで入り切らない)。 敷き詰め (tile) と
+      //   全体表示 (contain) では切れないので、 掛けても何も変わらない。
+      bg = AnimatedBuilder(
+        animation: ctrl,
+        builder: (_, __) => Image.file(
+          file,
+          fit: fit,
+          repeat: repeat,
+          alignment:
+              _bgAlignmentFor(ctrl, provider, pageOverride: pageOverride),
+          errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+          gaplessPlayback: true,
+        ),
       );
       // ── 動かしたぶんだけ背景も移す (= ユーザー要望) ──
       //   「全体を表示」 (contain) を選んでいる人には掛けない。 あれは
@@ -76685,6 +76665,30 @@ class _MindMapScreenState extends State<MindMapScreen>
         child: Opacity(opacity: opacity, child: bg),
       ),
     );
+  }
+
+  /// 覆う形 (cover) で切られた絵の「見せる所」 を、 動かした所に合わせる。
+  ///
+  /// ★ = ユーザー要望「モバイル版の背景が画面比率が違って入り切れていない
+  ///   から、 スクロールしたらゆっくりと背景も動く様にして欲しい」。
+  ///   画面より大きく描く [_wrapScrollingBackground] は倍率が等倍だと
+  ///   何もしない (余白が無いため) が、 **比率が違う時は等倍でも絵は
+  ///   切れている**。 その切れているぶんは寄せ先 (alignment) を動かすだけで
+  ///   見て回れる。 切れていない向きには何の影響も無いので、 どの画面でも
+  ///   掛けてよい。
+  Alignment _bgAlignmentFor(
+      TransformationController ctrl, MindMapProvider provider,
+      {MindMapPage? pageOverride}) {
+    final scene = ctrl.toScene(Offset.zero);
+    final extent =
+        _canvasDimensionForScrollbars(provider, pageOverride: pageOverride);
+    double a(double pos, double span) {
+      if (span <= 0) return 0;
+      // 左上の端 = -1 (絵の左上) / 右下の端 = +1 (絵の右下)。
+      return ((pos / span).clamp(0.0, 1.0)) * 2 - 1;
+    }
+
+    return Alignment(a(scene.dx, extent.width), a(scene.dy, extent.height));
   }
 
   /// 背景を画面より一回り大きく描き、 動かした所に合わせて中を滑らせる。
@@ -78476,6 +78480,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         return AutoClickerView(
           key: ValueKey('pane_tool_${slot}_$id'),
           provider: provider,
+          onPopOut: _isDesktop ? _openClickerPaletteWindow : null,
           onRequestClose: close,
         );
       // カレンダー (= ユーザー要望: 分割でも開けるように)。
@@ -78710,6 +78715,21 @@ class _MindMapScreenState extends State<MindMapScreen>
             final prefs = await SharedPreferences.getInstance();
             await prefs.setBool('calcScientificMode', sci);
           } catch (_) {}
+        }
+        break;
+      case 'autoClickPalette':
+        // 外に出したオートクリッカーのパレットで札を編んだ (= ユーザー要望:
+        //   他のアプリを触っていても消えない窓)。 控えを書くのは本体だけに
+        //   する (サブ窓は別の入れ物なので、 そこから書くと本体の控えを
+        //   丸ごと上書きしてしまう恐れがある)。
+        {
+          final json = '${call.arguments ?? ''}';
+          if (json.isNotEmpty) {
+            try {
+              final prefs = await SharedPreferences.getInstance();
+              await prefs.setString(AutoClickPalette.prefsKey, json);
+            } catch (_) {}
+          }
         }
         break;
       case 'focusMain':
@@ -81434,8 +81454,6 @@ class _MindMapScreenState extends State<MindMapScreen>
         _PowerTimeoutInline(provider: provider),
         _pcSubLabel(provider.t('saver.title')),
         _ScreenSaverInline(provider: provider),
-        _pcSubLabel(provider.t('pcPower.desktopTitle')),
-        _VirtualDesktopInline(provider: provider),
 
         // ── 音声の出力先 ──
         _pcSectionLabel(provider.t('audioOut.title')),
@@ -111719,1050 +111737,6 @@ class _ScreenSaverInlineState extends State<_ScreenSaverInline> {
 ///
 /// これまで 電源モード / デスクトップ切替 は**ヘッダーのボタンだけ**で、
 /// 設定の中からは触れなかった。 消灯時間 / セーバーと同じ見出しの下に置く。
-// ── 仮想デスクトップ ──────────────────────────────────
-
-/// ★ = ユーザー要望「デスクトップの切り替えではなく仮想デスクトップって
-/// 項目にして、 切り替えに加えて作成 / 削除に他の起動中のアプリ window の
-/// 転送なども行えるように」。
-///
-/// 窓の移動に使うのは公開されている IVirtualDesktopManager だけ
-/// (内部 COM は Windows の版が上がるたびに壊れる)。 相手のアプリによっては
-/// Windows 側が移動を断るので、 断られた時はその事をそのまま伝える。
-class _VirtualDesktopInline extends StatefulWidget {
-  final MindMapProvider provider;
-  const _VirtualDesktopInline({required this.provider});
-
-  @override
-  State<_VirtualDesktopInline> createState() => _VirtualDesktopInlineState();
-}
-
-class _VirtualDesktopInlineState extends State<_VirtualDesktopInline> {
-  /// 下に出す一行の知らせ。
-  ///
-  /// ★ = ユーザー要望「閉じましたのメッセージも数秒で消えるようにして
-  ///   欲しい」。 入れ替える時は、 前に仕掛けた「数秒で消す」 待ちを必ず
-  ///   外す (古い待ちが、 その後に出した**別の**知らせを消してしまうため)。
-  ///   自分から消えるのは [_fadeNote] を呼んだ知らせだけ。
-  String? get _note => _noteText;
-  set _note(String? v) {
-    _noteTimer?.cancel();
-    _noteTimer = null;
-    _noteText = v;
-  }
-
-  String? _noteText;
-  Timer? _noteTimer;
-
-  /// 済んだ知らせを数秒で自分から消す。
-  ///
-  /// ★ 「閉じました」 「送りました」 のような**済んだ事**の知らせは、 結果が
-  ///   目の前に出ているので置きっ放しにしない。 逆に「閉じられませんでした」
-  ///   「確かめてください」 は利用者がこれから動く物なので消さない。 待って
-  ///   いる間の「閉じています…」 も、 結果が出るまで残す (途中で消えると
-  ///   止まったように見える)。
-  void _fadeNote() {
-    _noteTimer?.cancel();
-    _noteTimer = Timer(const Duration(seconds: 4), () {
-      if (!mounted) return;
-      setState(() => _note = null);
-    });
-  }
-
-  bool _busy = false;
-
-  /// 起動中の窓の一覧 (開いた時と「更新」で読み直す)。
-  ///
-  /// ★ = ユーザー要望「windows本家の様に仮想デスクトップに window を
-  ///   送ったりできるようにして欲しい」。 自分のアプリの窓も送れるように
-  ///   したので、 isSelf を除かずに全部持っておく。
-  List<DesktopWindowInfo> _windows = const [];
-
-  /// 仮想デスクトップの一覧 (並び順 = タスクビューの左から)。
-  List<VirtualDesktopInfo> _desktops = const [];
-  bool _windowsLoaded = false;
-
-  /// 自分の窓を送った時、 送り先へ一緒に移るか。
-  bool _follow = true;
-
-  /// 窓の中身の小さな絵とアプリのアイコン (hwnd → 見た目)。
-  ///
-  /// ★ = ユーザー要望「何の画面か分かりにくいから窓のプレビュー画面を
-  ///   表示して欲しい」。 撮るのは**一覧を開いた時と「更新」 の時だけ**。
-  ///   組み立てのたびに撮ると、 窓の数だけ PrintWindow が走って重くなる。
-  Map<int, WindowShot> _shots = const {};
-
-  /// 絵を撮り終えたか (終わるまでは行の頭で回っている印を出す)。
-  bool _shotsLoaded = false;
-
-  /// 何回目の撮り直しか。 古い結果が後から届いても捨てるための番号。
-  int _shotRun = 0;
-
-  MindMapProvider get p => widget.provider;
-
-  @override
-  void initState() {
-    super.initState();
-    _reloadWindows();
-  }
-
-  @override
-  void dispose() {
-    // ★ 板を閉じた後に待ちが起きると、 もう無い画面へ setState して落ちる。
-    _noteTimer?.cancel();
-    super.dispose();
-  }
-
-  /// ★ = ユーザー報告「仮想デスクトップのボタンを押すとアプリが落ちる」。
-  ///   窓の一覧は COM を使うので、 画面のスレッドで直に呼ばない
-  ///   (別の isolate へ回す)。 待っている間は「調べています」 と出す。
-  Future<void> _reloadWindows({bool reshoot = false}) async {
-    setState(() => _windowsLoaded = false);
-    final snap = await OsQuickToggles.snapshot();
-    if (!mounted) return;
-    setState(() {
-      _desktops = snap.desktops;
-      _windows = snap.windows;
-      _windowsLoaded = true;
-    });
-    // ★ 一覧は先に出して、 絵は後から差し替える (撮るのに時間が掛かる)。
-    unawaited(_reloadShots(force: reshoot));
-  }
-
-  /// 窓の中身の絵とアプリのアイコンを撮る。
-  ///
-  /// ★ = ユーザー要望「何の画面か分かりにくいから窓のプレビュー画面を
-  ///   表示して欲しい」。 PrintWindow は相手のアプリに描き直させる
-  ///   呼び出しで、 4K の窓なら 33MB になる。 画面のスレッドでは回さず、
-  ///   別の isolate へまとめて 1 往復で頼む (window_preview.dart)。
-  ///
-  /// ★ 撮り直すのは [force] (= 「更新」 を押した時) だけ。 この一覧は
-  ///   窓を送るたび・デスクトップを切り替えるたびに読み直すので、 毎回
-  ///   撮り直すと (1) 相手のアプリを巻き込む呼び出しが何十回も走って
-  ///   待たされ、 (2) 切り替えた先からは前のデスクトップの窓が撮れず、
-  ///   一度出た絵が消えてアイコンに戻ってしまう。 既にある絵は残す。
-  ///
-  /// ★ 自分の窓は撮らない。 PrintWindow は相手の窓のスレッドに描き直させて
-  ///   **返事を待つ**呼び出しで、 自分の窓の持ち主は画面のスレッド
-  ///   (= この isolate が待っている相手) なので、 画面が詰まっている間は
-  ///   いつまでも返ってこない。 しかも Flutter の窓は GPU で描くので
-  ///   撮れても真っ白になる。 待つ意味が無いので最初から外す。
-  Future<void> _reloadShots({bool force = false}) async {
-    if (_windows.isEmpty) {
-      if (mounted) setState(() => _shotsLoaded = true);
-      return;
-    }
-    final targets = <({int hwnd, String exePath})>[
-      for (final w in _windows)
-        if (!w.isSelf && (force || !_shots.containsKey(w.hwnd)))
-          (hwnd: w.hwnd, exePath: w.exePath),
-    ];
-    if (targets.isEmpty) {
-      if (mounted) setState(() => _shotsLoaded = true);
-      return;
-    }
-    final run = ++_shotRun;
-    final shots = await captureWindowPreviews(targets);
-    // ★ 待っている間に利用者が「更新」 を押していたら、 古い方は捨てる。
-    if (!mounted || run != _shotRun) return;
-    setState(() {
-      _shots = force ? shots : {..._shots, ...shots};
-      _shotsLoaded = true;
-    });
-  }
-
-  /// デスクトップの見せ方 (名前を付けていなければ「デスクトップ N」)。
-  String _deskLabel(VirtualDesktopInfo d) => d.name.isNotEmpty
-      ? d.name
-      : p.t('vdesk.desktopN').replaceFirst('{n}', '${d.index + 1}');
-
-  /// 並び順から見せ方を引く (分からなければ空)。
-  String _deskLabelByIndex(int i) =>
-      i >= 0 && i < _desktops.length ? _deskLabel(_desktops[i]) : '';
-
-  Future<void> _go({required bool forward}) async {
-    if (_busy) return;
-    setState(() {
-      _busy = true;
-      _note = null;
-    });
-    final r = await OsQuickToggles.switchDesktop(forward: forward);
-    if (!mounted) return;
-    setState(() {
-      _busy = false;
-      // 切り替わった時は別のデスクトップに居るので、 何も出さない。
-      _note = switch (r) {
-        DesktopSwitchResult.ok => null,
-        DesktopSwitchResult.noNeighbor =>
-          p.t(forward ? 'desktop.noRight' : 'desktop.noLeft'),
-        _ => p.t('desktop.failed'),
-      };
-    });
-  }
-
-  Future<void> _move(DesktopWindowInfo w) async {
-    if (_busy) return;
-    setState(() {
-      _busy = true;
-      _note = null;
-    });
-    final r = await OsQuickToggles.moveWindowToThisDesktop(w.hwnd);
-    if (!mounted) return;
-    setState(() {
-      _busy = false;
-      _note = switch (r) {
-        MoveWindowResult.ok =>
-          p.t('vdesk.moved').replaceFirst('{name}', w.title),
-        MoveWindowResult.denied => p.t('vdesk.moveDenied'),
-        MoveWindowResult.failed => p.t('vdesk.moveFailed'),
-      };
-    });
-    if (r == MoveWindowResult.ok) {
-      // 済んだ知らせなので数秒で消す (断られた時の知らせは残す)。
-      _fadeNote();
-      OsQuickToggles.focusWindow(w.hwnd);
-      unawaited(_reloadWindows());
-    }
-  }
-
-  /// 窓 [w] が居るデスクトップへ**こちらが**移って、 その窓を手前に出す。
-  ///
-  /// ★ = ユーザー要望「windows本家の様に仮想デスクトップに window を
-  ///   送ったりできるようにして欲しい」 のうち、 他のアプリの窓ぶん。
-  ///   Windows は**そのアプリ自身が持っている窓しか動かせない**決まりなので
-  ///   ([DesktopWindowInfo.canSend])、 呼び寄せる代わりに「こちらが行く」。
-  ///   本家でも他のアプリの窓を動かすのは Win+Tab の画面での引っ張りだけ
-  ///   なので、 そちらへは [_openTaskView] で橋渡しする。
-  Future<void> _goToWindow(DesktopWindowInfo w) async {
-    if (_busy) return;
-    final now = OsQuickToggles.desktopIndexNow(w.desktopId);
-    final cur = now.current >= 0
-        ? now.current
-        : _desktops.indexWhere((x) => x.isCurrent);
-    final to = now.target >= 0 ? now.target : w.desktopIndex;
-    if (cur < 0 || to < 0) {
-      setState(() => _note = p.t('vdesk.noDesktops'));
-      return;
-    }
-    setState(() {
-      _busy = true;
-      _note = null;
-    });
-    final r = cur == to
-        ? DesktopSwitchResult.ok
-        : await OsQuickToggles.switchToDesktopIndex(
-            from: cur, to: to, targetId: w.desktopId);
-    if (r == DesktopSwitchResult.ok) OsQuickToggles.focusWindow(w.hwnd);
-    if (!mounted) return;
-    setState(() {
-      _busy = false;
-      _note = r == DesktopSwitchResult.ok ? null : p.t('desktop.failed');
-    });
-    unawaited(_reloadWindows());
-  }
-
-  /// タスクビュー (Win+Tab) を開く。
-  void _openTaskView() {
-    final ok = OsQuickToggles.openTaskView();
-    setState(() => _note = ok ? null : p.t('desktop.failed'));
-  }
-
-  /// デスクトップ [d] へ移る (一覧のチップを押した時)。
-  ///
-  /// ★ = ユーザー要望「windows本家の様に仮想デスクトップに window を
-  ///   送ったりできるようにして欲しい」。 本家の Win+Tab と同じで、
-  ///   どの番号のデスクトップへも一息で移れるようにする。
-  Future<void> _jumpTo(VirtualDesktopInfo d) async {
-    if (_busy) return;
-    // ★ 段数は「今どこか」 から数えるので、 控えではなく押した**その時**の
-    //   位置を読み直す (開いた後に利用者が自分で切り替えている事がある)。
-    final now = OsQuickToggles.desktopIndexNow(d.id);
-    final cur =
-        now.current >= 0 ? now.current : _desktops.indexWhere((x) => x.isCurrent);
-    final to = now.target >= 0 ? now.target : d.index;
-    if (cur < 0 || cur == to) return;
-    setState(() {
-      _busy = true;
-      _note = null;
-    });
-    final r = await OsQuickToggles.switchToDesktopIndex(
-        from: cur, to: to, targetId: d.id);
-    if (!mounted) return;
-    setState(() {
-      _busy = false;
-      _note = r == DesktopSwitchResult.ok ? null : p.t('desktop.failed');
-    });
-    unawaited(_reloadWindows());
-  }
-
-  /// 新しいデスクトップを作って、 **このアプリの窓も連れて行く**。
-  ///
-  /// ★ = ユーザー要望「windows初心者だとデスクトップ変えた時の戻り方が
-  ///   分からないだろうから、 他のデスクトップを作成したらこのアプリが
-  ///   開いた状態にして欲しい」。 Ctrl+Win+D は**作って、 そこへ移る**ので、
-  ///   そのままだと利用者は何も無い画面に置き去りになる (タスクバーも空で、
-  ///   戻り道は Ctrl+Win+← か Win+Tab しかない)。 作った先へこの窓を送れば、
-  ///   そこには必ずこの板 = 戻る道具がある。
-  ///
-  /// ★ 使うのは公開 API だけ。 `IVirtualDesktopManager::MoveWindowToDesktop`
-  ///   は**呼んだ側が持っている窓**なら動かせるので、 自分の窓は送れる
-  ///   ([DesktopWindowInfo.canSend])。 「全部のデスクトップに出す」 は
-  ///   公開されていない内部 COM でしか出来ないので採らない。
-  ///
-  /// ★ 前のデスクトップからはこのアプリが居なくなる。 戻すのは一手で、
-  ///   下の「このアプリ」 の「送る」 + 「送った先へ一緒に移動する」 で
-  ///   窓も利用者も一緒に戻れる。 その事を [_note] に書く。
-  ///
-  /// ★ 窓の番号は Ctrl+Win+D を**送る前**に取る (送った後は手前の窓が
-  ///   空のデスクトップに変わっている)。 今どこに居るかが読めない時は
-  ///   **作りもしない**: 作ってしまうと Windows がそこへ移すので、 連れて
-  ///   行けないまま何も無い画面に置き去りになる。 Ctrl+Win+← で戻す事も
-  ///   出来ない (作った物は一番後ろに足されるので、 左隣が居た所とは限らない)。
-  Future<void> _createDesktopAndFollow() async {
-    if (_busy) return;
-    // ★ 送る前に控える。 一覧の「このアプリ」 の行で代えるのは駄目で、
-    //   isSelf は**プロセスで**見ているので、 浮遊窓や録画窓など別の
-    //   自前の窓を掴んでしまい、 本体を置き去りにする事がある。
-    final me = OsQuickToggles.selfWindowHandle();
-    // ★ 「今どれか」 が読めない時は**作らない**。 Ctrl+Win+D は作って
-    //   そこへ移るので、 行き先の GUID が判らないままだとこの窓を連れて
-    //   行けず、 利用者を何も無い画面に置き去りにしてしまう
-    //   (= まさに今直そうとしている困り事)。 Ctrl+Win+← で戻す事も
-    //   出来ない: 作ったデスクトップは一番後ろに足されるので、 左隣は
-    //   利用者が居た所とは限らない。
-    final before = OsQuickToggles.currentDesktopId();
-    if (before.isEmpty || me == 0) {
-      setState(() => _note = p.t('vdesk.createSkipped'));
-      return;
-    }
-    setState(() {
-      _busy = true;
-      _note = null;
-    });
-    if (!OsQuickToggles.newDesktop()) {
-      if (!mounted) return;
-      setState(() {
-        _busy = false;
-        _note = p.t('desktop.failed');
-      });
-      return;
-    }
-    // ★ 作った先へ移り終わるのを待つ (Ctrl+Win+D は作ってそこへ移る)。
-    //   「今どれか」 が変わった時が移り終わった時。 2 秒待っても変わらない
-    //   時は送り先が判らないので、 動かさずに諦める (vdesk.createdOnly)。
-    var made = '';
-    for (var i = 0; i < 10; i++) {
-      await Future<void>.delayed(const Duration(milliseconds: 200));
-      final now = OsQuickToggles.currentDesktopId();
-      if (now.isNotEmpty && now != before) {
-        made = now;
-        break;
-      }
-    }
-    var moved = false;
-    if (made.isNotEmpty) {
-      moved = await OsQuickToggles.moveWindowToDesktop(me, made) ==
-          MoveWindowResult.ok;
-      if (moved) OsQuickToggles.focusWindow(me);
-    }
-    if (!mounted) return;
-    setState(() {
-      _busy = false;
-      _note = p.t(moved ? 'vdesk.createdWithApp' : 'vdesk.createdOnly');
-    });
-    unawaited(_reloadWindows());
-  }
-
-  /// 窓 [w] をデスクトップ [d] へ送る。
-  ///
-  /// ★ = ユーザー要望「windows本家の様に仮想デスクトップに window を
-  ///   送ったりできるようにして欲しい」。 Win+Tab の画面で窓を別の
-  ///   デスクトップへ引っ張るのと同じ事を、 一覧から選んで行う。
-  ///   自分の窓を送った時は、 そのまま送り先へ一緒に移れる (既定)。
-  Future<void> _sendTo(DesktopWindowInfo w, VirtualDesktopInfo d) async {
-    if (_busy) return;
-    setState(() {
-      _busy = true;
-      _note = null;
-    });
-    final r = await OsQuickToggles.moveWindowToDesktop(w.hwnd, d.id);
-    if (!mounted) return;
-    // ★ 「送りました」 は済んだ知らせなので数秒で消す。 断られた時と、
-    //   送れたのに付いて行けなかった時 (下) の知らせは残す。
-    var fade = r == MoveWindowResult.ok;
-    var note = switch (r) {
-      MoveWindowResult.ok => p
-          .t('vdesk.sent')
-          .replaceFirst('{name}', w.title)
-          .replaceFirst('{n}', _deskLabel(d)),
-      MoveWindowResult.denied => p.t('vdesk.moveDenied'),
-      MoveWindowResult.failed => p.t('vdesk.moveFailed'),
-    };
-    if (r == MoveWindowResult.ok && w.isSelf && _follow) {
-      // ★ 自分の窓を送ると、 この窓ごと別のデスクトップへ行く。
-      //   前面に出すだけで Windows が付いて来てくれる事が多いので
-      //   まずそれを試し、 駄目な時だけ Ctrl+Win+←/→ で移る。
-      OsQuickToggles.focusWindow(w.hwnd);
-      await Future<void>.delayed(const Duration(milliseconds: 260));
-      final on = await OsQuickToggles.isWindowOnCurrentDesktop(w.hwnd);
-      if (on == false) {
-        // ★ 控えではなく今の位置から数える (送った後に Windows が
-        //   勝手に付いて行っている事もある)。
-        final now = OsQuickToggles.desktopIndexNow(d.id);
-        final from = now.current >= 0
-            ? now.current
-            : _desktops.indexWhere((x) => x.isCurrent);
-        final to = now.target >= 0 ? now.target : d.index;
-        if (from >= 0) {
-          final sr = await OsQuickToggles.switchToDesktopIndex(
-              from: from, to: to, targetId: d.id);
-          if (sr != DesktopSwitchResult.ok) {
-            note = p.t('vdesk.switchFailed');
-            fade = false;
-          }
-        }
-      }
-    }
-    if (!mounted) return;
-    setState(() {
-      _busy = false;
-      _note = note;
-    });
-    if (fade) _fadeNote();
-    unawaited(_reloadWindows());
-  }
-
-  /// チップの見た目だけ (押す仕掛けは付けない)。
-  ///
-  /// ★ 「送る」 は PopupMenuButton の子として使う。 _chip の InkWell を
-  ///   そのまま渡すと押下を先に取られて献立が出ないので、 見た目だけを
-  ///   切り出してある。
-  Widget _chipBody(
-      {required IconData icon,
-      required String label,
-      required bool enabled,
-      Color accent = const Color(0xFF64B5F6)}) {
-    // ★ M3 の Chip は背景色を無視して白飛びするので自前で描く。
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
-      decoration: BoxDecoration(
-        color: Colors.white10,
-        borderRadius: BorderRadius.circular(9),
-        border: Border.all(color: Colors.white24),
-      ),
-      child: Row(mainAxisSize: MainAxisSize.min, children: [
-        Icon(icon, size: 16, color: enabled ? accent : Colors.white24),
-        const SizedBox(width: 6),
-        Text(label,
-            style: TextStyle(
-                color: enabled ? Colors.white70 : Colors.white24,
-                fontSize: 12)),
-      ]),
-    );
-  }
-
-  Widget _chip(
-      {required IconData icon,
-      required String label,
-      required VoidCallback? onTap,
-      Color accent = const Color(0xFF64B5F6)}) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(9),
-      onTap: onTap,
-      child: _chipBody(
-          icon: icon, label: label, enabled: onTap != null, accent: accent),
-    );
-  }
-
-  /// 「送る ▾」 = 送り先のデスクトップを選ぶ献立。
-  ///
-  /// ★ 出すのは**このアプリ自身の窓**だけ ([DesktopWindowInfo.canSend])。
-  ///   Windows は持ち主のプロセスからしか窓を動かせない決まりで、 他の
-  ///   アプリの窓に出しても押すたび断られるだけになるので、 出さない
-  ///   (代わりに「そこへ移る」 と Win+Tab への案内を出す)。
-  Widget _sendButton(DesktopWindowInfo w) {
-    if (!w.canSend) return const SizedBox.shrink();
-    final targets = [
-      for (final d in _desktops)
-        if (d.id.isNotEmpty && d.id != w.desktopId) d,
-    ];
-    if (targets.isEmpty) return const SizedBox.shrink();
-    return PopupMenuButton<VirtualDesktopInfo>(
-      color: const Color(0xFF24243A),
-      tooltip: p.t('vdesk.send'),
-      padding: EdgeInsets.zero,
-      enabled: !_busy,
-      onSelected: (d) => unawaited(_sendTo(w, d)),
-      itemBuilder: (_) => [
-        for (final d in targets)
-          PopupMenuItem<VirtualDesktopInfo>(
-            value: d,
-            height: 34,
-            child: Text(
-              p.t('vdesk.sendTo').replaceFirst('{n}', _deskLabel(d)),
-              style: const TextStyle(color: Colors.white70, fontSize: 12.5),
-            ),
-          ),
-      ],
-      child: _chipBody(
-        icon: Icons.send_rounded,
-        label: p.t('vdesk.send'),
-        enabled: !_busy,
-      ),
-    );
-  }
-
-  /// 今のデスクトップを閉じる前に一度たずねる。
-  Future<void> _confirmClose() async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (dctx) => AlertDialog(
-        backgroundColor: const Color(0xFF24243A),
-        title: Text(p.t('vdesk.closeTitle'),
-            style: const TextStyle(color: Colors.white, fontSize: 15)),
-        content: Text(p.t('vdesk.closeBody'),
-            style: const TextStyle(color: Colors.white70, fontSize: 13)),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dctx, false),
-            child: Text(p.t('btn.cancel'),
-                style: const TextStyle(color: Colors.white54)),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(dctx, true),
-            child: Text(p.t('vdesk.close'),
-                style: const TextStyle(color: Color(0xFFFF6B6B))),
-          ),
-        ],
-      ),
-    );
-    if (ok != true || !mounted) return;
-    OsQuickToggles.closeDesktop();
-    setState(() => _note = null);
-    // ★ = ユーザー要望「このデスクトップを閉じるボタンは他のデスクトップが
-    //   作成されるまで表示自体されないようにして欲しい」 の取りこぼし。
-    //   閉じた直後は控え (_desktops) が 1 枚多いままなので、 2 枚 → 1 枚に
-    //   しても閉じるボタンが出たまま残る (× や案内書きも同じ)。 Windows が
-    //   切り替え終えるのを待ってから数え直す。
-    await Future<void>.delayed(const Duration(milliseconds: 700));
-    if (!mounted) return;
-    unawaited(_reloadWindows());
-  }
-
-  /// デスクトップ [d] を閉じる (今いない所でも閉じられる)。
-  ///
-  /// ★ = ユーザー要望「現在いないデスクトップから別のデスクトップや
-  ///   その窓を削除できるようにして欲しい」。 Windows には「今いない
-  ///   デスクトップを閉じる」 公開の道が無いので、 一度そちらへ移って
-  ///   閉じ、 元へ戻る (やり方はこのまま)。
-  ///
-  /// ★ = ユーザー要望「他のデスクトップを削除する時に2回写って見えますとかも
-  ///   表示しなくてよい」。 画面が 2 回切り替わる断り書きは出さない。
-  ///   たずねる窓には「開いている窓は消えません」 だけを残す。
-  Future<void> _confirmRemove(VirtualDesktopInfo d) async {
-    if (_busy) return;
-    if (_desktops.length <= 1) {
-      setState(() => _note = p.t('vdesk.removeLast'));
-      return;
-    }
-    // ★ 「今そこに居るか」 は控えではなく押した**その時**に読み直す
-    //   ([_jumpTo] と同じ理由: 板を開いた後に利用者が自分で Ctrl+Win+←/→
-    //   や Win+Tab で切り替えている事がある)。 控えを信じると
-    //   _confirmClose は「今いるデスクトップ」 を閉じるので、
-    //   **選んでいない別のデスクトップを閉じてしまう**。
-    //   読めない時 (空) はここを素通りさせ、 そこへ移ってから確かめる
-    //   removeDesktop に任せる (そちらは移れなければ何も閉じない)。
-    final nowId = OsQuickToggles.currentDesktopId();
-    if (nowId.isNotEmpty && nowId == d.id) {
-      await _confirmClose();
-      return;
-    }
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (dctx) => AlertDialog(
-        backgroundColor: const Color(0xFF24243A),
-        title: Text(
-          p.t('vdesk.removeTitle').replaceFirst('{n}', _deskLabel(d)),
-          style: const TextStyle(color: Colors.white, fontSize: 15),
-        ),
-        // ★ 「画面が 2 回切り替わって見えます」 の断り書きは出さない
-        //   (ユーザー要望)。 伝えるべきは「窓は消えない」 事だけなので、
-        //   今いるデスクトップを閉じる時と同じ一行を使い回す。
-        content: Text(p.t('vdesk.closeBody'),
-            style: const TextStyle(color: Colors.white70, fontSize: 13)),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dctx, false),
-            child: Text(p.t('btn.cancel'),
-                style: const TextStyle(color: Colors.white54)),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(dctx, true),
-            child: Text(p.t('vdesk.removeDesktop'),
-                style: const TextStyle(color: Color(0xFFFF6B6B))),
-          ),
-        ],
-      ),
-    );
-    if (ok != true || !mounted) return;
-    setState(() {
-      _busy = true;
-      _note = p.t('vdesk.removing');
-    });
-    final r = await OsQuickToggles.removeDesktop(d.id);
-    if (!mounted) return;
-    setState(() {
-      _busy = false;
-      _note = switch (r) {
-        DesktopRemoveResult.ok =>
-          p.t('vdesk.removed').replaceFirst('{n}', _deskLabel(d)),
-        DesktopRemoveResult.lastOne => p.t('vdesk.removeLast'),
-        DesktopRemoveResult.switchFailed => p.t('vdesk.removeSwitchFailed'),
-        _ => p.t('vdesk.removeFailed'),
-      };
-    });
-    // 閉じられた時だけ数秒で消す。 閉じられなかった知らせは読ませる。
-    if (r == DesktopRemoveResult.ok) _fadeNote();
-    unawaited(_reloadWindows());
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (!OsQuickToggles.isSupported) return const SizedBox.shrink();
-    // ★ 自分のアプリの窓も送れるようにしたので、 2 段に分けて並べる。
-    final mine = [
-      for (final w in _windows)
-        if (w.isSelf) w,
-    ];
-    final others = [
-      for (final w in _windows)
-        if (!w.isSelf) w,
-    ];
-    // ★ = ユーザー要望「このデスクトップを閉じるボタンは他のデスクトップが
-    //   作成されるまで表示自体されないようにして欲しい」。 1 枚しか無い時は
-    //   Windows 自身が閉じさせないので、 灰色で置いておくのではなく
-    //   並びから外す (前は押せない見た目で残していた)。
-    //
-    //   一覧がまだ空の時は「1 枚しか無い」 のか「まだ数えていない」 のか
-    //   区別が付かないので、 読み終えるまでは出さない。 読み終えても空の
-    //   時 (= 数えられなかった。 snapshot は失敗すると空を返す) は出す。
-    //   ここで隠すと、 数え損ねただけの人から閉じる道が丸ごと消えてしまう。
-    //   出しておいても、 最後の 1 枚なら Windows が黙って何もしないだけ。
-    final showCloseThisDesktop =
-        _desktops.isEmpty ? _windowsLoaded : _desktops.length > 1;
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Padding(
-        padding: const EdgeInsets.fromLTRB(6, 2, 6, 0),
-        child: Wrap(spacing: 8, runSpacing: 8, children: [
-          _chip(
-            icon: Icons.chevron_left_rounded,
-            label: p.t('desktop.prev'),
-            onTap: _busy ? null : () => unawaited(_go(forward: false)),
-          ),
-          _chip(
-            icon: Icons.chevron_right_rounded,
-            label: p.t('desktop.next'),
-            onTap: _busy ? null : () => unawaited(_go(forward: true)),
-          ),
-          _chip(
-            icon: Icons.add_rounded,
-            label: p.t('desktop.newDesktop'),
-            // ★ 作るだけでなく、 このアプリの窓も連れて行く
-            //   (= ユーザー要望「デスクトップ変えた時の戻り方が分からない
-            //   だろうから、 作成したらこのアプリが開いた状態にして欲しい」)。
-            onTap: _busy ? null : () => unawaited(_createDesktopAndFollow()),
-          ),
-          // ★ 他のアプリの窓を動かせるのは本家のタスクビューだけなので、
-          //   ここから一押しで開けるようにしておく。
-          _chip(
-            icon: Icons.grid_view_rounded,
-            label: p.t('vdesk.taskView'),
-            onTap: _busy ? null : _openTaskView,
-          ),
-          // ★ = ユーザー要望「このデスクトップを閉じるボタンは他の
-          //   デスクトップが作成されるまで表示自体されないようにして欲しい」。
-          //   帯の末尾なので、 出入りしても他のボタンの位置はずれない。
-          if (showCloseThisDesktop)
-            _chip(
-              icon: Icons.close_rounded,
-              label: p.t('vdesk.close'),
-              accent: const Color(0xFFE57373),
-              onTap: _busy ? null : () => unawaited(_confirmClose()),
-            ),
-        ]),
-      ),
-      // ★ 知らせは道具の帯のすぐ下に出す。 窓の一覧の下に置くと、
-      //   窓が多い時に巻物の外へ押し出されて読まれない
-      //   (= 新しいデスクトップへ移った直後の、 戻り方の案内が見えない)。
-      if (_note != null)
-        Padding(
-          padding: const EdgeInsets.fromLTRB(6, 9, 6, 0),
-          child: Text(_note!,
-              style: const TextStyle(color: Color(0xFFFFB347), fontSize: 11)),
-        ),
-      // ── デスクトップの一覧 (押すとそこへ移る / × で閉じる) ──
-      _sectionLabel(p.t('vdesk.desktopsTitle'), top: 14),
-      // ★ = ユーザー要望「現在いないデスクトップから別のデスクトップや
-      //   その窓を削除できるようにして欲しい」。 × が何をする印なのか
-      //   (今いない所も閉じられる事) を先に書いておく。
-      if (_desktops.length > 1) _hintLabel(p.t('vdesk.removeHint')),
-      if (_desktops.isEmpty && _windowsLoaded)
-        Padding(
-          padding: const EdgeInsets.fromLTRB(6, 6, 6, 0),
-          child: Text(p.t('vdesk.noDesktops'),
-              style: const TextStyle(color: Colors.white38, fontSize: 11)),
-        ),
-      if (_desktops.isNotEmpty)
-        Padding(
-          padding: const EdgeInsets.fromLTRB(6, 6, 6, 0),
-          child: Wrap(spacing: 8, runSpacing: 8, children: [
-            for (final d in _desktops)
-              // ★ 札そのものは「そこへ移る」 のまま、 右肩に × を足して
-              //   今いないデスクトップも閉じられるようにする。
-              Row(mainAxisSize: MainAxisSize.min, children: [
-                _chip(
-                  icon: d.isCurrent
-                      ? Icons.check_circle_rounded
-                      : Icons.desktop_windows_rounded,
-                  label: d.isCurrent
-                      ? '${_deskLabel(d)} ${p.t('vdesk.current')}'
-                      : _deskLabel(d),
-                  accent: d.isCurrent
-                      ? const Color(0xFF81C784)
-                      : const Color(0xFF64B5F6),
-                  onTap: (_busy || d.isCurrent)
-                      ? null
-                      : () => unawaited(_jumpTo(d)),
-                ),
-                // 最後の 1 枚は Windows が閉じさせないので出さない。
-                if (_desktops.length > 1)
-                  IconButton(
-                    tooltip: p.t('vdesk.removeDesktop'),
-                    padding: EdgeInsets.zero,
-                    constraints:
-                        const BoxConstraints(minWidth: 28, minHeight: 28),
-                    icon: const Icon(Icons.close_rounded,
-                        size: 14, color: Color(0xFFE57373)),
-                    onPressed:
-                        _busy ? null : () => unawaited(_confirmRemove(d)),
-                  ),
-              ]),
-          ]),
-        ),
-      // ── 窓の一覧 (呼び寄せる / 送る) ──
-      Padding(
-        padding: const EdgeInsets.fromLTRB(6, 14, 6, 0),
-        child: Row(children: [
-          Expanded(
-            child: Text(p.t('vdesk.windowsTitle'),
-                style: const TextStyle(color: Colors.white70, fontSize: 12.5)),
-          ),
-          IconButton(
-            tooltip: p.t('btn.refresh'),
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
-            icon: const Icon(Icons.refresh_rounded,
-                size: 16, color: Colors.white54),
-            // ★ 「更新」 だけは絵も撮り直す (他の読み直しは既にある絵を残す)。
-            onPressed:
-                _busy ? null : () => unawaited(_reloadWindows(reshoot: true)),
-          ),
-        ]),
-      ),
-      if (!_windowsLoaded)
-        Padding(
-          padding: const EdgeInsets.fromLTRB(6, 8, 6, 0),
-          child: Row(children: [
-            const SizedBox(
-                width: 12,
-                height: 12,
-                child: CircularProgressIndicator(
-                    strokeWidth: 1.6, color: Color(0xFF64B5F6))),
-            const SizedBox(width: 8),
-            Text(p.t('vdesk.checking'),
-                style: const TextStyle(color: Colors.white38, fontSize: 11.5)),
-          ]),
-        ),
-      if (_windowsLoaded && _windows.isEmpty)
-        Padding(
-          padding: const EdgeInsets.fromLTRB(6, 8, 6, 0),
-          child: Text(p.t('vdesk.noWindows'),
-              style: const TextStyle(color: Colors.white38, fontSize: 11.5)),
-        ),
-      if (mine.isNotEmpty) ...[
-        _sectionLabel(p.t('vdesk.thisApp'), top: 10),
-        _hintLabel(p.t('vdesk.sendHint')),
-        for (final w in mine) _windowRow(w),
-        // ★ 自分の窓を送るとこの窓ごと別のデスクトップへ行く。
-        //   付いて行くかどうかを選べるようにしておく。
-        if (_desktops.length > 1)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(0, 2, 6, 0),
-            child: Row(children: [
-              SizedBox(
-                width: 34,
-                height: 30,
-                child: Checkbox(
-                  value: _follow,
-                  activeColor: const Color(0xFF64B5F6),
-                  side: const BorderSide(color: Colors.white38),
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  visualDensity: VisualDensity.compact,
-                  onChanged: (v) => setState(() => _follow = v ?? true),
-                ),
-              ),
-              Expanded(
-                child: Text(p.t('vdesk.followSwitch'),
-                    style: const TextStyle(
-                        color: Colors.white54, fontSize: 11.5)),
-              ),
-            ]),
-          ),
-      ],
-      if (others.isNotEmpty) ...[
-        _sectionLabel(p.t('vdesk.otherApps'), top: 10),
-        // ★ = 検証で分かった事。 公開 API
-        //   (IVirtualDesktopManager::MoveWindowToDesktop) は、 呼んだ側の
-        //   プロセスが持っている窓しか動かせない決まりで、 他のアプリの窓は
-        //   必ず断られる (E_ACCESSDENIED)。 本家の Win+Tab が引っ張れるのは
-        //   公開されていない内部 COM をシェル自身が使っているから。
-        //   押しても断られるだけの「送る」 は出さず、 先にそう伝える。
-        _hintLabel(p.t('vdesk.otherHint')),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(6, 6, 6, 0),
-          child: Align(
-            alignment: Alignment.centerLeft,
-            child: _chip(
-              icon: Icons.open_in_new_rounded,
-              label: p.t('vdesk.taskView'),
-              onTap: _busy ? null : _openTaskView,
-            ),
-          ),
-        ),
-        for (final w in others) _windowRow(w),
-      ],
-    ]);
-  }
-
-  /// 段の見出し。
-  Widget _sectionLabel(String text, {double top = 12}) => Padding(
-        padding: EdgeInsets.fromLTRB(6, top, 6, 0),
-        child: Text(text,
-            style: const TextStyle(color: Colors.white70, fontSize: 12.5)),
-      );
-
-  /// 見出しの下の小さな説明。
-  Widget _hintLabel(String text) => Padding(
-        padding: const EdgeInsets.fromLTRB(6, 3, 6, 0),
-        child: Text(text,
-            style: const TextStyle(color: Colors.white38, fontSize: 10.5)),
-      );
-
-  /// 行の頭に出す「その窓の顔」。
-  ///
-  /// ★ = ユーザー要望「他のアプリ窓の項目アイコンがチェックボックスと
-  ///   勘違いしてしまうから別のにして欲しいのと、 何の画面か分かりにくい
-  ///   から窓のプレビュー画面を表示して欲しい」。
-  ///   これまでの四角い枠だけの絵 (Icons.web_asset_rounded) は、 確かに
-  ///   空のチェック箱に見える。 代わりに**窓の中身を縮めた絵**を出す。
-  ///   撮れなかった時 (最小化中 / 管理者の窓 / 他のデスクトップで絵が
-  ///   残っていない) はアプリのアイコンを大きめに、 それも取れなければ
-  ///   丸い点の印を出す。 どれも「押す物」 には見えない。
-  Widget _windowFace(DesktopWindowInfo w) {
-    final shot = _shots[w.hwnd];
-    final thumb = shot?.thumbPng;
-    final icon = shot?.iconPng;
-    Widget inner;
-    if (thumb != null) {
-      inner = Image.memory(thumb,
-          fit: BoxFit.cover,
-          gaplessPlayback: true,
-          filterQuality: FilterQuality.medium);
-    } else if (icon != null) {
-      inner = Center(
-        child: Image.memory(icon,
-            width: 22,
-            height: 22,
-            gaplessPlayback: true,
-            filterQuality: FilterQuality.medium),
-      );
-    } else if (!_shotsLoaded) {
-      inner = const Center(
-        child: SizedBox(
-          width: 12,
-          height: 12,
-          child: CircularProgressIndicator(
-              strokeWidth: 1.4, color: Color(0xFF64B5F6)),
-        ),
-      );
-    } else {
-      // ★ チェック箱に見えない形 (四角い枠ではなく点の集まり) を選ぶ。
-      inner = Center(
-        child: Icon(
-            w.isSelf ? Icons.app_shortcut_rounded : Icons.apps_rounded,
-            size: 18,
-            color: w.isSelf ? const Color(0xFF64B5F6) : Colors.white38),
-      );
-    }
-    return Tooltip(
-      message: thumb != null
-          ? w.title
-          : (shot?.minimized == true
-              ? p.t('vdesk.minimized')
-              : p.t('vdesk.noPreview')),
-      child: Container(
-        width: 72,
-        height: 42,
-        clipBehavior: Clip.antiAlias,
-        decoration: BoxDecoration(
-          color: Colors.black26,
-          borderRadius: BorderRadius.circular(5),
-          border: Border.all(
-              color: w.isSelf ? const Color(0x5564B5F6) : Colors.white12),
-        ),
-        child: Stack(fit: StackFit.expand, children: [
-          inner,
-          // ★ 絵が出ている時だけ隅に小さくアプリのアイコンを重ねる
-          //   (同じ見た目の窓が並んだ時の見分け)。
-          if (thumb != null && icon != null)
-            Positioned(
-              left: 2,
-              bottom: 2,
-              child: Container(
-                padding: const EdgeInsets.all(1),
-                decoration: BoxDecoration(
-                  color: Colors.black54,
-                  borderRadius: BorderRadius.circular(3),
-                ),
-                child: Image.memory(icon,
-                    width: 13, height: 13, gaplessPlayback: true),
-              ),
-            ),
-        ]),
-      ),
-    );
-  }
-
-  /// 窓 1 行 (題名 / アプリ名 + 居場所 / ここへ / 送る)。
-  Widget _windowRow(DesktopWindowInfo w) {
-    final where = _deskLabelByIndex(w.desktopIndex);
-    final sub = [
-      if (w.processName.isNotEmpty) w.processName,
-      if (where.isNotEmpty) where,
-    ].join(' · ');
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(6, 6, 6, 0),
-      child: Row(children: [
-        _windowFace(w),
-        const SizedBox(width: 9),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(w.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: Colors.white70, fontSize: 12)),
-              if (sub.isNotEmpty)
-                Text(sub,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style:
-                        const TextStyle(color: Colors.white38, fontSize: 10)),
-            ],
-          ),
-        ),
-        // ★ 呼び寄せ (ここへ) が効くのは**このアプリ自身の窓**だけ。
-        //   他のアプリの窓は Windows が断るので、 押しても断り文句が
-        //   出るだけになる。 代わりに「そこへ移る」 (こちらが行く) を出す。
-        if (!w.onCurrentDesktop) ...[
-          const SizedBox(width: 6),
-          w.canSend
-              ? _chip(
-                  icon: Icons.download_rounded,
-                  label: p.t('vdesk.bringHere'),
-                  onTap: _busy ? null : () => unawaited(_move(w)),
-                )
-              : _chip(
-                  icon: Icons.login_rounded,
-                  label: p.t('vdesk.goThere'),
-                  // 居場所が分からない窓は行き先も決められないので押せない。
-                  onTap: (_busy || (w.desktopId.isEmpty && w.desktopIndex < 0))
-                      ? null
-                      : () => unawaited(_goToWindow(w)),
-                ),
-        ],
-        // ★ = ユーザー要望「他のアプリの窓の手前に出す項目が必要性を
-        //   感じない」。 今見ているデスクトップに居る窓を手前に出すのは
-        //   タスクバーや Alt+Tab と同じ事なうえ、 この板の裏で持ち上がる
-        //   だけなので取りやめる。 行そのものは 「どの窓がどこに居るか」
-        //   の一覧として残し、 押す物の代わりに 「このデスクトップ」 と
-        //   書くだけにする。 高さは札に合わせておく (行ごとに背が変わって
-        //   並びが崩れるのを防ぐ)。
-        if (w.onCurrentDesktop && !w.canSend) ...[
-          const SizedBox(width: 6),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 7),
-            child: Text(p.t('vdesk.here'),
-                style: const TextStyle(color: Colors.white30, fontSize: 11)),
-          ),
-        ],
-        const SizedBox(width: 6),
-        _sendButton(w),
-        // ★ = ユーザー要望「現在いないデスクトップから別のデスクトップや
-        //   その窓を削除できるようにして欲しい」 の**窓のぶん**。
-        //   窓を閉じるのは WM_CLOSE (公開された道) で出来て、 しかも
-        //   **どのデスクトップに居ても効く** (移動と違って断られない)。
-        //   自分のアプリの窓は、 ここから閉じると作業中の物まで落ちるので
-        //   出さない。 Windows 自身の土台 (Program Manager) も出さない。
-        if (!w.isSelf && !OsQuickToggles.isShellWindow(w.hwnd))
-          IconButton(
-            tooltip: p.t('vdesk.closeWindow'),
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-            icon: const Icon(Icons.highlight_off_rounded,
-                size: 15, color: Color(0xFFE57373)),
-            onPressed: _busy ? null : () => unawaited(_closeWindowNow(w)),
-          ),
-      ]),
-    );
-  }
-
-  /// 窓 [w] を閉じる (たずねずにその場で閉じる)。
-  ///
-  /// ★ = ユーザー要望「この窓を閉じますか？の確認は要らない」。 × を押した
-  ///   時点で意志は決まっているので、 もう一度たずねない。 送るのは
-  ///   「×を押した」 のと同じ合図 (WM_CLOSE) で、 保存していない物があれば
-  ///   **相手のアプリが**尋ねてくれるので、 取り返しも付く。
-  ///
-  /// ★ ただしその尋ねる窓は**そのアプリの居るデスクトップに出る**ので、
-  ///   こちらから見えない事がある。 閉じ切らなかった時はその事をそのまま
-  ///   伝える (管理者として動いている窓にも Windows は通さない)。
-  Future<void> _closeWindowNow(DesktopWindowInfo w) async {
-    if (_busy) return;
-    final name = w.title.isEmpty ? w.processName : w.title;
-    setState(() {
-      _busy = true;
-      // ★ 相手が保存を尋ねる事があるので最大 3 秒待つ。 その間ここが
-      //   黙っていると固まって見えるので、 待っている事を出す
-      //   (デスクトップを閉じる時の vdesk.removing と同じ扱い)。
-      _note = p.t('vdesk.closingWindow').replaceFirst('{name}', name);
-    });
-    final done = await OsQuickToggles.closeWindow(w.hwnd);
-    if (!mounted) return;
-    setState(() {
-      _busy = false;
-      _note = done
-          ? p.t('vdesk.windowClosed').replaceFirst('{name}', name)
-          : p.t('vdesk.windowCloseRefused');
-    });
-    // 閉じられた知らせは数秒で消す。 閉じられなかった知らせは、 利用者が
-    // これから確かめる物なので残す。
-    if (done) _fadeNote();
-    unawaited(_reloadWindows());
-  }
-}
-
 class _PowerModeInline extends StatefulWidget {
   final MindMapProvider provider;
   const _PowerModeInline({required this.provider});
@@ -183883,12 +182857,21 @@ class _MapBackgroundTemplateView extends StatelessWidget {
   final int hueDegrees;
   final int saturationPercent;
   final int brightnessPercent;
+
+  /// 覆う形 (cover) で切られた時に、 絵のどこを見せるか。
+  ///
+  /// ★ = ユーザー要望「モバイル版の背景が画面比率が違って入り切れて
+  ///   いないから、 スクロールしたらゆっくりと背景も動く様にして欲しい」。
+  ///   縦長の画面に横長の写真を覆わせると、 左右が大きく切れて**一生
+  ///   見えない**。 寄せ先を動かせば、 同じ 1 枚の中を見て回れる。
+  final Alignment alignment;
   const _MapBackgroundTemplateView({
     required this.templateId,
     this.scrollOffset = Offset.zero,
     this.hueDegrees = 0,
     this.saturationPercent = 100,
     this.brightnessPercent = 100,
+    this.alignment = Alignment.center,
   });
 
   @override
@@ -183900,6 +182883,7 @@ class _MapBackgroundTemplateView extends StatelessWidget {
         ? Image.asset(
             asset,
             fit: BoxFit.cover,
+            alignment: alignment,
             errorBuilder: (_, __, ___) => const SizedBox.expand(),
           )
         : CustomPaint(
@@ -282348,6 +281332,57 @@ class _McpChatDialogState extends State<_McpChatDialog>
   //    防いでいるはずの壊れ方が、 同一インスタンス内の判定をすり抜ける)。
   AgentCliSession? _splitCliSession;
 
+  // ── 3 枚目・4 枚目 (= ユーザー要望「powershell や AICLI/API を画面分割で
+  //    3 画面や 4 画面にできるようにして欲しい」) ──
+  //
+  //    ★ 1 枚目 = 主の枠 (端末なら [_inlineTerminal]、 会話ならその列)、
+  //      2 枚目 = [_splitCliSession] / [_sideCliSession] /
+  //      [_sideChatSessionId]。 ここはその**続き**だけを持つ。 2 枚までの
+  //      並べ方には一切触らないので、 今までの動きはそのまま残る。
+  //    ★ static にしない理由は [_splitCliSession] と同じ (浮かせた窓と
+  //      ペインで別々の欄が同時に生きているため)。
+  final List<AgentCliSession> _extraCliSessions = <AgentCliSession>[];
+  final Map<AgentCliSession, Widget> _extraCliTerminals =
+      <AgentCliSession, Widget>{};
+
+  /// 並べられる上限 (主 + 2 枚目 + ここ 2 つ = 4 画面)。
+  static const int _kMaxExtraPanes = 2;
+
+  /// 今いくつの画面を並べているか。
+  int _splitPaneCount() {
+    var n = 1;
+    if (_activeSplitSession != null || _activeSideSession != null) n++;
+    if (_activeSideChatIdRaw != null) n++;
+    return n + _extraCliSessions.length;
+  }
+
+  /// 会話どうしで並べている相手 (生の値。 [_activeSideChatId] は provider を
+  /// 要るので、 数を数えるだけの所ではこちらを見る)。
+  String? get _activeSideChatIdRaw => _sideChatSessionId;
+
+  /// 画面の並び順に見た、 それぞれの枠の中身 (null = 会話の列)。
+  List<AgentCliSession?> _splitPaneSessions() {
+    final out = <AgentCliSession?>[];
+    final side = _activeSideSession;
+    if (_inlineTerminal != null && side == null) {
+      out.add(_lastCliSession);
+      final mate = _activeSplitSession;
+      if (mate != null) out.add(mate);
+    } else {
+      out.add(null); // 会話の列
+      if (side != null) out.add(side);
+    }
+    out.addAll(_extraCliSessions);
+    return out;
+  }
+
+  /// 3 枚目以降を畳む。
+  void _clearExtraPanes() {
+    if (_extraCliSessions.isEmpty) return;
+    _extraCliSessions.clear();
+    _extraCliTerminals.clear();
+  }
+
   /// 左の取り分 (0.2〜0.8)。 欄を開き直しても覚えておく。
   static double _splitRatio = 0.5;
 
@@ -282410,9 +281445,28 @@ class _McpChatDialogState extends State<_McpChatDialog>
   void _splitWithTab(MindMapProvider provider, AgentCliSession s) {
     if (identical(s, _lastCliSession)) return;
     if (!_cliTabs.contains(s)) return;
+    // 既に並んでいる物をもう一度落とされたら何もしない。
+    if (_extraCliSessions.any((e) => identical(e, s))) return;
+    // ★ = ユーザー要望「3 画面や 4 画面にできるように」。 2 枚目が埋まって
+    //   いるなら、 3 枚目・4 枚目として足す。
+    if (_activeSplitSession != null && !identical(_splitCliSession, s)) {
+      if (_extraCliSessions.length >= _kMaxExtraPanes) {
+        showTopToast(context, provider.t('cli.splitMax'),
+            const Color(0xFFE5A23C));
+        return;
+      }
+      _ensureSplitWidth(paneCount: _splitPaneCount() + 1);
+      setState(() {
+        _extraCliSessions.add(s);
+        _extraCliTerminals[s] = _buildCliTerminal(provider, s);
+        _splitFocusPane = _splitPaneCount() - 1;
+      });
+      _focusCliPane(s);
+      return;
+    }
     // ★ 札を札へ落として並べる道 ([_pairCliTabs]) はここしか通らないので、
     //   幅を確かめるのもここへ置く (押すボタンごとに書かない)。
-    _ensureSplitWidth(cliPair: true);
+    _ensureSplitWidth(paneCount: 2);
     setState(() {
       _splitCliSession = s;
       _splitTerminal = _buildCliTerminal(provider, s);
@@ -282427,10 +281481,15 @@ class _McpChatDialogState extends State<_McpChatDialog>
 
   /// 左右をやめて 1 本に戻す。
   void _unsplitCli() {
-    if (_splitCliSession == null && _splitTerminal == null) return;
+    if (_splitCliSession == null &&
+        _splitTerminal == null &&
+        _extraCliSessions.isEmpty) {
+      return;
+    }
     setState(() {
       _splitCliSession = null;
       _splitTerminal = null;
+      _clearExtraPanes();
       _splitFocusPane = 0;
     });
     final s = _lastCliSession;
@@ -282581,6 +281640,27 @@ class _McpChatDialogState extends State<_McpChatDialog>
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [Expanded(child: left)]);
       }
+      // ★ = ユーザー要望「3 画面や 4 画面にできるように」。 3 枚目からは
+      //   入る幅のぶんだけ並べる (足りない枚数は並べない = 狭い所で全部が
+      //   潰れるのを防ぐ)。 取り分は等分にする (掴んで変えられるのは
+      //   2 枚の時だけ。 3 枚以上で比を持ち回ると、 どの境目を掴んだのかが
+      //   決められない)。
+      final extras = <Widget>[];
+      for (final e in _extraCliSessions) {
+        final n = 2 + extras.length + 1;
+        if (w < minPane * n + 8 * (n - 1)) break;
+        extras.add(_extraCliTerminals[e] ?? _buildCliTerminal(provider, e));
+      }
+      if (extras.isNotEmpty) {
+        final panes = <Widget>[left, _splitTerminal!, ...extras];
+        final row = <Widget>[];
+        for (var i = 0; i < panes.length; i++) {
+          if (i > 0) row.add(_buildCliSplitHandle(w));
+          row.add(Expanded(child: _buildCliSplitPane(i, panes[i], true)));
+        }
+        return Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch, children: row);
+      }
       final usable = w - 8;
       final lo = minPane / usable;
       final r = _splitRatio.clamp(lo, 1 - lo);
@@ -282610,12 +281690,18 @@ class _McpChatDialogState extends State<_McpChatDialog>
   ///   **会話と並べる時の数** (330+300) で決め打ちしていたのが原因。
   ///   端末どうしは 1 枚 360 必要 ( :282571 の minPane) なので、 642 まで
   ///   広げても 728 に届かず、 広げたのに並ばないという形になっていた。
-  void _ensureSplitWidth({bool cliPair = false}) {
+  /// [paneCount] を渡すと、 その枚数ぶん (端末の下限 360 × 枚数) を確かめる
+  /// (= ユーザー要望: 3 画面 / 4 画面)。
+  void _ensureSplitWidth({bool cliPair = false, int paneCount = 0}) {
     if (widget.paneMode) return;
     // 会話 + 相手 + 境目の板。 [_buildChatSideBySide] の下限と同じ数。
     // 端末どうしは 1 枚 360 (細くすると CLI の桁数がその場で変わるため)。
-    final need =
-        cliPair ? 360.0 * 2 + 8.0 + 4.0 : 330.0 + 300.0 + 8.0 + 4.0;
+    final double need;
+    if (paneCount >= 2) {
+      need = 360.0 * paneCount + 8.0 * (paneCount - 1) + 4.0;
+    } else {
+      need = cliPair ? 360.0 * 2 + 8.0 + 4.0 : 330.0 + 300.0 + 8.0 + 4.0;
+    }
     final win = context.findAncestorStateOfType<_FloatingPanelWindowState>();
     if (win != null) {
       win.ensureWidthAtLeast(need);
@@ -282659,9 +281745,10 @@ class _McpChatDialogState extends State<_McpChatDialog>
           //   では足りない。 端末は焦点が空くと 700 ミリ秒ごとに取り返しに
           //   来るので、 **選ばなかった側に掛け金を掛け直す**まで打ち込み先
           //   が変わらなかった。 押した側を選び直す。
-          final pick = index == 0
-              ? (_activeSideSession != null ? null : _lastCliSession)
-              : (_activeSplitSession ?? _activeSideSession);
+          // ★ = ユーザー要望「3 画面や 4 画面に」。 枠の番号から中身を
+          //   引く (0 = 主の枠 / 1 = 2 枚目 / 2 以降 = 足した枠)。
+          final panes = _splitPaneSessions();
+          final pick = index < panes.length ? panes[index] : null;
           if (pick != null) {
             _focusCliPane(pick);
           } else {
@@ -282881,6 +281968,24 @@ class _McpChatDialogState extends State<_McpChatDialog>
   /// 会話の隣に CLI [s] を置く (= 左が会話、 右が端末)。
   void _splitChatWith(MindMapProvider provider, AgentCliSession s) {
     if (!_cliTabs.contains(s)) return;
+    if (_extraCliSessions.any((e) => identical(e, s))) return;
+    // ★ = ユーザー要望「3 画面や 4 画面に」。 既に会話の隣が埋まって
+    //   いるなら、 その続きとして足す。
+    if (_activeSideSession != null && !identical(_sideCliSession, s)) {
+      if (_extraCliSessions.length >= _kMaxExtraPanes) {
+        showTopToast(context, provider.t('cli.splitMax'),
+            const Color(0xFFE5A23C));
+        return;
+      }
+      _ensureSplitWidth(paneCount: _splitPaneCount() + 1);
+      setState(() {
+        _extraCliSessions.add(s);
+        _extraCliTerminals[s] = _buildCliTerminal(provider, s);
+        _splitFocusPane = _splitPaneCount() - 1;
+      });
+      _focusCliPane(s);
+      return;
+    }
     setState(() {
       // 会話どうしで並べていたら、 そちらは畳む (右は 1 枚だけ)。
       _sideChatSessionId = null;
@@ -282924,13 +282029,15 @@ class _McpChatDialogState extends State<_McpChatDialog>
   void _unsplitChat() {
     if (_sideCliSession == null &&
         _sideTerminal == null &&
-        _sideChatSessionId == null) {
+        _sideChatSessionId == null &&
+        _extraCliSessions.isEmpty) {
       return;
     }
     setState(() {
       _sideCliSession = null;
       _sideTerminal = null;
       _sideChatSessionId = null;
+      _clearExtraPanes();
       _splitFocusPane = 0;
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -283046,6 +282153,24 @@ class _McpChatDialogState extends State<_McpChatDialog>
       //   だから描く時に必ずここで挟み直す。
       const minChat = 330.0;
       if (w < minChat + minPane + 8) return chat;
+      // ★ = ユーザー要望「3 画面や 4 画面にできるように」。 会話の右に
+      //   並べる端末を、 入る幅のぶんだけ足す。
+      final extras = <Widget>[];
+      for (final e in _extraCliSessions) {
+        final n = extras.length + 1;
+        if (w < minChat + minPane * (n + 1) + 8 * (n + 1)) break;
+        extras.add(_extraCliTerminals[e] ?? _buildCliTerminal(provider, e));
+      }
+      if (extras.isNotEmpty) {
+        final panes = <Widget>[chat, rightPane, ...extras];
+        final row = <Widget>[];
+        for (var i = 0; i < panes.length; i++) {
+          if (i > 0) row.add(_buildCliSplitHandle(w));
+          row.add(Expanded(child: _buildCliSplitPane(i, panes[i], true)));
+        }
+        return Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch, children: row);
+      }
       final usable = w - 8;
       // 取り分は端末どうしの左右と同じ物を使い回すが、 下限は左右で別
       // (左 = 会話の列、 右 = 端末)。
@@ -283887,6 +283012,11 @@ class _McpChatDialogState extends State<_McpChatDialog>
     if (identical(_splitCliSession, s)) {
       _splitCliSession = null;
       _splitTerminal = null;
+    }
+    // 3 枚目以降に並べていた物も外す (= ユーザー要望の 3 / 4 画面)。
+    if (_extraCliSessions.any((e) => identical(e, s))) {
+      _extraCliSessions.removeWhere((e) => identical(e, s));
+      _extraCliTerminals.remove(s);
     }
     // ★ 会話の隣に出していた物も同じ (= ユーザー要望「AI(API)と codexCLI を
     //   画面分割で」)。 並べている間は主の枠が会話なので [wasShown] は
@@ -285358,6 +284488,27 @@ class _McpChatDialogState extends State<_McpChatDialog>
   ///   出す順は 宛名 (CLI の控えから読んだ物) → 昔に手で付けた名前 → id。
   ///   ログインが済むまでは宛名が無いので、 その間だけ id (a1 …) が出る。
   String _cliAccountLabel(MindMapProvider provider, AgentAccount a,
+      [AgentCliKind? kind]) {
+    final base = _cliAccountLabelBase(provider, a, kind);
+    if (kind == null) return base;
+    // ★ = ユーザー報告「claudecode、 何故かログインしているアカウントが
+    //   全く同じのが二つあるのだけど」。 置き場は別でも、 同じ Google
+    //   アカウントでログインすれば宛名は同じになる (既定の置き場と、 後から
+    //   足した置き場の両方で同じ人でログインした時がこれ)。 宛名が同じ札が
+    //   並ぶと選びようが無いので、 並び順で番号を振って見分けを付ける。
+    var total = 0;
+    var mine = 0;
+    for (final e in AgentCli.accountList(kind)) {
+      if (_cliAccountLabelBase(provider, e, kind) != base) continue;
+      total++;
+      if (e.id == a.id) mine = total;
+    }
+    if (total <= 1) return base;
+    return '$base ($mine)';
+  }
+
+  /// 番号を振る前の、 その置き場そのものの宛名。
+  String _cliAccountLabelBase(MindMapProvider provider, AgentAccount a,
       [AgentCliKind? kind]) {
     // ★ = ユーザー指摘「ログイン中のアカウントの『既定』 は何のアカウント
     //   か分からないから辞めて」。 既定の置き場 (= 利用者のホーム) でも、

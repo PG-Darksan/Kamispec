@@ -20,6 +20,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../providers/mind_map_provider.dart';
+import 'auto_click_palette.dart';
 import '../services/desktop_input.dart';
 import '../services/rec_hotkey.dart';
 import '../utils/build_flags.dart';
@@ -31,23 +32,20 @@ import '../utils/build_flags.dart';
 bool get autoClickerSupported =>
     !kStoreBuild && DesktopInput.isSupported && Platform.isWindows;
 
-/// 押す先の決め方。
-enum AutoClickTarget {
-  /// 覚えた 1 点を押す。
-  fixedPoint,
-
-  /// 今カーソルがある所を押す (マウスを動かさない)。
-  cursor,
-}
-
 class AutoClickerView extends StatefulWidget {
   const AutoClickerView({
     super.key,
     required this.provider,
     this.onRequestClose,
+    this.onPopOut,
   });
 
+  /// パレットを常に手前の別窓へ送り出す (= ユーザー要望)。
+  /// null なら出さない (モバイルなど、 別窓を作れない所)。
+
   final MindMapProvider provider;
+
+  final VoidCallback? onPopOut;
 
   /// 閉じる時の処理 (道具窓・分割ペイン・ダイアログのどれでも使えるように、
   /// 閉じ方は呼んだ側に任せる)。 null なら閉じるボタンを出さない。
@@ -59,7 +57,9 @@ class AutoClickerView extends StatefulWidget {
 
 class _AutoClickerViewState extends State<AutoClickerView> {
   // ── 押し方 ──
-  AutoClickTarget _target = AutoClickTarget.fixedPoint;
+  //    ★ = ユーザー指摘「今カーソルがある場所とか使わないだろ、 覚えた場所も
+  //      分かりにくいから無くして、 座標指定する形にする」。 押す先の決め方
+  //      ([AutoClickTarget]) は廃止し、 座標 1 本にした。
   int _x = 0;
   int _y = 0;
   MouseButton _button = MouseButton.left;
@@ -82,6 +82,10 @@ class _AutoClickerViewState extends State<AutoClickerView> {
   int _done = 0;
   int _waitLeft = 0;
   String _status = '';
+
+  /// 昔からの「1 か所を押し続ける」 設定を開いているか。
+  /// 普段はパレットで足りるので、 既定では畳んでおく。
+  bool _repeatFormOpen = false;
 
   /// アプリの外にいても効く停止キー (F9 固定)。
   final RecStopHotkey _stopKey = RecStopHotkey.separate();
@@ -172,7 +176,6 @@ class _AutoClickerViewState extends State<AutoClickerView> {
           _y = p.y;
           _xCtrl.text = '$_x';
           _yCtrl.text = '$_y';
-          _target = AutoClickTarget.fixedPoint;
           _status = _t('autoClicker.picked')
               .replaceFirst('{x}', '$_x')
               .replaceFirst('{y}', '$_y');
@@ -250,15 +253,8 @@ class _AutoClickerViewState extends State<AutoClickerView> {
     });
   }
 
-  bool _clickOnce() {
-    if (_target == AutoClickTarget.cursor) {
-      final p = DesktopInput.cursorPos();
-      if (p == null) return false;
-      return DesktopInput.click(p.x, p.y,
-          button: _button, count: _clicksPerShot);
-    }
-    return DesktopInput.click(_x, _y, button: _button, count: _clicksPerShot);
-  }
+  bool _clickOnce() =>
+      DesktopInput.click(_x, _y, button: _button, count: _clicksPerShot);
 
   void _stop({bool byHotkey = false}) {
     _timer?.cancel();
@@ -305,6 +301,20 @@ class _AutoClickerViewState extends State<AutoClickerView> {
                       fontSize: 14,
                       fontWeight: FontWeight.w700)),
             ),
+            // ★ = ユーザー要望「パレットが出てきて、 他の箇所がアクティブ
+            //   でも消えずに押せるみたいなものを想定していた」。 アプリの
+            //   中の枠は、 他のアプリを前に出すと一緒に後ろへ回ってしまう。
+            //   常に手前に居続ける**別の窓**へパレットだけを送り出す。
+            if (widget.onPopOut != null)
+              IconButton(
+                padding: EdgeInsets.zero,
+                constraints:
+                    const BoxConstraints(minWidth: 30, minHeight: 30),
+                tooltip: p.t('palette.popOut'),
+                icon: const Icon(Icons.open_in_new_rounded,
+                    size: 17, color: Color(0xFF4DD0E1)),
+                onPressed: widget.onPopOut,
+              ),
             if (widget.onRequestClose != null)
               IconButton(
                 padding: EdgeInsets.zero,
@@ -330,9 +340,46 @@ class _AutoClickerViewState extends State<AutoClickerView> {
                 : Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      _sectionTitle(p.t('autoClicker.whereTitle')),
-                      _targetRow(p),
+                      // ★ = ユーザー要望「タップすると画面上にパレットが
+                      //   出てきて、 スワイプや指定したボタン位置を
+                      //   クリックするなどの動作を割り当てられるように」。
+                      //   よく使う動作を札にして並べる所を一番上に置く。
+                      AutoClickPalette(t: p.t),
+                      const SizedBox(height: 14),
+                      const Divider(height: 1, color: Colors.white12),
+                      const SizedBox(height: 10),
+                      // ── ここから下は「1 か所を押し続ける」 昔からの設定。
+                      //    普段はパレットで足りるので畳んでおく。
+                      InkWell(
+                        borderRadius: BorderRadius.circular(6),
+                        onTap: () =>
+                            setState(() => _repeatFormOpen = !_repeatFormOpen),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 4),
+                          child: Row(children: [
+                            Icon(
+                                _repeatFormOpen
+                                    ? Icons.expand_less_rounded
+                                    : Icons.expand_more_rounded,
+                                size: 18,
+                                color: Colors.white54),
+                            const SizedBox(width: 6),
+                            Text(p.t('autoClicker.repeatSection'),
+                                style: const TextStyle(
+                                    color: Colors.white70,
+                                    fontSize: 12.5,
+                                    fontWeight: FontWeight.w700)),
+                          ]),
+                        ),
+                      ),
+                      if (!_repeatFormOpen) const SizedBox(height: 4),
+                      if (_repeatFormOpen) ...[
                       const SizedBox(height: 8),
+                      // ★ = ユーザー指摘「今カーソルがある場所とか使わない
+                      //   だろ、 覚えた場所も分かりにくいから無くして、
+                      //   座標指定する形にする」。 押す先の決め方を選ばせる
+                      //   のをやめ、 **座標を書く**一本にした。
+                      _sectionTitle(p.t('autoClicker.pointTitle')),
                       _pointRow(p),
                       const SizedBox(height: 16),
                       _sectionTitle(p.t('autoClicker.howTitle')),
@@ -388,6 +435,7 @@ class _AutoClickerViewState extends State<AutoClickerView> {
                               color: Colors.white38,
                               fontSize: 11,
                               height: 1.6)),
+                      ],
                     ],
                   ),
           ),
@@ -405,44 +453,25 @@ class _AutoClickerViewState extends State<AutoClickerView> {
                 fontWeight: FontWeight.w700)),
       );
 
-  Widget _targetRow(MindMapProvider p) => Wrap(
-        spacing: 8,
-        runSpacing: 8,
-        children: [
-          _chip(
-            label: p.t('autoClicker.targetPoint'),
-            selected: _target == AutoClickTarget.fixedPoint,
-            onTap: () => setState(() => _target = AutoClickTarget.fixedPoint),
-          ),
-          _chip(
-            label: p.t('autoClicker.targetCursor'),
-            selected: _target == AutoClickTarget.cursor,
-            onTap: () => setState(() => _target = AutoClickTarget.cursor),
-          ),
-        ],
-      );
-
   Widget _pointRow(MindMapProvider p) {
-    final disabled = _target == AutoClickTarget.cursor;
-    return Opacity(
-      opacity: disabled ? 0.45 : 1,
-      child: Row(children: [
-        SizedBox(width: 70, child: _coordField('X', _xCtrl, !disabled)),
-        const SizedBox(width: 8),
-        SizedBox(width: 70, child: _coordField('Y', _yCtrl, !disabled)),
-        const SizedBox(width: 10),
-        TextButton.icon(
-          style: TextButton.styleFrom(
-            foregroundColor: const Color(0xFF4DD0E1),
-            visualDensity: VisualDensity.compact,
-          ),
-          icon: const Icon(Icons.my_location_rounded, size: 16),
-          label: Text(p.t('autoClicker.pick'),
-              style: const TextStyle(fontSize: 11.5)),
-          onPressed: disabled || _running ? null : _pickPoint,
+    return Row(children: [
+      SizedBox(width: 78, child: _coordField('X', _xCtrl, true)),
+      const SizedBox(width: 8),
+      SizedBox(width: 78, child: _coordField('Y', _yCtrl, true)),
+      const SizedBox(width: 10),
+      // 座標そのものは手で書けるが、 「今そこにある物の座標」 を人が
+      // 読む術は無いので、 取り込む口だけは残す (書いた値を埋めるだけ)。
+      TextButton.icon(
+        style: TextButton.styleFrom(
+          foregroundColor: const Color(0xFF4DD0E1),
+          visualDensity: VisualDensity.compact,
         ),
-      ]),
-    );
+        icon: const Icon(Icons.my_location_rounded, size: 16),
+        label: Text(p.t('autoClicker.readCursor'),
+            style: const TextStyle(fontSize: 11.5)),
+        onPressed: _running ? null : _pickPoint,
+      ),
+    ]);
   }
 
   Widget _coordField(String label, TextEditingController c, bool enabled) =>

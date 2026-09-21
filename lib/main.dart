@@ -38,6 +38,7 @@ import 'package:provider/provider.dart';
 import 'package:screen_retriever/screen_retriever.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'widgets/auto_click_palette.dart';
 import 'widgets/calc_body.dart';
 // アプリ外に出す AI 窓 (= ユーザー要望) の中身。 Windows 専用プラグイン。
 import 'package:webview_windows/webview_windows.dart' as wv_win;
@@ -3722,6 +3723,14 @@ void main(List<String> args) async {
     }
     if (kind == 'calc') {
       runApp(_CalcWindowApp(windowId: windowId));
+      return;
+    }
+    // オートクリッカーの動作パレット (= ユーザー要望: パレットが出てきて、
+    //   他の箇所がアクティブでも消えずに押せる物)。 本体の窓の中に置くと、
+    //   他のアプリを触った時に後ろへ回って消えてしまうので、 常に手前に
+    //   出し続ける別の窓にする。
+    if (kind == 'clicker') {
+      runApp(_ClickerWindowApp(windowId: windowId));
       return;
     }
     // AI アシスタントの窓 (= ユーザー要望: アプリの外に出せるように)。
@@ -10035,6 +10044,161 @@ class _CalcWindowAppState extends State<_CalcWindowApp> {
               child: KeyedSubtree(
                   key: _calcBodyKey,
                   child: _sci ? const CalcBody() : const BasicCalcBody()),
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
+// ─── オートクリッカーの動作パレット窓 ───────────────────────────────
+//
+// ★ = ユーザー要望「パレットが出てきて、 他の箇所がアクティブでも消えずに
+//   押せるみたいなものを想定していた」。 アプリの中の浮かぶ枠だと、 他の
+//   アプリを前に出した時点で一緒に後ろへ回ってしまう。 常に手前に居続ける
+//   **別の窓**にして、 そこから押す。
+//
+// 電卓窓と同じ作法: 常に手前 (ピンで切替)、 自前ヘッダーでドラッグ移動、
+// 控えは自分で書かず本体へ頼む (入れ物が違うので、 こちらから書くと本体の
+// 控えを丸ごと上書きしてしまう ── [[two-instances-clobber-prefs]])。
+class _ClickerWindowApp extends StatefulWidget {
+  final int windowId;
+  const _ClickerWindowApp({required this.windowId});
+
+  bool get standalone => windowId < 0;
+
+  @override
+  State<_ClickerWindowApp> createState() => _ClickerWindowAppState();
+}
+
+class _ClickerWindowAppState extends State<_ClickerWindowApp> {
+  final _WinDragger _dragger = _WinDragger();
+  bool _pinned = true;
+  Timer? _topTimer;
+
+  /// 言葉は本体の表から静的に引く (入れ物は作らない)。
+  String _lang = 'en';
+
+  @override
+  void initState() {
+    super.initState();
+    // ignore: discarded_futures
+    _loadLang();
+    // ignore: discarded_futures
+    _applyTop(true);
+    _topTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      if (!mounted) {
+        _topTimer?.cancel();
+        _topTimer = null;
+        return;
+      }
+      // ignore: discarded_futures
+      if (_pinned) _applyTop(true);
+    });
+  }
+
+  Future<void> _loadLang() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final v = (sp.getString('appLanguage') ?? '').trim();
+      if (v.isNotEmpty && mounted) setState(() => _lang = v);
+    } catch (_) {}
+  }
+
+  Future<void> _applyTop(bool on) async {
+    try {
+      await windowManager.ensureInitialized();
+      try {
+        if (await windowManager.isAlwaysOnTop() == on) return;
+      } catch (_) {}
+      await windowManager.setAlwaysOnTop(on);
+    } catch (_) {}
+  }
+
+  @override
+  void dispose() {
+    _topTimer?.cancel();
+    _topTimer = null;
+    super.dispose();
+  }
+
+  /// 札の中身は本体に書いてもらう (控えの取り合いを避けるため)。
+  Future<void> _saveSlots(String json) async {
+    if (!widget.standalone) {
+      try {
+        await DesktopMultiWindow.invokeMethod(0, 'autoClickPalette', json);
+        return;
+      } catch (_) {}
+    }
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setString(AutoClickPalette.prefsKey, json);
+    } catch (_) {}
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const acc = Color(0xFF4DD0E1);
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        brightness: Brightness.dark,
+        useMaterial3: true,
+        scaffoldBackgroundColor: const Color(0xFF1B1B2A),
+      ),
+      home: Scaffold(
+        backgroundColor: const Color(0xFF1B1B2A),
+        body: Column(children: [
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onPanStart: (_) => _dragger.start(),
+            onPanUpdate: (d) =>
+                _dragger.update(d, View.of(context).devicePixelRatio),
+            child: Container(
+              height: 34,
+              color: const Color(0xFF23233A),
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Row(children: [
+                const Icon(Icons.ads_click_rounded, color: acc, size: 16),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                      MindMapProvider.translateFor('hdr.autoClicker', _lang),
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700),
+                      overflow: TextOverflow.ellipsis),
+                ),
+                IconButton(
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 28, minHeight: 28),
+                  tooltip: FloatL10n.t('float.pin'),
+                  icon: Icon(
+                      _pinned
+                          ? Icons.push_pin_rounded
+                          : Icons.push_pin_outlined,
+                      color: _pinned ? acc : Colors.white38,
+                      size: 15),
+                  onPressed: () {
+                    setState(() => _pinned = !_pinned);
+                    // ignore: discarded_futures
+                    _applyTop(_pinned);
+                  },
+                ),
+              ]),
+            ),
+          ),
+          Expanded(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 14),
+              child: AutoClickPalette(
+                t: (k) => MindMapProvider.translateFor(k, _lang),
+                onSave: _saveSlots,
+                compact: true,
+              ),
             ),
           ),
         ]),

@@ -6855,10 +6855,12 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
                 itemCount: _steps.length,
                 itemBuilder: (_, i) => _stepTile(provider, _steps, i),
               );
-        final body = Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        mainAxisSize: fixedSteps ? MainAxisSize.min : MainAxisSize.max,
-        children: [
+        // ★ = ユーザー要望「自動操作ページの UI は、 せっかく全画面なの
+        //   だから手順を追加する場所と AI から下を左右に分けて広く使って
+        //   欲しい」。 並びを**前半 (手順まわり)** と **後半 (AI /
+        //   コマンド実行 / 時刻で実行)** の 2 束に分けておく。 狭い時は
+        //   今までどおり縦に積み、 広い時だけ左右に並べる。
+        final headChildren = <Widget>[
           // ── ネットにつながっていない時だけ、 一番上に出す
           //    (= ユーザー要望: 下の方の 1 行では地味で気付けない) ──
           if (!_online)
@@ -7284,6 +7286,8 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
               // 位置へ)。 ここには残さない。
             ]),
           ),
+        ];
+        final tailChildren = <Widget>[
           // ── AI でフローを作る入力欄 (= ユーザー要望: コマンド実行の欄と並べて下に置く。
           //    手順一覧を上に広く使えるように) ──
           // ── AI の欄。 見出しは常に出し、 中身だけたたむ
@@ -7497,11 +7501,52 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
           _buildCommandRow(provider),
           // 時刻で実行 = 一番下 (= ユーザー要望)。
           _buildScheduleRow(provider),
-        ],
+        ];
+        final body = Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          mainAxisSize: fixedSteps ? MainAxisSize.min : MainAxisSize.max,
+          children: [...headChildren, ...tailChildren],
         );
         // ★ 高さを決めた時も巻物にする (= 決めた高さが窓より高い時に
         //   はみ出さないように)。
         final inner = fixedSteps ? SingleChildScrollView(child: body) : body;
+        // ── 左右に分ける (= ユーザー要望: 全画面なのだから広く使いたい) ──
+        //    ★ 下限を置くのは、 狭い所で 2 列にすると手順の行も AI の欄も
+        //      どちらも潰れて読めなくなるため。 左は手順の一覧なので広く、
+        //      右は欄の集まりなので狭めに取る。
+        //    ★ 左の列は、 人が高さを決めていない時だけ [Expanded] で伸びる
+        //      ([headChildren] の中がそうなっている)。 決めている時は
+        //      決めた高さの箱なので、 巻物に入れてはみ出しを防ぐ。
+        const kSideBySideMin = 980.0;
+        if (cons.maxWidth.isFinite && cons.maxWidth >= kSideBySideMin) {
+          final leftCol = fixedSteps
+              ? SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    mainAxisSize: MainAxisSize.min,
+                    children: headChildren,
+                  ),
+                )
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: headChildren,
+                );
+          return Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Expanded(flex: 62, child: leftCol),
+            const VerticalDivider(
+                width: 1, thickness: 1, color: Colors.white12),
+            Expanded(
+              flex: 38,
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  mainAxisSize: MainAxisSize.min,
+                  children: tailChildren,
+                ),
+              ),
+            ),
+          ]);
+        }
         // ★ 広すぎる時は横を詰めて真ん中へ (= ユーザー要望: 全画面だと
         //   横に伸びすぎて操作しづらい)。 背景は外の Container が端まで
         //   塗っているので、 左右が白抜けたようには見えない。
