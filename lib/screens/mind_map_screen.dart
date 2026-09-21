@@ -425,9 +425,17 @@ const Map<String, String> _mapBackgroundTemplateAssets = <String, String>{
 };
 
 /// 初回起動で貼る背景 (= ユーザー要望)。
-const String _kFirstLaunchBackgroundId = 'appWallpaper';
+///
+/// ★ = ユーザー要望「ページ背景の既定は、 削除した以前のブループリントが
+///   いい」。 アプリの絵から戻した。
+const String _kFirstLaunchBackgroundId = 'blueprint';
 
 const List<({String id, String labelKey})> _mapBackgroundTemplates = [
+  // ★ = ユーザー要望「ページ背景の既定は、 削除した以前のブループリントが
+  //   いいから、 それをテンプレートに加えて置いて欲しい」。 絵ではなく
+  //   描いて作る種類なので、 同梱の写真の一覧 (_mapBackgroundTemplateAssets)
+  //   には入れない (描く方の case は元から残してある)。
+  (id: 'blueprint', labelKey: 'bg.template.blueprint'),
   (id: 'appWallpaper', labelKey: 'bg.template.appWallpaper'),
   (id: 'starryLake', labelKey: 'bg.template.starryLake'),
   (id: 'fireworks', labelKey: 'bg.template.fireworks'),
@@ -28963,7 +28971,10 @@ class _MindMapScreenState extends State<MindMapScreen>
       connections: provider.connections,
       lineStyle: provider.connectionLineStyle,
     );
-    final hit = painter.findConnection(canvasPos);
+    // ★ = ユーザー要望「リンク接続設定がモバイル版で出づらい」。 指で
+    //   狙う時は広めに取る (マウスは今までどおり)。
+    final hit = painter.findConnection(canvasPos,
+        tolerance: _isDesktop ? 14.0 : 30.0);
     if (hit == null) {
       // 接続なし → 接続が選択されていれば解除する
       if (_selectedConnections.isNotEmpty) {
@@ -115503,25 +115514,30 @@ class _ConnectionActionOverlayState extends State<_ConnectionActionOverlay>
                       child: Padding(
                         padding: const EdgeInsets.symmetric(vertical: 2),
                         child: Row(children: [
-                          const Icon(Icons.drag_indicator_rounded,
-                              color: Colors.white38, size: 17),
-                          const SizedBox(width: 4),
-                          Expanded(
-                            child: Text(
-                                widget.selectedCount > 1
-                                    ? context
-                                        .watch<MindMapProvider>()
-                                        .t('conn.settingsMulti')
-                                        .replaceAll(
-                                            '{n}', '${widget.selectedCount}')
-                                    : context
-                                        .watch<MindMapProvider>()
-                                        .t('conn.settings'),
-                                style: const TextStyle(
-                                    color: Colors.white70,
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600)),
-                          ),
+                          // ★ = ユーザー要望「リンク接続設定を折り畳んだら
+                          //   アイコンだけになるように」。 畳んでいる間は
+                          //   掴む所と見出しを出さず、 小さな丸 1 つにする。
+                          if (!_collapsed) ...[
+                            const Icon(Icons.drag_indicator_rounded,
+                                color: Colors.white38, size: 17),
+                            const SizedBox(width: 4),
+                            Expanded(
+                              child: Text(
+                                  widget.selectedCount > 1
+                                      ? context
+                                          .watch<MindMapProvider>()
+                                          .t('conn.settingsMulti')
+                                          .replaceAll(
+                                              '{n}', '${widget.selectedCount}')
+                                      : context
+                                          .watch<MindMapProvider>()
+                                          .t('conn.settings'),
+                                  style: const TextStyle(
+                                      color: Colors.white70,
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600)),
+                            ),
+                          ],
                           IconButton(
                             tooltip: context.read<MindMapProvider>().t(
                                 _collapsed
@@ -115532,10 +115548,14 @@ class _ConnectionActionOverlayState extends State<_ConnectionActionOverlay>
                             constraints: const BoxConstraints(
                                 minWidth: 30, minHeight: 30),
                             icon: Icon(
+                              // 畳んでいる間は「リンクの設定」 と分かる印に
+                              // する (山形だけでは何の設定か分からない)。
                               _collapsed
-                                  ? Icons.expand_more_rounded
+                                  ? Icons.account_tree_rounded
                                   : Icons.expand_less_rounded,
-                              color: Colors.white54,
+                              color: _collapsed
+                                  ? const Color(0xFF80CBC4)
+                                  : Colors.white54,
                               size: 20,
                             ),
                             onPressed: () =>

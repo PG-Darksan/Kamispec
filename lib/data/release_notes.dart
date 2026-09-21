@@ -50,6 +50,60 @@ const String kAppVersionName = '1.0.0';
 /// **新しい順**に並べる (先頭が今の版)。
 const List<ReleaseNote> kReleaseNotes = <ReleaseNote>[
   ReleaseNote(
+    build: 433,
+    date: '2026-09-21',
+    lines: <String, List<String>>{
+      'ja': [
+        '自動操作で「このページへ飛んで」 が効かなかったのを直しました。'
+            ' ページ移動を WebView 自身に頼むようにし、 移れたかどうかも'
+            '確かめて、 駄目なら理由を出します。',
+        'リンクの線を既定で太くしました (2.0 → 3.5)。',
+        'モバイルでリンクを押しやすくしました (当たり判定を 14 → 30 px)。',
+        'リンクの設定を畳むと、 小さなアイコン 1 つになります。',
+        'ページ背景にブループリントを戻し、 初回起動の既定にしました。',
+      ],
+      'en': [
+        'Fixed "go to this page" doing nothing in automation. Navigation is '
+            'now done by the WebView itself, and the step checks that it '
+            'actually moved.',
+        'Link lines are thicker by default (2.0 to 3.5).',
+        'Links are easier to tap on mobile (hit area 14 to 30 px).',
+        'Collapsing the link settings now leaves a single small icon.',
+        'The blueprint page background is back, and is the first-launch '
+            'default.',
+      ],
+    },
+  ),
+  ReleaseNote(
+    build: 432,
+    date: '2026-09-21',
+    lines: <String, List<String>>{
+      'ja': [
+        'パスワードを預ける所の言い回しを分かりやすくしました'
+            ' (「秘密」「合言葉」 → 「パスワード」「呼び名」)。',
+        'パスワードを預ける画面を、 画面の中央ではなく押したボタンの'
+            'すぐ下に出すようにしました。',
+        'PC 内 AI の一覧を、 CLI ごとにその下へモデルが並ぶ形にしました。'
+            ' どちらの設定なのかが一目で分かり、 モデルを選ぶだけで'
+            'その CLI へ切り替わります。',
+        'この欄を開いた時に、 使える CLI とログイン中のアカウントを'
+            '先に調べるようにしました (Codex CLI が候補に出ないことが'
+            'ありました)。',
+      ],
+      'en': [
+        'The password store uses plainer wording.',
+        'It now opens just under the button instead of in the middle of the '
+            'screen.',
+        'The on-device AI list nests the models of each CLI under it, so it '
+            'is '
+            'clear which one they belong to, and picking a model switches to '
+            'that CLI.',
+        'Available CLIs and their signed-in accounts are looked up when the '
+            'panel opens (Codex CLI could be missing from the list).',
+      ],
+    },
+  ),
+  ReleaseNote(
     build: 431,
     date: '2026-09-21',
     lines: <String, List<String>>{

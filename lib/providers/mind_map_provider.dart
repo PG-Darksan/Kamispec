@@ -49295,8 +49295,8 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'В самый верх',
     },
     'auto.secretShort': {
-      'ja': '秘密',
-      'en': 'Secrets',
+      'ja': 'パスワード',
+      'en': 'Passwords',
       'zh': '密钥',
       'ko': '비밀',
       'es': 'Secretos',
@@ -49306,7 +49306,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Sekrety',
     },
     'auto.secretTitle': {
-      'ja': '合言葉を預ける',
+      'ja': 'パスワードを預ける',
       'en': 'Store a secret',
       'zh': '保存密钥',
       'ko': '비밀 보관',
@@ -49328,8 +49328,8 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Dayte imya - v stsenarii budet tolko {{secret:imya}}. Znachenie podstavlyaetsya pered vvodom i ne popadaet k II.',
     },
     'auto.secretName': {
-      'ja': '名前 (例: 会社メール)',
-      'en': 'Name (e.g. work mail)',
+      'ja': '呼び名 (例: 会社メールのパスワード)',
+      'en': 'Label (e.g. work mail password)',
       'zh': '名称（例如 公司邮箱）',
       'ko': '이름 (예: 회사 메일)',
       'es': 'Nombre (p. ej. correo del trabajo)',
@@ -49339,8 +49339,8 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Imya (naprimer rabochaya pochta)',
     },
     'auto.secretValue': {
-      'ja': '中身 (合言葉)',
-      'en': 'Value (the password)',
+      'ja': 'パスワードや ID などの値',
+      'en': 'The password or ID',
       'zh': '内容（密码）',
       'ko': '내용 (비밀번호)',
       'es': 'Valor (la contrasena)',
@@ -49361,7 +49361,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Sokhranit',
     },
     'auto.secretUnsupported': {
-      'ja': 'この端末では安全に包めないので、 合言葉は預かりません (Windows のみ)。',
+      'ja': 'この端末では安全に包めないので、 パスワードは預かりません (Windows のみ)。',
       'en': 'This device cannot seal the value, so secrets are not stored here (Windows only).',
       'zh': '此设备无法安全加密，因此不保存密钥（仅限 Windows）。',
       'ko': '이 기기에서는 안전하게 봉인할 수 없어 비밀을 보관하지 않습니다 (Windows 전용).',
@@ -75884,7 +75884,7 @@ class MindMapProvider extends ChangeNotifier {
             .toDouble();
     _connectionElbowPointCount =
         (prefs.getInt('connectionElbowPointCount') ?? 2).clamp(1, 8).toInt();
-    _connectionStrokeWidth = (prefs.getDouble('connectionStrokeWidth') ?? 2.0)
+    _connectionStrokeWidth = (prefs.getDouble('connectionStrokeWidth') ?? 3.5)
         .clamp(1.0, 8.0)
         .toDouble();
     _connectionShowArrow = prefs.getBool('connectionShowArrow') ?? true;
@@ -77899,7 +77899,8 @@ class MindMapProvider extends ChangeNotifier {
   double get connectionElbowSplitRatio => _connectionElbowSplitRatio;
   int _connectionElbowPointCount = 2;
   int get connectionElbowPointCount => _connectionElbowPointCount;
-  double _connectionStrokeWidth = 2.0;
+  // ★ = ユーザー要望「デフォルトのリンク線が細すぎる」。
+  double _connectionStrokeWidth = 3.5;
   double get connectionStrokeWidth => _connectionStrokeWidth;
   bool _connectionShowArrow = true;
   bool get connectionShowArrow => _connectionShowArrow;

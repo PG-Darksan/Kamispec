@@ -5642,6 +5642,9 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                       fillWindow && !widget.hostHasCloseButton,
                   exec: _autoExecJs,
                   evalJs: _autoEvalJs,
+                  // ★ = ユーザー報告「HP に飛んでと言っても飛べていない」。
+                  //   ページ移動は JS ではなく WebView 自身に頼む。
+                  openUrl: _autoOpenUrl,
                   onRecordingChanged: (rec) {
                     if (!mounted) return;
                     setState(() => _autoRecording = rec);
@@ -5693,6 +5696,41 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       ),
       ),
     );
+  }
+
+  /// 自動操作の open 手順で、 WebView をその URL へ移す。
+  ///
+  /// ★ JS (`location.href`) だと、 操作口がまだ無い / about:blank から
+  ///   動かせない / 例外が出る のどれでも**黙って何も起きない**。
+  ///   ここでは WebView そのものに開かせて、 成否を返す。
+  /// ★ 自動操作だけを出している間はブラウザを隠しているので、 開いた事を
+  ///   控えて姿を見せる (隠れたまま進むと、 撮っても真っ暗になる)。
+  Future<bool> _autoOpenUrl(String url) async {
+    try {
+      if (_isDesktop) {
+        if (!_winInitialized) {
+          // 操作口が出来るまで少し待つ (開いた直後に呼ばれる事がある)。
+          for (var i = 0; i < 40 && !_winInitialized; i++) {
+            await Future<void>.delayed(const Duration(milliseconds: 150));
+          }
+        }
+        final c = _winCtrl;
+        if (c == null || !_winInitialized) return false;
+        await c.loadUrl(url);
+      } else {
+        final c = _iawCtrl;
+        if (c == null) return false;
+        await c.loadUrl(urlRequest: iaw.URLRequest(url: iaw.WebUri(url)));
+      }
+      if (mounted) {
+        // 実行している間は [_browserHidden] が false になるので、
+        // ここで見せる細工は要らない (URL の控えだけ合わせる)。
+        setState(() => _currentUrl = url);
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   Future<void> _autoExecJs(String js) async {

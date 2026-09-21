@@ -532,6 +532,17 @@ class WebAutomationPanel extends StatefulWidget {
   /// 使わず、 座標だけで入力する。
   final Future<String?> Function(String js)? evalJs;
 
+  /// ページを開く (= WebView をその URL へ移す)。
+  ///
+  /// ★ = ユーザー報告「〜って HP に飛んでっていうのに全く飛べていない」。
+  ///   これまで open の手順は JS の `location.href` に頼っていたが、
+  ///   ・WebView の操作口がまだ出来ていない
+  ///   ・about:blank から動かせない
+  ///   ・executeScript が例外を投げる (呼び出し側が握り潰していた)
+  ///   のどれでも**黙って何も起きない**。 ページ移動は JS ではなく、
+  ///   WebView そのものに頼む。 渡されない時だけ今までどおり JS。
+  final Future<bool> Function(String url)? openUrl;
+
   /// 画面キャプチャして保存し、 保存先パスを返す。 [region] が null なら
   /// WebView 全体。 座標は WebView 内のローカル論理座標。
   final Future<String?> Function(Rect? region) capture;
@@ -593,6 +604,7 @@ class WebAutomationPanel extends StatefulWidget {
     this.saveShotBytes,
     this.onRunStarted,
     this.evalJs,
+    this.openUrl,
     this.onRunningChanged,
     this.onRecordingChanged,
     this.showCloseButton = false,
@@ -742,9 +754,15 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
     //   この 2 択が唯一の設定になった)。
     // ignore: discarded_futures
     _loadAgentOpts();
-    // 預かっている秘密の名前 (= AI には名前しか見せない)。
+    // 預かっているパスワードの呼び名 (= AI には呼び名しか見せない)。
     // ignore: discarded_futures
     _reloadSecretNames();
+    // ★ 点検で判明: 使える CLI の一覧も、 ログイン中のアカウント名も、
+    //   「調べ終わっている物」 からしか読めない。 この欄を開いただけでは
+    //   まだ調べていないので、 Codex CLI が候補に出ず、 アカウント名も
+    //   空のままだった。 開いた時に 1 度だけ調べておく。
+    // ignore: discarded_futures
+    _primeCliInfo();
     // ネットの様子を見張る (= ユーザー要望: つながっていない時だけ、
     //   一番上に分かり易く出す)。 判定そのものは短い間だけ使い回される。
     unawaited(_checkNet());
@@ -1151,6 +1169,24 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
 
   /// フロー作成で使うモデルを選ぶ (= ユーザー要望: ここでも設定したい)。
   /// AI アシスタント等と同じ設定 (relayModel) を共有する。
+  /// 使える CLI とログイン中のアカウント名を、 先に調べておく。
+  ///
+  /// ★ 控えから返るので 2 回目以降はすぐ戻る。 調べ終わったら描き直す
+  ///   (一覧を開く前に間に合っていれば、 最初から正しく並ぶ)。
+  Future<void> _primeCliInfo() async {
+    if (!AgentCli.supported) return;
+    try {
+      final found = await AgentCli.findAll();
+      for (final f in found) {
+        if (!f.installed) continue;
+        try {
+          await AgentCli.ensureAccountNames(f.spec.kind);
+        } catch (_) {}
+      }
+    } catch (_) {}
+    if (mounted) setState(() {});
+  }
+
   /// この端末に入っていて、 ログイン済みの CLI の種類。
   ///
   /// ★ = ユーザー指摘「codex に切り替えることができない」。 選べる相手を
@@ -1197,6 +1233,22 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
           if (mounted) setState(() {});
           return;
         }
+        // ★ = ユーザー指摘「切り替える時にモデルの設定を同時に行うことが
+        //   できない」。 種類とモデルを 1 回で決める。
+        if (id.startsWith('clipick:')) {
+          final rest = id.substring(8);
+          final at = rest.indexOf(':');
+          if (at < 0) return;
+          final kind = rest.substring(0, at);
+          final model = rest.substring(at + 1);
+          await provider.setAiEngine('cli');
+          if (provider.cliAiKind != kind) {
+            await provider.setCliAiKind(kind);
+          }
+          await provider.setCliAiModelChoice(model);
+          if (mounted) setState(() {});
+          return;
+        }
         if (id == '__cli__' || id == '__api__') {
           await provider.setAiEngine(id == '__cli__' ? 'cli' : 'api');
           if (mounted) setState(() {});
@@ -1226,7 +1278,12 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
                       const TextStyle(color: Colors.white38, fontSize: 11)),
             ]),
           ),
-          for (final k in _installedCliKinds())
+          // ★ = ユーザー指摘「どちらの CLI の設定なのか分からないから、
+          //   その選択肢の下にモデルが出るようにして欲しい」+「切り替える
+          //   時にモデルの設定を同時に行えるように」。 CLI ごとに、 その
+          //   すぐ下へ**その CLI のモデル**を入れ子で並べる。 モデルを
+          //   選ぶと、 その CLI へ切り替えつつモデルも決まる。
+          for (final k in _installedCliKinds()) ...[
             PopupMenuItem<String>(
               value: 'clikind:${k.name}',
               child: Row(children: [
@@ -1253,20 +1310,24 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
                     ]),
               ]),
             ),
-          // ★ 選んでいる CLI のモデルだけを、 その下に並べる。
-          if (provider.useCliAi)
-            for (final c in AgentCli.modelChoices(_activeCliKind(provider)))
+            for (final c in AgentCli.modelChoices(k))
               PopupMenuItem<String>(
-                value: 'climodel:${c.id}',
+                // ★ 種類とモデルを 1 回で決める (= ユーザー要望)。
+                value: 'clipick:${k.name}:${c.id}',
+                height: 34,
                 child: Padding(
-                  padding: const EdgeInsets.only(left: 20),
+                  padding: const EdgeInsets.only(left: 22),
                   child: Row(children: [
                     Icon(
-                        provider.cliAiModelChoice == c.id
+                        provider.useCliAi &&
+                                _activeCliKind(provider) == k &&
+                                provider.cliAiModelChoice == c.id
                             ? Icons.radio_button_checked_rounded
                             : Icons.radio_button_off_rounded,
                         size: 12,
-                        color: provider.cliAiModelChoice == c.id
+                        color: provider.useCliAi &&
+                                _activeCliKind(provider) == k &&
+                                provider.cliAiModelChoice == c.id
                             ? const Color(0xFF9CCC65)
                             : Colors.white38),
                     const SizedBox(width: 8),
@@ -1280,6 +1341,7 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
                   ]),
                 ),
               ),
+          ],
           const PopupMenuDivider(height: 8),
           PopupMenuItem<String>(
             enabled: false,
@@ -1437,10 +1499,11 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
 - **中身が決まらない手順は出さないこと**。 osActivate は窓の題名、
   osKey はキー、 osClick は座標が必ず要る。 空のまま置かない
   (空の手順は捨てられる)。
-- **合言葉 (パスワード) を手順に書いてはいけない**。 利用者が預けた秘密は
-  名前でしか呼べない: {"kind":"type","text":"{{secret:名前}}","selector":"input[type=password]"}
+- **パスワードや ID を手順に書いてはいけない**。 利用者が預けた物は
+  呼び名でしか指せない: {"kind":"type","text":"{{secret:名前}}","selector":"input[type=password]"}
   と書く。 中身はアプリが打ち込む直前に入れるので、 あなたは知らなくてよい。
-  預かっている名前は下の【使える秘密】 に並ぶ。 そこに無い名前は使わない。
+  預かっている呼び名は下の【使えるパスワード】 に並ぶ。 そこに無い呼び名は
+  使わない。
 - 本人にしか決められない所 (ログインするアカウントの選択、 二段階認証、
   同意画面など) に来たら、 そこで止めずに
   {"kind":"ask","text":"どのアカウントでログインしますか?"} を置く。
@@ -3008,10 +3071,39 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
             if (!u.startsWith('http://') && !u.startsWith('https://')) {
               u = 'https://$u';
             }
-            await _exec('location.href = ${jsonEncode(u)};');
+            // ★ = ユーザー報告「HP に飛んでと言っても全く飛べていない」。
+            //   まず WebView 自身に開かせる。 それが使えない時だけ、
+            //   今までどおり JS で飛ばす。
+            var moved = false;
+            final go = widget.openUrl;
+            if (go != null) {
+              try {
+                moved = await go(u);
+              } catch (_) {
+                moved = false;
+              }
+            }
+            if (!moved) await _exec('location.href = ${jsonEncode(u)};');
+            _log('OPEN', '$u${moved ? '' : ' (JS で移動)'}');
             // 読み込みを待つ。 durationMs を待ち時間として使う (既定 2 秒)。
             final waitMs = s.durationMs <= 0 ? 2000 : s.durationMs;
             await Future.delayed(Duration(milliseconds: waitMs));
+            // ★ = ユーザー報告「HP に飛んでと言っても全く飛べていない」。
+            //   飛べなかった時に黙って次の手順へ進むと、 後の撮影が
+            //   真っ白な画面になるだけで理由が分からない。 実際に移れたかを
+            //   見て、 駄目ならその場で止めて理由を出す。
+            final here = (await _eval('location.href'))
+                ?.replaceAll('"', '')
+                .trim() ??
+                '';
+            final host = Uri.tryParse(u)?.host ?? '';
+            if (host.isNotEmpty && here.isNotEmpty && !here.contains(host)) {
+              _log('OPEN', '飛べていない: $here');
+              if (mounted) {
+                setState(() => _status = '$u へ移動できませんでした '
+                    '(今いるのは ${here.length > 60 ? '${here.substring(0, 60)}…' : here})');
+              }
+            }
           }
           break;
         case WebAutoKind.click:
@@ -3495,7 +3587,7 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
           DesktopInput.moveTo(s.x.round(), s.y.round());
           break;
         case WebAutoKind.osType:
-          // ★ 秘密は打ち込む直前だけ中身にする (= ユーザー要望)。
+          // ★ パスワードは打ち込む直前だけ中身にする (= ユーザー要望)。
           DesktopInput.typeText(await SecretStore.expand(s.text));
           break;
         case WebAutoKind.osKey:
@@ -4798,119 +4890,184 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
   ///
   /// ★ 中身は Windows の DPAPI で包んで控える。 画面にも出さない
   ///   (一度入れたら、 消すか上書きするしかない)。
+  /// 押した所の位置を測るための鍵 (= ユーザー指摘: 画面中央に出さない)。
+  final GlobalKey _secretBtnKey = GlobalKey();
+
   Future<void> _showSecretManager(MindMapProvider provider) async {
     final nameCtrl = TextEditingController();
     final valCtrl = TextEditingController();
     var names = await SecretStore.names();
     if (!mounted) return;
+    // ★ = ユーザー指摘「画面中央に出てくるのではなく、 項目の所でそのまま
+    //   設定できるように」。 押したボタンの真下に出す。 画面からはみ出す
+    //   時だけ内側へ寄せる。
+    const w = 380.0;
+    const h = 430.0;
+    var left = 40.0;
+    var top = 80.0;
+    try {
+      final box =
+          _secretBtnKey.currentContext?.findRenderObject() as RenderBox?;
+      final screen = MediaQuery.sizeOf(context);
+      if (box != null && box.hasSize) {
+        final p = box.localToGlobal(Offset.zero);
+        left = p.dx.clamp(8.0, math.max(8.0, screen.width - w - 8));
+        top = (p.dy + box.size.height + 6)
+            .clamp(8.0, math.max(8.0, screen.height - h - 8));
+      }
+    } catch (_) {}
     await showDialog<void>(
       context: context,
+      barrierColor: Colors.black.withValues(alpha: 0.25),
       builder: (dctx) => StatefulBuilder(
-        builder: (sctx, setD) => AlertDialog(
-          backgroundColor: const Color(0xFF1E1E32),
-          title: Row(children: [
-            const Icon(Icons.key_rounded, size: 18, color: Color(0xFFFFB347)),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(provider.t('auto.secretTitle'),
-                  style:
-                      const TextStyle(color: Colors.white, fontSize: 15)),
-            ),
-          ]),
-          content: SizedBox(
-            width: 420,
-            child: SingleChildScrollView(
-              child: Column(mainAxisSize: MainAxisSize.min, children: [
-                Text(provider.t('auto.secretBody'),
-                    style: const TextStyle(
-                        color: Colors.white70, fontSize: 11.5, height: 1.5)),
-                const SizedBox(height: 12),
-                if (!SecretStore.supported)
-                  Text(provider.t('auto.secretUnsupported'),
-                      style: const TextStyle(
-                          color: Color(0xFFFF8A80), fontSize: 11.5))
-                else ...[
-                  for (final n in names)
-                    ListTile(
-                      dense: true,
-                      contentPadding: EdgeInsets.zero,
-                      leading: const Icon(Icons.lock_rounded,
-                          size: 15, color: Color(0xFF9CCC65)),
-                      title: Text(n,
-                          style: const TextStyle(
-                              color: Colors.white, fontSize: 12.5)),
-                      subtitle: Text('{{secret:$n}}',
-                          style: const TextStyle(
-                              color: Colors.white38, fontSize: 10.5)),
-                      trailing: IconButton(
-                        icon: const Icon(Icons.close_rounded,
-                            size: 15, color: Color(0xFFFF8A80)),
-                        onPressed: () async {
-                          await SecretStore.remove(n);
-                          names = await SecretStore.names();
-                          setD(() {});
-                          await _reloadSecretNames();
-                        },
-                      ),
-                    ),
-                  const Divider(height: 18, color: Colors.white12),
-                  TextField(
-                    controller: nameCtrl,
-                    style:
-                        const TextStyle(color: Colors.white, fontSize: 13),
-                    decoration: InputDecoration(
-                      isDense: true,
-                      labelText: provider.t('auto.secretName'),
-                      labelStyle: const TextStyle(
-                          color: Colors.white38, fontSize: 11),
-                      enabledBorder: const OutlineInputBorder(
-                          borderSide: BorderSide(color: Colors.white24)),
+        builder: (sctx, setD) {
+          Widget field(TextEditingController c, String label,
+                  {bool hide = false}) =>
+              TextField(
+                controller: c,
+                obscureText: hide,
+                style: const TextStyle(color: Colors.white, fontSize: 13),
+                decoration: InputDecoration(
+                  isDense: true,
+                  labelText: label,
+                  labelStyle:
+                      const TextStyle(color: Colors.white38, fontSize: 11),
+                  contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 10),
+                  enabledBorder: const OutlineInputBorder(
+                      borderSide: BorderSide(color: Colors.white24)),
+                  focusedBorder: const OutlineInputBorder(
+                      borderSide: BorderSide(color: Color(0xFFFFB347))),
+                ),
+              );
+          return Stack(children: [
+            Positioned(
+              left: left,
+              top: top,
+              width: w,
+              child: Material(
+                color: const Color(0xFF1E1E32),
+                borderRadius: BorderRadius.circular(12),
+                elevation: 12,
+                child: Container(
+                  constraints: const BoxConstraints(maxHeight: h),
+                  padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+                  child: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(children: [
+                          const Icon(Icons.password_rounded,
+                              size: 17, color: Color(0xFFFFB347)),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(provider.t('auto.secretTitle'),
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 13.5,
+                                    fontWeight: FontWeight.w700)),
+                          ),
+                          IconButton(
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                                minWidth: 26, minHeight: 26),
+                            icon: const Icon(Icons.close_rounded,
+                                size: 16, color: Colors.white54),
+                            onPressed: () => Navigator.pop(dctx),
+                          ),
+                        ]),
+                        Text(provider.t('auto.secretBody'),
+                            style: const TextStyle(
+                                color: Colors.white54,
+                                fontSize: 10.5,
+                                height: 1.5)),
+                        const SizedBox(height: 10),
+                        if (!SecretStore.supported)
+                          Text(provider.t('auto.secretUnsupported'),
+                              style: const TextStyle(
+                                  color: Color(0xFFFF8A80), fontSize: 11.5))
+                        else ...[
+                          for (final n in names)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 4),
+                              child: Row(children: [
+                                const Icon(Icons.lock_rounded,
+                                    size: 14, color: Color(0xFF9CCC65)),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Text(n,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 12.5)),
+                                        Text('{{secret:$n}}',
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(
+                                                color: Colors.white38,
+                                                fontSize: 10)),
+                                      ]),
+                                ),
+                                IconButton(
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints(
+                                      minWidth: 26, minHeight: 26),
+                                  icon: const Icon(Icons.close_rounded,
+                                      size: 14, color: Color(0xFFFF8A80)),
+                                  onPressed: () async {
+                                    await SecretStore.remove(n);
+                                    names = await SecretStore.names();
+                                    setD(() {});
+                                    await _reloadSecretNames();
+                                  },
+                                ),
+                              ]),
+                            ),
+                          if (names.isNotEmpty)
+                            const Divider(height: 16, color: Colors.white12),
+                          field(nameCtrl, provider.t('auto.secretName')),
+                          const SizedBox(height: 8),
+                          field(valCtrl, provider.t('auto.secretValue'),
+                              hide: true),
+                          const SizedBox(height: 10),
+                          Align(
+                            alignment: Alignment.centerRight,
+                            child: ElevatedButton.icon(
+                              style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFFFFB347),
+                                  foregroundColor: Colors.black87,
+                                  visualDensity: VisualDensity.compact),
+                              icon: const Icon(Icons.save_rounded, size: 15),
+                              label: Text(provider.t('auto.secretAdd'),
+                                  style: const TextStyle(fontSize: 12)),
+                              onPressed: () async {
+                                final ok = await SecretStore.put(
+                                    nameCtrl.text, valCtrl.text);
+                                if (!ok) return;
+                                nameCtrl.clear();
+                                valCtrl.clear();
+                                names = await SecretStore.names();
+                                setD(() {});
+                                await _reloadSecretNames();
+                              },
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                   ),
-                  const SizedBox(height: 8),
-                  TextField(
-                    controller: valCtrl,
-                    obscureText: true,
-                    style:
-                        const TextStyle(color: Colors.white, fontSize: 13),
-                    decoration: InputDecoration(
-                      isDense: true,
-                      labelText: provider.t('auto.secretValue'),
-                      labelStyle: const TextStyle(
-                          color: Colors.white38, fontSize: 11),
-                      enabledBorder: const OutlineInputBorder(
-                          borderSide: BorderSide(color: Colors.white24)),
-                    ),
-                  ),
-                ],
-              ]),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dctx),
-              child: Text(provider.t('btn.close'),
-                  style: const TextStyle(color: Colors.white54)),
-            ),
-            if (SecretStore.supported)
-              ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFFFFB347),
-                    foregroundColor: Colors.black87),
-                onPressed: () async {
-                  final ok = await SecretStore.put(
-                      nameCtrl.text, valCtrl.text);
-                  if (!ok) return;
-                  nameCtrl.clear();
-                  valCtrl.clear();
-                  names = await SecretStore.names();
-                  setD(() {});
-                  await _reloadSecretNames();
-                },
-                child: Text(provider.t('auto.secretAdd')),
+                ),
               ),
-          ],
-        ),
+            ),
+          ]);
+        },
       ),
     );
     nameCtrl.dispose();
@@ -7643,6 +7800,7 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
                     //   渡す仕組みが欲しい」。 ここから合言葉を預ける。
                     //   AI へ渡すのは**名前だけ**。
                     InkWell(
+                      key: _secretBtnKey,
                       borderRadius: BorderRadius.circular(8),
                       onTap: () => unawaited(_showSecretManager(provider)),
                       child: Container(

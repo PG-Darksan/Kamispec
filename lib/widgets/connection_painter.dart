@@ -104,9 +104,14 @@ class ConnectionPainter extends CustomPainter {
 
   /// [point] がいずれかの接続線の近傍にあるか判定し、
   /// 最も近い接続を返す。なければ null。
-  NodeConnection? findConnection(Offset point) {
+  /// [tolerance] は線までの距離の上限 (px)。
+  ///
+  /// ★ = ユーザー要望「リンク接続設定がモバイル版で出づらいから、 もう少し
+  ///   出やすくして欲しい」。 14px は指では細すぎる (マウスの矢印なら
+  ///   狙えるが、 指の腹は 8mm ほどある)。 呼ぶ側が端末に合わせて広げる。
+  NodeConnection? findConnection(Offset point, {double tolerance = 14.0}) {
     NodeConnection? result;
-    double best = 14.0;
+    double best = tolerance;
 
     for (final conn in connections) {
       final from = nodes[conn.fromId];

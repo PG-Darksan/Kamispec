@@ -589,7 +589,8 @@ class NodeConnection {
     required this.fromAnchor,
     required this.toId,
     required this.toAnchor,
-    this.strokeWidth = 2.0,
+    // ★ = ユーザー要望「デフォルトのリンク線が細すぎる」。
+    this.strokeWidth = 3.5,
     this.showArrow = true,
     this.arrowHeadScale = 0.5,
     this.bidirectional = false,
@@ -722,7 +723,7 @@ class NodeConnection {
       fromAnchor: AnchorDirection.values[json['fromAnchor'] as int],
       toId: json['toId'] as String,
       toAnchor: AnchorDirection.values[json['toAnchor'] as int],
-      strokeWidth: (json['strokeWidth'] as num?)?.toDouble() ?? 2.0,
+      strokeWidth: (json['strokeWidth'] as num?)?.toDouble() ?? 3.5,
       showArrow: json['showArrow'] as bool? ?? true,
       arrowHeadScale: (json['arrowHeadScale'] as num?)?.toDouble() ?? 1.0,
       bidirectional: json['bidirectional'] as bool? ?? false,
