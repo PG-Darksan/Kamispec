@@ -174,6 +174,7 @@ class AutoClickPalette extends StatefulWidget {
     required this.t,
     this.onSave,
     this.compact = false,
+    this.bar = false,
   });
 
   /// 言葉を引く手 (本体なら `provider.t`)。
@@ -185,6 +186,13 @@ class AutoClickPalette extends StatefulWidget {
 
   /// 別窓のように狭い所で出す時は、 説明と見出しを畳む。
   final bool compact;
+
+  /// 画面録画の操作窓のような**横一列の帯**で出すか。
+  ///
+  /// ★ = ユーザー指摘「オートクリッカーが思っているのと違う。 画面録画バー
+  ///   みたいなのが画面外にも出る形で出てきて」。 縦長の窓ではなく、 画面の
+  ///   どこにでも置ける薄い帯にする。 札は横に流して並べる。
+  final bool bar;
 
   /// 控えの鍵 (別窓から本体へ書き戻してもらう時に使う)。
   static const String prefsKey = 'autoClickPalette_v1';
@@ -210,6 +218,10 @@ class _AutoClickPaletteState extends State<AutoClickPalette> {
   int _pickWhich = 1;
   int _pickLeft = 0;
   Timer? _pickTimer;
+
+  /// 始点を控えた後、 続けて終点も控えるか
+  /// (= ユーザー要望: スワイプの開始点・終了点は画面に乗せたポインタを基準に)。
+  bool _pickChain = false;
 
   String _status = '';
 
@@ -297,11 +309,12 @@ class _AutoClickPaletteState extends State<AutoClickPalette> {
   //
   // アプリの窓の外は覆えないので、 数えている間に置きたい所へカーソルを
   // 動かしてもらう (自動操作・これまでのオートクリッカーと同じ考え方)。
-  void _pickPoint(int index, int which) {
+  void _pickPoint(int index, int which, {bool chain = false}) {
     _pickTimer?.cancel();
     setState(() {
       _pickIndex = index;
       _pickWhich = which;
+      _pickChain = chain;
       _pickLeft = 3;
       _status = _t('palette.pickHint').replaceFirst('{n}', '$_pickLeft');
     });
@@ -336,6 +349,14 @@ class _AutoClickPaletteState extends State<AutoClickPalette> {
             .replaceFirst('{x}', '${p.x}')
             .replaceFirst('{y}', '${p.y}');
         unawaited(_save());
+        // ★ 始点を控えたら、 そのまま終点も控える (= ユーザー要望:
+        //   スワイプの 2 点をポインタで決める)。 窓を開き直さずに続ける。
+        if (_pickChain && _pickWhich == 1) {
+          _pickChain = false;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) _pickPoint(i, 2);
+          });
+        }
       });
     });
   }
@@ -540,7 +561,8 @@ class _AutoClickPaletteState extends State<AutoClickPalette> {
             ),
           ]),
           content: SizedBox(
-            width: 340,
+            // 狭い端末では窓の幅いっぱいに (決め打ちだと外へ出る)。
+            width: MediaQuery.sizeOf(sctx).width < 420 ? double.maxFinite : 340,
             child: SingleChildScrollView(
               child: Column(mainAxisSize: MainAxisSize.min, children: [
                 _field(nameCtrl, _t('palette.name')),
@@ -575,6 +597,27 @@ class _AutoClickPaletteState extends State<AutoClickPalette> {
                       Navigator.pop(dctx);
                       _pickPoint(index, 2);
                     },
+                  ),
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: const Color(0xFF4DD0E1),
+                        side: const BorderSide(color: Color(0xFF4DD0E1)),
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        minimumSize: const Size(0, 30),
+                      ),
+                      icon: const Icon(Icons.timeline_rounded, size: 15),
+                      label: Text(_t('palette.pickBoth'),
+                          style: const TextStyle(fontSize: 11)),
+                      onPressed: () {
+                        _commit(s, nameCtrl, textCtrl, intervalCtrl, notchCtrl,
+                            x1Ctrl, y1Ctrl, x2Ctrl, y2Ctrl);
+                        Navigator.pop(dctx);
+                        _pickPoint(index, 1, chain: true);
+                      },
+                    ),
                   ),
                 ],
                 if (s.kind == AutoClickKind.scroll) ...[
@@ -686,20 +729,25 @@ class _AutoClickPaletteState extends State<AutoClickPalette> {
 
   Widget _pointLine(String label, TextEditingController xc,
           TextEditingController yc, VoidCallback onPick) =>
+      // ★ 点検で判明 (試験環境で描いて発見): 決め打ちの幅を足し合わせると
+      //   360dp の端末では 8px 足りずにはみ出していた。 欄は残り幅を
+      //   分け合う形にして、 どの幅でも収まるようにする。
       Row(children: [
-        SizedBox(
-          width: 52,
+        Flexible(
           child: Text(label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: const TextStyle(color: Colors.white70, fontSize: 12)),
         ),
-        SizedBox(width: 68, child: _numField(xc, 'X')),
         const SizedBox(width: 6),
-        SizedBox(width: 68, child: _numField(yc, 'Y')),
+        Expanded(flex: 3, child: _numField(xc, 'X')),
         const SizedBox(width: 6),
+        Expanded(flex: 3, child: _numField(yc, 'Y')),
         IconButton(
           tooltip: _t('palette.readCursor'),
           visualDensity: VisualDensity.compact,
-          constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
           icon: const Icon(Icons.my_location_rounded,
               size: 16, color: Color(0xFF4DD0E1)),
           onPressed: onPick,
@@ -741,6 +789,7 @@ class _AutoClickPaletteState extends State<AutoClickPalette> {
                 child: CircularProgressIndicator(strokeWidth: 2))),
       );
     }
+    if (widget.bar) return _buildBar();
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Row(children: [
         const Icon(Icons.dashboard_customize_rounded,
@@ -792,6 +841,58 @@ class _AutoClickPaletteState extends State<AutoClickPalette> {
     ]);
   }
 
+  /// 横一列の帯 (= 画面録画の操作窓と同じ構え)。
+  ///
+  /// ★ 札は横に流して並べる。 数が増えても帯の高さは変わらない。
+  Widget _buildBar() => Column(mainAxisSize: MainAxisSize.min, children: [
+        Row(children: [
+          const SizedBox(width: 4),
+          OutlinedButton.icon(
+            style: OutlinedButton.styleFrom(
+              foregroundColor: const Color(0xFF4DD0E1),
+              side: const BorderSide(color: Color(0xFF4DD0E1)),
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              minimumSize: const Size(0, 26),
+              visualDensity: VisualDensity.compact,
+            ),
+            icon: const Icon(Icons.add_rounded, size: 14),
+            label:
+                Text(_t('palette.add'), style: const TextStyle(fontSize: 10.5)),
+            onPressed: () => unawaited(_addSlot()),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: _slots.isEmpty
+                ? Text(_t('palette.empty'),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style:
+                        const TextStyle(color: Colors.white24, fontSize: 10.5))
+                : SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      for (var i = 0; i < _slots.length; i++) ...[
+                        if (i > 0) const SizedBox(width: 6),
+                        _chip(i),
+                      ],
+                    ]),
+                  ),
+          ),
+        ]),
+        if (_status.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(_status,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      color: Color(0xFF9CCC65), fontSize: 10.5)),
+            ),
+          ),
+      ]);
+
   Widget _chip(int i) {
     final s = _slots[i];
     final on = _repeatIndex == i;
@@ -821,20 +922,44 @@ class _AutoClickPaletteState extends State<AutoClickPalette> {
                 size: 16,
                 color: on ? const Color(0xFF9CCC65) : const Color(0xFF4DD0E1)),
             const SizedBox(width: 8),
-            Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(_titleOf(s),
-                      style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700)),
-                  Text(_subtitleOf(s),
-                      style: const TextStyle(
-                          color: Colors.white38, fontSize: 10)),
-                ]),
+            // ★ 点検で判明 (試験環境で描いて発見): 名前や説明が長い札
+            //   (スワイプの 2 点や、 打ち込む文字が長い物) で横へはみ出して
+            //   いた。 札は [Wrap] の中なので、 中身に上限を置いて畳む。
+            ConstrainedBox(
+              // ★ 札に控える口 (2 点まとめ) を足したぶん、 名前の幅を詰める
+              //   (検分で 360dp の端末で 2px はみ出した)。
+              constraints: const BoxConstraints(maxWidth: 118),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(_titleOf(s),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700)),
+                    Text(_subtitleOf(s),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            color: Colors.white38, fontSize: 10)),
+                  ]),
+            ),
             const SizedBox(width: 4),
+            // ★ = ユーザー要望「スワイプの開始点、 終了点は画面の上に乗せた
+            //   ポインタを基準にするように」。 札から直に 2 点を続けて
+            //   控えられるようにする (窓を開き直さなくてよい)。
+            if (autoClickNeedsEnd(s.kind))
+              IconButton(
+                tooltip: _t('palette.pickBoth'),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+                icon: const Icon(Icons.my_location_rounded,
+                    size: 14, color: Color(0xFF4DD0E1)),
+                onPressed: () => _pickPoint(i, 1, chain: true),
+              ),
             IconButton(
               tooltip: _t('palette.edit'),
               padding: EdgeInsets.zero,

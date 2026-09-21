@@ -6860,6 +6860,9 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
         //   欲しい」。 並びを**前半 (手順まわり)** と **後半 (AI /
         //   コマンド実行 / 時刻で実行)** の 2 束に分けておく。 狭い時は
         //   今までどおり縦に積み、 広い時だけ左右に並べる。
+        const kSideBySideMin = 980.0;
+        final sideBySide =
+            cons.maxWidth.isFinite && cons.maxWidth >= kSideBySideMin;
         final headChildren = <Widget>[
           // ── ネットにつながっていない時だけ、 一番上に出す
           //    (= ユーザー要望: 下の方の 1 行では地味で気付けない) ──
@@ -7232,6 +7235,10 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
           //    (= ユーザー要望)。 二度押しで自動の高さに戻る。 ──
           //    ★ 巻物の中でも掴めるよう、 Listener で直に受け取る
           //      (中の GestureDetector と取り合いにならない)。
+          //    ★ = ユーザー指摘「AI 欄が右に移ってきたのに、 下の表示領域を
+          //      伸ばす所がそのままになっているから消して」。 左右 2 列の
+          //      時は手順一覧が縦いっぱいを使うので、 伸ばす帯は意味が無い。
+          if (!sideBySide)
           MouseRegion(
             cursor: SystemMouseCursors.resizeUpDown,
             child: Listener(
@@ -7517,8 +7524,7 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
         //    ★ 左の列は、 人が高さを決めていない時だけ [Expanded] で伸びる
         //      ([headChildren] の中がそうなっている)。 決めている時は
         //      決めた高さの箱なので、 巻物に入れてはみ出しを防ぐ。
-        const kSideBySideMin = 980.0;
-        if (cons.maxWidth.isFinite && cons.maxWidth >= kSideBySideMin) {
+        if (sideBySide) {
           final leftCol = fixedSteps
               ? SingleChildScrollView(
                   child: Column(

@@ -40953,6 +40953,19 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Fim',
       'ru': 'Konets',
     },
+    // ★ = ユーザー要望「スワイプの開始点、 終了点は画面の上に乗せた
+    //   ポインタを基準にするように」。
+    'palette.pickBoth': {
+      'ja': '2 点を続けて控える',
+      'en': 'Capture both points in turn',
+      'zh': '依次记录两个点',
+      'ko': '두 점을 연달아 기록',
+      'es': 'Capturar ambos puntos seguidos',
+      'fr': 'Capturer les deux points a la suite',
+      'de': 'Beide Punkte nacheinander erfassen',
+      'pt': 'Capturar os dois pontos em sequencia',
+      'ru': 'Zapomnit obe tochki podryad',
+    },
     'palette.pick': {
       'ja': '位置を控える',
       'en': 'Capture',
@@ -53334,6 +53347,18 @@ class MindMapProvider extends ChangeNotifier {
     // ── タブの結合 / 左右分割 (= ユーザー要望: タブを結合させて左右分割で
     //    出せるように) ──
     // ★ = ユーザー要望「3 画面や 4 画面にできるように」 の上限の知らせ。
+    // ★ = ユーザー指摘「3〜4 分割って CLI や API の画面をだよ?」。
+    'cli.splitAdd': {
+      'ja': 'もう 1 つ並べる ({n} 画面)',
+      'en': 'Add one more pane ({n} in all)',
+      'zh': '再并排一个（共 {n} 个）',
+      'ko': '하나 더 나란히 ({n} 화면)',
+      'es': 'Anadir otro panel ({n} en total)',
+      'fr': 'Ajouter un volet ({n} au total)',
+      'de': 'Einen weiteren Bereich ({n} insgesamt)',
+      'pt': 'Adicionar outro painel ({n} no total)',
+      'ru': 'Dobavit eshche panel (vsego {n})',
+    },
     'cli.splitMax': {
       'ja': '並べられるのは 4 画面までです',
       'en': 'You can place at most four panes side by side',
@@ -71298,6 +71323,18 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Страницы этой папки сопоставлены с Ctrl+1-9',
     },
     // ── 動画再生倍率の上限カスタマイズ ──
+    // ★ = ユーザー要望「数値でも上限倍率設定できるように」。
+    'video.maxRate.range': {
+      'ja': '1.5 〜 16.0 の間で書けます',
+      'en': 'Any value from 1.5 to 16.0',
+      'zh': '可填写 1.5 到 16.0 之间的值',
+      'ko': '1.5 〜 16.0 사이로 적을 수 있습니다',
+      'es': 'Cualquier valor entre 1.5 y 16.0',
+      'fr': 'Une valeur entre 1.5 et 16.0',
+      'de': 'Ein Wert zwischen 1.5 und 16.0',
+      'pt': 'Qualquer valor entre 1.5 e 16.0',
+      'ru': 'Lyuboe znachenie ot 1.5 do 16.0',
+    },
     'video.maxRate.title': {
       'ja': '再生速度の上限',
       'en': 'Max playback speed',

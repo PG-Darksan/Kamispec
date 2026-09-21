@@ -1367,6 +1367,17 @@ class FloatL10n {
 
   static const Map<String, Map<String, String>> _table = {
     // ── 外の窓を 全画面 ⇄ 元の大きさ に切り替える (= ユーザー要望) ──
+    'btn.close': {
+      'ja': '閉じる',
+      'en': 'Close',
+      'zh': '关闭',
+      'ko': '닫기',
+      'es': 'Cerrar',
+      'fr': 'Fermer',
+      'de': 'Schliessen',
+      'pt': 'Fechar',
+      'ru': 'Zakryt',
+    },
     'float.toFullscreen': {
       'ja': '全画面にする',
       'en': 'Make fullscreen',
@@ -10087,6 +10098,14 @@ class _ClickerWindowAppState extends State<_ClickerWindowApp> {
     _loadLang();
     // ignore: discarded_futures
     _applyTop(true);
+    // ★ = ユーザー指摘「オートクリッカーがバー形式の画面録画の様なものが
+    //   出てきてない」。 OS のタイトル帯が乗っていると「窓」 にしか見えない
+    //   ので、 外して中身だけの**帯**にする。 描かれてから外す (それまで
+    //   窓の実体が無い)。 閉じる口は自前の ✕ を出す。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      // ignore: discarded_futures
+      _makeFrameless();
+    });
     _topTimer = Timer.periodic(const Duration(seconds: 10), (_) {
       if (!mounted) {
         _topTimer?.cancel();
@@ -10096,6 +10115,13 @@ class _ClickerWindowAppState extends State<_ClickerWindowApp> {
       // ignore: discarded_futures
       if (_pinned) _applyTop(true);
     });
+  }
+
+  Future<void> _makeFrameless() async {
+    try {
+      await windowManager.ensureInitialized();
+      await windowManager.setTitleBarStyle(TitleBarStyle.hidden);
+    } catch (_) {}
   }
 
   Future<void> _loadLang() async {
@@ -10113,6 +10139,21 @@ class _ClickerWindowAppState extends State<_ClickerWindowApp> {
         if (await windowManager.isAlwaysOnTop() == on) return;
       } catch (_) {}
       await windowManager.setAlwaysOnTop(on);
+    } catch (_) {}
+  }
+
+  Future<void> _closeBar() async {
+    if (widget.standalone) {
+      try {
+        Process.killPid(pid);
+      } catch (_) {}
+      exit(0);
+    }
+    try {
+      await DesktopMultiWindow.invokeMethod(0, 'focusMain');
+    } catch (_) {}
+    try {
+      await WindowController.fromWindowId(widget.windowId).close();
     } catch (_) {}
   }
 
@@ -10156,11 +10197,11 @@ class _ClickerWindowAppState extends State<_ClickerWindowApp> {
             onPanUpdate: (d) =>
                 _dragger.update(d, View.of(context).devicePixelRatio),
             child: Container(
-              height: 34,
+              height: 30,
               color: const Color(0xFF23233A),
               padding: const EdgeInsets.symmetric(horizontal: 8),
               child: Row(children: [
-                const Icon(Icons.ads_click_rounded, color: acc, size: 16),
+                const Icon(Icons.ads_click_rounded, color: acc, size: 15),
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
@@ -10188,16 +10229,34 @@ class _ClickerWindowAppState extends State<_ClickerWindowApp> {
                     _applyTop(_pinned);
                   },
                 ),
+                // ★ OS のタイトル帯を外したので、 閉じる口はここに出す。
+                IconButton(
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 28, minHeight: 28),
+                  tooltip: FloatL10n.t('btn.close'),
+                  icon: const Icon(Icons.close_rounded,
+                      color: Colors.white54, size: 16),
+                  onPressed: () {
+                    _topTimer?.cancel();
+                    _topTimer = null;
+                    // ignore: discarded_futures
+                    _closeBar();
+                  },
+                ),
               ]),
             ),
           ),
           Expanded(
             child: SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(12, 10, 12, 14),
+              padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
               child: AutoClickPalette(
                 t: (k) => MindMapProvider.translateFor(k, _lang),
                 onSave: _saveSlots,
                 compact: true,
+                // ★ = ユーザー指摘「画面録画バーみたいなのが画面外にも
+                //   出る形で」。 縦長の窓ではなく横一列の帯にする。
+                bar: true,
               ),
             ),
           ),

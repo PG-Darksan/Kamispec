@@ -50,6 +50,50 @@ const String kAppVersionName = '1.0.0';
 /// **新しい順**に並べる (先頭が今の版)。
 const List<ReleaseNote> kReleaseNotes = <ReleaseNote>[
   ReleaseNote(
+    build: 430,
+    date: '2026-09-21',
+    lines: <String, List<String>>{
+      'ja': [
+        'オートクリッカーを、 画面録画の操作窓と同じ**横一列の帯**にしました。'
+            ' 枠を外したので画面のどこにでも置けます。',
+        'スワイプの始点と終点を、 ポインタで続けて控えられるようにしました。',
+        'CLI のアカウントは、 ログイン名が読めた物だけを重複なく並べます'
+            ' (「既定」 や「a1」 は出しません)。 新しいタブの一覧でも'
+            ' 1 つの時から選べます。',
+        '札の上で右クリックすると一覧が 2 枚重なっていたのを直しました。',
+        '「下に分割」 を選んでいるのに上側に開いてしまう不具合を直しました'
+            ' (ターミナルで選んだ開き方が効いていなかったのも直しました)。',
+        '端末や AI の画面を、 右クリックから 3 枚・4 枚に増やせるように'
+            ' しました。',
+        '再生速度の上限を UI の配置設定に並べ、 速度バーの右に置きました。'
+            ' 数値でも決められます。',
+        '自動操作を左右 2 列で使う時、 要らなくなった高さ調整の帯を'
+            ' 消しました。',
+        '右クリックからのページ削除を、 ページが 1 枚の時も出すように'
+            ' しました (ヘッダーの ⋮ と同じ)。',
+        '背景のあるページを動かす時の重さを取りました。',
+      ],
+      'en': [
+        'The auto clicker is now a horizontal bar like the screen-recording '
+            'window, with no frame, so it can sit anywhere on screen.',
+        'A swipe can capture its start and end points with the pointer, one '
+            'after the other.',
+        'CLI accounts are listed only when their sign-in name could be read, '
+            'with duplicates removed.',
+        'Right-clicking a tab no longer opens two stacked menus.',
+        'Choosing "split bottom" no longer opens the pane at the top.',
+        'Terminals and AI panes can be grown to three or four from the '
+            'right-click menu.',
+        'The playback-speed ceiling is now a placeable item next to the speed '
+            'bar, and can be typed as a number.',
+        'The height-drag strip is gone from the two-column automation page.',
+        'Delete-this-page is offered from the right-click menu even when only '
+            'one page is left.',
+        'Panning a page with a background is no longer heavy.',
+      ],
+    },
+  ),
+  ReleaseNote(
     build: 429,
     date: '2026-09-21',
     lines: <String, List<String>>{

@@ -29780,9 +29780,12 @@ class _MindMapScreenState extends State<MindMapScreen>
       // ── このページを削除 (= ユーザー要望: 右クリックやタップ長押しに
       //    ページ削除の項目を加えて欲しい) ──
       //    ★ 消す前に必ず確かめる ([_confirmDeletePageAt] が受け持つ)。
-      //      ページが 1 枚しか無い時は出さない (消すと行き先が無くなる)。
-      if (provider.pages.length > 1)
-        _CtxMenuItem(
+      //    ★ 実機で分かった事: 最初は「1 枚しか無い時は出さない」 として
+      //      いたが、 ヘッダーの ⋮ は 1 枚でも出すし、 provider 側も
+      //      「最後の 1 枚でも消せる (= 以前のご要望)。 0 枚になったら
+      //      白紙を 1 枚置く」 と決めてある。 出し分けると口によって
+      //      できる事が変わるので、 ここも常に出す。
+      _CtxMenuItem(
           menuId: 'deletePage',
           icon: Icons.delete_outline_rounded,
           label: provider.t('page.deleteThis'),
@@ -49264,7 +49267,10 @@ class _MindMapScreenState extends State<MindMapScreen>
     //   開き方 (全画面 / フローティング / 分割) は AI アシスタント側の
     //   設定に従う (ターミナル単独の窓ではなくなるため)。
     _McpChatDialogState.openShellDirOnStart = dir;
-    await _openMcpChat(provider);
+    // ★ = ユーザー報告「下分割ボタンを押しているのに上分割で開いてしまう」。
+    //   ターミナルで選んだ開き方をそのまま渡す (渡さないとアシスタント側の
+    //   設定が使われ、 ターミナルの上下の指定が死ぬ)。
+    await _openMcpChat(provider, styleOverride: _isDesktop ? style : null);
     return;
     // ignore: dead_code
     final session = _terminalSessionFor(provider, dir);
@@ -50169,9 +50175,14 @@ class _MindMapScreenState extends State<MindMapScreen>
         // ── 左右分割で開く (= ユーザー要望: メモも分割で開けるように) ──
         {
           final memoStyle = _openStyleOf('mapMemo');
-          if (memoStyle == 'splitLeft' || memoStyle == 'splitRight') {
+          // ★ 上下の指定も通す (= ユーザー報告: 下分割なのに上に出る)。
+          if (memoStyle.startsWith('split')) {
             unawaited(_openToolInSplitPane(
-                'mapMemo', memoStyle == 'splitLeft'));
+              'mapMemo',
+              memoStyle == 'splitLeft' || memoStyle == 'splitTop',
+              stacked:
+                  memoStyle == 'splitTop' || memoStyle == 'splitBottom',
+            ));
             break;
           }
         }
@@ -67449,7 +67460,10 @@ class _MindMapScreenState extends State<MindMapScreen>
         final win = await DesktopMultiWindow.createWindow(
             jsonEncode({'kind': 'clicker'}));
         _clickerWinId = win.windowId;
-        await win.setFrame(const Offset(80, 80) & const Size(420, 460));
+        // ★ = ユーザー指摘「画面録画バーみたいなのが画面外にも出る形で
+        //   出てきて」。 縦長の窓ではなく、 画面のどこにでも置ける薄い帯に
+        //   する (録画の操作窓と同じ構え)。 横幅は札が数枚並ぶぶん。
+        await win.setFrame(const Offset(160, 120) & const Size(660, 104));
         await win.setTitle('HisatorNotebook Clicker');
         await win.show();
       } catch (e) {
@@ -67744,7 +67758,12 @@ class _MindMapScreenState extends State<MindMapScreen>
   bool _mcpChatVisible = false;
 
   Future<void> _openMcpChat(MindMapProvider provider,
-      {String? initialTask, bool floatingPanel = false}) async {
+      {String? initialTask,
+      bool floatingPanel = false,
+      // ★ ターミナルのボタンから呼ばれた時は、 そちらで選ばれた開き方を
+      //   使う (= ターミナルは AI アシスタントのタブとして開くので、
+      //   渡さないとターミナル側の「下に分割」 などが効かない)。
+      String? styleOverride}) async {
     // 要素から始めた指示ではないので、 札を要素に貼り付けない
     // (= 前の要素のそばに出しっぱなしにならないように)。
     _aiBusyAnchorNodeId = null;
@@ -67779,17 +67798,29 @@ class _MindMapScreenState extends State<MindMapScreen>
         await _commandOpenStylesReady;
       } catch (_) {}
       if (!mounted) return;
-      final style = _openStyleOf('aiAssistant');
-      if (style == 'splitLeft' || style == 'splitRight') {
+      // ★ ターミナルのボタンから来た時は、 そちらで選ばれた開き方を使う
+      //   (= ターミナルは AI アシスタントのタブとして開くので、 何も
+      //   しないとターミナル側の「下に分割」 などが死ぬ)。
+      final style = styleOverride ?? _openStyleOf('aiAssistant');
+    // ★ = ユーザー報告「下分割ボタンを押しているのに上分割で開いてしまう」。
+    //   ここが `splitLeft` / `splitRight` しか見ておらず、 上下の指定が
+    //   そのまま落ちていた (縦に積んでいる時は「左」 が上・「右」 が下に
+    //   なるので、 選んだ物と違う側に出る)。 4 とおり全部を見る。
+      if (style.startsWith('split')) {
+        final stacked = style == 'splitTop' || style == 'splitBottom';
         final wasSplit = _mapSplitOpen;
         if (!_mapSplitOpen) {
-          await _applyMapSplitMode(panes: 2, stacked: false);
+          await _applyMapSplitMode(panes: 2, stacked: stacked);
+          if (!mounted) return;
+        } else if (!_mapSplitQuad && _mapSplitStacked != stacked) {
+          // 既に開いている分割の向きが違う時は、 向きだけ倒す。
+          await _applyMapSplitMode(panes: 2, stacked: stacked, toggle: false);
           if (!mounted) return;
         }
         if (_mapSplitOpen) {
-          // 左は 0 / 右は 1 (= ユーザー報告: 左分割と右分割のボタンを
-          //   押すと両方が左半分に入ってしまう)。
-          final slot = _splitSlotFor(style == 'splitLeft');
+          // 左 (上) は 0 / 右 (下) は 1。
+          final slot =
+              _splitSlotFor(style == 'splitLeft' || style == 'splitTop');
           if (_mapSplitCellTool[slot] == 'aiAssistant') {
             // もう一度押した = 閉じる。 この道具のために分割したのなら
             // 全画面に戻す (= ユーザー報告: 押し直しても 2 画面のまま)。
@@ -76694,12 +76725,36 @@ class _MindMapScreenState extends State<MindMapScreen>
   ///   切れている**。 その切れているぶんは寄せ先 (alignment) を動かすだけで
   ///   見て回れる。 切れていない向きには何の影響も無いので、 どの画面でも
   ///   掛けてよい。
+  /// 背景の寄せ先を数えるための、 キャンバスの大きさの控え。
+  ///
+  /// ★ [_canvasDimensionForScrollbars] は全ノードをなめて外周を出すので、
+  ///   毎フレーム呼ぶと動かしている間ずっと重い。 同じページで要素の数が
+  ///   変わらないうちは、 少しの間だけ使い回す (背景の寄せ先はそこまでの
+  ///   精度を要らない)。
+  String? _bgExtentKey;
+  Size _bgExtent = const Size(2000, 2000);
+  DateTime _bgExtentAt = DateTime.fromMillisecondsSinceEpoch(0);
+
+  Size _bgExtentFor(MindMapProvider provider, MindMapPage? pageOverride) {
+    final page = pageOverride ?? provider.currentPage;
+    final key = '${page.id}:${page.nodes.length}:${page.pageType}';
+    final now = DateTime.now();
+    if (key == _bgExtentKey &&
+        now.difference(_bgExtentAt) < const Duration(milliseconds: 400)) {
+      return _bgExtent;
+    }
+    _bgExtentKey = key;
+    _bgExtentAt = now;
+    _bgExtent =
+        _canvasDimensionForScrollbars(provider, pageOverride: pageOverride);
+    return _bgExtent;
+  }
+
   Alignment _bgAlignmentFor(
       TransformationController ctrl, MindMapProvider provider,
       {MindMapPage? pageOverride}) {
     final scene = ctrl.toScene(Offset.zero);
-    final extent =
-        _canvasDimensionForScrollbars(provider, pageOverride: pageOverride);
+    final extent = _bgExtentFor(provider, pageOverride);
     double a(double pos, double span) {
       if (span <= 0) return 0;
       // 左上の端 = -1 (絵の左上) / 右下の端 = +1 (絵の右下)。
@@ -78182,8 +78237,16 @@ class _MindMapScreenState extends State<MindMapScreen>
     } catch (_) {}
     if (!mounted) return false;
     final style = _openStyleOf(id);
-    if (style == 'splitLeft' || style == 'splitRight') {
-      await _openToolInSplitPane(id, style == 'splitLeft');
+    // ★ = ユーザー報告「下分割ボタンを押しているのに上分割で開いてしまう」。
+    //   ここが `splitLeft` / `splitRight` しか見ておらず、 上下の指定が
+    //   そのまま落ちていた (縦に積んでいる時は「左」 が上・「右」 が下に
+    //   なるので、 選んだ物と違う側に出る)。 4 とおり全部を見る。
+    if (style.startsWith('split')) {
+      await _openToolInSplitPane(
+        id,
+        style == 'splitLeft' || style == 'splitTop',
+        stacked: style == 'splitTop' || style == 'splitBottom',
+      );
       return true;
     }
     if (style == 'floating' && floating != null) {
@@ -107907,13 +107970,15 @@ class _MindMapScreenState extends State<MindMapScreen>
     } catch (_) {}
     if (!mounted) return;
     final style = _openStyleOf('shortcuts');
-    if (style == 'splitRight' || style == 'splitLeft') {
+    // ★ 上下の指定も通す (= ユーザー報告: 下分割なのに上に出る)。
+    final stacked = style == 'splitTop' || style == 'splitBottom';
+    if (style.startsWith('split')) {
       // ★ まだ分割していなければ、 ここで分割してから入れる
       //   (= ユーザー報告: 右分割を選んでいるのに画面の真ん中に出る)。
       //   以前は「分割中なら」 という条件だったので、 分割していない時は
       //   黙って真ん中のダイアログに落ちていた。
       if (!_mapSplitOpen) {
-        await _applyMapSplitMode(panes: 2, stacked: false);
+        await _applyMapSplitMode(panes: 2, stacked: stacked);
         if (!mounted) return;
         // この道具のために分割を開いた印 (= ユーザー報告: もう一度押しても
         // 2 画面のまま。 共通の閉じ処理がこの印を見て全画面へ戻す)。
@@ -107925,7 +107990,9 @@ class _MindMapScreenState extends State<MindMapScreen>
       }
       // 閉じた時に元の全画面へ戻す扱いも含めて、 共通の入口に任せる
       // (= ユーザー要望)。
-      await _openToolInSplitPane('shortcuts', style == 'splitLeft');
+      await _openToolInSplitPane(
+          'shortcuts', style == 'splitLeft' || style == 'splitTop',
+          stacked: stacked);
       return;
     }
     if (style == 'floating') {
@@ -121192,7 +121259,12 @@ try {
     final p = ctx.read<MindMapProvider>();
     // ★ 選べるのは 2 / 3 / 4 / 5 倍だけ (= ユーザー指摘)。 前に 16 倍などを
     //   選んでいた人でも、 どれか 1 つが必ず選ばれた状態で開くようにする。
-    double tmpMax = p.videoMaxRate.clamp(2.0, 5.0).toDouble();
+    double tmpMax = p.videoMaxRate.clamp(1.5, 16.0).toDouble();
+    // ★ = ユーザー要望「数値でも上限倍率設定できるように」。
+    final rateCtrl = TextEditingController(
+        text: tmpMax == tmpMax.roundToDouble()
+            ? tmpMax.toStringAsFixed(0)
+            : tmpMax.toStringAsFixed(1));
     final result = await showDialog<double>(
       context: ctx,
       builder: (dctx) {
@@ -121218,6 +121290,45 @@ try {
                 //   し、 選択肢が微妙だから 2 倍 / 3 倍 / 4 倍 / 5 倍だけに」。
                 //   つまみ (1.5〜16.0) と 5 つの札はやめ、 4 択だけにした。
                 //   狭い画面でも必ず 1 行に収まる。
+                // ★ = ユーザー要望「数値でも上限倍率設定できるように」。
+                //   札で足りない人は、 ここへ直に書ける (1.5〜16.0)。
+                Row(children: [
+                  SizedBox(
+                    width: 92,
+                    child: TextField(
+                      controller: rateCtrl,
+                      keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true),
+                      style: const TextStyle(
+                          color: Colors.white, fontSize: 14),
+                      decoration: const InputDecoration(
+                        isDense: true,
+                        suffixText: 'x',
+                        suffixStyle:
+                            TextStyle(color: Colors.white38, fontSize: 12),
+                        contentPadding: EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 8),
+                        enabledBorder: OutlineInputBorder(
+                            borderSide: BorderSide(color: Colors.white24)),
+                        focusedBorder: OutlineInputBorder(
+                            borderSide:
+                                BorderSide(color: Color(0xFFFFB347))),
+                      ),
+                      onChanged: (v) {
+                        final d = double.tryParse(v.trim());
+                        if (d == null) return;
+                        ss(() => tmpMax = d.clamp(1.5, 16.0).toDouble());
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(p.t('video.maxRate.range'),
+                        style: const TextStyle(
+                            color: Colors.white38, fontSize: 10.5)),
+                  ),
+                ]),
+                const SizedBox(height: 12),
                 Wrap(
                   spacing: 8,
                   runSpacing: 8,
@@ -121232,7 +121343,11 @@ try {
                       backgroundColor: selected
                           ? const Color(0xFFFFB347)
                           : const Color(0xFF2A2A3E),
-                      onPressed: () => ss(() => tmpMax = preset),
+                      onPressed: () => ss(() {
+                        tmpMax = preset;
+                        // 欄の方も合わせる (= どちらを触っても同じ値に)。
+                        rateCtrl.text = preset.toStringAsFixed(0);
+                      }),
                     );
                   }).toList(),
                 ),
@@ -172992,6 +173107,14 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
   static const _ytSideSplit = 'split';
   static const _ytSideMemo = 'memo';
   static const _ytSidePlaybackRate = 'playback_rate';
+
+  /// 再生速度の**上限**を決める項目。
+  ///
+  /// ★ = ユーザー要望「UI の配置設定の中に再生速度の上限を設定する項目を
+  ///   入れて、 1 段目の再生速度バーの右に置いて欲しい」。 これまでは
+  ///   速度バーの右に決め打ちで置いていただけで、 並べ替えも取り外しも
+  ///   できなかった。 他のボタンと同じ「項目」 にする。
+  static const _ytSideMaxRate = 'max_rate';
   static const _ytSideSeekStep = 'seek_step';
   static const _ytSideReload = 'reload';
   static const _ytSideCopyUrl = 'copy_url';
@@ -173027,6 +173150,8 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
     _ytSideSplit,
     _ytSideMemo,
     _ytSidePlaybackRate,
+    // ★ = ユーザー要望「1 段目の再生速度バーの右に置いて欲しい」。
+    _ytSideMaxRate,
     _ytSideSeekStep,
     _ytSideReload,
     _ytSideCopyUrl,
@@ -177038,6 +177163,8 @@ v.addEventListener('play', function() {
         return '動画メモ';
       case _ytSidePlaybackRate:
         return '再生速度';
+      case _ytSideMaxRate:
+        return context.read<MindMapProvider>().t('video.maxRate');
       case _ytSideSeekStep:
         return '早送り秒数';
       case _ytSideReload:
@@ -177091,6 +177218,8 @@ v.addEventListener('play', function() {
         return Icons.sticky_note_2_outlined;
       case _ytSidePlaybackRate:
         return Icons.speed_rounded;
+      case _ytSideMaxRate:
+        return Icons.keyboard_double_arrow_up_rounded;
       case _ytSideSeekStep:
         return Icons.fast_forward_rounded;
       case _ytSideReload:
@@ -177147,6 +177276,8 @@ v.addEventListener('play', function() {
         return canEmbed;
       case _ytSidePip:
       case _ytSidePlaybackRate:
+      // ★ 上限も動画を見ている時だけ (= 速度と同じ)。
+      case _ytSideMaxRate:
       case _ytSideReload:
         return isVideo;
       case _ytSideSplit:
@@ -177701,8 +177832,16 @@ v.addEventListener('play', function() {
     );
   }
 
+  /// 「再生速度の上限」 を出すか (配置設定で外されていないか)。
+  bool get _ytMaxRateShown =>
+      _youtubeSideActionOrder.contains(_ytSideMaxRate);
+
   Widget? _buildMobileYoutubeSideAction(String id) {
     if (!_isYoutubeSideActionCurrentlyVisible(id)) return null;
+    // ★ 上限は「速度バーの右」 が定位置 (= ユーザー要望)。 ヘッダー / 下部の
+    //   配置では速度バーがそこに在るので、 ボタン列には出さない (二重に
+    //   なるため)。 サイドの配置では速度バーが無いので、 ここで出す。
+    if (id == _ytSideMaxRate && !_youtubeControlsInSideMenu) return null;
     switch (id) {
       case _ytSideHideUi:
         return _buildMobileYoutubeRailButton(
@@ -177835,6 +177974,23 @@ v.addEventListener('play', function() {
                   fontWeight: FontWeight.w800)),
           onTap: _showYoutubePlaybackRateSheet,
           onLongPress: () => _showMaxRateDialog(context),
+        );
+      case _ytSideMaxRate:
+        // ★ = ユーザー要望「UI の配置設定の中に再生速度の上限を設定する
+        //   項目を入れて」。 今の上限を数で出す (押すと決め直せる)。
+        return _buildMobileYoutubeRailButton(
+          color: const Color(0xFFFFB347),
+          icon: Column(mainAxisSize: MainAxisSize.min, children: [
+            const Icon(Icons.keyboard_double_arrow_up_rounded,
+                color: Color(0xFFFFB347), size: 13),
+            Text(
+                '${context.watch<MindMapProvider>().videoMaxRate.toStringAsFixed(0)}x',
+                style: const TextStyle(
+                    color: Color(0xFFFFB347),
+                    fontSize: 9,
+                    fontWeight: FontWeight.w800)),
+          ]),
+          onTap: () => _showMaxRateDialog(context),
         );
       case _ytSideSeekStep:
         return _buildMobileYoutubeRailButton(
@@ -178079,18 +178235,23 @@ v.addEventListener('play', function() {
           ),
         ),
       ),
-      IconButton(
-        tooltip: context.read<MindMapProvider>().t('video.tip.maxRate'),
-        padding: EdgeInsets.zero,
-        constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-        iconSize: 15,
-        // ★ = ユーザー指摘「UI 配置のボタンと再生速度の上限ボタンの
-        //   アイコンが同じだから違うのにして欲しい」。 UI 配置が tune
-        //   なので、 こちらは「上限」 らしい二重の上向きにする。
-        icon: const Icon(Icons.keyboard_double_arrow_up_rounded,
-            color: Colors.white54),
-        onPressed: () => _showMaxRateDialog(context),
-      ),
+      // ★ = ユーザー要望「UI の配置設定の中に再生速度の上限を設定する
+      //   項目を入れて、 1 段目の再生速度バーの右に置いて欲しい」。
+      //   置き場所はここ (速度バーの右) のまま、 配置設定から外したら
+      //   消えるようにする。
+      if (_ytMaxRateShown)
+        IconButton(
+          tooltip: context.read<MindMapProvider>().t('video.tip.maxRate'),
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+          iconSize: 15,
+          // ★ = ユーザー指摘「UI 配置のボタンと再生速度の上限ボタンの
+          //   アイコンが同じだから違うのにして欲しい」。 UI 配置が tune
+          //   なので、 こちらは「上限」 らしい二重の上向きにする。
+          icon: const Icon(Icons.keyboard_double_arrow_up_rounded,
+              color: Colors.white54),
+          onPressed: () => _showMaxRateDialog(context),
+        ),
     ]);
   }
 
@@ -178602,7 +178763,12 @@ v.addEventListener('play', function() {
     final p = ctx.read<MindMapProvider>();
     // ★ 選べるのは 2 / 3 / 4 / 5 倍だけ (= ユーザー指摘)。 前に 16 倍などを
     //   選んでいた人でも、 どれか 1 つが必ず選ばれた状態で開くようにする。
-    double tmpMax = p.videoMaxRate.clamp(2.0, 5.0).toDouble();
+    double tmpMax = p.videoMaxRate.clamp(1.5, 16.0).toDouble();
+    // ★ = ユーザー要望「数値でも上限倍率設定できるように」。
+    final rateCtrl = TextEditingController(
+        text: tmpMax == tmpMax.roundToDouble()
+            ? tmpMax.toStringAsFixed(0)
+            : tmpMax.toStringAsFixed(1));
     final result = await showDialog<double>(
       context: ctx,
       builder: (dctx) {
@@ -178628,6 +178794,45 @@ v.addEventListener('play', function() {
                 //   し、 選択肢が微妙だから 2 倍 / 3 倍 / 4 倍 / 5 倍だけに」。
                 //   つまみ (1.5〜16.0) と 5 つの札はやめ、 4 択だけにした。
                 //   狭い画面でも必ず 1 行に収まる。
+                // ★ = ユーザー要望「数値でも上限倍率設定できるように」。
+                //   札で足りない人は、 ここへ直に書ける (1.5〜16.0)。
+                Row(children: [
+                  SizedBox(
+                    width: 92,
+                    child: TextField(
+                      controller: rateCtrl,
+                      keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true),
+                      style: const TextStyle(
+                          color: Colors.white, fontSize: 14),
+                      decoration: const InputDecoration(
+                        isDense: true,
+                        suffixText: 'x',
+                        suffixStyle:
+                            TextStyle(color: Colors.white38, fontSize: 12),
+                        contentPadding: EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 8),
+                        enabledBorder: OutlineInputBorder(
+                            borderSide: BorderSide(color: Colors.white24)),
+                        focusedBorder: OutlineInputBorder(
+                            borderSide:
+                                BorderSide(color: Color(0xFFFFB347))),
+                      ),
+                      onChanged: (v) {
+                        final d = double.tryParse(v.trim());
+                        if (d == null) return;
+                        ss(() => tmpMax = d.clamp(1.5, 16.0).toDouble());
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(p.t('video.maxRate.range'),
+                        style: const TextStyle(
+                            color: Colors.white38, fontSize: 10.5)),
+                  ),
+                ]),
+                const SizedBox(height: 12),
                 Wrap(
                   spacing: 8,
                   runSpacing: 8,
@@ -178642,7 +178847,11 @@ v.addEventListener('play', function() {
                       backgroundColor: selected
                           ? const Color(0xFFFFB347)
                           : const Color(0xFF2A2A3E),
-                      onPressed: () => ss(() => tmpMax = preset),
+                      onPressed: () => ss(() {
+                        tmpMax = preset;
+                        // 欄の方も合わせる (= どちらを触っても同じ値に)。
+                        rateCtrl.text = preset.toStringAsFixed(0);
+                      }),
                     );
                   }).toList(),
                 ),
@@ -281534,6 +281743,41 @@ class _McpChatDialogState extends State<_McpChatDialog>
     _splitWithTab(provider, mate);
   }
 
+  /// まだ並べていない、 走っている端末のうち一番新しい物。
+  ///
+  /// ★ = ユーザー指摘「3〜4 分割って CLI や API の画面をだよ?」。 増やす道が
+  ///   札を札へ落とすしか無かったので、 ボタンからも増やせるようにする。
+  AgentCliSession? _nextPaneCandidate() {
+    final shown = _splitPaneSessions();
+    for (final t in _cliTabs.reversed) {
+      if (!t.running) continue;
+      if (shown.any((e) => e != null && identical(e, t))) continue;
+      return t;
+    }
+    return null;
+  }
+
+  /// 並べている画面をもう 1 つ増やせるか。
+  bool get _canAddSplitPane =>
+      (_activeSplitSession != null || _activeSideSession != null) &&
+      _extraCliSessions.length < _kMaxExtraPanes &&
+      _nextPaneCandidate() != null;
+
+  /// 画面をもう 1 つ並べる。
+  void _addSplitPane(MindMapProvider provider) {
+    final next = _nextPaneCandidate();
+    if (next == null) {
+      showTopToast(
+          context, provider.t('cli.splitNeedTwo'), const Color(0xFFE5A23C));
+      return;
+    }
+    if (_activeSideSession != null) {
+      _splitChatWith(provider, next);
+    } else {
+      _splitWithTab(provider, next);
+    }
+  }
+
   /// タブ 2 枚を結合する (= タブをタブの上へ落とした時)。
   /// [target] が左、 [dragged] が右。
   void _pairCliTabs(MindMapProvider provider, AgentCliSession target,
@@ -281559,6 +281803,18 @@ class _McpChatDialogState extends State<_McpChatDialog>
   ///   切り替えられない)。 端末を出していない時は必ず出し直す。
   void _onCliTabTap(MindMapProvider provider, AgentCliSession s) {
     if (_inlineTerminal != null && identical(s, _lastCliSession)) {
+      _focusCliPane(s);
+      return;
+    }
+    // ★ 点検で判明: 3 枚目・4 枚目に並べている札を押すと、 下の道が
+    //   「2 枚目を差し替える」 と解釈して**同じ端末が 2 か所に出て**いた。
+    //   既に並んでいる物を押した時は、 その枠を打ち込み先にするだけ。
+    final extraIndex = _extraCliSessions.indexWhere((e) => identical(e, s));
+    if (extraIndex >= 0) {
+      final pane = _splitPaneSessions().indexWhere((e) => identical(e, s));
+      if (pane >= 0 && _splitFocusPane != pane) {
+        setState(() => _splitFocusPane = pane);
+      }
       _focusCliPane(s);
       return;
     }
@@ -281660,7 +281916,10 @@ class _McpChatDialogState extends State<_McpChatDialog>
         final panes = <Widget>[left, _splitTerminal!, ...extras];
         final row = <Widget>[];
         for (var i = 0; i < panes.length; i++) {
-          if (i > 0) row.add(_buildCliSplitHandle(w));
+          // ★ 点検で判明: 3 枚以上でも掴める板を挟んでいたが、 取り分は
+          //   等分なので動かず、 それでいて [_splitRatio] だけが書き換わって
+          //   **2 枚に戻した時の取り分が壊れて**いた。 3 枚以上はただの境目。
+          if (i > 0) row.add(_buildCliSplitDivider());
           row.add(Expanded(child: _buildCliSplitPane(i, panes[i], true)));
         }
         return Row(
@@ -281777,6 +282036,22 @@ class _McpChatDialogState extends State<_McpChatDialog>
 
   /// 左右の境目。 掴んで動かすと取り分が変わる (= 既にある掴み棒と同じ作り)。
   /// 二度押しで半々に戻す。
+  /// 3 枚以上並べた時の境目 (掴めない = 取り分は等分)。
+  Widget _buildCliSplitDivider() => Container(
+        width: 8,
+        color: Colors.white.withValues(alpha: 0.04),
+        child: Center(
+          child: Container(
+            width: 2,
+            height: 32,
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.18),
+              borderRadius: BorderRadius.circular(1),
+            ),
+          ),
+        ),
+      );
+
   Widget _buildCliSplitHandle(double totalW) {
     return MouseRegion(
       cursor: SystemMouseCursors.resizeLeftRight,
@@ -282170,7 +282445,9 @@ class _McpChatDialogState extends State<_McpChatDialog>
         final panes = <Widget>[chat, rightPane, ...extras];
         final row = <Widget>[];
         for (var i = 0; i < panes.length; i++) {
-          if (i > 0) row.add(_buildCliSplitHandle(w));
+          // 3 枚以上は等分なので、 掴める板ではなくただの境目
+          // (掴ませると [_splitRatio] だけが書き換わって害になる)。
+          if (i > 0) row.add(_buildCliSplitDivider());
           row.add(Expanded(child: _buildCliSplitPane(i, panes[i], true)));
         }
         return Row(
@@ -282459,6 +282736,16 @@ class _McpChatDialogState extends State<_McpChatDialog>
     final list = AgentCli.supported
         ? await AgentCli.findAll()
         : const <AgentCliFound>[];
+    // ★ = ユーザー指摘「Claude Code においても『既定』 って表示やめてって
+    //   言ってるよね? a1 もよく分からないし、 ちゃんとユーザー名が表示
+    //   されるようにして」。 宛名は CLI が置いた控えから読むので、 読む前に
+    //   一覧を出すと「既定」 や「a1」 のまま並んでしまっていた。 先に読む。
+    for (final f in list) {
+      if (!f.installed) continue;
+      try {
+        await AgentCli.ensureAccountNames(f.spec.kind);
+      } catch (_) {}
+    }
     if (!mounted) return;
     final ctx = anchor ?? context;
     // ★ 一覧の位置は**その Overlay から見た座標**で渡す決まり
@@ -282578,8 +282865,10 @@ class _McpChatDialogState extends State<_McpChatDialog>
             ]),
           ),
           if (f.installed && pro)
-            for (final a in AgentCli.accountList(f.spec.kind))
-              if (AgentCli.accountList(f.spec.kind).length > 1)
+            // ★ = ユーザー指摘「最初クリックした時に、 何のアカウントで
+            //   ログインするかの項目が出てこないのが良くない」。 2 つ以上
+            //   ある時しか出していなかったので、 1 つでも出すようにする。
+            for (final a in _cliAccountsShown(provider, f.spec.kind))
                 PopupMenuItem<String>(
                   value: 'cliacc:${f.spec.kind.name}:${a.id}',
                   height: 32,
@@ -283138,9 +283427,19 @@ class _McpChatDialogState extends State<_McpChatDialog>
   /// ★ 走っている擬似端末の垢は後から変えられない (置き場は環境変数で
   ///   `Pty.start` に渡す 1 回きり) ので、 選んだ垢では**同じフォルダーで
   ///   開き直す**。 元の札は、 何もしていなければそのまま畳む。
+  /// 札の右クリックを出した時刻。
+  ///
+  /// ★ = ユーザー報告「codex の所は右クリックすると 2 回項目が出てくる」。
+  ///   札の上で右クリックすると、 札の受け口と**帯の受け口**の両方が
+  ///   反応して一覧が 2 枚重なっていた (押し下げの時点で両方の
+  ///   `onSecondaryTapDown` が走るので、 内側が勝っても外側は止まらない)。
+  ///   札が出した直後は、 帯の方を出さない。
+  DateTime _cliTabMenuAt = DateTime.fromMillisecondsSinceEpoch(0);
+
   Future<void> _showCliTabMenu(
       MindMapProvider provider, AgentCliSession s, Offset globalPos) async {
     if (!mounted) return;
+    _cliTabMenuAt = DateTime.now();
     AgentCliKind? found;
     for (final k in AgentCliKind.values) {
       if (k.name == s.cliKey) found = k;
@@ -283159,7 +283458,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
     //   (= 実際にその垢でログインしている時だけ) 並べる。
     final accounts = <AgentAccount>[];
     if (kind != null) {
-      for (final a in AgentCli.accountList(kind)) {
+      for (final a in _cliAccountsShown(provider, kind)) {
         if (a.id.isEmpty &&
             AgentCli.accountNameFor(kind, a.id).trim().isEmpty) {
           continue;
@@ -283306,9 +283605,35 @@ class _McpChatDialogState extends State<_McpChatDialog>
                 style: const TextStyle(color: Colors.white, fontSize: 12.5)),
           ]),
         ),
+        // この札を、 今並べている所へ**足す** (= 3 枚目 / 4 枚目)。
+        if (split &&
+            _extraCliSessions.length < _kMaxExtraPanes &&
+            !_splitPaneSessions().any((e) => e != null && identical(e, s)))
+          PopupMenuItem<String>(
+            value: 'addthis',
+            height: 38,
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              const Icon(Icons.view_column_rounded,
+                  size: 15, color: Color(0xFF7CD992)),
+              const SizedBox(width: 9),
+              Text(
+                  provider
+                      .t('cli.splitAdd')
+                      .replaceFirst('{n}', '${_splitPaneCount() + 1}'),
+                  style: const TextStyle(color: Colors.white, fontSize: 12.5)),
+            ]),
+          ),
       ],
     );
     if (picked == null || !mounted) return;
+    if (picked == 'addthis') {
+      if (_activeSideSession != null) {
+        _splitChatWith(provider, s);
+      } else {
+        _splitWithTab(provider, s);
+      }
+      return;
+    }
     if (picked == 'new') {
       await _newCliTab(provider, null, globalPos);
       return;
@@ -283632,20 +283957,22 @@ class _McpChatDialogState extends State<_McpChatDialog>
   ///
   /// 左右に並べている時は、 焦点のある側の札を閉じる。
   void _closeActiveTab(MindMapProvider provider) {
+    // ★ 点検で判明: 1 / 2 枚目しか見ておらず、 3 枚目・4 枚目に焦点が
+    //   ある時は**主の枠**を閉じていた。 枠の番号から中身を引く。
+    final panes = _splitPaneSessions();
+    if (_splitFocusPane >= 0 && _splitFocusPane < panes.length) {
+      final t = panes[_splitFocusPane];
+      if (t != null) {
+        _closeCliTab(provider, t);
+        return;
+      }
+    }
     if (_inlineTerminal != null && _inlineIsTerminal) {
-      final mate = _activeSplitSession;
-      final target =
-          (mate != null && _splitFocusPane == 1) ? mate : _lastCliSession;
+      final target = _lastCliSession;
       if (target != null) {
         _closeCliTab(provider, target);
         return;
       }
-    }
-    // 会話の右に端末を並べていて、 焦点が右にある時は端末の方。
-    final side = _activeSideSession;
-    if (side != null && _splitFocusPane == 1) {
-      _closeCliTab(provider, side);
-      return;
     }
     // 会話の札。 最後の 1 枚で戻る所が無い時は閉じない (× と同じ決まり)。
     final id = provider.mcpCurrentSessionId;
@@ -284027,6 +284354,11 @@ class _McpChatDialogState extends State<_McpChatDialog>
   Future<void> _showTabStripMenu(
       MindMapProvider provider, Offset globalPos) async {
     if (!mounted) return;
+    // 札の一覧が今し方出たなら、 こちらは出さない (= 二重表示を止める)。
+    if (DateTime.now().difference(_cliTabMenuAt) <
+        const Duration(milliseconds: 400)) {
+      return;
+    }
     final nav = Navigator.of(context, rootNavigator: !widget.floatingPanel);
     final overlay = nav.overlay?.context.findRenderObject() as RenderBox?;
     final pos = overlay == null
@@ -284101,9 +284433,31 @@ class _McpChatDialogState extends State<_McpChatDialog>
                 style: const TextStyle(color: Colors.white, fontSize: 12.5)),
           ]),
         ),
+        // ★ = ユーザー指摘「3〜4 分割って CLI や API の画面をだよ?」。
+        //   並べている時は「もう 1 つ増やす」 を出す (左右分割のボタンは
+        //   並べている間は「やめる」 になるので、 増やす道が無かった)。
+        if (_canAddSplitPane)
+          PopupMenuItem<String>(
+            value: 'addpane',
+            height: 38,
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              const Icon(Icons.view_column_rounded,
+                  size: 15, color: Color(0xFF7CD992)),
+              const SizedBox(width: 9),
+              Text(
+                  provider
+                      .t('cli.splitAdd')
+                      .replaceFirst('{n}', '${_splitPaneCount() + 1}'),
+                  style: const TextStyle(color: Colors.white, fontSize: 12.5)),
+            ]),
+          ),
       ],
     );
     if (picked == null || !mounted) return;
+    if (picked == 'addpane') {
+      _addSplitPane(provider);
+      return;
+    }
     if (picked == 'new') {
       await _newCliTab(provider, null, globalPos);
       return;
@@ -284493,23 +284847,37 @@ class _McpChatDialogState extends State<_McpChatDialog>
   ///   出す順は 宛名 (CLI の控えから読んだ物) → 昔に手で付けた名前 → id。
   ///   ログインが済むまでは宛名が無いので、 その間だけ id (a1 …) が出る。
   String _cliAccountLabel(MindMapProvider provider, AgentAccount a,
-      [AgentCliKind? kind]) {
-    final base = _cliAccountLabelBase(provider, a, kind);
-    if (kind == null) return base;
-    // ★ = ユーザー報告「claudecode、 何故かログインしているアカウントが
-    //   全く同じのが二つあるのだけど」。 置き場は別でも、 同じ Google
-    //   アカウントでログインすれば宛名は同じになる (既定の置き場と、 後から
-    //   足した置き場の両方で同じ人でログインした時がこれ)。 宛名が同じ札が
-    //   並ぶと選びようが無いので、 並び順で番号を振って見分けを付ける。
-    var total = 0;
-    var mine = 0;
-    for (final e in AgentCli.accountList(kind)) {
-      if (_cliAccountLabelBase(provider, e, kind) != base) continue;
-      total++;
-      if (e.id == a.id) mine = total;
+      [AgentCliKind? kind]) =>
+      _cliAccountLabelBase(provider, a, kind);
+
+  /// 画面に並べるアカウント。
+  ///
+  /// ★ = ユーザー指摘「claudecode が同じアカウントが複数表示されているのは
+  ///   おかしいから重複しないで欲しい」。 置き場は別でも、 同じ人で
+  ///   ログインすれば宛名は同じになる (既定の置き場と、 後から足した置き場の
+  ///   両方で同じ人でログインした時がこれ)。 番号で見分けを付けていたが、
+  ///   そもそも同じ物が 2 つ並ぶ事自体が要らないので**先に出てくる方だけ**を
+  ///   残す。 片方で別の人にログインし直せば宛名が変わり、 また 2 つに戻る。
+  /// ★ = ユーザー指摘「『既定』 って表示やめて。 a1 もよく分からないし、
+  ///   ちゃんとユーザー名が表示されるようにして、 重複はしないように」。
+  ///   宛名 (= ログインしているアカウント名) が読めた札だけを、 重複を
+  ///   潰して並べる。 読めない札 (まだログインしていない置き場) は、 名前で
+  ///   呼べないので並べない ── ただし 1 つも読めない時だけは、 何も選べなく
+  ///   なるのを避けて既定の置き場を残す。
+  List<AgentAccount> _cliAccountsShown(
+      MindMapProvider provider, AgentCliKind kind) {
+    final out = <AgentAccount>[];
+    final seen = <String>{};
+    for (final a in AgentCli.accountList(kind)) {
+      final name = AgentCli.accountNameFor(kind, a.id).trim();
+      if (name.isEmpty) continue;
+      if (!seen.add(name)) continue;
+      out.add(a);
     }
-    if (total <= 1) return base;
-    return '$base ($mine)';
+    if (out.isEmpty) {
+      out.add(const AgentAccount(id: AgentCli.kDefaultAccountId, name: ''));
+    }
+    return out;
   }
 
   /// 番号を振る前の、 その置き場そのものの宛名。
@@ -284587,7 +284955,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
         child: FutureBuilder<void>(
           future: AgentCli.ensureAccountNames(kind),
           builder: (_, __) => Wrap(spacing: 6, runSpacing: 6, children: [
-            for (final a in AgentCli.accountList(kind))
+            for (final a in _cliAccountsShown(provider, kind))
               chip(_cliAccountLabel(provider, a, kind),
                   _cliAccountActive(kind, a),
                   onTap: _cliAccountActive(kind, a)
@@ -287853,15 +288221,32 @@ class _McpChatDialogState extends State<_McpChatDialog>
                       const Icon(Icons.folder_open_rounded,
                           size: 15, color: Color(0xFF4FC3F7)),
                       const SizedBox(width: 8),
+                      // ★ = ユーザー指摘「AI(API) では編集権限を渡す
+                      //   フォルダーの場所が書いていなくない?」。 末尾の
+                      //   名前しか出していなかったので、 どこを指している
+                      //   のか分からなかった。 道筋も下に添える。
                       Flexible(
-                        child: Text(
-                            provider.aiEditDir.trim().isEmpty
-                                ? provider.t('cli.tabDirPick')
-                                : _dirLabel(provider.aiEditDir),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                                color: Colors.white, fontSize: 12.5)),
+                        child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                  provider.aiEditDir.trim().isEmpty
+                                      ? provider.t('cli.tabDirPick')
+                                      : _dirLabel(provider.aiEditDir),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                      color: Colors.white, fontSize: 12.5)),
+                              if (provider.aiEditDir.trim().isNotEmpty)
+                                Text(provider.aiEditDir.trim(),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                        color: Colors.white38,
+                                        fontSize: 10,
+                                        height: 1.3)),
+                            ]),
                       ),
                     ]),
                   ),

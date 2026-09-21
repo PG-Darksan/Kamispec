@@ -5725,11 +5725,16 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   ///
   /// ★ webview の外 (AppBar の場所) に置くのが肝。 重ねると Android では
   ///   触りを webview に奪われて押せない。
-  PreferredSizeWidget _buildHiddenHeaderStrip(MindMapProvider provider) =>
-      PreferredSize(
-        preferredSize: const Size.fromHeight(30),
+  PreferredSizeWidget _buildHiddenHeaderStrip(MindMapProvider provider) {
+    // ★ 点検で判明: 自前の PreferredSize は AppBar と違って状態表示の帯
+    //   (ノッチ / ステータスバー) を避けてくれない。 そのぶんを自分で足す
+    //   (足さないと、 押せるはずの帯が時計や電池の下に潜る)。
+    final top = MediaQuery.paddingOf(context).top;
+    return PreferredSize(
+        preferredSize: Size.fromHeight(30 + top),
         child: Container(
-          height: 30,
+          height: 30 + top,
+          padding: EdgeInsets.only(top: top),
           color: const Color(0xFF1A1A1A),
           alignment: Alignment.center,
           child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
@@ -5748,8 +5753,8 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
               ),
             ),
           ]),
-        ),
-      );
+        ));
+  }
 
   Widget _buildWebView() {
     final picking = !_autoPanelHiddenForShot &&
