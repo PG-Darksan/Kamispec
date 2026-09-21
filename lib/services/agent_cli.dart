@@ -1298,13 +1298,35 @@ class AgentCli {
   static const Duration _kPromptTimeout = Duration(minutes: 5);
 
   /// 1 回聞く相手 (入っていてログイン済みの物を、 この順で選ぶ)。
+  /// 1 回聞きで使う CLI の種類 (空 = おまかせ)。
+  ///
+  /// ★ = ユーザー指摘「現状、 自動操作の所で claudecode が選択されているが、
+  ///   codex に切り替えることができない」。 これまでは claude → codex の
+  ///   決め打ちで、 選ぶ余地が無かった。 画面で選んだ種類をここへ入れて、
+  ///   最初に試す。 入っていない / ログインしていない時は今までどおり
+  ///   順に当たる (= 選んだせいで何も動かなくなるのを避ける)。
+  static String preferredPromptKind = '';
+
+  /// 既に調べ終わっている分だけを返す (画面の組み立て中に呼ぶ用)。
+  ///
+  /// ★ = ユーザー指摘「codex に切り替えることができない」。 選べる相手を
+  ///   一覧に出すのに使う。 まだ調べていなければ空なので、 呼ぶ側で
+  ///   既定を用意すること (待たせない = 描画を止めない)。
+  static List<AgentCliFound> cachedAll() => _cache.values.toList();
+
   static Future<AgentCliFound?> pickForPrompt() async {
     if (!supported) return null;
     final found = await findAll();
-    for (final k in const [
+    final order = <AgentCliKind>[
+      for (final k in AgentCliKind.values)
+        if (k.name == preferredPromptKind) k,
       AgentCliKind.claude,
       AgentCliKind.codex,
-    ]) {
+      AgentCliKind.gemini,
+    ];
+    final seen = <AgentCliKind>{};
+    for (final k in order) {
+      if (!seen.add(k)) continue;
       for (final f in found) {
         if (f.spec.kind != k) continue;
         // ★ .ps1 はそのまま起こせないので選ばない。
@@ -1399,26 +1421,32 @@ class AgentCli {
   /// 選べるモデル (= ユーザー要望: この画面でモデルを切り替えたい)。
   ///
   /// ★ 空文字は「CLI の既定に任せる」。 どの CLI も `--model` で指定できる。
+  /// ★ = ユーザー指摘「『CLI の設定のまま』 が何を指しているか分からない」。
+  ///   これは「アプリからモデルを指定せず、 その CLI 自身の設定に任せる」
+  ///   という意味。 どの CLI の設定かが分かるように名前を付け直す。
+  static String defaultModelLabel(AgentCliKind kind) =>
+      '指定しない (${AgentCliSpec.of(kind).label} の設定のまま)';
+
   static List<({String id, String label})> modelChoices(AgentCliKind kind) {
     switch (kind) {
       case AgentCliKind.claude:
-        return const [
-          (id: '', label: 'CLI の設定のまま'),
-          (id: 'opus', label: 'Opus'),
-          (id: 'sonnet', label: 'Sonnet'),
-          (id: 'haiku', label: 'Haiku'),
+        return [
+          (id: '', label: defaultModelLabel(kind)),
+          const (id: 'opus', label: 'Opus'),
+          const (id: 'sonnet', label: 'Sonnet'),
+          const (id: 'haiku', label: 'Haiku'),
         ];
       case AgentCliKind.codex:
-        return const [
-          (id: '', label: 'CLI の設定のまま'),
-          (id: 'gpt-5-codex', label: 'GPT-5 Codex'),
-          (id: 'o4-mini', label: 'o4-mini'),
+        return [
+          (id: '', label: defaultModelLabel(kind)),
+          const (id: 'gpt-5-codex', label: 'GPT-5 Codex'),
+          const (id: 'o4-mini', label: 'o4-mini'),
         ];
       case AgentCliKind.gemini:
-        return const [
-          (id: '', label: 'CLI の設定のまま'),
-          (id: 'gemini-2.5-pro', label: '2.5 Pro'),
-          (id: 'gemini-2.5-flash', label: '2.5 Flash'),
+        return [
+          (id: '', label: defaultModelLabel(kind)),
+          const (id: 'gemini-2.5-pro', label: '2.5 Pro'),
+          const (id: 'gemini-2.5-flash', label: '2.5 Flash'),
         ];
     }
   }

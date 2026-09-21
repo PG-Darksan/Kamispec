@@ -36,6 +36,7 @@ import '../providers/mind_map_provider.dart';
 import '../services/agent_cli.dart';
 import '../services/cdp_browser.dart';
 import '../services/desktop_input.dart';
+import '../services/secret_store.dart';
 import '../services/page_extract_js.dart';
 import '../services/page_scroll_js.dart';
 import '../services/screen_capture.dart' as scap;
@@ -741,6 +742,9 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
     //   この 2 択が唯一の設定になった)。
     // ignore: discarded_futures
     _loadAgentOpts();
+    // 預かっている秘密の名前 (= AI には名前しか見せない)。
+    // ignore: discarded_futures
+    _reloadSecretNames();
     // ネットの様子を見張る (= ユーザー要望: つながっていない時だけ、
     //   一番上に分かり易く出す)。 判定そのものは短い間だけ使い回される。
     unawaited(_checkNet());
@@ -1147,6 +1151,30 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
 
   /// フロー作成で使うモデルを選ぶ (= ユーザー要望: ここでも設定したい)。
   /// AI アシスタント等と同じ設定 (relayModel) を共有する。
+  /// この端末に入っていて、 ログイン済みの CLI の種類。
+  ///
+  /// ★ = ユーザー指摘「codex に切り替えることができない」。 選べる相手を
+  ///   ここで洗い出す (探索の結果は控えから返るので、 描画の中で呼んでよい)。
+  List<AgentCliKind> _installedCliKinds() {
+    final out = <AgentCliKind>[];
+    for (final f in AgentCli.cachedAll()) {
+      if (!f.installed) continue;
+      final exe = (f.exePath ?? '').toLowerCase();
+      if (exe.endsWith('.ps1')) continue;
+      if (!out.contains(f.spec.kind)) out.add(f.spec.kind);
+    }
+    if (out.isEmpty) out.add(AgentCliKind.claude);
+    return out;
+  }
+
+  /// 今えらばれている CLI の種類。
+  AgentCliKind _activeCliKind(MindMapProvider provider) {
+    for (final k in AgentCliKind.values) {
+      if (k.name == provider.cliAiKind) return k;
+    }
+    return AgentCli.lastPickKind ?? _installedCliKinds().first;
+  }
+
   Widget _buildAiModelPicker(MindMapProvider provider) {
     String label(String id) => provider.relayModelRawLabel(id);
     // ★ 同じ系統はいちばん新しい版だけ (= ユーザー要望)。
@@ -1162,6 +1190,13 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
           if (mounted) setState(() {});
           return;
         }
+        // ★ = ユーザー指摘「codex に切り替えることができない」。
+        if (id.startsWith('clikind:')) {
+          await provider.setAiEngine('cli');
+          await provider.setCliAiKind(id.substring(8));
+          if (mounted) setState(() {});
+          return;
+        }
         if (id == '__cli__' || id == '__api__') {
           await provider.setAiEngine(id == '__cli__' ? 'cli' : 'api');
           if (mounted) setState(() {});
@@ -1172,64 +1207,108 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
         if (mounted) setState(() {});
       },
       itemBuilder: (_) => [
-        if (AgentCli.supported && provider.canUseCliAi)
+        // ── PC 内 AI (CLI) ────────────────────────────────────────────
+        //    ★ = ユーザー指摘「CLI を選択しているのに API の選択肢も選択
+        //      されているのはおかしい」+「codex に切り替えることが
+        //      できない」+「何のアカウントでログインしているのか分からない」。
+        //      どちらか一方しか点かないようにして、 CLI は**種類ごとに**
+        //      並べ、 それぞれにログイン中のアカウントを添える。
+        if (AgentCli.supported && provider.canUseCliAi) ...[
           PopupMenuItem<String>(
-            value: provider.useCliAi ? '__api__' : '__cli__',
+            enabled: false,
+            height: 28,
             child: Row(children: [
-              Icon(
-                  provider.useCliAi
-                      ? Icons.radio_button_checked_rounded
-                      : Icons.radio_button_off_rounded,
-                  size: 13,
-                  color: provider.useCliAi
-                      ? const Color(0xFF9CCC65)
-                      : Colors.white38),
-              const SizedBox(width: 8),
               const Icon(Icons.terminal_rounded,
                   size: 13, color: Color(0xFF9CCC65)),
               const SizedBox(width: 6),
-              Text(provider.cliAiLabel,
-                  style: const TextStyle(color: Colors.white, fontSize: 12)),
+              Text(provider.t('ai.modeCli'),
+                  style:
+                      const TextStyle(color: Colors.white38, fontSize: 11)),
             ]),
           ),
-        // ★ PC 内 AI の中のモデルもここで選べるように (= ユーザー要望)。
-        if (AgentCli.supported && provider.useCliAi)
-          for (final c in AgentCli.modelChoices(
-              AgentCli.lastPickKind ?? AgentCliKind.claude))
+          for (final k in _installedCliKinds())
             PopupMenuItem<String>(
-              value: 'climodel:${c.id}',
-              child: Padding(
-                padding: const EdgeInsets.only(left: 20),
-                child: Row(children: [
-                  Icon(
-                      provider.cliAiModelChoice == c.id
-                          ? Icons.radio_button_checked_rounded
-                          : Icons.radio_button_off_rounded,
-                      size: 12,
-                      color: provider.cliAiModelChoice == c.id
-                          ? const Color(0xFF9CCC65)
-                          : Colors.white38),
-                  const SizedBox(width: 8),
-                  Text(c.label,
-                      style:
-                          const TextStyle(color: Colors.white70, fontSize: 11.5)),
-                ]),
-              ),
+              value: 'clikind:${k.name}',
+              child: Row(children: [
+                Icon(
+                    provider.useCliAi && _activeCliKind(provider) == k
+                        ? Icons.radio_button_checked_rounded
+                        : Icons.radio_button_off_rounded,
+                    size: 13,
+                    color: provider.useCliAi && _activeCliKind(provider) == k
+                        ? const Color(0xFF9CCC65)
+                        : Colors.white38),
+                const SizedBox(width: 8),
+                Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(AgentCliSpec.of(k).label,
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 12)),
+                      if (provider.cliAiAccountName(k).isNotEmpty)
+                        Text(provider.cliAiAccountName(k),
+                            style: const TextStyle(
+                                color: Colors.white38, fontSize: 10)),
+                    ]),
+              ]),
             ),
-        if (AgentCli.supported && provider.canUseCliAi)
+          // ★ 選んでいる CLI のモデルだけを、 その下に並べる。
+          if (provider.useCliAi)
+            for (final c in AgentCli.modelChoices(_activeCliKind(provider)))
+              PopupMenuItem<String>(
+                value: 'climodel:${c.id}',
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 20),
+                  child: Row(children: [
+                    Icon(
+                        provider.cliAiModelChoice == c.id
+                            ? Icons.radio_button_checked_rounded
+                            : Icons.radio_button_off_rounded,
+                        size: 12,
+                        color: provider.cliAiModelChoice == c.id
+                            ? const Color(0xFF9CCC65)
+                            : Colors.white38),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text(c.label,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              color: Colors.white70, fontSize: 11.5)),
+                    ),
+                  ]),
+                ),
+              ),
           const PopupMenuDivider(height: 8),
+          PopupMenuItem<String>(
+            enabled: false,
+            height: 28,
+            child: Row(children: [
+              const Icon(Icons.cloud_outlined,
+                  size: 13, color: Color(0xFFBA68C8)),
+              const SizedBox(width: 6),
+              Text(provider.t('ai.modeApi'),
+                  style:
+                      const TextStyle(color: Colors.white38, fontSize: 11)),
+            ]),
+          ),
+        ],
         for (final m in models)
           PopupMenuItem<String>(
             value: '${m['id']}',
             child: Row(children: [
               Icon(
-                  '${m['id']}' == provider.relayModel
+                  // ★ CLI を使っている間は、 API 側の丸は**点けない**
+                  //   (= ユーザー指摘: 両方選ばれて見える)。
+                  !provider.useCliAi && '${m['id']}' == provider.relayModel
                       ? Icons.radio_button_checked_rounded
                       : Icons.radio_button_off_rounded,
                   size: 13,
-                  color: '${m['id']}' == provider.relayModel
-                      ? const Color(0xFFBA68C8)
-                      : Colors.white38),
+                  color:
+                      !provider.useCliAi && '${m['id']}' == provider.relayModel
+                          ? const Color(0xFFBA68C8)
+                          : Colors.white38),
               const SizedBox(width: 8),
               Text(label('${m['id']}'),
                   style:
@@ -1358,6 +1437,10 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
 - **中身が決まらない手順は出さないこと**。 osActivate は窓の題名、
   osKey はキー、 osClick は座標が必ず要る。 空のまま置かない
   (空の手順は捨てられる)。
+- **合言葉 (パスワード) を手順に書いてはいけない**。 利用者が預けた秘密は
+  名前でしか呼べない: {"kind":"type","text":"{{secret:名前}}","selector":"input[type=password]"}
+  と書く。 中身はアプリが打ち込む直前に入れるので、 あなたは知らなくてよい。
+  預かっている名前は下の【使える秘密】 に並ぶ。 そこに無い名前は使わない。
 - 本人にしか決められない所 (ログインするアカウントの選択、 二段階認証、
   同意画面など) に来たら、 そこで止めずに
   {"kind":"ask","text":"どのアカウントでログインしますか?"} を置く。
@@ -2361,6 +2444,7 @@ $prevPlan
 これ以上やる事が無ければ {"done":true,"steps":[]} を返してください。
 '''}
 ${_pcContext(req)}
+${_secretHint()}
 ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
         String out;
         try {
@@ -2893,10 +2977,17 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
           }
           break;
         case WebAutoKind.type:
-          for (var c = 0; c < (s.count <= 0 ? 1 : s.count); c++) {
-            if (_cancel) return;
-            await _exec(_typeJs(s));
-            await Future.delayed(_intervalOf(s));
+          {
+            // ★ = ユーザー要望「AI にパスワードを直接平文で渡さずに、
+            //   変数で読ませずに渡す仕組み」。 手順には
+            //   `{{secret:名前}}` としか書かれていないので、 打ち込む
+            //   **この瞬間だけ**中身へ置き換える (控えにも記録にも残さない)。
+            final filled = await _withSecrets(s);
+            for (var c = 0; c < (s.count <= 0 ? 1 : s.count); c++) {
+              if (_cancel) return;
+              await _exec(_typeJs(filled));
+              await Future.delayed(_intervalOf(s));
+            }
           }
           break;
         case WebAutoKind.upload:
@@ -3404,7 +3495,8 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
           DesktopInput.moveTo(s.x.round(), s.y.round());
           break;
         case WebAutoKind.osType:
-          DesktopInput.typeText(s.text);
+          // ★ 秘密は打ち込む直前だけ中身にする (= ユーザー要望)。
+          DesktopInput.typeText(await SecretStore.expand(s.text));
           break;
         case WebAutoKind.osKey:
           DesktopInput.pressKeys(
@@ -4702,6 +4794,163 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
   /// React などのフレームワークは value を直接書き換えても気付かないので、
   /// ネイティブの value setter を使ってから input / change を発火させる
   /// (= 一般的な「プログラムからの入力」 対策)。
+  /// 合言葉などを預ける画面 (= ユーザー要望: AI に平文で渡さない)。
+  ///
+  /// ★ 中身は Windows の DPAPI で包んで控える。 画面にも出さない
+  ///   (一度入れたら、 消すか上書きするしかない)。
+  Future<void> _showSecretManager(MindMapProvider provider) async {
+    final nameCtrl = TextEditingController();
+    final valCtrl = TextEditingController();
+    var names = await SecretStore.names();
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dctx) => StatefulBuilder(
+        builder: (sctx, setD) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E32),
+          title: Row(children: [
+            const Icon(Icons.key_rounded, size: 18, color: Color(0xFFFFB347)),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(provider.t('auto.secretTitle'),
+                  style:
+                      const TextStyle(color: Colors.white, fontSize: 15)),
+            ),
+          ]),
+          content: SizedBox(
+            width: 420,
+            child: SingleChildScrollView(
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                Text(provider.t('auto.secretBody'),
+                    style: const TextStyle(
+                        color: Colors.white70, fontSize: 11.5, height: 1.5)),
+                const SizedBox(height: 12),
+                if (!SecretStore.supported)
+                  Text(provider.t('auto.secretUnsupported'),
+                      style: const TextStyle(
+                          color: Color(0xFFFF8A80), fontSize: 11.5))
+                else ...[
+                  for (final n in names)
+                    ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.lock_rounded,
+                          size: 15, color: Color(0xFF9CCC65)),
+                      title: Text(n,
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 12.5)),
+                      subtitle: Text('{{secret:$n}}',
+                          style: const TextStyle(
+                              color: Colors.white38, fontSize: 10.5)),
+                      trailing: IconButton(
+                        icon: const Icon(Icons.close_rounded,
+                            size: 15, color: Color(0xFFFF8A80)),
+                        onPressed: () async {
+                          await SecretStore.remove(n);
+                          names = await SecretStore.names();
+                          setD(() {});
+                          await _reloadSecretNames();
+                        },
+                      ),
+                    ),
+                  const Divider(height: 18, color: Colors.white12),
+                  TextField(
+                    controller: nameCtrl,
+                    style:
+                        const TextStyle(color: Colors.white, fontSize: 13),
+                    decoration: InputDecoration(
+                      isDense: true,
+                      labelText: provider.t('auto.secretName'),
+                      labelStyle: const TextStyle(
+                          color: Colors.white38, fontSize: 11),
+                      enabledBorder: const OutlineInputBorder(
+                          borderSide: BorderSide(color: Colors.white24)),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: valCtrl,
+                    obscureText: true,
+                    style:
+                        const TextStyle(color: Colors.white, fontSize: 13),
+                    decoration: InputDecoration(
+                      isDense: true,
+                      labelText: provider.t('auto.secretValue'),
+                      labelStyle: const TextStyle(
+                          color: Colors.white38, fontSize: 11),
+                      enabledBorder: const OutlineInputBorder(
+                          borderSide: BorderSide(color: Colors.white24)),
+                    ),
+                  ),
+                ],
+              ]),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dctx),
+              child: Text(provider.t('btn.close'),
+                  style: const TextStyle(color: Colors.white54)),
+            ),
+            if (SecretStore.supported)
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFFFB347),
+                    foregroundColor: Colors.black87),
+                onPressed: () async {
+                  final ok = await SecretStore.put(
+                      nameCtrl.text, valCtrl.text);
+                  if (!ok) return;
+                  nameCtrl.clear();
+                  valCtrl.clear();
+                  names = await SecretStore.names();
+                  setD(() {});
+                  await _reloadSecretNames();
+                },
+                child: Text(provider.t('auto.secretAdd')),
+              ),
+          ],
+        ),
+      ),
+    );
+    nameCtrl.dispose();
+    valCtrl.dispose();
+  }
+
+  /// 預かっている秘密の**名前だけ**を AI へ知らせる一節。
+  ///
+  /// ★ = ユーザー要望「AI にパスワードを直接平文で渡さずに」。 中身は
+  ///   絶対に渡さない。 名前が分かれば `{{secret:名前}}` と書けるので、
+  ///   AI はログインの手順を組める。
+  List<String> _secretNames = const <String>[];
+
+  String _secretHint() {
+    if (_secretNames.isEmpty) return '';
+    return '【使える秘密】 中身は渡しません。 打ち込む所には '
+        '{{secret:名前}} と書いてください。\n'
+        '名前: ${_secretNames.join(' / ')}';
+  }
+
+  Future<void> _reloadSecretNames() async {
+    try {
+      final n = await SecretStore.names();
+      if (!mounted) return;
+      setState(() => _secretNames = n);
+    } catch (_) {}
+  }
+
+  /// 手順の文字の中の `{{secret:名前}}` を中身へ置き換えた控えを作る。
+  ///
+  /// ★ 元の手順は書き換えない (= 控えに中身が残らないようにする)。
+  Future<WebAutoStep> _withSecrets(WebAutoStep s) async {
+    if (!s.text.contains('{{')) return s;
+    final filled = await SecretStore.expand(s.text);
+    if (filled == s.text) return s;
+    final copy = WebAutoStep.fromJson(s.toJson());
+    copy.text = filled;
+    return copy;
+  }
+
   String _typeJs(WebAutoStep s) {
     final sel = _jsStr(s.selector);
     final txt = _jsStr(s.text);
@@ -7388,6 +7637,44 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
                   // ── 使うモデル + 前に使った指示 (= ユーザー要望) ──
                   Row(children: [
                     _buildAiModelPicker(provider),
+                    const SizedBox(width: 6),
+                    // ★ = ユーザー要望「自動操作で何かにログインしてって
+                    //   お願いした時に、 AI にパスワードを直接平文で渡さずに
+                    //   渡す仕組みが欲しい」。 ここから合言葉を預ける。
+                    //   AI へ渡すのは**名前だけ**。
+                    InkWell(
+                      borderRadius: BorderRadius.circular(8),
+                      onTap: () => unawaited(_showSecretManager(provider)),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                              color: _secretNames.isEmpty
+                                  ? Colors.white24
+                                  : const Color(0xFFFFB347)),
+                        ),
+                        child: Row(mainAxisSize: MainAxisSize.min, children: [
+                          Icon(Icons.key_rounded,
+                              size: 13,
+                              color: _secretNames.isEmpty
+                                  ? Colors.white54
+                                  : const Color(0xFFFFB347)),
+                          const SizedBox(width: 4),
+                          Text(
+                              _secretNames.isEmpty
+                                  ? provider.t('auto.secretShort')
+                                  : '${provider.t('auto.secretShort')} '
+                                      '${_secretNames.length}',
+                              style: TextStyle(
+                                  color: _secretNames.isEmpty
+                                      ? Colors.white54
+                                      : const Color(0xFFFFB347),
+                                  fontSize: 10.5)),
+                        ]),
+                      ),
+                    ),
                     const SizedBox(width: 6),
                     if (_aiPrompts.isNotEmpty)
                       PopupMenuButton<String>(

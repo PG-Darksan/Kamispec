@@ -50,6 +50,35 @@ const String kAppVersionName = '1.0.0';
 /// **新しい順**に並べる (先頭が今の版)。
 const List<ReleaseNote> kReleaseNotes = <ReleaseNote>[
   ReleaseNote(
+    build: 431,
+    date: '2026-09-21',
+    lines: <String, List<String>>{
+      'ja': [
+        '自動操作で合言葉を預けられるようにしました。 手順には'
+            ' {{secret:名前}} としか書かれず、 中身は打ち込む直前に入るので'
+            ' AI にも手順の控えにも残りません (Windows の仕組みで包んで保存)。',
+        '自動操作で使う AI を、 CLI と API のどちらか一方だけが選ばれた'
+            '状態にしました。',
+        '使う CLI を Claude Code / Codex CLI から選べるようにし、'
+            ' ログイン中のアカウントも並べて出すようにしました。',
+        '「CLI の設定のまま」 を「指定しない (◯◯ の設定のまま)」 に直して、'
+            ' 何を指しているか分かるようにしました。',
+      ],
+      'en': [
+        'Secrets can be stored for automation. A flow only contains '
+            '{{secret:name}}; the value is filled in as it is typed, so it '
+            'never reaches the AI or the saved flow (sealed with Windows '
+            'DPAPI on disk).',
+        'The automation AI picker now shows either CLI or API as selected, '
+            'never both.',
+        'You can choose which CLI to use (Claude Code / Codex CLI), with the '
+            'signed-in account shown next to each.',
+        '"Leave it to the CLI" is now spelled out as "no model (use <CLI> '
+            'settings)".',
+      ],
+    },
+  ),
+  ReleaseNote(
     build: 430,
     date: '2026-09-21',
     lines: <String, List<String>>{

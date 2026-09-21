@@ -49294,6 +49294,83 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Ate o topo',
       'ru': 'В самый верх',
     },
+    'auto.secretShort': {
+      'ja': '秘密',
+      'en': 'Secrets',
+      'zh': '密钥',
+      'ko': '비밀',
+      'es': 'Secretos',
+      'fr': 'Secrets',
+      'de': 'Geheimnisse',
+      'pt': 'Segredos',
+      'ru': 'Sekrety',
+    },
+    'auto.secretTitle': {
+      'ja': '合言葉を預ける',
+      'en': 'Store a secret',
+      'zh': '保存密钥',
+      'ko': '비밀 보관',
+      'es': 'Guardar un secreto',
+      'fr': 'Enregistrer un secret',
+      'de': 'Geheimnis speichern',
+      'pt': 'Guardar um segredo',
+      'ru': 'Sokhranit sekret',
+    },
+    'auto.secretBody': {
+      'ja': '名前を付けて預けると、 手順には {{secret:名前}} とだけ書かれます。 中身は打ち込む直前にアプリが入れるので、 AI にも手順の控えにも残りません。 中身は Windows の仕組みで包んで保存します (同じ利用者でしか開けません)。',
+      'en': 'Give it a name and the flow will only contain {{secret:name}}. The value is filled in at the moment of typing, so it never reaches the AI or the saved flow. It is sealed with Windows DPAPI on disk.',
+      'zh': '命名后，流程中只会出现 {{secret:名称}}。实际值在输入前才填入，不会传给 AI，也不会留在保存的流程中。',
+      'ko': '이름을 붙여 맡기면 순서에는 {{secret:이름}} 만 남습니다. 값은 입력 직전에 채워지므로 AI 에도 저장된 순서에도 남지 않습니다.',
+      'es': 'Dale un nombre y el flujo solo contendra {{secret:nombre}}. El valor se rellena al escribirlo, nunca llega a la IA.',
+      'fr': 'Donnez-lui un nom : le flux ne contiendra que {{secret:nom}}. La valeur est inseree au moment de la saisie et n\'atteint jamais l\'IA.',
+      'de': 'Mit einem Namen enthaelt der Ablauf nur {{secret:Name}}. Der Wert wird erst beim Tippen eingesetzt und erreicht die KI nie.',
+      'pt': 'Deem um nome e o fluxo tera apenas {{secret:nome}}. O valor e inserido no momento de digitar e nunca chega a IA.',
+      'ru': 'Dayte imya - v stsenarii budet tolko {{secret:imya}}. Znachenie podstavlyaetsya pered vvodom i ne popadaet k II.',
+    },
+    'auto.secretName': {
+      'ja': '名前 (例: 会社メール)',
+      'en': 'Name (e.g. work mail)',
+      'zh': '名称（例如 公司邮箱）',
+      'ko': '이름 (예: 회사 메일)',
+      'es': 'Nombre (p. ej. correo del trabajo)',
+      'fr': 'Nom (ex. mail pro)',
+      'de': 'Name (z. B. Arbeitsmail)',
+      'pt': 'Nome (ex. e-mail do trabalho)',
+      'ru': 'Imya (naprimer rabochaya pochta)',
+    },
+    'auto.secretValue': {
+      'ja': '中身 (合言葉)',
+      'en': 'Value (the password)',
+      'zh': '内容（密码）',
+      'ko': '내용 (비밀번호)',
+      'es': 'Valor (la contrasena)',
+      'fr': 'Valeur (le mot de passe)',
+      'de': 'Wert (das Passwort)',
+      'pt': 'Valor (a senha)',
+      'ru': 'Znachenie (parol)',
+    },
+    'auto.secretAdd': {
+      'ja': '預ける',
+      'en': 'Store',
+      'zh': '保存',
+      'ko': '맡기기',
+      'es': 'Guardar',
+      'fr': 'Enregistrer',
+      'de': 'Speichern',
+      'pt': 'Guardar',
+      'ru': 'Sokhranit',
+    },
+    'auto.secretUnsupported': {
+      'ja': 'この端末では安全に包めないので、 合言葉は預かりません (Windows のみ)。',
+      'en': 'This device cannot seal the value, so secrets are not stored here (Windows only).',
+      'zh': '此设备无法安全加密，因此不保存密钥（仅限 Windows）。',
+      'ko': '이 기기에서는 안전하게 봉인할 수 없어 비밀을 보관하지 않습니다 (Windows 전용).',
+      'es': 'Este dispositivo no puede sellar el valor, asi que no se guardan secretos (solo Windows).',
+      'fr': 'Cet appareil ne peut pas sceller la valeur : aucun secret n\'est stocke (Windows uniquement).',
+      'de': 'Dieses Geraet kann den Wert nicht versiegeln, daher werden keine Geheimnisse gespeichert (nur Windows).',
+      'pt': 'Este dispositivo nao consegue selar o valor, entao segredos nao sao guardados (apenas Windows).',
+      'ru': 'Eto ustroystvo ne mozhet zashchitit znachenie, sekrety ne sokhranyayutsya (tolko Windows).',
+    },
     'auto.aiHistory': {
       'ja': '前の指示',
       'en': 'Past prompts',
@@ -85716,6 +85793,14 @@ class MindMapProvider extends ChangeNotifier {
     return '${t('ai.modeCli')} ($_cliAiName$m)';
   }
 
+  /// 今その CLI がどのアカウントでログインしているか (読めなければ空)。
+  ///
+  /// ★ = ユーザー指摘「何のアカウントでログインしているのか分からない」。
+  String cliAiAccountName(AgentCliKind kind) {
+    final id = AgentCli.activeAccountId[kind] ?? AgentCli.kDefaultAccountId;
+    return AgentCli.accountNameFor(kind, id).trim();
+  }
+
   Future<void> refreshCliAiName() async {
     try {
       final n = await AgentCli.preferredLabel() ?? '';
@@ -85735,7 +85820,40 @@ class MindMapProvider extends ChangeNotifier {
         notifyListeners();
       }
       AgentCli.chosenModel = _cliAiModelChoice;
+      // どの CLI を使うかの控え (= ユーザー指摘: codex に切り替えたい)。
+      final k = p.getString('cliAiKind') ?? '';
+      if (k != _cliAiKind) {
+        _cliAiKind = k;
+        notifyListeners();
+      }
+      AgentCli.preferredPromptKind = _cliAiKind;
     } catch (_) {}
+  }
+
+  // ── どの CLI を使うか (= ユーザー指摘「codex に切り替えることが
+  //    できない」) ──
+  //
+  //    空 = おまかせ (入っている物を順に当たる)。 選ぶと、 その種類を
+  //    最初に試す ([AgentCli.preferredPromptKind])。
+  String _cliAiKind = '';
+  String get cliAiKind => _cliAiKind;
+
+  Future<void> setCliAiKind(String kindName) async {
+    _cliAiKind = kindName;
+    AgentCli.preferredPromptKind = kindName;
+    // 種類を変えたらモデルの指定は持ち越さない (相手ごとに候補が違う)。
+    _cliAiModelChoice = '';
+    AgentCli.chosenModel = '';
+    _cliAiName = '';
+    _cliAiModel = '';
+    notifyListeners();
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setString('cliAiKind', kindName);
+      await p.remove('cliAiModelChoice');
+      await p.remove('cliAiModel');
+    } catch (_) {}
+    await refreshCliAiName();
   }
 
   /// PC 内 AI で使うモデルの指定 (空 = CLI の既定に任せる)。
