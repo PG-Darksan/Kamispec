@@ -29777,6 +29777,24 @@ class _MindMapScreenState extends State<MindMapScreen>
           unawaited(_showQuickPageSwitcher(provider));
         },
       ),
+      // ── このページを削除 (= ユーザー要望: 右クリックやタップ長押しに
+      //    ページ削除の項目を加えて欲しい) ──
+      //    ★ 消す前に必ず確かめる ([_confirmDeletePageAt] が受け持つ)。
+      //      ページが 1 枚しか無い時は出さない (消すと行き先が無くなる)。
+      if (provider.pages.length > 1)
+        _CtxMenuItem(
+          menuId: 'deletePage',
+          icon: Icons.delete_outline_rounded,
+          label: provider.t('page.deleteThis'),
+          color: const Color(0xFFFF8A80),
+          onTap: () {
+            _removeOverlay();
+            final i = provider.pages.indexOf(provider.currentPage);
+            if (i >= 0) {
+              unawaited(_confirmDeletePageAt(context, provider, i));
+            }
+          },
+        ),
       // ── クリップボードから貼り付け (モバイルだけ) ──
       // ★ = ユーザー要望「モバイル版でも長押ししたらグリップボードの貼り付け
       //   ではなく、 PC 版の右クリックの項目が出るようにして欲しい」。
@@ -121172,12 +121190,13 @@ try {
   /// 1.5〜16.0 の範囲で任意に設定できる。
   Future<void> _showMaxRateDialog(BuildContext ctx) async {
     final p = ctx.read<MindMapProvider>();
-    double tmpMax = p.videoMaxRate;
+    // ★ 選べるのは 2 / 3 / 4 / 5 倍だけ (= ユーザー指摘)。 前に 16 倍などを
+    //   選んでいた人でも、 どれか 1 つが必ず選ばれた状態で開くようにする。
+    double tmpMax = p.videoMaxRate.clamp(2.0, 5.0).toDouble();
     final result = await showDialog<double>(
       context: ctx,
       builder: (dctx) {
         return StatefulBuilder(builder: (sctx, ss) {
-          final divs = ((16.0 - 1.5) * 2).round();
           return AlertDialog(
             backgroundColor: const Color(0xFF1E1E32),
             title: Row(children: [
@@ -121195,28 +121214,14 @@ try {
                     style:
                         const TextStyle(color: Colors.white70, fontSize: 12)),
                 const SizedBox(height: 16),
-                Center(
-                  child: Text('${tmpMax.toStringAsFixed(1)}x',
-                      style: const TextStyle(
-                          color: Color(0xFFFFB347),
-                          fontSize: 32,
-                          fontWeight: FontWeight.w700)),
-                ),
-                Slider(
-                  value: tmpMax,
-                  min: 1.5,
-                  max: 16.0,
-                  divisions: divs,
-                  activeColor: const Color(0xFFFFB347),
-                  inactiveColor: Colors.white24,
-                  label: '${tmpMax.toStringAsFixed(1)}x',
-                  onChanged: (v) => ss(() => tmpMax = v),
-                ),
-                const SizedBox(height: 4),
+                // ★ = ユーザー指摘「再生速度上限の選択肢が入り切れていない
+                //   し、 選択肢が微妙だから 2 倍 / 3 倍 / 4 倍 / 5 倍だけに」。
+                //   つまみ (1.5〜16.0) と 5 つの札はやめ、 4 択だけにした。
+                //   狭い画面でも必ず 1 行に収まる。
                 Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  children: [2.0, 5.0, 8.0, 10.0, 16.0].map((preset) {
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [2.0, 3.0, 4.0, 5.0].map((preset) {
                     final selected = (tmpMax - preset).abs() < 0.01;
                     return ActionChip(
                       label: Text('${preset.toStringAsFixed(0)}x',
@@ -177059,7 +177064,9 @@ v.addEventListener('play', function() {
   IconData _youtubeSideActionIcon(String id) {
     switch (id) {
       case _ytSideHideUi:
-        return Icons.visibility_off_rounded;
+        // ★ = ユーザー指摘「目のアイコンだと不気味だから別のアイコンに」。
+        //   やっている事は「動画だけを残す」 なので、 枠に寄せる印にする。
+        return Icons.crop_free_rounded;
       case _ytSideAiChat:
         return Icons.auto_awesome_rounded;
       case _ytSideShareWithAi:
@@ -177605,7 +177612,8 @@ v.addEventListener('play', function() {
     //  ため、 ヘッダー配置モードのボタン UI からは○枠を外す)。
     final visibilityButton = _buildMobileYoutubeRailButton(
       color: const Color(0xFF6C63FF),
-      icon: const Icon(Icons.visibility_off_rounded,
+      // ★ = ユーザー指摘「目のアイコンだと不気味」 (上の一覧と同じ印)。
+      icon: const Icon(Icons.crop_free_rounded,
           color: Color(0xFF8C84FF), size: 21),
       onTap: _hideFullscreenControls,
       framed: false,
@@ -177699,7 +177707,8 @@ v.addEventListener('play', function() {
       case _ytSideHideUi:
         return _buildMobileYoutubeRailButton(
           color: const Color(0xFF6C63FF),
-          icon: const Icon(Icons.visibility_off_rounded,
+          // ★ = ユーザー指摘「目のアイコンだと不気味」。
+          icon: const Icon(Icons.crop_free_rounded,
               color: Color(0xFF8C84FF), size: 21),
           onTap: _hideFullscreenControls,
         );
@@ -177970,16 +177979,17 @@ v.addEventListener('play', function() {
     final atBottom = !inSideMenu && _youtubeControlsAtBottom;
     // サイドでは「UIを隠す」も並べ替え可能なため、非表示直前の位置がどこでも
     // 同じサイド領域を押せば復元できるよう、透明な復帰領域を縦全体に保つ。
+    // ★ = ユーザー指摘「表示する際にボタンの所だけに表示判定があると
+    //   当てづらくて使いにくいから、 ヘッダー位置をタップしたら出てくる
+    //   ようにして欲しい」。 56x56 の点を狙わせるのをやめ、 ヘッダーが
+    //   居た**帯ぜんたい**を受け口にする (横幅いっぱい × 1 段ぶん)。
+    //   サイド配置の時は今までどおり、 その側の縦帯ぜんたい。
     return Positioned(
       top: (inSideMenu || !atBottom) ? 0 : null,
       bottom: inSideMenu ? 0 : (atBottom ? 0 : null),
-      // ヘッダー配置時は YouTube の検索欄と重なる右端を避け、上/下中央に置く。
-      // サイド配置時だけ従来どおり左右端の復帰領域を維持する。
-      left: inSideMenu
-          ? (onLeft ? 0 : null)
-          : (MediaQuery.sizeOf(context).width - 56) / 2,
-      right: inSideMenu ? (onLeft ? null : 0) : null,
-      width: 56,
+      left: inSideMenu ? (onLeft ? 0 : null) : 0,
+      right: inSideMenu ? (onLeft ? null : 0) : 0,
+      width: inSideMenu ? 56 : null,
       height: inSideMenu ? null : 56,
       child: Semantics(
         button: true,
@@ -178074,7 +178084,11 @@ v.addEventListener('play', function() {
         padding: EdgeInsets.zero,
         constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
         iconSize: 15,
-        icon: const Icon(Icons.tune_rounded, color: Colors.white54),
+        // ★ = ユーザー指摘「UI 配置のボタンと再生速度の上限ボタンの
+        //   アイコンが同じだから違うのにして欲しい」。 UI 配置が tune
+        //   なので、 こちらは「上限」 らしい二重の上向きにする。
+        icon: const Icon(Icons.keyboard_double_arrow_up_rounded,
+            color: Colors.white54),
         onPressed: () => _showMaxRateDialog(context),
       ),
     ]);
@@ -178586,12 +178600,13 @@ v.addEventListener('play', function() {
   /// State クラスごとに独立して動作させるため別メソッドで提供する。
   Future<void> _showMaxRateDialog(BuildContext ctx) async {
     final p = ctx.read<MindMapProvider>();
-    double tmpMax = p.videoMaxRate;
+    // ★ 選べるのは 2 / 3 / 4 / 5 倍だけ (= ユーザー指摘)。 前に 16 倍などを
+    //   選んでいた人でも、 どれか 1 つが必ず選ばれた状態で開くようにする。
+    double tmpMax = p.videoMaxRate.clamp(2.0, 5.0).toDouble();
     final result = await showDialog<double>(
       context: ctx,
       builder: (dctx) {
         return StatefulBuilder(builder: (sctx, ss) {
-          final divs = ((16.0 - 1.5) * 2).round();
           return AlertDialog(
             backgroundColor: const Color(0xFF1E1E32),
             title: Row(children: [
@@ -178609,28 +178624,14 @@ v.addEventListener('play', function() {
                     style:
                         const TextStyle(color: Colors.white70, fontSize: 12)),
                 const SizedBox(height: 16),
-                Center(
-                  child: Text('${tmpMax.toStringAsFixed(1)}x',
-                      style: const TextStyle(
-                          color: Color(0xFFFFB347),
-                          fontSize: 32,
-                          fontWeight: FontWeight.w700)),
-                ),
-                Slider(
-                  value: tmpMax,
-                  min: 1.5,
-                  max: 16.0,
-                  divisions: divs,
-                  activeColor: const Color(0xFFFFB347),
-                  inactiveColor: Colors.white24,
-                  label: '${tmpMax.toStringAsFixed(1)}x',
-                  onChanged: (v) => ss(() => tmpMax = v),
-                ),
-                const SizedBox(height: 4),
+                // ★ = ユーザー指摘「再生速度上限の選択肢が入り切れていない
+                //   し、 選択肢が微妙だから 2 倍 / 3 倍 / 4 倍 / 5 倍だけに」。
+                //   つまみ (1.5〜16.0) と 5 つの札はやめ、 4 択だけにした。
+                //   狭い画面でも必ず 1 行に収まる。
                 Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  children: [2.0, 5.0, 8.0, 10.0, 16.0].map((preset) {
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [2.0, 3.0, 4.0, 5.0].map((preset) {
                     final selected = (tmpMax - preset).abs() < 0.01;
                     return ActionChip(
                       label: Text('${preset.toStringAsFixed(0)}x',
@@ -179260,7 +179261,11 @@ v.addEventListener('play', function() {
                                             constraints: const BoxConstraints(
                                                 minWidth: 24, minHeight: 24),
                                             iconSize: 14,
-                                            icon: const Icon(Icons.tune_rounded,
+                                            // ★ = ユーザー指摘: UI 配置の
+                                            //   ボタンと同じ印だったので変える。
+                                            icon: const Icon(
+                                                Icons
+                                                    .keyboard_double_arrow_up_rounded,
                                                 color: Colors.white54),
                                             onPressed: () =>
                                                 _showMaxRateDialog(sctx),

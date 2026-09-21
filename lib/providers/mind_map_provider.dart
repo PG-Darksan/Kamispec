@@ -51872,6 +51872,18 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Criar',
       'ru': 'Создать',
     },
+    // ★ = ユーザー要望「右クリックやタップ長押しにページ削除の項目を」。
+    'page.deleteThis': {
+      'ja': 'このページを削除',
+      'en': 'Delete this page',
+      'zh': '删除此页面',
+      'ko': '이 페이지를 삭제',
+      'es': 'Eliminar esta pagina',
+      'fr': 'Supprimer cette page',
+      'de': 'Diese Seite loeschen',
+      'pt': 'Excluir esta pagina',
+      'ru': 'Udalit etu stranitsu',
+    },
     'page.renameTitle': {
       'ja': 'ページ名を変更',
       'en': 'Rename page',

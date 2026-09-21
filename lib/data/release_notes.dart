@@ -50,6 +50,32 @@ const String kAppVersionName = '1.0.0';
 /// **新しい順**に並べる (先頭が今の版)。
 const List<ReleaseNote> kReleaseNotes = <ReleaseNote>[
   ReleaseNote(
+    build: 429,
+    date: '2026-09-21',
+    lines: <String, List<String>>{
+      'ja': [
+        'モバイルの YouTube で、 動画以外を隠すボタンの印を目から枠の印に'
+            '変えました。',
+        '隠した後は、 ヘッダーが居た帯のどこを押しても戻せるようになりました'
+            ' (小さな点を狙わなくて済みます)。',
+        '再生速度の上限を 2 倍 / 3 倍 / 4 倍 / 5 倍の 4 択にしました。'
+            ' 狭い画面でも入り切ります。',
+        '上限のボタンの印を、 UI 配置のボタンと別の物にしました。',
+        '右クリック (長押し) から、 このページを削除できるようになりました。',
+      ],
+      'en': [
+        'On mobile YouTube, the button that hides everything but the video '
+            'no longer uses an eye icon.',
+        'Once hidden, tapping anywhere along the band where the header was '
+            'brings it back (no more aiming at a small spot).',
+        'The playback-speed ceiling is now a choice of 2x, 3x, 4x or 5x, so '
+            'it fits on a narrow screen.',
+        'The ceiling button no longer shares its icon with the layout button.',
+        'Right-click (or long-press) can now delete the current page.',
+      ],
+    },
+  ),
+  ReleaseNote(
     build: 428,
     date: '2026-09-21',
     lines: <String, List<String>>{
