@@ -895,9 +895,9 @@ class McpServer {
         'a new one). Prefer generate_page_background only when the user '
         'describes a look they DO want. Use "imagePath" for an absolute path '
         'to an image file already on this device, "clear": true to remove, '
-        'or "template" for one of the built-in ones (wood, chalkboard, ocean, '
-        'sakura, fireworks, castle, aurora, nightSky, galaxy, rain, nature, '
-        'blueprint, midnight, sage, sunset). '
+        'or "template" for one of the built-in ones (blueprint, appWallpaper, '
+        'starryLake, fireworks, gems, ocean, autumn, castle, watercolor, '
+        'greenery, sumie). '
         'Optionally adjust opacityPercent (0-100), fit (cover/contain/tile) '
         'and the tone (hueDegrees -180..180, saturationPercent 0-200, '
         'brightnessPercent 50-150). A value outside its range is clamped, not '
@@ -1168,7 +1168,13 @@ class McpServer {
         'how you fill in a page made with create_page type:"markdown" - '
         'append_document_text does NOT work on markdown pages. Pass the '
         'WHOLE document in "text" in a SINGLE call (headings, lists, tables, '
-        'code fences and ```mermaid diagrams all render). By default the '
+        'code fences and ```mermaid diagrams all render). PUT REAL LINE '
+        'BREAKS IN "text" - a plain newline inside the JSON string is exactly '
+        'right. Do NOT write the two characters backslash + n in place of a '
+        'line break: markdown only sees a heading, a list item, a table row '
+        'or a code fence at the START of a real line, so an escaped body '
+        'lands as one long paragraph with "\\n" printed all through it. '
+        'By default the '
         'text REPLACES the body; pass "append":true to add to the end of '
         'what is already there. The page is opened and shown after writing, '
         'so the user sees the result immediately. '
@@ -2150,6 +2156,86 @@ class McpServer {
         '${jsonEncode(titled)}';
   }
 
+  /// 相手が「改行」 を **文字 2 つ (`\` + `n`)** のまま送ってきた本文を直す。
+  ///
+  /// ★ = ユーザー報告「CLI に頼んでマークダウンを作らせたら、 本文が 1 行の
+  ///   長文になり、 中に \n が字のまま並んで ### も見出しにならない」。
+  ///   受け口の JSON-RPC は正しく読めているので、 これは相手 (AI / CLI) が
+  ///   **二重にエスケープ**した物。 戻さないと、 マークダウンで**行頭でしか**
+  ///   効かない記法 (見出し・箇条書き・表・コードフェンス) が全部死ぬ。
+  ///
+  /// 本文を壊さないための決め:
+  ///   ・**本物の改行が 1 つでもあれば一切触らない**。 本当に \n と書きたい
+  ///     場面 (コードフェンスの中、 「改行は \n と書く」 という説明) は
+  ///     必ず前後に本物の改行を持つ。 逆に本物の改行が 0 なのに \n が並ぶ
+  ///     本文は、 エスケープが解けていない以外に有り得ない。
+  ///   ・インラインコード (backquote で囲んだ中) の \n は数えず、 戻さない。
+  ///   ・バックスラッシュ 2 つ + n は「本当に \n と書きたい」 印と見て、
+  ///     2 文字のまま残す。
+  ///   ・[minHits] 個未満なら触らない (既定 2 = 本文。 題名のように短くて
+  ///     \n を字として書く事がまず無い所は 1 で呼ぶ)。
+  ///
+  /// ★ パス・id・ファイル名には**決して通さない事**。 Windows のパス
+  ///   (C:\new\note.txt) にはこの 2 文字が普通に入っているので壊れる。
+  ///   通してよいのは「本文」 の欄だけ。
+  static String _unescapeLiteralNewlines(String s, {int minHits = 2}) {
+    if (s.isEmpty || s.contains('\n') || s.contains('\r')) return s;
+    if (!s.contains(r'\n')) return s;
+    // まずはインラインコードの外にある \n を数える。
+    var hits = 0;
+    var inCode = false;
+    for (var i = 0; i < s.length; i++) {
+      final c = s[i];
+      if (c == '`') {
+        inCode = !inCode;
+      } else if (c == r'\' && i + 1 < s.length) {
+        if (!inCode && s[i + 1] == 'n') hits++;
+        i++; // 次の 1 文字は読み飛ばす (バックスラッシュ 2 つ + n を数えない)
+      }
+    }
+    if (hits < minHits) return s;
+    final out = StringBuffer();
+    inCode = false;
+    for (var i = 0; i < s.length; i++) {
+      final c = s[i];
+      if (c == '`') {
+        inCode = !inCode;
+        out.write(c);
+        continue;
+      }
+      if (c != r'\' || i + 1 >= s.length) {
+        out.write(c);
+        continue;
+      }
+      final n = s[i + 1];
+      if (inCode) {
+        out.write(c);
+        out.write(n);
+      } else if (n == 'n') {
+        out.write('\n');
+      } else if (n == 't') {
+        out.write('\t');
+      } else if (n == 'r') {
+        // \r\n は 1 つの改行に畳む。 単独の \r は 2 文字のまま残す。
+        if (i + 3 < s.length && s[i + 2] == r'\' && s[i + 3] == 'n') {
+          out.write('\n');
+          i += 2;
+        } else {
+          out.write(c);
+          out.write(n);
+        }
+      } else if (n == '"' || n == "'") {
+        out.write(n);
+      } else {
+        // その他 (バックスラッシュ 2 つを含む) は 2 文字そのまま残す。
+        out.write(c);
+        out.write(n);
+      }
+      i++;
+    }
+    return out.toString();
+  }
+
   /// 配列の引数を文字列の並びに直す (空文字は捨てる)。
   static List<String> _stringList(Object? v) {
     if (v is! List) return const [];
@@ -2543,12 +2629,18 @@ class McpServer {
               }
               final id = _provider.mcpAddNode(
                 pageId,
-                title: '${m['title'] ?? ''}',
+                // ★ 題名は説明文で「\n で 2 行目になる」 と案内しているので、
+                //   文字 2 つのまま届きやすい。 短い札で \n を字として書く事は
+                //   まず無いので 1 個から戻す。
+                title:
+                    _unescapeLiteralNewlines('${m['title'] ?? ''}', minHits: 1),
                 x: _numOf(m['x']),
                 y: _numOf(m['y']),
                 // 文字列以外が来ても途中で例外にしない (= 200 個の途中で
                 //   落ちると、 作った分の一覧すら返せなくなる)。
-                memo: m['memo'] == null ? null : '${m['memo']}',
+                memo: m['memo'] == null
+                    ? null
+                    : _unescapeLiteralNewlines('${m['memo']}'),
                 url: m['url'] == null ? null : '${m['url']}',
                 colorValue: _argbOf(m['color']),
               );
@@ -2623,10 +2715,12 @@ class McpServer {
           }
           final id = _provider.mcpAddNode(
             pageId,
-            title: '${a['title'] ?? ''}',
+            title: _unescapeLiteralNewlines('${a['title'] ?? ''}', minHits: 1),
             x: numOf('x'),
             y: numOf('y'),
-            memo: a['memo'] == null ? null : '${a['memo']}',
+            memo: a['memo'] == null
+                ? null
+                : _unescapeLiteralNewlines('${a['memo']}'),
             url: a['url'] == null ? null : '${a['url']}',
             colorValue: _argbOf(a['color']),
           );
@@ -2649,8 +2743,12 @@ class McpServer {
           final ok = _provider.mcpUpdateNode(
             pageId,
             key,
-            title: a['title'] as String?,
-            memo: a['memo'] as String?,
+            title: a['title'] == null
+                ? null
+                : _unescapeLiteralNewlines(a['title'] as String, minHits: 1),
+            memo: a['memo'] == null
+                ? null
+                : _unescapeLiteralNewlines(a['memo'] as String),
             x: numOf('x'),
             y: numOf('y'),
             colorValue: color,
@@ -3235,9 +3333,15 @@ class McpServer {
               a, 'texts', 'Pass at least one line, or send a single "text".',
               usable: many.length);
           if (ptEmpty != null) return ptEmpty;
-          final lines = many.isNotEmpty
-              ? many
-              : [if ((a['text'] as String? ?? '').isNotEmpty) a['text'] as String];
+          final lines = [
+            for (final l in many.isNotEmpty
+                ? many
+                : [
+                    if ((a['text'] as String? ?? '').isNotEmpty)
+                      a['text'] as String
+                  ])
+              _unescapeLiteralNewlines(l),
+          ];
           // text も texts も無い呼び出しは「空白だから捨てた」 ではない。
           if (lines.isEmpty) {
             return _err('add_paint_text needs text: put every line in '
@@ -3386,7 +3490,11 @@ class McpServer {
       case 'write_markdown':
         {
           final pageId = a['pageId'] as String? ?? '';
-          final text = a['text'] as String? ?? '';
+          // ★ 相手が改行を「文字 2 つ (バックスラッシュ + n)」 のまま送って
+          //   くる事がある (= ユーザー報告: CLI に作らせた本文が 1 行の
+          //   長文になり、 ### も見出しにならない)。 本物の改行へ戻してから
+          //   書く。 判定と限界は _unescapeLiteralNewlines の注記を参照。
+          final text = _unescapeLiteralNewlines(a['text'] as String? ?? '');
           if (text.trim().isEmpty) {
             return _err('"text" was empty - nothing was written. Write the '
                 'markdown you want the page to hold.');
@@ -3444,9 +3552,15 @@ class McpServer {
               'Pass at least one paragraph, or send a single "text".',
               usable: many.length);
           if (adEmpty != null) return adEmpty;
-          final paras = many.isNotEmpty
-              ? many
-              : [if ((a['text'] as String? ?? '').isNotEmpty) a['text'] as String];
+          final paras = [
+            for (final p in many.isNotEmpty
+                ? many
+                : [
+                    if ((a['text'] as String? ?? '').isNotEmpty)
+                      a['text'] as String
+                  ])
+              _unescapeLiteralNewlines(p),
+          ];
           // 空白だけの段落は捨てられる (add_paint_text と同じ理由)。
           if (paras.every((p) => p.trim().isEmpty)) {
             return _err('nothing was appended: blank / whitespace-only text '

@@ -434,24 +434,21 @@ const Map<String, String> _mapBackgroundTemplateAssets = <String, String>{
 ///
 /// ★ = ユーザー要望「ページ背景の既定は、 削除した以前のブループリントが
 ///   いい」。 アプリの絵から戻した。
-const String _kFirstLaunchBackgroundId = 'blueprint';
+const String _kFirstLaunchBackgroundId = MindMapProvider.kDefaultBgTemplateId;
 
-const List<({String id, String labelKey})> _mapBackgroundTemplates = [
-  // ★ = ユーザー要望「ページ背景の既定は、 削除した以前のブループリントが
-  //   いいから、 それをテンプレートに加えて置いて欲しい」。 絵ではなく
-  //   描いて作る種類なので、 同梱の写真の一覧 (_mapBackgroundTemplateAssets)
-  //   には入れない (描く方の case は元から残してある)。
-  (id: 'blueprint', labelKey: 'bg.template.blueprint'),
-  (id: 'appWallpaper', labelKey: 'bg.template.appWallpaper'),
-  (id: 'starryLake', labelKey: 'bg.template.starryLake'),
-  (id: 'fireworks', labelKey: 'bg.template.fireworks'),
-  (id: 'gems', labelKey: 'bg.template.gems'),
-  (id: 'ocean', labelKey: 'bg.template.ocean'),
-  (id: 'autumn', labelKey: 'bg.template.autumn'),
-  (id: 'castle', labelKey: 'bg.template.castle'),
-  (id: 'watercolor', labelKey: 'bg.template.watercolor'),
-  (id: 'greenery', labelKey: 'bg.template.greenery'),
-  (id: 'sumie', labelKey: 'bg.template.sumie'),
+/// 一覧に出すテンプレート。
+///
+/// ★ = ユーザー報告「新規ページに**前の**テンプレート背景が付く」。 並びを
+///   ここと provider の抽選表の 2 か所に書いていて、 片方が古いまま
+///   残っていたのが原因だった。 いまは provider の 1 本
+///   ([MindMapProvider.kBgTemplateIds]) から組み立てる。 足す / 下ろすのは
+///   provider 側だけで済む。
+/// ★ 札の名前は `bg.template.<id>` で決まる (翻訳キーもこの形で揃えてある)。
+/// ★ blueprint は描いて作る種類なので、 同梱の写真の一覧
+///   (_mapBackgroundTemplateAssets) には入っていない。
+final List<({String id, String labelKey})> _mapBackgroundTemplates = [
+  for (final id in MindMapProvider.kBgTemplateIds)
+    (id: id, labelKey: 'bg.template.$id'),
 ];
 
 String? _mapBackgroundTemplateId(String? path) {
@@ -38419,7 +38416,11 @@ class _MindMapScreenState extends State<MindMapScreen>
         shift = want - held.position;
       }
     }
-    provider.moveNodesToPage(ids, targetIdx);
+    // 隠れている子 (格納の中身 / 折りたたんだ子孫) も一緒に運ぶので、
+    // 置き直し (ずらし) も同じ集合に掛ける。 親だけずらすと、 向こうで
+    // 開いた時に子が元の座標に取り残されて線が変な方向へ折れる。
+    final moveIds = provider.expandHiddenChildren(ids);
+    provider.moveNodesToPage(moveIds, targetIdx);
     // ★ = ユーザー報告「要素を境界を越えて他のページへ送った直後の
     //   1 動作後は掴めなくなっている」。 送った要素の id が「範囲で選んだ
     //   一覧」 に残ったままだったのが原因。 残っていると画面は「範囲を
@@ -38443,7 +38444,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         (shift.dx.abs() > 0.5 || shift.dy.abs() > 0.5)) {
       // ★ moveNodesToPage は座標をそのまま運ぶので、 移した先でずらす。
       //   相対位置は保ったままなので、 まとめて渡しても形が崩れない。
-      provider.moveNodesOnPage(targetPageId, ids, shift);
+      provider.moveNodesOnPage(targetPageId, moveIds, shift);
     }
     if (mounted) {
       _appSnack(
@@ -76256,7 +76257,9 @@ class _MindMapScreenState extends State<MindMapScreen>
           children: [
             Text(
                 provider
-                    .t('drawer.bulkDeleteBody')
+                    .t(provider.pageTrashEnabled
+                        ? 'drawer.bulkDeleteBody'
+                        : 'drawer.bulkDeleteBodyNoTrash')
                     .replaceAll('{folders}', folderIds.length.toString())
                     .replaceAll('{pages}', totalPagesAffected.toString()),
                 style: const TextStyle(color: Colors.white, fontSize: 13)),
@@ -80825,6 +80828,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     'rain', 'blueprint', 'midnight',
     // 花火 / 城 も夜空ベースで暗い (= 接続線を白系にする)。
     'fireworks', 'castle',
+    // ★ b426 で足した写真のうち夜空の物。 ここに入れ忘れていたので、
+    //   星空の湖を貼ったページで接続線が黒のまま沈んでいた。
+    'starryLake',
   };
 
   /// カスタム背景画像の明暗判定キャッシュ (path → 暗いか)。
@@ -81792,6 +81798,24 @@ class _MindMapScreenState extends State<MindMapScreen>
                   setS(() {});
                 },
               ),
+
+            // ── ごみ箱 (消したページの控え) の扱い (= ユーザー要望:
+            //    期限を 1 週間にして、 自分で決められるように。 ごみ箱に
+            //    入れずそのまま消すモードも選べるように) ──
+            _settingsTile(
+              icon: provider.pageTrashEnabled
+                  ? Icons.delete_sweep_rounded
+                  : Icons.delete_forever_rounded,
+              color: provider.pageTrashEnabled
+                  ? const Color(0xFF4FC3F7)
+                  : const Color(0xFFFF8A80),
+              title: provider.t('trash.setting'),
+              subtitle: _trashModeLabel(provider),
+              onTap: () async {
+                await _showPageTrashSettingsDialog(ctx, provider);
+                setS(() {});
+              },
+            ),
 
             // ── 資料に入れる絵の入手先 (= ユーザー要望: AI 生成か Web 取得か、
             //    Web なら著作権フリーのみか問わないかを設定で選ぶ) ──
@@ -99616,6 +99640,155 @@ class _MindMapScreenState extends State<MindMapScreen>
     );
   }
 
+  /// ごみ箱の今の設定を 1 行で表す (設定の行の右側に出す)。
+  String _trashModeLabel(MindMapProvider provider) {
+    if (!provider.pageTrashEnabled) return provider.t('trash.modeOff');
+    final d = provider.pageTrashRetentionDays;
+    if (d <= 0) return provider.t('trash.modeForever');
+    return provider.t('trash.modeKeep').replaceFirst('{d}', '$d');
+  }
+
+  /// ごみ箱の窓に出す説明の 2 行目 (今の設定を言葉で説明する)。
+  String _trashRetentionNote(MindMapProvider provider) {
+    if (!provider.pageTrashEnabled) return provider.t('trash.noteOff');
+    final d = provider.pageTrashRetentionDays;
+    if (d <= 0) return provider.t('trash.noteForever');
+    return provider.t('trash.noteKeep').replaceFirst('{d}', '$d');
+  }
+
+  /// ごみ箱の設定 — 何日残すかと、 ごみ箱を使わないモード (= ユーザー要望)。
+  ///
+  /// ★ 「使わない」 の歯止めは provider の `_backupPagesIfShrinking`
+  ///   (= ページが減る保存の一本道) に置いてあるので、 ドロワーの右クリック /
+  ///   Ctrl+Shift+D / まとめて削除 / フォルダー削除 / MCP の delete_page の
+  ///   **どこから消しても**効く。 画面側に歯止めを分散させない。
+  Future<void> _showPageTrashSettingsDialog(
+      BuildContext context, MindMapProvider provider) async {
+    // 'keep' = 日数で消す / 'forever' = 期限なし / 'off' = 使わない
+    var mode = !provider.pageTrashEnabled
+        ? 'off'
+        : (provider.pageTrashRetentionDays <= 0 ? 'forever' : 'keep');
+    final ctl = TextEditingController(
+        text: '${provider.pageTrashRetentionDays <= 0 ? MindMapProvider.kPageTrashDefaultDays : provider.pageTrashRetentionDays}');
+    Widget opt(String id, IconData icon, String label, String? desc,
+            void Function(void Function()) setD) =>
+        ListTile(
+          dense: true,
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(
+              mode == id
+                  ? Icons.radio_button_checked_rounded
+                  : Icons.radio_button_unchecked_rounded,
+              color: mode == id ? const Color(0xFF4FC3F7) : Colors.white38,
+              size: 20),
+          title: Row(children: [
+            Icon(icon, color: Colors.white54, size: 16),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(label,
+                  style: const TextStyle(color: Colors.white, fontSize: 13)),
+            ),
+          ]),
+          subtitle: desc == null
+              ? null
+              : Text(desc,
+                  style:
+                      const TextStyle(color: Colors.white54, fontSize: 11)),
+          onTap: () => setD(() => mode = id),
+        );
+    await showDialog<void>(
+      context: context,
+      builder: (dctx) => StatefulBuilder(
+        builder: (dctx, setD) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E32),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          title: Text(provider.t('trash.setting'),
+              style: const TextStyle(color: Colors.white, fontSize: 15)),
+          content: SizedBox(
+            width: 380,
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              opt('keep', Icons.schedule_rounded, provider.t('trash.optKeep'),
+                  null, setD),
+              // 日数は自由に入れられる (= ユーザー要望)。 よく使う値は
+              //   ひと押しで入るようにして、 打たなくても済むようにする。
+              if (mode == 'keep')
+                Padding(
+                  padding: const EdgeInsets.only(left: 30, bottom: 4),
+                  child: Row(children: [
+                    SizedBox(
+                      width: 76,
+                      child: TextField(
+                        controller: ctl,
+                        keyboardType: TextInputType.number,
+                        style: const TextStyle(
+                            color: Colors.white, fontSize: 13),
+                        decoration: InputDecoration(
+                          isDense: true,
+                          suffixText: provider.t('trash.daysUnit'),
+                          suffixStyle: const TextStyle(
+                              color: Colors.white54, fontSize: 12),
+                          enabledBorder: const UnderlineInputBorder(
+                              borderSide: BorderSide(color: Colors.white24)),
+                          focusedBorder: const UnderlineInputBorder(
+                              borderSide:
+                                  BorderSide(color: Color(0xFF4FC3F7))),
+                        ),
+                      ),
+                    ),
+                    for (final d in const [7, 14, 30])
+                      TextButton(
+                        style: TextButton.styleFrom(
+                            minimumSize: const Size(0, 30),
+                            padding:
+                                const EdgeInsets.symmetric(horizontal: 8),
+                            tapTargetSize:
+                                MaterialTapTargetSize.shrinkWrap),
+                        onPressed: () => setD(() => ctl.text = '$d'),
+                        child: Text('$d',
+                            style: const TextStyle(
+                                color: Color(0xFF4FC3F7), fontSize: 12)),
+                      ),
+                  ]),
+                ),
+              opt('forever', Icons.all_inclusive_rounded,
+                  provider.t('trash.optForever'), null, setD),
+              opt('off', Icons.delete_forever_rounded,
+                  provider.t('trash.optOff'), provider.t('trash.optOffDesc'),
+                  setD),
+            ]),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dctx),
+              child: Text(provider.t('btn.cancel'),
+                  style: const TextStyle(color: Colors.white54)),
+            ),
+            TextButton(
+              onPressed: () async {
+                if (mode == 'off') {
+                  await provider.setPageTrashEnabled(false);
+                } else if (mode == 'forever') {
+                  await provider.setPageTrashEnabled(true);
+                  await provider.setPageTrashRetentionDays(0);
+                } else {
+                  final n = int.tryParse(ctl.text.trim()) ??
+                      MindMapProvider.kPageTrashDefaultDays;
+                  await provider.setPageTrashEnabled(true);
+                  await provider.setPageTrashRetentionDays(n < 1 ? 1 : n);
+                }
+                if (dctx.mounted) Navigator.pop(dctx);
+              },
+              child: Text(provider.t('btn.save'),
+                  style: const TextStyle(color: Color(0xFF4FC3F7))),
+            ),
+          ],
+        ),
+      ),
+    );
+    ctl.dispose();
+  }
+
   /// ごみ箱 — 消したページの控えを、戻す / 完全に削除する (= ユーザー要望)。
   ///
   /// 控えは `page_backups` に貯まる。 1 か月を過ぎた分と 30 件を超えた分は
@@ -99644,7 +99817,9 @@ class _MindMapScreenState extends State<MindMapScreen>
           content: SizedBox(
             width: 460,
             child: list.isEmpty
-                ? Text(provider.t('trash.empty'),
+                ? Text(
+                    '${provider.t('trash.empty')}\n'
+                    '${_trashRetentionNote(provider)}',
                     style:
                         const TextStyle(color: Colors.white60, fontSize: 12))
                 : Column(mainAxisSize: MainAxisSize.min, children: [
@@ -99652,6 +99827,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                       alignment: Alignment.centerLeft,
                       child: Text(
                           '${provider.t('trash.note')}\n'
+                          '${_trashRetentionNote(provider)}\n'
                           '${provider.t('trash.restoreHint')}',
                           style: const TextStyle(
                               color: Colors.white54,
@@ -99748,6 +99924,18 @@ class _MindMapScreenState extends State<MindMapScreen>
                   ]),
           ),
           actions: [
+            // 期限や「使わない」 をここからも変えられるようにする
+            //   (= ユーザー要望: ⋮ → ごみ箱 から辿れる所に置く)。
+            TextButton(
+              onPressed: () async {
+                await _showPageTrashSettingsDialog(dctx, provider);
+                final next = await provider.listPageBackups();
+                if (!dctx.mounted) return;
+                setD(() => list = next);
+              },
+              child: Text(provider.t('trash.setting'),
+                  style: const TextStyle(color: Colors.white70)),
+            ),
             if (list.isNotEmpty)
               TextButton(
                 onPressed: () async {
@@ -141497,8 +141685,15 @@ String _markdownPreviewHtml(String md, bool dark,
     background-clip:padding-box;}
   mjx-container svg{overflow:visible;}
   #err{color:#E57373;font-size:12px;white-space:pre-wrap;}
-  /* 目次が長い時は中でスクロールさせる (= ユーザー報告: 目次が長すぎる) */
-  #mmtoc{max-height:44vh;overflow:auto;}
+  /* ── 目次の高さ (= ユーザー要望: 目次が入り切っていないので、 表示領域に
+     上限を設けず、 全部入るようにしてほしい) ──
+     以前は 44vh で頭打ちにしていたため、 長い目次は途中で切れて見えた
+     (しかもこの頁はカーソルを乗せた時しかつまみを出さないので、 携帯では
+     続きがある事すら分からなかった)。 上限をやめ、 項目が多い時は段組みに
+     して同じ高さに数倍収める (幅が足りない画面では自動で 1 段に戻る)。 */
+  #mmtoc{max-height:none;overflow:visible;}
+  .mmtoc-list.mmtoc-multi{column-width:230px;column-gap:20px;}
+  #mmtoc a{break-inside:avoid;-webkit-column-break-inside:avoid;}
   /* ── 埋め込んだ「アプリの表」 (= ユーザー要望: md の表をアプリの形式に
      変換して埋め込めるように)。 見た目は要素の表と同じ枠線・見出し行。 ── */
   .mmtbl{margin:14px 0;overflow-x:auto;}
@@ -142332,23 +142527,23 @@ $mapsJs
     if (old) old.remove();
     var hs = out.querySelectorAll('h1, h2, h3');
     if (hs.length < 2) return;
-    // ★ 全部のタブを 1 頁にまとめると見出しが数十個になり、 目次だけで
-    //   画面が埋まる (= ユーザー報告)。 多い時は浅い階層だけを出す。
-    var deep = out.querySelectorAll('h1, h2, h3');
-    var lim = 3;
-    if (deep.length > 40) lim = 1;
-    else if (deep.length > 18) lim = 2;
+    // ★ 以前は見出しが多い時 (19 個以上で h3、 41 個以上で h2 も) 浅い階層
+    //   だけに間引いていたが、 それだと目次に出ない見出しができてしまう
+    //   (= ユーザー報告: 目次が入り切っていない)。 h1〜h3 は必ず全部出し、
+    //   項目が多い時は段組み (.mmtoc-multi) にして高さを詰める。
     var box = document.createElement('div');
     box.id = 'mmtoc';
     var html = '<div class="mmtoc-title">&#9776; ' + esc($toc) + '</div>';
+    var cls = hs.length > 12 ? 'mmtoc-list mmtoc-multi' : 'mmtoc-list';
+    html += '<div class="' + cls + '">';
     for (var i = 0; i < hs.length; i++) {
       var h = hs[i];
       h.id = 'mmh' + i;
       var lv = Number(h.tagName.substring(1));
-      if (lv > lim) continue;
       html += '<a class="mmtoc-l' + lv + '" data-t="mmh' + i + '">' +
           esc(tocLabelOf(h.textContent)) + '</a>';
     }
+    html += '</div>';
     box.innerHTML = html;
     out.insertBefore(box, out.firstChild);
     box.addEventListener('click', function (ev) {
@@ -144439,6 +144634,124 @@ class _MarkdownDraftStore {
   }
 }
 
+/// AI チャットの 1 通。
+typedef _MdChatMsg = ({String role, String text});
+
+/// しまっておいた 1 つの会話。
+typedef _MdChatSession = ({String at, String title, List<_MdChatMsg> msgs});
+
+/// マークダウンの AI チャット欄の会話の置き場 (= ユーザー要望: 過去の
+/// チャットセッションの履歴を呼び出せるように)。
+///
+/// ★ 造りは Word / Excel の AI 欄 (`_AiDocChatPanel`) と同じ「今の会話 1 本 +
+///   しまった会話の一覧」 にそろえてある。 本文と同じで prefs に置く
+///   (ページの JSON には載らないので、 同期にも乗らない)。
+class _MdAiChatStore {
+  /// 今の会話 (開き直しても続きから見えるように)。
+  static String _logKey(String pageId) => 'markdown_aichat_$pageId';
+
+  /// しまった会話の一覧。
+  static String _sessionsKey(String pageId) =>
+      'markdown_aichat_sessions_$pageId';
+
+  /// 1 本の会話に残す通数 (増えすぎないように)。
+  static const int _maxMsgs = 60;
+
+  /// しまっておく会話の数。
+  static const int _maxSessions = 20;
+
+  static List<_MdChatMsg> _decodeMsgs(Object? arr) {
+    final out = <_MdChatMsg>[];
+    if (arr is! List) return out;
+    for (final e in arr) {
+      if (e is Map && e['r'] is String && e['t'] is String) {
+        out.add((role: e['r'] as String, text: e['t'] as String));
+      }
+    }
+    return out;
+  }
+
+  static List<Map<String, String>> _encodeMsgs(List<_MdChatMsg> msgs) {
+    final keep =
+        msgs.length > _maxMsgs ? msgs.sublist(msgs.length - _maxMsgs) : msgs;
+    return [
+      for (final m in keep) {'r': m.role, 't': m.text}
+    ];
+  }
+
+  static Future<List<_MdChatMsg>> loadLog(String pageId) async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final raw = sp.getString(_logKey(pageId));
+      if (raw == null || raw.isEmpty) return <_MdChatMsg>[];
+      return _decodeMsgs(jsonDecode(raw));
+    } catch (_) {
+      return <_MdChatMsg>[];
+    }
+  }
+
+  static Future<void> saveLog(String pageId, List<_MdChatMsg> msgs) async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setString(_logKey(pageId), jsonEncode(_encodeMsgs(msgs)));
+    } catch (_) {}
+  }
+
+  /// しまった会話 (古い順)。
+  static Future<List<_MdChatSession>> loadSessions(String pageId) async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final raw = sp.getString(_sessionsKey(pageId));
+      if (raw == null || raw.isEmpty) return <_MdChatSession>[];
+      final arr = jsonDecode(raw);
+      if (arr is! List) return <_MdChatSession>[];
+      return [
+        for (final e in arr)
+          if (e is Map)
+            (
+              at: '${e['at'] ?? ''}',
+              title: '${e['title'] ?? ''}',
+              msgs: _decodeMsgs(e['msgs']),
+            )
+      ];
+    } catch (_) {
+      return <_MdChatSession>[];
+    }
+  }
+
+  static Future<void> writeSessions(
+      String pageId, List<_MdChatSession> list) async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final keep = list.length > _maxSessions
+          ? list.sublist(list.length - _maxSessions)
+          : list;
+      await sp.setString(
+          _sessionsKey(pageId),
+          jsonEncode([
+            for (final s in keep)
+              {'at': s.at, 'title': s.title, 'msgs': _encodeMsgs(s.msgs)}
+          ]));
+    } catch (_) {}
+  }
+
+  /// 今の会話を一覧へしまう (空なら何もしない)。 題名は最初の発言の 1 行目。
+  static Future<void> archive(String pageId, List<_MdChatMsg> msgs) async {
+    if (msgs.isEmpty) return;
+    var title = '';
+    for (final m in msgs) {
+      if (m.role == 'user' && m.text.trim().isNotEmpty) {
+        title = m.text.trim().split('\n').first;
+        break;
+      }
+    }
+    if (title.length > 30) title = '${title.substring(0, 30)}…';
+    final list = await loadSessions(pageId);
+    list.add((at: DateTime.now().toIso8601String(), title: title, msgs: msgs));
+    await writeSessions(pageId, list);
+  }
+}
+
 // ─── 本文 (markdown) の表を、 編集欄の側で拾うための道具 ───────────────
 //
 // プレビューの中の札は JS が作るが、 本文だけで開いている時 (プレビューを
@@ -144930,6 +145243,74 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
   final FocusNode _sideAiInputFocus = FocusNode();
   final ScrollController _sideAiScroll = ScrollController();
   bool _sideAiBusy = false;
+
+  // ─── ↑ / ↓ で前に送った指示を呼び戻す (= ユーザー要望: 端末のコマンド
+  //     履歴と同じ操作感) ────────────────────────────────────────────
+  //     造りは AI アシスタント (`_McpChatDialogState`) と Word / Excel の
+  //     AI 欄 (`_AiDocChatPanelState`) の `_recallPrompt` と同じ。
+
+  /// 今どこを見ているか。 -1 = 履歴を見ていない (書きかけの状態)。
+  int _sideChatHistIndex = -1;
+
+  /// 履歴に入る前に書きかけだった文 (一番下まで戻った時に返す)。
+  String _sideChatDraft = '';
+
+  /// この会話で送った指示 (古い順、 続けて同じ物は 1 つに)。
+  List<String> get _sentSideChatPrompts {
+    final out = <String>[];
+    for (final m in _sideAiChat) {
+      if (m.role != 'user') continue;
+      final t = m.text.trim();
+      if (t.isEmpty) continue;
+      if (out.isNotEmpty && out.last == t) continue;
+      out.add(t);
+    }
+    return out;
+  }
+
+  /// ↑ / ↓ を履歴に使ってよいか。 ★ 改行できる欄にしたので、 何行か
+  /// 書いている最中に ↑ を取ると**欄の中の行移動ができなくなる**。
+  /// 1 行だけの時と、 端 (先頭行で ↑ / 末尾行で ↓) にいる時だけ履歴に回す。
+  bool _sideChatCaretAtEdge(bool up) {
+    final t = _sideAiInput.text;
+    if (!t.contains('\n')) return true;
+    final sel = _sideAiInput.selection;
+    final off = (sel.isValid ? sel.baseOffset : t.length).clamp(0, t.length);
+    return up
+        ? !t.substring(0, off).contains('\n')
+        : !t.substring(off).contains('\n');
+  }
+
+  /// [delta] = -1 で 1 つ前、 +1 で 1 つ後。 動かせたら true。
+  bool _recallSideChatPrompt(int delta) {
+    final list = _sentSideChatPrompts;
+    if (list.isEmpty) return false;
+    if (_sideChatHistIndex < 0) {
+      if (delta > 0) return false; // 履歴を見ていない時の ↓ は何もしない
+      _sideChatDraft = _sideAiInput.text;
+      _sideChatHistIndex = list.length - 1;
+    } else {
+      final next = _sideChatHistIndex + (delta < 0 ? -1 : 1);
+      if (next < 0) return true; // 一番上で止める
+      if (next >= list.length) {
+        // 一番下まで戻った → 書きかけの内容に戻す。
+        _sideChatHistIndex = -1;
+        _setSideChatInput(_sideChatDraft);
+        return true;
+      }
+      _sideChatHistIndex = next;
+    }
+    _setSideChatInput(list[_sideChatHistIndex]);
+    return true;
+  }
+
+  void _setSideChatInput(String text) {
+    _sideAiInput.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+    setState(() {});
+  }
 
   /// 昔の「1 枚の文章」 のメモの置き場 (取り込みのためだけに読む)。
   String get _kMdSideMemoKey => 'md_sidememo_${widget.pageId}';
@@ -145733,6 +146114,12 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
     //   手当ては要らなくなった。
     // 編集欄を動かしたらプレビューも同じ所へ (= ユーザー要望)。
     _editorScroll.addListener(_onEditorScroll);
+    // ── AI チャットの続きを読み直す (= ユーザー要望: 過去のチャット履歴を
+    //    呼び出せるように)。 開き直しても前の会話から続けられる。 ──
+    unawaited(_MdAiChatStore.loadLog(widget.pageId).then((msgs) {
+      if (!mounted || msgs.isEmpty || _sideAiChat.isNotEmpty) return;
+      setState(() => _sideAiChat.addAll(msgs));
+    }));
     _load();
     if (_isDesktopPlatform) _initWin();
     // メインの DropTarget からファイルのドロップを受け取れるよう登録する
@@ -145859,6 +146246,9 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
     _sideAiResult = null;
     if (waiting != null && !waiting.isCompleted) waiting.complete(null);
     _sideAiReviseCtrl.dispose();
+    // ページを閉じたら読み上げは必ず止める (画面が無いのに喋り続けない)。
+    _reader?.dispose();
+    _reader = null;
     try {
       _win?.dispose();
     } catch (_) {}
@@ -147024,6 +147414,8 @@ graph TD
   /// 押されたタブへ移る。 今の内容は書き戻してから。
   void _selectTab(int i) {
     if (i < 0 || i >= _tabs.length || i == _sel) return;
+    // 読んでいる途中で別のタブへ移ったら止める (前のタブを読み続けない)。
+    _stopReadAloud();
     _syncCurrentTab();
     setState(() {
       _sel = i;
@@ -148910,6 +149302,47 @@ $body''';
   /// 上の知らせを必ず閉じるための時計 (出しっぱなし対策)。
   Timer? _snackAutoClose;
 
+  // ─── 音声読み上げ (TTS) ────────────────────────────────────────────────
+  //  = ユーザー要望「マークダウンページにも本文の音声読み上げ機能を作って
+  //    欲しい」。 PDF ビューア / テキストエディタと同じ共有部品
+  //    (lib/widgets/read_aloud.dart) をそのまま使う (二重実装しない)。
+  //    読むのは**今開いているタブの本文**だけ。
+  ReadAloudController? _reader;
+  bool _readerVisible = false;
+
+  /// 今開いているタブの本文を音声で読み上げる。
+  Future<void> _startReadAloud() async {
+    final provider = widget.provider;
+    final tab = _cur;
+    // サイトのタブは本文を持たないので読まない。
+    if (tab == null || tab.isWeb) {
+      _appSnackTop(context, provider.t('tts.noText'), const Color(0xFFE57373));
+      return;
+    }
+    // 編集欄の今の中身をタブへ書き戻してから読む (書いた直後でも読める)。
+    _syncCurrentTab();
+    final text = markdownToSpeechText(tab.text);
+    if (text.isEmpty) {
+      _appSnackTop(context, provider.t('tts.noText'), const Color(0xFFE57373));
+      return;
+    }
+    _reader ??= ReadAloudController(language: provider.speechLocaleId);
+    setState(() => _readerVisible = true);
+    final ok = await _reader!.start(text);
+    if (!mounted) return;
+    if (!ok) {
+      // TTS が使えない端末 (Linux 等) はバーを畳んで知らせるだけ。
+      setState(() => _readerVisible = false);
+      _appSnackTop(
+          context, provider.t('pdf.ttsUnavailable'), const Color(0xFFE57373));
+    }
+  }
+
+  void _stopReadAloud() {
+    _reader?.stop();
+    if (mounted && _readerVisible) setState(() => _readerVisible = false);
+  }
+
   Future<void> _copyAll() async {
     await Clipboard.setData(ClipboardData(text: _ctrl.text));
     if (!mounted) return;
@@ -149482,13 +149915,9 @@ $body''';
     return Focus(
       canRequestFocus: false,
       skipTraversal: true,
-      onKeyEvent: (node, event) {
-        if (commandIdForKeyEventFromAnywhere?.call(event) != 'openDrawer') {
-          return KeyEventResult.ignored;
-        }
-        unawaited(openPageListFromAnywhere?.call());
-        return KeyEventResult.handled;
-      },
+      onKeyEvent: (node, event) => tryPageListShortcut(event)
+          ? KeyEventResult.handled
+          : KeyEventResult.ignored,
       child: CallbackShortcuts(
       // F2 で選んでいるタブの名前を変える (= ユーザー要望: ダブルクリック
       //   または選択して F2)。
@@ -149571,9 +150000,12 @@ $body''';
         //    画面下部に出す)。 帯の高さは**この場の残り**で抑える。 ──
         Expanded(
           child: LayoutBuilder(builder: (_, room) {
-          final bandH = (_bottomTermOpen && _bottomTerm != null)
-              ? _bottomTermH.clamp(_EditorTerminalBand.kMinH,
-                  math.max(_EditorTerminalBand.kMinH, room.maxHeight - 120))
+          final double bandH = (_bottomTermOpen && _bottomTerm != null)
+              ? _bottomTermH
+                  .clamp(_EditorTerminalBand.kMinH,
+                      math.max(
+                          _EditorTerminalBand.kMinH, room.maxHeight - 120))
+                  .toDouble()
               : 0.0;
           return Column(children: [
           Expanded(
@@ -149743,6 +150175,20 @@ $body''';
               ),
             ),
           ],
+          // ── 音声読み上げの操作バー (= ユーザー要望)。 本文の上に重ねて
+          //    出す (前 / 再生・一時停止 / 次 / 停止 / 速度 / 進捗)。 ──
+          if (_readerVisible && _reader != null)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 14,
+              child: Center(
+                child: ReadAloudBar(
+                  controller: _reader!,
+                  onClose: _stopReadAloud,
+                ),
+              ),
+            ),
           ]),
           ),
           if (bandH > 0)
@@ -150075,6 +150521,9 @@ $body''';
     setState(() {
       _sideAiChat.add((role: 'user', text: q));
       _sideAiInput.clear();
+      // 送ったら履歴を辿っていた位置は戻す (= 既存の AI 欄と同じ)。
+      _sideChatHistIndex = -1;
+      _sideChatDraft = '';
       _sideAiBusy = true;
     });
     try {
@@ -150096,12 +150545,164 @@ $body''';
       }
     } finally {
       if (mounted) setState(() => _sideAiBusy = false);
+      // 1 往復ごとに書き出す (= 閉じても続きから見えるように)。
+      unawaited(_MdAiChatStore.saveLog(widget.pageId, List.of(_sideAiChat)));
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (_sideAiScroll.hasClients) {
           _sideAiScroll.jumpTo(_sideAiScroll.position.maxScrollExtent);
         }
       });
     }
+  }
+
+  /// 今の会話をしまって、 まっさらから始める (= ユーザー要望: 過去の
+  /// チャットセッションの履歴を呼び出せるように)。
+  /// [keep] が false なら、 しまわずにそのまま消す。
+  Future<void> _startNewSideChatSession({bool keep = true}) async {
+    if (keep) {
+      await _MdAiChatStore.archive(widget.pageId, List.of(_sideAiChat));
+    }
+    if (!mounted) return;
+    setState(() {
+      _sideAiChat.clear();
+      _sideChatHistIndex = -1;
+      _sideChatDraft = '';
+    });
+    await _MdAiChatStore.saveLog(widget.pageId, List.of(_sideAiChat));
+  }
+
+  /// しまった会話の一覧 (開く / 消す)。 並びは新しい物が上。
+  Future<void> _showSideChatSessionList(MindMapProvider provider) async {
+    final list = await _MdAiChatStore.loadSessions(widget.pageId);
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dctx) => StatefulBuilder(
+        builder: (dctx, setD) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E2E),
+          title: Text(provider.t('mcp.sessions'),
+              style: const TextStyle(color: Colors.white, fontSize: 15)),
+          content: SizedBox(
+            width: 340,
+            child: list.isEmpty
+                ? Text(provider.t('mcp.noSessions'),
+                    style:
+                        const TextStyle(color: Colors.white54, fontSize: 12))
+                : SingleChildScrollView(
+                    child: Column(mainAxisSize: MainAxisSize.min, children: [
+                      for (var i = list.length - 1; i >= 0; i--)
+                        ListTile(
+                          dense: true,
+                          title: Text(
+                              list[i].title.isEmpty
+                                  ? provider.t('mcp.untitled')
+                                  : list[i].title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  color: Colors.white, fontSize: 12.5)),
+                          subtitle: Text(
+                              '${list[i].at.split('T').first}'
+                              '  ・  ${list[i].msgs.length}',
+                              style: const TextStyle(
+                                  color: Colors.white38, fontSize: 10.5)),
+                          trailing: IconButton(
+                            tooltip: provider.t('btn.delete'),
+                            icon: const Icon(Icons.delete_outline_rounded,
+                                size: 17, color: Color(0xFFE57373)),
+                            onPressed: () async {
+                              list.removeAt(i);
+                              await _MdAiChatStore.writeSessions(
+                                  widget.pageId, list);
+                              setD(() {});
+                            },
+                          ),
+                          onTap: () async {
+                            final msgs = List.of(list[i].msgs);
+                            // 今の会話はしまってから開く (失わせない)。
+                            await _startNewSideChatSession();
+                            if (!mounted) return;
+                            setState(() => _sideAiChat.addAll(msgs));
+                            await _MdAiChatStore.saveLog(
+                                widget.pageId, List.of(_sideAiChat));
+                            if (dctx.mounted) Navigator.pop(dctx);
+                          },
+                        ),
+                    ]),
+                  ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dctx),
+              child: Text(provider.t('btn.close'),
+                  style: const TextStyle(color: Colors.white54)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// チャット欄の「使うモデル ・ 考える深さ」 の札 (= ユーザー要望: 推論
+  /// レベルやモデルを指定することもできない)。 押すと、 どの欄からでも同じ
+  /// `showAiModelDialog` (API の relayModel / relayReasoning と、 CLI ごとの
+  /// モデル / 推論を 1 画面で選ぶ物) が開く。
+  ///
+  /// ★ 札に出す名前は **この欄が選んでいる相手** (`_sideChatEngine`) の物。
+  ///   アプリ全体の設定をそのまま出すと、 上の相手選びで Codex CLI を選んで
+  ///   いるのに Gemini の名前が出て食い違う。
+  Widget _buildSideChatModelChip(MindMapProvider provider) {
+    var eng = _sideChatEngine;
+    if (eng.isEmpty) {
+      // '' = アプリ全体の設定のまま。 今その設定が指している相手を出す。
+      eng = provider.useCliAi ? 'cli:${provider.activeCliKindName}' : 'api';
+    }
+    String text;
+    if (eng.startsWith('cli:')) {
+      final kindName = eng.substring(4);
+      var label = kindName;
+      for (final k in AgentCliKind.values) {
+        if (k.name == kindName) {
+          label = AgentCliSpec.of(k).label;
+          break;
+        }
+      }
+      final m = provider.cliModelFor(kindName);
+      final r = provider.cliReasoningFor(kindName);
+      text = [label, if (m.isNotEmpty) m, if (r.isNotEmpty) r].join(' ・ ');
+    } else {
+      text = '${provider.relayModelRawLabel(provider.relayModel)}'
+          ' ・ ${provider.relayReasoning}';
+    }
+    return InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: () => unawaited(showAiModelDialog(context, provider,
+          onChanged: () {
+        if (mounted) setState(() {});
+      })),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1A1A24),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.white12),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          const Icon(Icons.psychology_rounded,
+              size: 13, color: Color(0xFF80CBC4)),
+          const SizedBox(width: 5),
+          Flexible(
+            child: Text(text,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style:
+                    const TextStyle(color: Colors.white70, fontSize: 10.5)),
+          ),
+          const Icon(Icons.expand_more_rounded,
+              size: 13, color: Colors.white38),
+        ]),
+      ),
+    );
   }
 
   /// 左のメモ欄。 ★ = ユーザー要望「マークダウンでのメモは PDF の様に
@@ -150440,6 +151041,49 @@ $body''';
                     style: const TextStyle(
                         color: Colors.white38, fontSize: 10.5)),
               ),
+              // ── 会話の始め直し / しまった会話を開く / 消す (= ユーザー要望:
+              //    過去のチャットセッションの履歴を呼び出せるように)。
+              //    並びは AI アシスタントや Word / Excel の AI 欄と同じ。 ──
+              if (!_sideAiBrowser)
+                PopupMenuButton<String>(
+                  tooltip: provider.t('tip.chatMenu'),
+                  color: const Color(0xFF1E1E32),
+                  padding: EdgeInsets.zero,
+                  icon: const Icon(Icons.history_rounded,
+                      size: 15, color: Colors.white38),
+                  onSelected: (v) async {
+                    if (v == 'new') {
+                      await _startNewSideChatSession();
+                    } else if (v == 'list') {
+                      await _showSideChatSessionList(provider);
+                    } else if (v == 'clear') {
+                      await _startNewSideChatSession(keep: false);
+                    }
+                  },
+                  itemBuilder: (_) => [
+                    PopupMenuItem<String>(
+                      value: 'new',
+                      height: 36,
+                      child: Text(provider.t('mcp.newSession'),
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 12.5)),
+                    ),
+                    PopupMenuItem<String>(
+                      value: 'list',
+                      height: 36,
+                      child: Text(provider.t('mcp.sessions'),
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 12.5)),
+                    ),
+                    PopupMenuItem<String>(
+                      value: 'clear',
+                      height: 36,
+                      child: Text(provider.t('mcp.clearHistory'),
+                          style: const TextStyle(
+                              color: Color(0xFFE57373), fontSize: 12.5)),
+                    ),
+                  ],
+                ),
               // ブラウザ版を出している時は、 どの AI を出すかも選べる。
               if (_sideAiBrowser)
                 PopupMenuButton<String>(
@@ -150563,30 +151207,93 @@ $body''';
                       },
                     ),
             ),
+            // ── 使うモデルと考える深さ (= ユーザー要望: 推論レベルやモデルを
+            //    指定することもできない)。 入力欄のすぐ上に置く (打つ時に
+            //    目に入る位置。 Word / Excel の AI 欄と同じ並び)。 ──
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 0, 8, 2),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: _buildSideChatModelChip(provider),
+              ),
+            ),
             Padding(
               padding: const EdgeInsets.all(8),
-              child: Row(children: [
+              child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
                 Expanded(
-                  child: TextField(
-                    controller: _sideAiInput,
-                    focusNode: _sideAiInputFocus,
-                    style:
-                        const TextStyle(color: Colors.white, fontSize: 12.5),
-                    decoration: InputDecoration(
-                      isDense: true,
-                      contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 9),
-                      hintText: provider.t('md.aiChatInputHint'),
-                      hintStyle: const TextStyle(
-                          color: Colors.white30, fontSize: 12),
-                      filled: true,
-                      fillColor: Colors.white.withValues(alpha: 0.05),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8),
-                        borderSide: BorderSide.none,
+                  // ── Enter で送信 / Shift+Enter で改行、 ↑ / ↓ で前に送った
+                  //    指示を呼び戻す (= ユーザー要望: 改行を入れることが
+                  //    できない / 過去の会話履歴を呼び出せるように) ──
+                  //    ★ `KeyboardListener` では打鍵を消せないので `Focus` で
+                  //      包んで `handled` を返す。 上の「書いてもらう」 欄
+                  //      (`_sideAiWriteCtrl`) と同じ作法にそろえてある。
+                  child: Focus(
+                    onKeyEvent: (node, event) {
+                      if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+                        return KeyEventResult.ignored;
+                      }
+                      final isEnter =
+                          event.logicalKey == LogicalKeyboardKey.enter ||
+                              event.logicalKey ==
+                                  LogicalKeyboardKey.numpadEnter;
+                      if (isEnter) {
+                        // 押しっぱなしの連打では送らない。
+                        if (event is! KeyDownEvent) {
+                          return KeyEventResult.ignored;
+                        }
+                        // 改行は TextField に任せる。
+                        if (HardwareKeyboard.instance.isShiftPressed) {
+                          return KeyEventResult.ignored;
+                        }
+                        // ★ 日本語などの変換を決める Enter は横取りしない。
+                        //   取ると、 変換を決めただけで送信されてしまう。
+                        if (_isComposing(_sideAiInput)) {
+                          return KeyEventResult.ignored;
+                        }
+                        unawaited(_sendSideAiChat());
+                        return KeyEventResult.handled;
+                      }
+                      if (event.logicalKey == LogicalKeyboardKey.arrowUp ||
+                          event.logicalKey == LogicalKeyboardKey.arrowDown) {
+                        final up =
+                            event.logicalKey == LogicalKeyboardKey.arrowUp;
+                        // 何行か書いている最中は、 欄の中の行移動を邪魔しない。
+                        if (!_sideChatCaretAtEdge(up)) {
+                          return KeyEventResult.ignored;
+                        }
+                        return _recallSideChatPrompt(up ? -1 : 1)
+                            ? KeyEventResult.handled
+                            : KeyEventResult.ignored;
+                      }
+                      return KeyEventResult.ignored;
+                    },
+                    child: TextField(
+                      controller: _sideAiInput,
+                      focusNode: _sideAiInputFocus,
+                      // 書いた分だけ伸びる (5 行までで、 あとは中で送る)。
+                      minLines: 1,
+                      maxLines: 5,
+                      keyboardType: TextInputType.multiline,
+                      textInputAction: TextInputAction.newline,
+                      style:
+                          const TextStyle(color: Colors.white, fontSize: 12.5),
+                      decoration: InputDecoration(
+                        isDense: true,
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 9),
+                        hintText: provider.t('md.aiChatInputHint'),
+                        hintStyle: const TextStyle(
+                            color: Colors.white30, fontSize: 12),
+                        filled: true,
+                        fillColor: Colors.white.withValues(alpha: 0.05),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: BorderSide.none,
+                        ),
                       ),
                     ),
-                    onSubmitted: (_) => unawaited(_sendSideAiChat()),
                   ),
                 ),
                 const SizedBox(width: 6),
@@ -150597,7 +151304,8 @@ $body''';
                         child: CircularProgressIndicator(
                             strokeWidth: 2, color: Color(0xFFBA68C8)))
                     : Tooltip(
-                        message: provider.t('aiFollowUp.send'),
+                        message: '${provider.t('aiFollowUp.send')}'
+                            '  (${provider.t('node.enterHint')})',
                         child: InkWell(
                           borderRadius: BorderRadius.circular(18),
                           onTap: () => unawaited(_sendSideAiChat()),
@@ -151022,6 +151730,18 @@ $body''';
                 () => unawaited(_showMdScrollSettings(provider))),
             // 表示の仕方: 押したら次に何になるかを出す (= ユーザー要望)。
             _btn(_viewModeIcon, _viewModeLabel(provider), _cycleViewMode),
+            // ── 本文の音声読み上げ (= ユーザー要望: マークダウンページにも
+            //    読み上げが欲しい)。 押すと今開いているタブの本文を読み、
+            //    もう一度押すと止まる (読んでいる間だけ色が付く)。 ──
+            _btn(
+                _readerVisible
+                    ? Icons.stop_circle_rounded
+                    : Icons.record_voice_over_rounded,
+                provider.t(
+                    _readerVisible ? 'text.readAloudStop' : 'text.readAloud'),
+                _readerVisible ? _stopReadAloud : _startReadAloud,
+                color:
+                    _readerVisible ? const Color(0xFFFF6B6B) : Colors.white70),
             // ── メモ / AI チャットのパネル (= ユーザー要望)。 開いている
             //    時だけ色が付く。 ★ メモは箇条書きで貯める物になったので、
             //    モバイルでも出せるようにした (= ユーザー要望: ページへ
@@ -210085,17 +210805,56 @@ Future<void> Function()? openPageListFromAnywhere;
 /// _MindMapScreenState.initState が入れる。
 String? Function(KeyEvent event)? commandIdForKeyEventFromAnywhere;
 
-/// 「ページ一覧」 のショートカットを、 本体の外の画面からも効かせる。
-/// 受け取ったら true (= その打鍵はここで止める)。
-Future<bool> handlePageListShortcut(KeyEvent event) async {
+/// 押された打鍵が「ページ一覧」 のショートカット (既定 Ctrl+Shift+E) か。
+///
+/// ★ = ユーザー報告「pptx ファイルなどを開いた時も ctrl+shift+e で
+///   サイドメニューのページ一覧が開くようにして」。 本体の打鍵の受け口
+///   (`KeyboardListener` → `_commandForKeyCombo` → `openDrawer`) は本体の
+///   画面の中にしか無く、 ファイルのビューアは本体の**上に重ねた別の
+///   route** で開くので、 そこには打鍵がそもそも届かない (= 効かなかった
+///   理由)。 ビューアごとに同じ判定を書き写さないよう、 ここに 1 つだけ置く。
+/// * 割り当ての差し替えと個別の on-off は本体に聞くので尊重される。
+/// * 押しっぱなしの繰り返し (KeyRepeatEvent) では開かない。
+bool isPageListShortcut(KeyEvent event) {
   if (event is! KeyDownEvent) return false;
-  if (commandIdForKeyEventFromAnywhere?.call(event) != 'openDrawer') {
-    return false;
-  }
+  return commandIdForKeyEventFromAnywhere?.call(event) == 'openDrawer';
+}
+
+/// 「ページ一覧」 のショートカットなら一覧を出す。
+/// 受け取ったら true (= その打鍵はここで止める)。
+bool tryPageListShortcut(KeyEvent event) {
+  if (!isPageListShortcut(event)) return false;
   final open = openPageListFromAnywhere;
   if (open == null) return false;
-  await open();
+  unawaited(open());
   return true;
+}
+
+/// どの画面でも「ページ一覧」 のショートカットを効かせる包み。
+///
+/// 自前のキー処理を持たないビューア (表計算 / ipynb / モバイルの PDF …)
+/// は、 画面ぜんぶをこれで包むだけでよい。
+/// * `canRequestFocus: false` なので焦点は奪わない (入力欄の文字打ちを
+///   邪魔しない)。 打鍵は焦点から先祖へ上がってくるので、 一番外に 1 枚
+///   かぶせれば、 どこを触った後でも必ず通る。
+/// * 入力欄が自分で使う組み合わせは、 その欄が先に消費するのでここへは
+///   上がってこない (= 文字を打っている最中に暴発しない)。
+class _PageListShortcut extends StatelessWidget {
+  const _PageListShortcut({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Focus(
+      canRequestFocus: false,
+      skipTraversal: true,
+      onKeyEvent: (node, event) => tryPageListShortcut(event)
+          ? KeyEventResult.handled
+          : KeyEventResult.ignored,
+      child: child,
+    );
+  }
 }
 
 /// 設定の画面を出す入口 (同上)。
@@ -217900,6 +218659,10 @@ try {
       autofocus: true,
       onKeyEvent: (node, event) {
         if (event is! KeyDownEvent) return KeyEventResult.ignored;
+        // ── Ctrl+Shift+E: ページ一覧 (= ユーザー報告: ファイルを開いて
+        //    いる間も効くように)。 Esc の判定より前でよい (組み合わせが
+        //    重ならない)。 ──
+        if (tryPageListShortcut(event)) return KeyEventResult.handled;
         // ── Esc では閉じない (= ユーザー要望)。 描き込み中は「選ぶ」 への
         //    切り替えに使う。 消費して既定の dismiss へ流さない。 ──
         if (event.logicalKey == LogicalKeyboardKey.escape) {
@@ -221346,7 +222109,11 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
   @override
   Widget build(BuildContext context) {
     final showMemoBtn = widget.nodeId != null;
-    return PopScope(
+    // ── Ctrl+Shift+E: ページ一覧 (= ユーザー報告: ファイルを開いて
+    //    いる間も効くように) ──
+    //    デスクトップ版 (_InAppViewerDialogState) と動きをそろえる。
+    return _PageListShortcut(
+      child: PopScope(
       canPop: _sessionAddedHighlightIds.isEmpty,
       onPopInvoked: (didPop) async {
         if (didPop) return;
@@ -221435,6 +222202,7 @@ class _InAppViewerPageState extends State<_InAppViewerPage>
           );
         },
       ),
+    ),
     );
   }
 
@@ -233672,7 +234440,13 @@ $csvText
           if (mounted) Navigator.of(context).pop();
         }
       },
-      child: MouseRegion(
+      // ── Ctrl+Shift+E: ページ一覧 (= ユーザー報告: ファイルを開いて
+      //    いる間も効くように) ──
+      //    表のキー処理 (_onKeyEvent) は本文の Focus にしか付いていないので、
+      //    数式バー / 探す欄 / AI 欄に焦点がある間は届かない。 画面ぜんぶを
+      //    包んで、 どこを触った後でも通るようにする。
+      child: _PageListShortcut(
+        child: MouseRegion(
         onEnter: (_) => _sheetHovered = true,
         onExit: (_) => _sheetHovered = false,
         child: Container(
@@ -233751,6 +234525,7 @@ $csvText
               ),
             ),
         ]),
+      ),
       ),
       ),
     );
@@ -250864,6 +251639,12 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog>
               _startPresenterMode(startIndex: shift ? _currentIndex : 0));
           return KeyEventResult.handled;
         }
+        // ── Ctrl+Shift+E: ページ一覧 ──
+        //
+        // ★ = ユーザー報告「pptx ファイルなどを開いた時も ctrl+shift+e で
+        //   サイドメニューのページ一覧が開くように」。 この画面は本体の
+        //   上に重ねた別の route なので、 本体の打鍵の受け口には届かない。
+        if (tryPageListShortcut(event)) return KeyEventResult.handled;
         return KeyEventResult.ignored;
       },
       child: Container(
@@ -258707,7 +259488,7 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
     //   ままでもページを移れるように)。 この画面は本体の上に重なって
     //   いるので、 本体のキー処理には届かない。 見出しのボタンと同じ道を通す。
     //   割り当てを差し替えていても効くよう、 組み合わせは本体に聞く。
-    if (commandIdForKeyEventFromAnywhere?.call(event) == 'openDrawer') {
+    if (isPageListShortcut(event)) {
       unawaited(_openPageListAndLeaveIfSwitched());
       return KeyEventResult.handled;
     }
@@ -259446,11 +260227,13 @@ $currentText
             //    本文が 0px まで潰れて溢れる)。 ──
             Expanded(
               child: LayoutBuilder(builder: (_, room) {
-                final bandH = (_bottomTermOpen && _bottomTerm != null)
-                    ? _bottomTermH.clamp(
-                        _EditorTerminalBand.kMinH,
-                        math.max(_EditorTerminalBand.kMinH,
-                            room.maxHeight - 120))
+                final double bandH = (_bottomTermOpen && _bottomTerm != null)
+                    ? _bottomTermH
+                        .clamp(
+                            _EditorTerminalBand.kMinH,
+                            math.max(_EditorTerminalBand.kMinH,
+                                room.maxHeight - 120))
+                        .toDouble()
                     : 0.0;
                 return Column(children: [
                   Expanded(
@@ -267238,7 +268021,11 @@ class _IpynbViewerDialogState extends State<_IpynbViewerDialog> {
     final dark = widget.isDarkMode;
     final bg = dark ? const Color(0xFF1A1A24) : const Color(0xFFF4F4F2);
     final fg = dark ? Colors.white : const Color(0xFF1A1A24);
-    return Column(
+    // ── Ctrl+Shift+E: ページ一覧 (= ユーザー報告: ファイルを開いて
+    //    いる間も効くように) ──
+    //    この画面は自前のキー処理を持たないので、 画面ぜんぶを包むだけ。
+    return _PageListShortcut(
+      child: Column(
       children: [
         // ── ヘッダー ──
         Container(
@@ -267275,6 +268062,7 @@ class _IpynbViewerDialogState extends State<_IpynbViewerDialog> {
         ),
         Expanded(child: _buildBody(dark, bg, fg)),
       ],
+    ),
     );
   }
 
@@ -270002,6 +270790,12 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
         HardwareKeyboard.instance.isMetaPressed;
     final isShift = HardwareKeyboard.instance.isShiftPressed;
 
+    // ── Ctrl+Shift+E: ページ一覧 (= ユーザー報告: ファイルを開いて
+    //    いる間も効くように) ──
+    //    段落を打っている最中でも効かせたいので、 下の「編集中はスルー」
+    //    の関所 (_editingIdx != null) より前に置く。
+    if (tryPageListShortcut(event)) return KeyEventResult.handled;
+
     // ── Ctrl+S = 保存 ──
     if (isCtrl && event.logicalKey == LogicalKeyboardKey.keyS) {
       _save();
@@ -272153,6 +272947,11 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
       final route = ModalRoute.of(context);
       if (route == null || !route.isCurrent) return false;
     }
+    // ── Ctrl+Shift+E: ページ一覧 (= ユーザー報告: ファイルを開いて
+    //    いる間も効くように) ──
+    //    入力欄の関所より前に置く (この組み合わせは文字打ちで使わない
+    //    ので暴発しない)。 前面判定 (_ownsRoute) は上で済んでいる。
+    if (tryPageListShortcut(e)) return true;
     // 文字を打っている欄があれば、 その欄の取り消しに任せる。
     final fc = FocusManager.instance.primaryFocus?.context;
     if (fc != null &&
@@ -282509,7 +283308,8 @@ class _McpChatSession extends ChangeNotifier {
         'paint (フリーノート) = add_paint_text、 '
         'document (便箋型メモ帳) = append_document_text (段落ごとに呼ぶ)、 '
         'markdown (Markdown / 図) = write_markdown (本文まるごとを 1 回で '
-        '渡す。 append_document_text は使えない)'
+        '渡す。 改行は「本物の改行」 で書く。 \\n という 2 文字を書かない。 '
+        'append_document_text は使えない)'
         '${kStoreBuild ? '。 ' : '、 videoEditor (動画エディター) = add_video_editor_item。 '}'
         'ページの種類はこの ${kStoreBuild ? '5' : '6'} つだけです。 一覧に無い種類 (例:「AI '
         'スタジオのページ」) を頼まれたら、 近い種類で黙って代用せず、 '

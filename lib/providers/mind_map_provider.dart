@@ -42979,16 +42979,185 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Lixeira (cópias de páginas excluídas)',
       'ru': 'Корзина (копии удалённых страниц)',
     },
+    // ★ 期限を直書きしない (= ユーザー要望: 期限を自分で決められるように)。
+    //   今の設定は trash.noteKeep / noteForever / noteOff で別に出す。
     'trash.note': {
-      'ja': 'ページを消した時に、その直前の状態を控えています。1 か月を過ぎた分と、30 件を超えた古い分は自動で消えます。',
-      'en': 'A copy is kept each time a page is deleted. Copies older than a month, and anything past the newest 30, are removed automatically.',
-      'zh': '每次删除页面时都会保留删除前的备份。超过一个月的备份，以及最新 30 份以外的备份会自动删除。',
-      'ko': '페이지를 삭제할 때마다 직전 상태를 보관합니다. 한 달이 지난 것과 최신 30개를 넘는 것은 자동으로 삭제됩니다.',
-      'es': 'Se guarda una copia cada vez que se elimina una página. Las copias de más de un mes y las que superan las 30 más recientes se borran solas.',
-      'fr': 'Une copie est conservée à chaque suppression de page. Les copies de plus d’un mois et celles au-delà des 30 plus récentes sont supprimées automatiquement.',
-      'de': 'Bei jedem Löschen einer Seite wird eine Kopie behalten. Kopien, die älter als ein Monat sind, und alles jenseits der neuesten 30 werden automatisch entfernt.',
-      'pt': 'Uma cópia é guardada sempre que uma página é excluída. Cópias com mais de um mês e as que passam das 30 mais recentes são removidas automaticamente.',
-      'ru': 'При каждом удалении страницы сохраняется копия. Копии старше месяца и всё, что за пределами последних 30, удаляются автоматически.',
+      'ja': 'ページを消した時に、その直前の状態を控えています。',
+      'en': 'A copy of the state just before is kept each time a page is deleted.',
+      'zh': '每次删除页面时，都会保留删除前的状态。',
+      'ko': '페이지를 삭제할 때마다 직전 상태를 보관합니다.',
+      'es': 'Cada vez que se elimina una página se guarda una copia del estado anterior.',
+      'fr': 'À chaque suppression de page, l’état juste avant est conservé.',
+      'de': 'Bei jedem Löschen einer Seite wird der Stand davor aufbewahrt.',
+      'pt': 'Sempre que uma página é excluída, o estado anterior é guardado.',
+      'ru': 'При каждом удалении страницы сохраняется состояние до удаления.',
+    },
+    'trash.noteKeep': {
+      'ja': '控えは {d} 日間残ります（30 件を超えた古い分は自動で消えます）。',
+      'en': 'Copies are kept for {d} days (anything past the newest 30 is removed automatically).',
+      'zh': '备份保留 {d} 天（最新 30 份以外的会自动删除）。',
+      'ko': '사본은 {d}일 동안 보관됩니다 (최신 30개를 넘는 것은 자동으로 삭제됩니다).',
+      'es': 'Las copias se guardan {d} días (lo que pase de las 30 más recientes se borra solo).',
+      'fr': 'Les copies sont conservées {d} jours (au-delà des 30 plus récentes, elles sont supprimées automatiquement).',
+      'de': 'Kopien bleiben {d} Tage erhalten (alles jenseits der neuesten 30 wird automatisch entfernt).',
+      'pt': 'As cópias ficam por {d} dias (o que passar das 30 mais recentes é removido automaticamente).',
+      'ru': 'Копии хранятся {d} дней (всё, что за пределами последних 30, удаляется автоматически).',
+    },
+    'trash.noteForever': {
+      'ja': '控えは期限では消えません（30 件を超えた古い分だけが自動で消えます）。',
+      'en': 'Copies never expire (only anything past the newest 30 is removed automatically).',
+      'zh': '备份不会因过期而删除（只有最新 30 份以外的会自动删除）。',
+      'ko': '사본은 기한으로 삭제되지 않습니다 (최신 30개를 넘는 것만 자동으로 삭제됩니다).',
+      'es': 'Las copias no caducan (solo se borra lo que pase de las 30 más recientes).',
+      'fr': 'Les copies n’expirent pas (seul ce qui dépasse les 30 plus récentes est supprimé automatiquement).',
+      'de': 'Kopien verfallen nicht (nur alles jenseits der neuesten 30 wird automatisch entfernt).',
+      'pt': 'As cópias não expiram (só o que passar das 30 mais recentes é removido automaticamente).',
+      'ru': 'Копии не удаляются по сроку (автоматически удаляется только то, что за пределами последних 30).',
+    },
+    'trash.noteOff': {
+      'ja': 'ごみ箱は使わない設定です。これから消すページは控えを取らずにそのまま消えます。',
+      'en': 'The trash is turned off. Pages you delete from now on are removed without keeping a copy.',
+      'zh': '当前设置为不使用回收站。之后删除的页面不会保留备份。',
+      'ko': '휴지통을 사용하지 않는 설정입니다. 앞으로 삭제하는 페이지는 사본 없이 바로 삭제됩니다.',
+      'es': 'La papelera está desactivada. Las páginas que elimines a partir de ahora se borran sin guardar copia.',
+      'fr': 'La corbeille est désactivée. Les pages supprimées désormais le sont sans copie.',
+      'de': 'Der Papierkorb ist aus. Ab jetzt gelöschte Seiten werden ohne Kopie entfernt.',
+      'pt': 'A lixeira está desativada. As páginas excluídas a partir de agora não guardam cópia.',
+      'ru': 'Корзина отключена. Удаляемые далее страницы стираются без сохранения копии.',
+    },
+    'trash.setting': {
+      'ja': 'ごみ箱の設定',
+      'en': 'Trash settings',
+      'zh': '回收站设置',
+      'ko': '휴지통 설정',
+      'es': 'Ajustes de la papelera',
+      'fr': 'Réglages de la corbeille',
+      'de': 'Papierkorb-Einstellungen',
+      'pt': 'Configurações da lixeira',
+      'ru': 'Настройки корзины',
+    },
+    'trash.modeKeep': {
+      'ja': '{d} 日間残す',
+      'en': 'Keep for {d} days',
+      'zh': '保留 {d} 天',
+      'ko': '{d}일 보관',
+      'es': 'Guardar {d} días',
+      'fr': 'Conserver {d} jours',
+      'de': '{d} Tage aufbewahren',
+      'pt': 'Guardar por {d} dias',
+      'ru': 'Хранить {d} дн.',
+    },
+    'trash.modeForever': {
+      'ja': '期限なしで残す',
+      'en': 'Keep forever',
+      'zh': '永久保留',
+      'ko': '기한 없이 보관',
+      'es': 'Guardar sin límite',
+      'fr': 'Conserver sans limite',
+      'de': 'Unbegrenzt aufbewahren',
+      'pt': 'Guardar sem prazo',
+      'ru': 'Хранить без срока',
+    },
+    'trash.modeOff': {
+      'ja': '使わない（すぐ削除）',
+      'en': 'Off (delete right away)',
+      'zh': '不使用（直接删除）',
+      'ko': '사용 안 함 (바로 삭제)',
+      'es': 'Desactivada (borrar al instante)',
+      'fr': 'Désactivée (suppression immédiate)',
+      'de': 'Aus (sofort löschen)',
+      'pt': 'Desativada (excluir na hora)',
+      'ru': 'Выключена (удалять сразу)',
+    },
+    'trash.optKeep': {
+      'ja': '日数を決めて残す',
+      'en': 'Keep for a set number of days',
+      'zh': '按设定的天数保留',
+      'ko': '정한 일수만큼 보관',
+      'es': 'Guardar durante los días que elijas',
+      'fr': 'Conserver pendant un nombre de jours défini',
+      'de': 'Für eine festgelegte Anzahl Tage aufbewahren',
+      'pt': 'Guardar pelo número de dias definido',
+      'ru': 'Хранить заданное число дней',
+    },
+    'trash.optForever': {
+      'ja': '期限を付けずに残す',
+      'en': 'Keep without an expiry',
+      'zh': '不设期限保留',
+      'ko': '기한 없이 보관',
+      'es': 'Guardar sin caducidad',
+      'fr': 'Conserver sans expiration',
+      'de': 'Ohne Ablauf aufbewahren',
+      'pt': 'Guardar sem prazo de validade',
+      'ru': 'Хранить без срока',
+    },
+    'trash.optOff': {
+      'ja': 'ごみ箱を使わない',
+      'en': 'Do not use the trash',
+      'zh': '不使用回收站',
+      'ko': '휴지통을 사용하지 않음',
+      'es': 'No usar la papelera',
+      'fr': 'Ne pas utiliser la corbeille',
+      'de': 'Papierkorb nicht verwenden',
+      'pt': 'Não usar a lixeira',
+      'ru': 'Не использовать корзину',
+    },
+    'trash.optOffDesc': {
+      'ja': '消したページの控えを取りません。取り消し（Ctrl+Z）は直前の 1 件だけ効きます。',
+      'en': 'No copy is kept when you delete a page. Undo (Ctrl+Z) still covers the most recent one.',
+      'zh': '删除页面时不保留备份。撤销（Ctrl+Z）只对最近一次有效。',
+      'ko': '페이지를 삭제해도 사본을 남기지 않습니다. 실행 취소(Ctrl+Z)는 직전 1건만 가능합니다.',
+      'es': 'No se guarda copia al eliminar una página. Deshacer (Ctrl+Z) solo sirve para la última.',
+      'fr': 'Aucune copie n’est conservée à la suppression. L’annulation (Ctrl+Z) ne couvre que la dernière.',
+      'de': 'Beim Löschen wird keine Kopie behalten. Rückgängig (Strg+Z) gilt nur für die letzte Seite.',
+      'pt': 'Nenhuma cópia é guardada ao excluir. Desfazer (Ctrl+Z) vale apenas para a última.',
+      'ru': 'При удалении копия не сохраняется. Отмена (Ctrl+Z) действует только на последнюю страницу.',
+    },
+    'trash.daysUnit': {
+      'ja': '日',
+      'en': 'days',
+      'zh': '天',
+      'ko': '일',
+      'es': 'días',
+      'fr': 'jours',
+      'de': 'Tage',
+      'pt': 'dias',
+      'ru': 'дн.',
+    },
+    'drawer.bulkDeleteBodyNoTrash': {
+      'ja': '{folders} 個のフォルダーと {pages} 個のマップを削除します。'
+          'フォルダー内のマップも一緒に削除されます。\n'
+          'ごみ箱は使わない設定なので、控えは残りません '
+          '(取り消し (Ctrl+Z) でも戻せません)。',
+      'en': 'Delete {folders} folder(s) and {pages} map(s). Maps inside folders '
+          'will also be deleted.\n'
+          'The trash is turned off, so no copy is kept - undo (Ctrl+Z) will '
+          'not bring them back either.',
+      'zh': '将删除 {folders} 个文件夹和 {pages} 张地图。文件夹内的地图也会被删除。\n'
+          '当前设置为不使用回收站，因此不会保留备份 (撤销 (Ctrl+Z) 也无法恢复)。',
+      'ko': '{folders}개의 폴더와 {pages}개의 맵을 삭제합니다. 폴더 안의 맵도 함께 삭제됩니다.\n'
+          '휴지통을 사용하지 않는 설정이라 사본이 남지 않습니다 '
+          '(실행 취소(Ctrl+Z)로도 되돌릴 수 없습니다).',
+      'es': 'Eliminar {folders} carpeta(s) y {pages} mapa(s). Los mapas dentro de '
+          'las carpetas también se eliminarán.\n'
+          'La papelera está desactivada, así que no se guarda copia '
+          '(deshacer con Ctrl+Z tampoco los recupera).',
+      'fr': 'Supprimer {folders} dossier(s) et {pages} carte(s). Les cartes dans '
+          'les dossiers seront aussi supprimées.\n'
+          'La corbeille est désactivée : aucune copie n’est conservée '
+          '(Ctrl+Z ne les ramènera pas non plus).',
+      'de': '{folders} Ordner und {pages} Maps löschen. Maps in den Ordnern '
+          'werden ebenfalls gelöscht.\n'
+          'Der Papierkorb ist aus, es wird keine Kopie behalten '
+          '(auch Rückgängig mit Strg+Z holt sie nicht zurück).',
+      'pt': 'Excluir {folders} pasta(s) e {pages} mapa(s). Os mapas dentro das '
+          'pastas também serão excluídos.\n'
+          'A lixeira está desativada, então nenhuma cópia é guardada '
+          '(desfazer com Ctrl+Z também não recupera).',
+      'ru': 'Удалить {folders} папк(у/и) и {pages} карт(у/ы). Карты внутри папок '
+          'тоже будут удалены.\n'
+          'Корзина отключена, копия не сохраняется '
+          '(отмена Ctrl+Z тоже не вернёт их).',
     },
     'trash.empty': {
       'ja': 'ごみ箱は空です',
@@ -83740,6 +83909,8 @@ class MindMapProvider extends ChangeNotifier {
     'geofenceLat', 'geofenceLon', 'geofenceLockEnabled',
     'geofenceLockMinutes', 'geofenceMode', 'geofenceRadiusKm',
     'mcp_preamble_v1', 'mcp_model_bar_hidden_v1',
+    // ごみ箱 (消したページの控え) の扱い
+    'pageTrashEnabled', 'pageTrashRetentionDays',
   ];
 
   /// 何があっても持ち出さない物 (鍵・身元・支払い・使用量)。
@@ -91456,7 +91627,10 @@ $cleanQ
     //   完了させる (= ユーザー報告の再発防止: 言語ピッカーが出ない / 英語固定 /
     //   下部ボタンが空)。 他のロードがハングしても起動フローが進む。
     _loadEssentialUiState();
-    // 期限切れの控えを片付ける (= ユーザー要望: 1 か月で自動的に消す)。
+    // ごみ箱の設定 (使うか / 何日残すか) を読む。 片付け側は prefs を
+    //   自分で読むので、 この読み込みと前後しても取りこぼさない。
+    unawaited(_loadPageTrashSettings());
+    // 期限切れの控えを片付ける (= ユーザー要望: 既定は 1 週間。 設定で変えられる)。
     // ページを消さない限り書き込みが起きないので、 起動時にも回す。
     // ★ 2 つ目の窓では飛ばす (= 立ち上がりを速く)。 本体が既にやっている。
     if (!fastStartWindow) unawaited(prunePageBackups());
@@ -91505,6 +91679,10 @@ $cleanQ
     });
     _loadFontSettings();
     _loadGeneratedIds();
+    // ★ 背景テンプレートの「隠した / 自分で足した」 控えを起動時に読む。
+    //   これが読めていないと、 新規ページの背景が「今の一覧」 ではなく
+    //   同梱の全部から選ばれる (= 隠したテンプレが出てくる)。
+    unawaited(loadBgTemplates());
     _loadShelfCells();
     _loadHeaderAndBookshelfSettings();
     _loadFlashcards();
@@ -100280,12 +100458,20 @@ $cleanQ
   ///
   /// 1 ページ消しただけでも残すので、 誤って消した直後でも戻せる。
   /// 増えた時・中身を書き換えただけの時は控えない (減った時だけが対象)。
-  /// 期限で消える仕組みは無く、 新しい 30 個を超えた分だけが捨てられる。
+  /// 設定した日数を過ぎた分と、 新しい 30 個を超えた分が捨てられる
+  /// (日数は設定で変えられる。 0 にすると期限では消えない)。
   Future<void> _backupPagesIfShrinking(
     SharedPreferences prefs,
     _PageStorageSnapshot next,
   ) async {
     if (kIsWeb) return;
+    // ★ 「ごみ箱に入れずにそのまま消す」 設定なら控えを取らない
+    //   (= ユーザー要望)。 ページを消す道は全部この保存に集まるので、
+    //   ここ 1 か所でどの入口 (ドロワーの右クリック / Ctrl+Shift+D /
+    //   まとめて削除 / フォルダー削除 / MCP の delete_page) にも効く。
+    //   設定は渡された prefs から直に読む (起動直後、 まだ
+    //   `_loadPageTrashSettings` が終わっていなくても取りこぼさない)。
+    if (!(prefs.getBool('pageTrashEnabled') ?? true)) return;
     try {
       final beforeRaw = prefs.getString(_coordinatedStorageKey);
       if (beforeRaw == null || beforeRaw.isEmpty) return;
@@ -100308,9 +100494,66 @@ $cleanQ
     }
   }
 
-  /// 控えを置いておく期間と本数 (= ユーザー要望: 1 か月で自動的に消す)。
-  static const Duration _kPageBackupMaxAge = Duration(days: 31);
+  /// 控えを置いておく本数の上限。 期限とは別の歯止めで、 新しい物から
+  /// 数えてこの数までに切る (ディスクが膨らまないように)。
   static const int _kPageBackupMaxCount = 30;
+
+  // ── ごみ箱の設定 (= ユーザー要望: 期限を 1 週間にする / 期限を自分で
+  //    決められるようにする / ごみ箱に入れずそのまま消すモードも選べる) ──
+  //
+  // ★ 既定は 31 日から **7 日** に短くした。 控えは 1 件が「全ページ分の
+  //   丸ごとの写し」 なので場所を取る。 長く置きたい人は設定で伸ばす。
+  /// ごみ箱の既定の保存日数。
+  static const int kPageTrashDefaultDays = 7;
+
+  /// 設定できる日数の上限 (10 年)。 事実上の「期限なし」 は 0 で表す。
+  static const int kPageTrashMaxDays = 3650;
+
+  /// ごみ箱を使うか。 false = 控えを取らずにそのまま消す。
+  ///
+  /// ★ 歯止めは [_backupPagesIfShrinking] (= ページが減る保存の一本道) に
+  ///   置いてあるので、 ドロワーの右クリック / Ctrl+Shift+D / まとめて削除 /
+  ///   フォルダー削除 / MCP の delete_page の**どの入口**から消しても効く。
+  ///   画面側に歯止めを分散させない (増える度に付け忘れが出るため)。
+  bool _pageTrashEnabled = true;
+  bool get pageTrashEnabled => _pageTrashEnabled;
+
+  /// 控えを置いておく日数。 0 = 期限では消さない (件数の上限だけ効く)。
+  int _pageTrashRetentionDays = kPageTrashDefaultDays;
+  int get pageTrashRetentionDays => _pageTrashRetentionDays;
+
+  Future<void> _loadPageTrashSettings() async {
+    try {
+      final prefs = await _prefsWithRetry();
+      _pageTrashEnabled = prefs.getBool('pageTrashEnabled') ?? true;
+      final d =
+          prefs.getInt('pageTrashRetentionDays') ?? kPageTrashDefaultDays;
+      _pageTrashRetentionDays =
+          d < 0 ? 0 : (d > kPageTrashMaxDays ? kPageTrashMaxDays : d);
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  Future<void> setPageTrashEnabled(bool v) async {
+    _pageTrashEnabled = v;
+    notifyListeners();
+    try {
+      final prefs = await _prefsWithRetry();
+      await prefs.setBool('pageTrashEnabled', v);
+    } catch (_) {}
+  }
+
+  /// 保存日数を変える (0 = 期限なし)。 短くした時はその場で片付ける。
+  Future<void> setPageTrashRetentionDays(int days) async {
+    _pageTrashRetentionDays =
+        days < 0 ? 0 : (days > kPageTrashMaxDays ? kPageTrashMaxDays : days);
+    notifyListeners();
+    try {
+      final prefs = await _prefsWithRetry();
+      await prefs.setInt('pageTrashRetentionDays', _pageTrashRetentionDays);
+    } catch (_) {}
+    await prunePageBackups();
+  }
 
   /// 古い控えを片付ける。 1 か月を過ぎた物と、 30 件を超えた古い分。
   ///
@@ -100324,10 +100567,20 @@ $cleanQ
       final dir = await pageBackupDir();
       final files = await _backupFilesNewestFirst(dir);
       final now = DateTime.now();
+      // ★ 期限は設定から読む (= ユーザー要望: 自由に決められるように)。
+      //   この片付けは**起動直後 (設定の読み込みより前)** にも走るので、
+      //   その場で端末の値を読む。 `_pageTrashRetentionDays` を見ると、
+      //   まだ既定値のままの一瞬に「伸ばしておいた控え」 を消してしまう。
+      var days = _pageTrashRetentionDays;
+      try {
+        days = (await _prefsWithRetry()).getInt('pageTrashRetentionDays') ??
+            kPageTrashDefaultDays;
+      } catch (_) {}
+      final maxAge = days <= 0 ? null : Duration(days: days);
       var removed = 0;
       for (var i = 0; i < files.length; i++) {
         final e = files[i];
-        final expired = now.difference(e.at) > _kPageBackupMaxAge;
+        final expired = maxAge != null && now.difference(e.at) > maxAge;
         final overflow = i >= _kPageBackupMaxCount;
         if (!expired && !overflow) continue;
         try {
@@ -101341,12 +101594,15 @@ $cleanQ
     // 一番最初のページはミッドナイト。 以降はページを作る度にテンプレ背景から
     // ランダムに選ぶ。 作成時に一度だけ割り当てるので、 ユーザーが後から
     // 自分で変えた背景はそのまま残る。
+    // ★ = ユーザー報告「新規ページを作ると**前の**テンプレート背景が
+    //   ランダムに選ばれる」。 抽選表が b426 で下ろした古い 15 種類のまま
+    //   だったのが原因。 いまは [bgTemplateChoicesForNewPage] が一覧と
+    //   同じ物 (隠した物は除き、 自分で足した物は含む) を返す。
     if (pageType == 'normal' || pageType == 'bookshelf') {
-      final id = _pages.isEmpty
-          ? 'midnight'
-          : kBgTemplateIdsForNewPage[
-              math.Random().nextInt(kBgTemplateIdsForNewPage.length)];
-      page.backgroundImagePath = 'builtin-map-background:$id';
+      final choices = bgTemplateChoicesForNewPage();
+      page.backgroundImagePath = _pages.isEmpty
+          ? 'builtin-map-background:$kDefaultBgTemplateId'
+          : choices[math.Random().nextInt(choices.length)];
       // テンプレは常に不透明度 100% (= ユーザー報告: モバイルで背景が
       // 白っぽくもやが掛かる。 既定の 50% が明るいテーマと混ざっていた)。
       page.backgroundOpacityPercent = 100;
@@ -101358,13 +101614,58 @@ $cleanQ
     return page;
   }
 
-  /// 新規ページの背景抽選に使う組み込みテンプレ ID
-  /// (screen 側 `_mapBackgroundTemplates` と同じ一覧)。
-  static const List<String> kBgTemplateIdsForNewPage = [
-    'wood', 'chalkboard', 'ocean', 'sakura', 'fireworks', 'castle',
-    'aurora', 'nightSky', 'galaxy', 'rain', 'nature', 'blueprint',
-    'midnight', 'sage', 'sunset',
+  /// 既定のテンプレ背景 (= 初回起動で貼る物)。
+  static const String kDefaultBgTemplateId = 'blueprint';
+
+  /// **今**の背景テンプレートの並び (= 一覧に出る順序そのまま)。
+  ///
+  /// ★ = ユーザー報告「新規ページを作ると**前の**テンプレート背景が
+  ///   ランダムに選ばれる」。 b426 で一覧を写真 9 枚 + ブループリント +
+  ///   アプリの絵に入れ替えた時、 抽選表だけが古い 15 種類 (描いて作る方)
+  ///   のまま残っていた。 一覧と抽選表を 2 か所に書いていたのが原因なので、
+  ///   画面側 (`_mapBackgroundTemplates`) はこの並びから組み立てる。
+  ///   足す / 下ろす時はここだけ直せばよい。
+  static const List<String> kBgTemplateIds = [
+    'blueprint',
+    'appWallpaper',
+    'starryLake',
+    'fireworks',
+    'gems',
+    'ocean',
+    'autumn',
+    'castle',
+    'watercolor',
+    'greenery',
+    'sumie',
   ];
+
+  /// 一覧から下ろした古いテンプレ id (描いて作る方)。
+  ///
+  /// ★ 消さない。 前の版でこれらを貼ったページがまだ有るので、 描く方は
+  ///   今までどおり知っている必要がある。 新規ページの抽選には使わないが、
+  ///   AI からの指定は受け付ける。
+  static const List<String> kLegacyBgTemplateIds = [
+    'wood', 'chalkboard', 'sakura', 'aurora', 'nightSky', 'galaxy',
+    'rain', 'nature', 'midnight', 'sage', 'sunset', 'paper',
+  ];
+
+  /// 新規ページに貼る背景の候補 (= **今**一覧に出ている物)。
+  ///
+  /// ★ = ユーザー要望「今のテンプレート背景から選択されるように」。
+  ///   隠したテンプレは外し、 自分で足したテンプレも候補に入れる。
+  List<String> bgTemplateChoicesForNewPage() {
+    final out = <String>[
+      for (final id in kBgTemplateIds)
+        if (!_hiddenBgTemplates.contains(id)) 'builtin-map-background:$id',
+      for (final t in _customBgTemplates)
+        if ((t['path'] ?? '').trim().isNotEmpty &&
+            File(t['path']!.trim()).existsSync())
+          t['path']!.trim(),
+    ];
+    // 全部隠した時でも背景なしにはしない (= 既定の 1 枚に戻す)。
+    if (out.isEmpty) out.add('builtin-map-background:$kDefaultBgTemplateId');
+    return out;
+  }
 
   void addPage({String? name, String? folderId}) {
     final page = _addDefaultPage(name: name, folderId: folderId);
@@ -104177,7 +104478,8 @@ $cleanQ
   /// AI からページの背景を変える (= ユーザー要望: 背景画像も AI で操作したい)。
   ///
   /// 指定できるのは次のどれか。
-  ///   - [template] … 組み込みの背景名 (kBgTemplateIdsForNewPage のいずれか)
+  ///   - [template] … 組み込みの背景名 ([kBgTemplateIds] か
+  ///     [kLegacyBgTemplateIds] のいずれか)
   ///   - [imagePath] … 端末にある画像ファイルの絶対パス
   ///   - [clear] = true … 背景を外して升目だけにする
   /// あわせて [opacityPercent] (0〜100) と [fit] ('cover'/'contain'/'tile')、
@@ -104220,7 +104522,11 @@ $cleanQ
       page.backgroundImagePath = null;
     } else if (template != null && template.trim().isNotEmpty) {
       final id = template.trim();
-      if (!kBgTemplateIdsForNewPage.contains(id)) return false;
+      // ★ 今の一覧 + 下ろした古い id。 古い方も受け付けるのは、 AI が
+      //   前の版の名前で指定してきても描ける (= 絵は残してある) ため。
+      if (!kBgTemplateIds.contains(id) && !kLegacyBgTemplateIds.contains(id)) {
+        return false;
+      }
       page.backgroundImagePath = 'builtin-map-background:$id';
       // テンプレは不透明のまま出すのが既定 (半透明だと白っぽく霞む)。
       page.backgroundOpacityPercent = opacityPercent ?? 100;
@@ -117661,6 +117967,110 @@ $example
     return hidden;
   }
 
+  /// 現在ページ版の [expandHiddenChildrenOnPage]。
+  Set<String> expandHiddenChildren(Set<String> ids) =>
+      expandHiddenChildrenOnPage(currentPage, ids);
+
+  /// [page] の [ids] を運ぶ時に**一緒に付いて行くべき隠れた子**を足した集合。
+  ///
+  /// ★ = ユーザー報告「画面分割した状態で子ノードを格納した親ノードを境界線を
+  ///   跨いで転送すると、 子ノードは転送されず、 親ノードは収納しているマークが
+  ///   付いたままになる」。
+  ///   隠れている子には 2 通りあるのに、 転送は (1) しか数えていなかった。
+  ///     (1) Ctrl+G の格納ノード … 子に `hiddenInContainer` が立ち、
+  ///         親の `containedNodeIds` から辿れる。
+  ///     (2) 折りたたみ (収納) … 子には何の印も付かず、 接続を辿って子孫を
+  ///         求めている (`collapsed` / `collapsedChildIds`)。
+  ///   そのため (2) は親だけが向こうのページへ行き、 残された子は隠していた
+  ///   親が居なくなった途端に元のページで**見えるようになっていた**。
+  ///   入れ子 (格納の中で折りたたんでいる等) も辿れるよう、 見付けた子を
+  ///   もう一度調べ直す。
+  Set<String> expandHiddenChildrenOnPage(MindMapPage page, Set<String> ids) {
+    final result = <String>{...ids};
+    final queue = <String>[...ids];
+    void push(String id) {
+      if (!page.nodes.containsKey(id)) return;
+      if (result.add(id)) queue.add(id);
+    }
+
+    while (queue.isNotEmpty) {
+      final id = queue.removeLast();
+      final n = page.nodes[id];
+      if (n == null) continue;
+      // (1) 格納ノードの中身。
+      for (final m in n.containedNodeIds ?? const <String>[]) {
+        push(m);
+      }
+      // (2) 折りたたみで隠れている子孫 ([hiddenNodeIdsOnPage] と同じ数え方)。
+      if (n.collapsed) {
+        for (final d in getDescendantsOnPage(page, id)) {
+          push(d);
+        }
+      } else {
+        for (final c in n.collapsedChildIds ?? const <String>[]) {
+          if (!page.nodes.containsKey(c)) continue;
+          push(c);
+          for (final d in getDescendantsOnPage(page, c)) {
+            push(d);
+          }
+        }
+      }
+    }
+    return result;
+  }
+
+  /// [page] に残っている要素のうち、 収納の印で [gone] を指している物の id。
+  Set<String> _containmentRefsInto(MindMapPage page, Set<String> gone) {
+    final out = <String>{};
+    for (final e in page.nodes.entries) {
+      final n = e.value;
+      if ((n.containedNodeIds ?? const <String>[]).any(gone.contains) ||
+          (n.collapsedChildIds ?? const <String>[]).any(gone.contains)) {
+        out.add(e.key);
+      }
+    }
+    return out;
+  }
+
+  /// 移動 / 転送の後始末。 [page] の [ids] が持つ収納の印を、 そのページに
+  /// **実在する id だけ**に整える。
+  ///
+  /// ★ = ユーザー報告「親ノードは収納しているマークが付いたままの状態になる」。
+  ///   万一子を運べなかった時に「開けない空の収納」 が残らないようにする。
+  void _repairContainmentOnPage(MindMapPage page, Set<String> ids) {
+    for (final id in ids) {
+      final n = page.nodes[id];
+      if (n == null) continue;
+      var next = n;
+      final members = n.containedNodeIds;
+      if (members != null) {
+        final alive = members.where(page.nodes.containsKey).toList();
+        if (alive.length != members.length) {
+          next = next.copyWith(
+            title: alive.isEmpty
+                ? next.title
+                : _updateContainerCountInTitle(next.title, alive.length),
+            isContainer: next.isContainer && alive.isNotEmpty,
+            containedNodeIds: alive.isEmpty ? null : alive,
+          );
+        }
+      }
+      final kids = next.collapsedChildIds;
+      if (kids != null) {
+        final alive = kids.where(page.nodes.containsKey).toList();
+        if (alive.length != kids.length) {
+          next = next.copyWith(collapsedChildIds: alive.isEmpty ? null : alive);
+        }
+      }
+      // 畳む中身が 1 つも無いなら印を下ろす (= 「中身が無いのに畳んだ印」)。
+      if (next.collapsed && getDescendantsOnPage(page, id).isEmpty) {
+        next = next.copyWith(collapsed: false);
+        _collapsedPositions.remove(id);
+      }
+      if (!identical(next, n)) page.nodes[id] = next;
+    }
+  }
+
   /// 削除する id 集合 [ids] にコンテナ (= ギャラリーの表紙 / 格納ノード) が
   /// 含まれていれば、 その中のメンバー (containedNodeIds) も削除対象に含めて
   /// 返す (= ユーザー要望: 表紙を消したら中の動画も一緒に消す。 旧実装は表紙
@@ -117930,6 +118340,12 @@ $example
           (node.position.dy + delta.dy).clamp(0.0, 20000.0 - node.height),
         ),
       );
+      // 畳んでいる親を動かした時は、 折りたたみの基準位置も同じだけずらす。
+      // ★ これが無いと、 隠れた子も一緒に運んで置き直した後で親を開いた時に
+      //   [toggleNodeCollapsed] の差分補正が重なり、 子だけもう一度同じ量
+      //   ずれる。
+      final saved = _collapsedPositions[id];
+      if (saved != null) _collapsedPositions[id] = saved + delta;
     }
     page.lastModifiedAt = DateTime.now();
     _saveToStorage();
@@ -118208,13 +118624,9 @@ $example
     // ★ 以前は転送**先**の控えしか積んでいなかったので、 Ctrl+Z すると
     //   転送先から要素が消えるだけで元にも戻らず、 要素が消滅していた。
     _captureCrossPageMove(source, target);
-    final toMove = <String>{...ids};
-    for (final id in ids) {
-      final n = source.nodes[id];
-      if (n != null && n.isContainer && n.containedNodeIds != null) {
-        toMove.addAll(n.containedNodeIds!);
-      }
-    }
+    // 隠れている子 (格納の中身 / 折りたたんだ子孫) も一緒に運ぶ
+    // (= [moveNodesToPage] と同じ理由。 双子なので同じ直し方にする)。
+    final toMove = expandHiddenChildrenOnPage(source, ids);
     final moved = <String>{};
     for (final id in toMove) {
       final node = source.nodes.remove(id);
@@ -118237,6 +118649,8 @@ $example
       return f || t; // 片端のみ → 破棄
     });
     target.connections.addAll(carried);
+    _repairContainmentOnPage(target, moved);
+    _repairContainmentOnPage(source, _containmentRefsInto(source, moved));
     _autoArrangeIfBookshelf();
     _saveToStorage();
     notifyListeners();
@@ -118543,8 +118957,15 @@ $example
     // 送れた分だけ元のページから消す (= 転送は移動)。
     for (final id in done) {
       source.nodes.remove(id);
-      source.connections
-          .removeWhere((c) => c.fromId == id || c.toId == id);
+      source.connections.removeWhere((c) => c.fromId == id || c.toId == id);
+    }
+    // 隠していた親 (格納ノード) が紙へ行ったなら、 取り残された子の
+    // 「隠れ印」 を外す。 印だけ残ると二度と出せない迷子になる。
+    for (final e in source.nodes.entries.toList()) {
+      final h = e.value.hiddenInContainer;
+      if (h != null && !source.nodes.containsKey(h)) {
+        source.nodes[e.key] = e.value.copyWith(hiddenInContainer: null);
+      }
     }
     _saveToStorage();
     notifyListeners();
@@ -118574,17 +118995,15 @@ $example
     //   Ctrl+Z すると同じ要素が転送元と転送先の両方に生えていた。
     _captureCrossPageMove(source, target);
 
-    // ── 格納ノード (コンテナ) は中の子ノードも一緒に移動する ──
-    // コンテナだけ移すと containedNodeIds が対象ページに存在しないノードを
-    //   指してコンテナが壊れ、 元ページには hiddenInContainer の迷子ノードが
-    //   残る。 これを防ぐため移動対象にコンテナの子 id を加える。
-    final toMove = <String>{...ids};
-    for (final id in ids) {
-      final n = source.nodes[id];
-      if (n != null && n.isContainer && n.containedNodeIds != null) {
-        toMove.addAll(n.containedNodeIds!);
-      }
-    }
+    // ── 隠れている子 (格納の中身 / 折りたたんだ子孫) も一緒に運ぶ ──
+    // ★ = ユーザー報告「子ノードを格納した親ノードを境界線を跨いで転送すると、
+    //   子ノードが転送されず、 親に収納のマークが付いたまま残る」。
+    //   旧: 格納ノード (containedNodeIds) だけを足していた。 折りたたみ
+    //   (collapsed / collapsedChildIds) の子は接続を辿って隠しているので
+    //   ここに入らず、 親だけが向こうへ行き、 残された子は隠す側の親が
+    //   居なくなった途端に元のページで見えるようになっていた。
+    //   数え方は [expandHiddenChildrenOnPage] に寄せる (入れ子も辿る)。
+    final toMove = expandHiddenChildrenOnPage(source, ids);
 
     // ── ノード本体をそのまま移動 (全フィールド保持) ──
     final moved = <String>{};
@@ -118729,6 +119148,11 @@ $example
       _saveShelfCells();
     }
 
+    // 収納の印が実在しない id を指したままにならないよう整える
+    // (= ユーザー報告「収納しているマークが付いたままになる」)。
+    _repairContainmentOnPage(target, moved);
+    _repairContainmentOnPage(source, _containmentRefsInto(source, moved));
+
     _saveToStorage();
     notifyListeners();
   }
@@ -118779,9 +119203,10 @@ $example
             .firstWhere((p) => (p.backgroundImagePath ?? '').trim().isNotEmpty)
             .backgroundOpacityPercent;
       } else {
-        final id = kBgTemplateIdsForNewPage[
-            math.Random().nextInt(kBgTemplateIdsForNewPage.length)];
-        merged.backgroundImagePath = 'builtin-map-background:$id';
+        // ★ 新規ページと同じ選び方 (= **今**一覧に出ている物から選ぶ)。
+        final choices = bgTemplateChoicesForNewPage();
+        merged.backgroundImagePath =
+            choices[math.Random().nextInt(choices.length)];
         merged.backgroundOpacityPercent = 100;
       }
     }

@@ -50,6 +50,101 @@ const String kAppVersionName = '1.0.0';
 /// **新しい順**に並べる (先頭が今の版)。
 const List<ReleaseNote> kReleaseNotes = <ReleaseNote>[
   ReleaseNote(
+    build: 438,
+    date: '2026-09-25',
+    lines: <String, List<String>>{
+      'ja': [
+        'ターミナルがセキュリティソフトに止められてアプリごと落ちる事が'
+            'あったのを直しました。開く時に余計なシェルを挟まないようにし、'
+            '失敗した時の後始末も入れてあります。',
+        '同じアカウントのままでも、CLI のタブを何枚でも開けるようにしました。'
+            '新規タブから同じアカウントを選んでも、別の会話が始まります。',
+        'CLI の更新が終わると、自動で探し直して新しいセッションを開くように'
+            'なりました。端末に出た URL もクリックで開けます。',
+        'ターミナルで使えるシェルの一覧に PowerShell 7 が出ないことが'
+            'あったのを直しました。',
+        'txt やマークダウンの編集画面のターミナルを、VS Code のように'
+            '画面の下に開くようにしました。上の縁を掴むと高さを変えられます。',
+        'マークダウンのページを、最後に読んでいた所から開くようにしました'
+            '(タブごとに覚えます)。',
+        'マークダウンの AI 欄を整理しました。見出しを「本文を書き出す」'
+            '「チャット」に改め、上下の境界を動かせるようにし、'
+            'ページを開くたびに勝手に出てくるのをやめました。',
+        'マークダウンのチャット欄で改行できるようにし、モデルと推論の'
+            '深さを選べるようにしました。過去のやり取りは上下キーで'
+            '呼び出せます。',
+        'マークダウンに本文の読み上げを付けました。',
+        'CLI にマークダウンを頼んだ時、改行が「\\n」の文字のまま入って'
+            '1 行の長文になっていたのを直しました。長い資料は自動で'
+            '複数のタブに分かれます。',
+        'フリーノートに AI で資料を作らせた時、文字が重なって崩れていたのを'
+            '直しました。用紙の幅で折り返し、入り切らない分は次のタブへ'
+            '続きます。崩れた下書きのタブも残りません。',
+        'ページ一覧のメニューから、そのページのファイルの場所を'
+            'エクスプローラーで開けるようにしました。',
+        'ヘッダーを隠すと、ページ名の行やボタンの帯まで隠れるように'
+            'しました。Esc か画面上端の中央にカーソルを持っていくと'
+            '戻すボタンが出ます。',
+        'ごみ箱の期限を 1 週間にしました。日数は自由に変えられ、'
+            'ごみ箱を使わずそのまま消す設定も選べます。',
+        'pptx や docx などを開いている時も Ctrl+Shift+E でページ一覧が'
+            '開くようにしました。',
+        '分割画面で、格納した親ノードを境界の向こうへ渡すと子が'
+            '付いてこなかったのを直しました。',
+        '新しいページに、今の一覧に無い古いテンプレート背景が'
+            '付いてしまうのを直しました。',
+        'マークダウンの目次が途中で切れていたのを直しました'
+            '(項目が多い時は段組みになります)。',
+        'ギャラリーで、ブロックの外の背景を長押しするとメニューが'
+            '出るようにしました。スマホのメニューに範囲選択も足しました。',
+        '要素の背景色と文字色の既定を、パソコンでも右クリックで'
+            '決められるようにしました。',
+      ],
+      'en': [
+        'Fixed the terminal being blocked by security software and taking the '
+            'app down with it. It no longer goes through an extra shell, and '
+            'failures now clean up after themselves.',
+        'You can now open as many CLI tabs as you like on the same account — '
+            'picking the same account from a new tab starts a new session.',
+        'After a CLI update finishes, the app re-detects it and opens a fresh '
+            'session automatically. URLs printed in the terminal are clickable.',
+        'Fixed PowerShell 7 sometimes missing from the shell list.',
+        'The terminal for txt and markdown editors now opens as a panel at the '
+            'bottom, like VS Code. Drag its top edge to resize.',
+        'Markdown pages reopen where you left off, remembered per tab.',
+        'Tidied the markdown AI panel: the headings are now "Write the '
+            'document" and "Chat", the divider between them can be dragged, '
+            'and it no longer opens by itself every time.',
+        'The markdown chat box accepts line breaks, lets you pick the model '
+            'and reasoning depth, and recalls past messages with the arrow keys.',
+        'Markdown pages can now read the text aloud.',
+        'Fixed markdown written by a CLI arriving as one long paragraph with '
+            r'literal "\n" in it. Long documents are split across tabs.',
+        'Fixed AI-written free-note material overlapping itself. Text now '
+            'wraps to the paper and continues on the next tab when it does not '
+            'fit, and no broken draft tab is left behind.',
+        'The page list menu can open a page\'s file location in the file '
+            'manager.',
+        'Hiding the header now hides the page-name row and button bars too. '
+            'Press Esc or move the pointer to the top centre to bring them back.',
+        'The trash now keeps deleted pages for a week. You can change the '
+            'number of days, or turn the trash off entirely.',
+        'Ctrl+Shift+E opens the page list while pptx, docx and other files are '
+            'open.',
+        'Fixed children being left behind when a container node was dragged '
+            'across the split boundary.',
+        'Fixed new pages getting an old template background that is no longer '
+            'in the list.',
+        'Fixed the markdown table of contents being cut off (it now flows into '
+            'columns when there are many entries).',
+        'Long-pressing the gallery background now opens the same menu as a '
+            'right-click, and mobile menus gained range select.',
+        'Element background and text colours can be pinned as the default with '
+            'a right-click on desktop.',
+      ],
+    },
+  ),
+  ReleaseNote(
     build: 437,
     date: '2026-09-23',
     lines: <String, List<String>>{

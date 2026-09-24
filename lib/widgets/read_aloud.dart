@@ -383,6 +383,62 @@ class ReadAloudController extends ChangeNotifier {
   }
 }
 
+/// Markdown の飾り記号を落として、 読み上げ向けの素の文字にする。
+///
+/// = ユーザー要望「マークダウンページにも本文の音声読み上げ機能を作って欲しい」。
+/// `#` や `**`、 表の `|`、 ``` のコード塊をそのまま読ませると意味を成さない音に
+/// なるので、 読ませたくない飾りだけを落とす (本文の文字は消さない)。
+String markdownToSpeechText(String md) {
+  final out = <String>[];
+  var inFence = false;
+  for (final raw in md.replaceAll('\r\n', '\n').split('\n')) {
+    final t = raw.trim();
+    // コード塊 (``` / ~~~) の中は読まない。
+    if (RegExp(r'^(```|~~~)').hasMatch(t)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    // ページ区切りの印は読まない。
+    if (RegExp(r'^<<<PAGE:.*>>>$').hasMatch(t)) continue;
+    // 水平線は読まない。
+    if (RegExp(r'^([-*_])\s*(?:\1\s*){2,}$').hasMatch(t)) continue;
+    // 表の区切り行 (|---|:--:|) は読まない。
+    if (t.contains('-') && RegExp(r'^\|?[\s:|-]+\|[\s:|-]*$').hasMatch(t)) {
+      continue;
+    }
+    // 行頭の印 (見出し / 引用 / 箇条書き / 作業の [ ]) を落とす。
+    var line = raw
+        .replaceFirst(RegExp(r'^\s{0,3}#{1,6}\s*'), '')
+        .replaceFirst(RegExp(r'^\s*>+\s*'), '')
+        .replaceFirst(RegExp(r'^\s*(?:[-*+•・]|\d+[.)])\s+'), '')
+        .replaceFirst(RegExp(r'^\[[ xX]\]\s*'), '');
+    // 表の縦棒は読点に変える (セルが続けて読まれてしまうのを防ぐ)。
+    if (line.contains('|')) {
+      line = line
+          .replaceFirst(RegExp(r'^\s*\|'), '')
+          .replaceFirst(RegExp(r'\|\s*$'), '')
+          .replaceAll('|', '、');
+    }
+    line = line
+        // 画像は説明だけ、 リンクは文字だけ残す。
+        .replaceAllMapped(
+            RegExp(r'!\[([^\]]*)\]\([^)]*\)'), (m) => m.group(1) ?? '')
+        .replaceAllMapped(
+            RegExp(r'\[([^\]]*)\]\([^)]*\)'), (m) => m.group(1) ?? '')
+        // 裸の URL は記号の羅列になるので読まない。
+        .replaceAll(RegExp(r'https?://\S+'), '')
+        // 強調 / 打ち消し / 行内コードの印を落とす。
+        .replaceAll(RegExp(r'(\*\*|__|~~|\*|_|`)'), '')
+        // HTML のタグは落とす。
+        .replaceAll(RegExp(r'<[^>]+>'), '')
+        .trim();
+    out.add(line);
+  }
+  // 空行は 1 つにまとめる (文の切れ目は残す)。
+  return out.join('\n').replaceAll(RegExp(r'\n{3,}'), '\n\n').trim();
+}
+
 /// 速度プリセット (ラベル, flutter_tts のレート値)。
 /// = ユーザー要望: 「速い」 等では速さが分かりにくいので ×2.0 のような倍率表記に。
 ///   倍率は等速 (rate 0.5) を ×1.0 とした表記 (Android の rate→×2 換算に一致)。
