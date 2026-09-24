@@ -50,6 +50,164 @@ const String kAppVersionName = '1.0.0';
 /// **新しい順**に並べる (先頭が今の版)。
 const List<ReleaseNote> kReleaseNotes = <ReleaseNote>[
   ReleaseNote(
+    build: 437,
+    date: '2026-09-23',
+    lines: <String, List<String>>{
+      'ja': [
+        'Claude Code / Codex CLI の画面を、アプリの外の窓として開けるように'
+            'しました。CLI の一覧の上にある「別の窓で開く」から出せます。',
+        'その窓を直に開くショートカットをデスクトップに作れるようにしました。'
+            'ショートカットから始めると、マップのページを立ち上げずに'
+            'CLI の画面だけが出ます。',
+        '集中ロックの設定を整理しました。「ロック中に使える物」を'
+            '3 択 (使わない / 調べ物だけ / 全部) に、ロック画面に置く物を'
+            '1 行の札にまとめ、時刻での自動ロックは畳んであります。'
+            '今までの設定はそのまま引き継がれます。',
+        '集中ロックのショートカットを作れるようにしました。そこから始めると、'
+            'ページを開かずにロック画面から始まります。',
+        '「時刻で自動的に始める」を入にしたまま枠を 1 つも作っていないと、'
+            '毎晩 22 時に勝手にロックが掛かっていたのを直しました。',
+      ],
+      'en': [
+        'The Claude Code / Codex CLI view can now open as its own window '
+            'outside the app, from "Open in its own window" above the CLI list.',
+        'You can create a desktop shortcut straight to that window. Launching '
+            'it opens only the CLI view — the map is never started.',
+        'The focus-lock settings were tidied up: what you can still use while '
+            'locked is now one choice of three (nothing / research only / '
+            'everything), what appears on the lock screen is a single row of '
+            'chips, and the schedule is folded away. Your existing settings '
+            'carry over.',
+        'You can create a shortcut for focus lock too; launching it starts the '
+            'lock without opening the map.',
+        'Fixed: leaving "start automatically at a set time" on without adding '
+            'any time range locked the screen every night at 22:00.',
+      ],
+    },
+  ),
+  ReleaseNote(
+    build: 436,
+    date: '2026-09-22',
+    lines: <String, List<String>>{
+      'ja': [
+        'Claude Code / Codex CLI の「考える深さ」 を「推論」 と書くように'
+            'しました。 選択肢も言い換えるのをやめて、 その CLI が実際に'
+            '受け取る値 (low / medium / high / xhigh / max など) を'
+            'そのまま並べます。',
+        '選んだモデルと推論が、 端末で開いた時にも効くようになりました。'
+            ' これまでは 1 回聞くだけの問い合わせにしか効いておらず、'
+            '端末では CLI 自身の設定 (例: gpt-5.6-sol の xhigh) で'
+            '始まっていました。',
+        'モデルと推論は CLI ごとに覚えるようにしました。 Claude Code で'
+            '選んだモデルが Codex CLI へ渡ってしまう事が無くなります。',
+        '推論を指定する口が無い相手 (Gemini CLI) では、 その欄を'
+            '出さないようにしました。',
+        'AI やターミナルの欄が点滅する不具合を直しました。'
+            ' 「最新へ」 の札・「停止」 のボタン・文字を打つ位置の追従・'
+            '焦点の奪い合いが、 出力のたびに画面を組み直していたのが原因です。',
+      ],
+      'en': [
+        'The CLI setting is now called "Reasoning" instead of "thinking '
+            'depth", and the choices are the values the CLI actually takes '
+            '(low / medium / high / xhigh / max) rather than reworded labels.',
+        'The model and reasoning you pick now also apply when you open the '
+            'CLI in a terminal. Until now they only applied to one-shot '
+            'questions, so the terminal started with the CLI\'s own config '
+            '(for example gpt-5.6-sol at xhigh).',
+        'The model and reasoning are remembered per CLI, so a model picked '
+            'for Claude Code is no longer handed to Codex CLI.',
+        'For a CLI with no reasoning switch (Gemini CLI) the row is hidden.',
+        'Fixed the AI and terminal panes flickering. The "jump to latest" '
+            'pill, the "stop" button, the typing-position follow and a focus '
+            'tug-of-war were rebuilding the pane on every chunk of output.',
+      ],
+    },
+  ),
+  ReleaseNote(
+    build: 435,
+    date: '2026-09-21',
+    lines: <String, List<String>>{
+      'ja': [
+        'CLI の画面に「ファイル」 ボタンを足しました。 画像や文書を選ぶと、'
+            ' その道筋が打ちかけの文へ差し込まれます (送信はしません)。',
+        '要素の色の並びに「背景」「文字」 と名札を付けました。',
+        '文字色の数を増やして、 背景色と同じ幅・同じ列数にそろえました。',
+        '自動操作の「手順を追加」 は、 窓ではなく手順一覧の下に選択肢を'
+            '並べるようにしました。',
+        'マークダウンの AI 欄を、 上に「書いてもらう」、 下にチャットの'
+            '1 枚にしました。 相手 (API / Claude Code / Codex CLI、 チャットは'
+            'ブラウザ版も) は上と下で別々に選べます。',
+        'AI の相手の表記を「PC内AI」から「Claude Code」「Codex CLI」へ改め、'
+            '一覧でも 2 つに分けて選べるようにしました。',
+        'Claude Code と Codex CLI を Free プランでも使えるようにしました。'
+            ' その代わり、 無料プランで開けるのは一覧の先頭 2 ページまでに'
+            'なりました (作成は自由。 3 ページ目以降は鍵が掛かり、'
+            'ピン留めや並べ替えで開ける枠を入れ替えられます)。',
+        '端末で Ctrl+V を押すと、 写している画像をファイルにして'
+            'その道筋を差し込むようにしました。 「クリア」 で打ちかけの行を'
+            '全消しできます。',
+        '「キュー / ステア」 をアプリ側で持つ形にしました。 キューの間は'
+            'Enter で順番待ちへ溜まり、 考え終わってから渡ります'
+            ' (Claude Code でも使えます)。',
+        'AI アシスタントを左右に並べた時、 見出しとタブの帯を'
+            '1 本にし、 右の端末を押せばそちらに打てるようにしました。'
+            ' 欄の札には開いているフォルダーも出ます。',
+        '同じフォルダーをもう一度開こうとした時は、 「既に開かれています」 と'
+            '出して、 そのタブへ移るだけにしました。',
+      ],
+      'en': [
+        'The CLI view has a "File" button. Pick an image or document and its '
+            'path is inserted into what you are typing (nothing is sent).',
+        'The node colour rows are labelled "fill" and "text".',
+        'More text colours were added so that row matches the width of the '
+            'fill colours.',
+        'In automation, "add a step" now lists the kinds under the step list '
+            'instead of opening a dialog.',
+        'The Markdown AI pane is now one column: "write for me" on top, chat '
+            'below, each with its own engine (API, Claude Code, Codex CLI, and '
+            'the browser versions for chat).',
+        'The AI engines are named "Claude Code" and "Codex CLI" instead of '
+            '"PC AI", and they are listed separately.',
+        'Claude Code and Codex CLI now work on the free plan. In exchange, the '
+            'free plan can open the first 2 pages of the list; creating pages '
+            'is unlimited, and pinning or reordering changes which 2 are open.',
+        'Ctrl+V in the terminal writes a clipboard image to a file and inserts '
+            'its path. A "Clear" button wipes the line you are typing.',
+        'Queue/steer is now handled by the app, so it works with Claude Code '
+            'too: while queued, Enter parks the line and sends it once the CLI '
+            'is done thinking.',
+        'When the assistant is split side by side, the header and tab strip '
+            'span both panes, and clicking the right pane types there.',
+        'Opening a folder that is already open switches to that tab instead of '
+            'starting a second one.',
+      ],
+    },
+  ),
+  ReleaseNote(
+    build: 434,
+    date: '2026-09-21',
+    lines: <String, List<String>>{
+      'ja': [
+        '左右に並べている時、 札の並び順どおりに左右へ置くようにしました。'
+            ' 右の札を押したのに左側が入れ替わる事が無くなります。',
+        'リンクの線の既定を 4 にしました。',
+        'リンクの色に白を足し、 黒と白を先頭に寄せました。',
+        'リンクの設定を畳むと、 横長の帯ではなく小さなアイコン 1 つに'
+            'なります。',
+      ],
+      'en': [
+        'When two panes are side by side, they now follow the order of the '
+            'tabs, so tapping the right-hand tab no longer replaces the left '
+            'pane.',
+        'Link lines default to 4.',
+        'White was added to the link colours, and black and white moved to '
+            'the front.',
+        'Collapsing the link settings now leaves a small icon instead of a '
+            'wide bar.',
+      ],
+    },
+  ),
+  ReleaseNote(
     build: 433,
     date: '2026-09-21',
     lines: <String, List<String>>{

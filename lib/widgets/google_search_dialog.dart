@@ -58,6 +58,7 @@ import 'package:provider/provider.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart' as iaw;
 import 'package:webview_windows/webview_windows.dart' as wv_win;
 import '../services/screen_capture.dart';
+import 'auto_clicker.dart';
 import 'paywall_hook.dart';
 import 'shot_manager_dialog.dart';
 import 'web_automation_panel.dart';
@@ -1288,6 +1289,64 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   late List<_GsTab> _gsTabs;
   int _gsActiveTab = 0;
   static const int _kGsMaxTabs = 15;
+
+  // ── タブどうしの分割ビュー (= ユーザー要望「google 検索の分割ビューって
+  //    いうのは開いている別のタブと分割して表示するもの」) ──────────────
+  //
+  //    ★ 本体のページと並べるのではなく、 **この窓の中で 2 つのタブを
+  //      並べる**。 デスクトップはもともと全タブの WebView を同時に持って
+  //      いる (IndexedStack) ので、 出す所を変えるだけで済む。
+  //    ★ モバイルは「複数の keepAlive を同時にマウントすると真っ白になる」
+  //      という既知の不具合があるので出さない ([_buildWebViewCore] の覚書)。
+  //    null = 並べていない。 それ以外 = 相方のタブの位置。
+  int? _gsSplitTab;
+
+  /// 並べる向き (true = 上下、 false = 左右)。
+  bool _gsSplitVertical = false;
+
+  /// 「今のタブ」 が左 (上下分割なら上) の枠に居るか。
+  ///
+  /// ★ = ユーザー要望「最初に画面分割をする際の並びはタブの順に。 その後は
+  ///   切り替えた際にアクティブな側、 もしくは固定されていない側に新規画面が
+  ///   来るように」。 並べ始めた時だけ札の順で決め、 それ以降は**枠の位置を
+  ///   動かさず**、 中身だけ入れ替える。
+  bool _gsActiveOnLeft = true;
+
+  /// 固定している枠の札の位置 (= ユーザー要望「画面分割したページを右クリック
+  /// すると固定することができて、 固定中は固定されていない側の画面が他のタブを
+  /// クリックした時に切り替わるように」)。 null = 固定なし。
+  ///
+  /// ★ 必ず今出ている 2 枚 ([_gsActiveTab] / [_gsSplitTab]) のどちらか。
+  ///   外れていたら効かない物として扱う ([_pinnedPaneIndex])。 こうしておくと、
+  ///   どこかで数が食い違っても「固定が効かなくなる」 だけで済み、 別のページが
+  ///   出てしまう事故にはならない。
+  int? _gsPinnedTab;
+
+  /// 今ほんとうに効いている固定 (並べていない / 札が消えていたら null)。
+  ///
+  /// ★ = ユーザー報告「右枠を固定したのに、 新規でタブを開くと右枠が
+  ///   切り替わってしまう」。 以前は「今出ている 2 枚のどちらか」 でないと
+  ///   効かない事にしていたので、 新しい札を開いて組み合わせが変わった
+  ///   瞬間に固定が黙って外れていた。 札が並びに居る限り生きている事にして、
+  ///   出す時に**必ず固定した札を片側へ入れる**ようにする。
+  int? get _pinnedPaneIndex {
+    final p = _gsPinnedTab;
+    if (p == null || _gsSplitTab == null) return null;
+    if (p < 0 || p >= _gsTabs.length) return null;
+    return p;
+  }
+
+  /// 固定を守ったうえでの相方 (= 出す時に使う)。
+  int? get _effectiveSplitTab {
+    final pin = _pinnedPaneIndex;
+    final mate = _gsSplitTab;
+    if (mate == null) return null;
+    // 固定した札が「今のタブ」 なら、 相方は自由。
+    if (pin == null || pin == _gsActiveTab) return mate;
+    // そうでなければ、 もう片方は必ず固定した札。
+    return pin;
+  }
+
   bool _gsTabBarExpanded = false;
 
   /// ヘッダー (AppBar) を隠しているか (= ユーザー要望: Google 検索の
@@ -2622,6 +2681,14 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         await ctrl
             .addScriptToExecuteOnDocumentCreated(_kGsAutoHideScrollbarJs);
       } catch (_) {}
+      // ★ 自動操作から預かっている物があれば、 後から作ったタブにも
+      //   入れる (= ページのエラーを拾う仕掛け)。
+      final pageJs = _autoPageScript;
+      if (pageJs != null && pageJs.isNotEmpty) {
+        try {
+          await ctrl.addScriptToExecuteOnDocumentCreated(pageJs);
+        } catch (_) {}
+      }
       ctrl.webMessage.listen((msg) {
         if (!mounted) return;
         final url = _parseGsCtrlClickMessage(msg);
@@ -3327,25 +3394,24 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         //   全画面で開いている時だけ出す。 浮遊窓からは「全画面表示」 を
         //   押せばこのボタンが現れる。
         if (!widget.minimalMode)
-          IconButton(
-            // AI ボタンと同じ絵柄だと紛らわしいので別アイコンにする
-            // (= ユーザー要望)。
-            icon: Icon(Icons.play_circle_outline_rounded,
-                color: _autoPanelOpen ? const Color(0xFF80CBC4) : Colors.white,
-                size: 20),
-            tooltip: provider.t('auto.title'),
-            visualDensity: VisualDensity.compact,
-            padding: const EdgeInsets.all(6),
-            constraints: const BoxConstraints(),
-            onPressed: () {
-              // 自動操作は Pro 以上限定 (= ユーザー要望)。
-              if (!provider.canUseWebAutomation) {
-                _showPlanNotice(provider.t('paywall.proRequiredAutomation'));
-                return;
-              }
-              setState(() => _autoPanelOpen = !_autoPanelOpen);
-            },
-          ),
+          // ★ = ユーザー要望「google 検索のヘッダーには、 クリック手順ではなく
+          //   オートクリッカーのボタン項目を配置して欲しい」。 手順を組む方の
+          //   パネルは 自動操作ページ 側に任せ、 ブラウザの帯からはその場で
+          //   使うオートクリッカーを出す。
+          if (autoClickerSupported)
+            IconButton(
+              icon: Icon(Icons.ads_click_rounded,
+                  color: _autoClickerOpen
+                      ? const Color(0xFF80CBC4)
+                      : Colors.white,
+                  size: 20),
+              tooltip: provider.t('hdr.autoClicker'),
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.all(6),
+              constraints: const BoxConstraints(),
+              onPressed: () =>
+                  setState(() => _autoClickerOpen = !_autoClickerOpen),
+            ),
         // ── ブックマーク追加 / リンク埋め込み ──
         // モバイル (縦) ではここに置くと AI ボタン等と被るので、 横分割時
         //   のみ検索バーに置き、 モバイルでは AppBar の actions 側へ移す
@@ -3367,7 +3433,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   //   ① _captureScrollToBottomAndAdd
   //       ページの末尾までスクロールしてから、 viewport を 1 枚キャプチャ。
   //   ② _captureFullPageAndAdd
-  //       ページ全体を viewport ぶんずつスクロールしながら段階キャプチャし、
+  //       ページ全体を viewport 分ずつスクロールしながら段階キャプチャし、
   //       縦に結合して 1 枚の長い PNG にする (= 画面外も含む全体)。
   //
   // 制限: Windows の `wv_win.WebviewController` には公開された screenshot
@@ -3665,7 +3731,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         await Future<void>.delayed(const Duration(milliseconds: 350));
         final png = await _iawCtrl!.takeScreenshot();
         if (png != null) shots.add(png);
-        // スワイプ (= 1 画面ぶんスクロール)
+        // スワイプ (= 1 画面分スクロール)
         await _iawCtrl!.evaluateJavascript(
             source: 'window.scrollBy({top: $step, behavior: "instant"});');
         // 末尾に到達したら早期終了 (これ以上スクロールできない)
@@ -3802,7 +3868,12 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
           icon: Icon(
             // 埋め込みは「+」 のアイコンにする (= ユーザー要望: + ボタン
             // みたいなアイコンにして欲しい)。
-            isBookmark ? Icons.bookmark_add_rounded : Icons.add_box_rounded,
+            // ★ = ユーザー要望「リンクとして埋め込みのボタンがタブ追加と
+            //   似ているから別のものに」。 四角に＋の絵柄は右の「＋」 (新しい
+            //   タブ) と見分けが付かないので、 「ページへ貼る」 絵柄にする。
+            isBookmark
+                ? Icons.bookmark_add_rounded
+                : Icons.note_add_outlined,
             color:
                 isBookmark ? const Color(0xFFFFB347) : const Color(0xFF4FC3F7),
             size: 22,
@@ -4328,6 +4399,50 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
 
   void _switchGsTab(int i) {
     if (i == _gsActiveTab || i < 0 || i >= _gsTabs.length) return;
+    // ★ 固定中は、 固定していない側の枠を押された札に差し替える
+    //   (= ユーザー要望「固定中は固定されていない側の画面が他のタブを
+    //   クリックした時に切り替わる」)。
+    final pin = _pinnedPaneIndex;
+    if (pin != null) {
+      if (i == pin) {
+        // 固定した札を押した = その枠を「今のタブ」 にするだけ (枠は動かない)。
+        setState(() {
+          _gsSplitTab = _gsActiveTab == pin ? _gsSplitTab : _gsActiveTab;
+          _gsActiveTab = pin;
+          _currentUrl = _gsTabs[pin].url;
+          _pageTitle =
+              _gsTabs[pin].title.isNotEmpty ? _gsTabs[pin].title : 'Google';
+        });
+        return;
+      }
+      setState(() {
+        // 固定していない側が押された札になる。 固定した札は必ず残す。
+        // ★ 新しい画面は**固定していない側**へ入れる (= ユーザー要望)。
+        //   固定した札が今どちらの枠に居るかは、 今の並びから割り出す。
+        final pinOnLeft =
+            (pin == _gsActiveTab) ? _gsActiveOnLeft : !_gsActiveOnLeft;
+        _gsActiveOnLeft = !pinOnLeft;
+        _gsActiveTab = i;
+        _gsSplitTab = pin;
+        _currentUrl = _gsTabs[i].url;
+        _pageTitle = _gsTabs[i].title.isNotEmpty ? _gsTabs[i].title : 'Google';
+      });
+      if (_searchVideoRate != 1.0) _applySearchVideoRate(_searchVideoRate);
+      return;
+    }
+    // ★ 並べている相方の札を押した時は、 「今のタブ」 をそちらへ移すだけ。
+    //   二つは枠を入れ替えず役目だけを入れ替えるので、 「今のタブの居場所」も
+    //   裏返す (= ユーザー要望「クリックした側が自動で左側に来ない様に」)。
+    if (_gsSplitTab == i) {
+      setState(() {
+        _gsActiveOnLeft = !_gsActiveOnLeft;
+        _gsSplitTab = _gsActiveTab;
+        _gsActiveTab = i;
+        _currentUrl = _gsTabs[i].url;
+        _pageTitle = _gsTabs[i].title.isNotEmpty ? _gsTabs[i].title : 'Google';
+      });
+      return;
+    }
     // 再読み込みせず表示だけ切り替える (= IndexedStack で各タブを保持済み)。
     setState(() {
       _gsActiveTab = i;
@@ -4360,11 +4475,30 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     }
     setState(() {
       _gsTabs.removeAt(i);
+      // ★ 並べている相方の位置も、 アクティブと同じようにずらす
+      //   (= ずらさないと、 左のタブを閉じた時に別のページが枠に出る)。
+      if (_gsSplitTab != null) {
+        if (_gsSplitTab == i) {
+          _gsSplitTab = null;
+        } else if (i < _gsSplitTab!) {
+          _gsSplitTab = _gsSplitTab! - 1;
+        }
+      }
       if (_gsActiveTab >= _gsTabs.length) {
         _gsActiveTab = _gsTabs.length - 1;
       } else if (i < _gsActiveTab) {
         _gsActiveTab--;
       }
+      if (_gsSplitTab == _gsActiveTab) _gsSplitTab = null;
+      // 固定していた札も同じようにずらす (= ずらさないと別の枠を固定した事になる)。
+      if (_gsPinnedTab != null) {
+        if (_gsPinnedTab == i) {
+          _gsPinnedTab = null;
+        } else if (i < _gsPinnedTab!) {
+          _gsPinnedTab = _gsPinnedTab! - 1;
+        }
+      }
+      if (_gsSplitTab == null) _gsPinnedTab = null;
       // 新しいアクティブタブの URL / タイトルを反映 (再読み込みはしない)。
       _currentUrl = _gsTabs[_gsActiveTab].url;
       _pageTitle = _gsTabs[_gsActiveTab].title.isNotEmpty
@@ -4429,6 +4563,41 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
           child: Text(context.read<MindMapProvider>().t('gs.saveToFolder'),
               style: const TextStyle(color: Colors.white, fontSize: 13)),
         ),
+        // ★ = ユーザー要望「開いている別のタブと分割して表示する」。
+        //   デスクトップだけ (モバイルは同時マウントで白画面になる)。
+        // ★ = ユーザー報告「右クリックしても分割ビューの項目が出てこない」。
+        //   今見ている札を右クリックした時に出していなかったのが原因
+        //   (利用者は今の札を右クリックする)。 どの札からでも出す。
+        //   ・別の札 … その札と今の札を並べる
+        //   ・今の札 … 隣の札と並べる
+        if (_isDesktop && _gsTabs.length > 1)
+          PopupMenuItem<String>(
+            value: 'splitwith',
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              const Icon(Icons.vertical_split_rounded,
+                  size: 15, color: Color(0xFF7CD992)),
+              const SizedBox(width: 8),
+              Text(
+                  context.read<MindMapProvider>().t(i == _gsActiveTab
+                      ? 'gs.splitWithNext'
+                      : 'gs.splitWithTab'),
+                  style: const TextStyle(color: Colors.white, fontSize: 13)),
+            ]),
+          ),
+        if (_isDesktop && _gsSplitTab != null) ...[
+          PopupMenuItem<String>(
+            value: 'splitdir',
+            child: Text(
+                context.read<MindMapProvider>().t(
+                    _gsSplitVertical ? 'gs.splitSideBySide' : 'gs.splitStacked'),
+                style: const TextStyle(color: Colors.white, fontSize: 13)),
+          ),
+          PopupMenuItem<String>(
+            value: 'unsplit',
+            child: Text(context.read<MindMapProvider>().t('gs.splitStop'),
+                style: const TextStyle(color: Colors.white, fontSize: 13)),
+          ),
+        ],
         const PopupMenuDivider(),
         ..._gsSites.map((s) => PopupMenuItem<String>(
               value: 'site:${s.$1}',
@@ -4441,11 +4610,161 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     if (selected == null || !mounted) return;
     if (selected == 'folder') {
       _gsSaveTabToFolder(i);
+    } else if (selected == 'splitwith') {
+      // 今の札を右クリックした時は、 隣 (右優先、 無ければ左) と並べる。
+      var mate = i;
+      if (i == _gsActiveTab) {
+        mate = (i + 1 < _gsTabs.length) ? i + 1 : i - 1;
+      }
+      if (mate < 0 || mate >= _gsTabs.length || mate == _gsActiveTab) return;
+      setState(() {
+        _gsSplitTab = mate;
+        // ★ 並べ始めの並びだけは札の順 (= ユーザー要望)。
+        _gsActiveOnLeft = _gsActiveTab < mate;
+      });
+    } else if (selected == 'unsplit') {
+      setState(() => _gsSplitTab = null);
+    } else if (selected == 'splitdir') {
+      setState(() => _gsSplitVertical = !_gsSplitVertical);
     } else if (selected.startsWith('site:')) {
       final name = selected.substring(5);
       final site = _gsSites.firstWhere((s) => s.$1 == name,
           orElse: () => _gsSites.first);
       _openSiteGsTab(i, site.$2, site.$1);
+    }
+  }
+
+  /// 並べた 2 枚の取り分 (左 / 上 の割合)。
+  double _gsSplitRatio = 0.5;
+
+  /// 境界を掴んでから動かした量 (放した時にまとめて効かせる)。
+  double? _gsSplitDrag;
+
+  /// 掴んでいた分を取り分へ反映する。
+  void _commitGsSplitDrag() {
+    final moved = _gsSplitDrag ?? 0;
+    _gsSplitDrag = null;
+    final box = context.findRenderObject() as RenderBox?;
+    final full = (box != null && box.hasSize)
+        ? (_gsSplitVertical ? box.size.height : box.size.width)
+        : 1200.0;
+    if (full <= 1) {
+      setState(() {});
+      return;
+    }
+    setState(() {
+      _gsSplitRatio = (_gsSplitRatio + moved / full).clamp(0.15, 0.85);
+    });
+  }
+
+  /// 境界の掴み棒 (= ユーザー要望: 分割境界を動かせるように)。
+  ///
+  /// ★ 掴んでいる間だけ色を付ける。 二度押しで半々へ戻す。
+  Widget _buildGsSplitHandle() {
+    final vertical = _gsSplitVertical;
+    return MouseRegion(
+      cursor: vertical
+          ? SystemMouseCursors.resizeUpDown
+          : SystemMouseCursors.resizeLeftRight,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onDoubleTap: () => setState(() => _gsSplitRatio = 0.5),
+        // ★ = ユーザー報告「画面境界を動かすと何もない黒い領域が大きく出る」。
+        //   掴んでいる間ずっと幅を変えていたので、 WebView2 の描画の受け皿
+        //   (Texture) が追い付かず、 縮め切れていない所が黒いまま見えていた。
+        //   **放した時に 1 回だけ**変える (掴んでいる間は棒が光るだけ)。
+        onHorizontalDragStart:
+            vertical ? null : (_) => setState(() => _gsSplitDrag = 0),
+        onHorizontalDragUpdate: vertical
+            ? null
+            : (d) => _gsSplitDrag = (_gsSplitDrag ?? 0) + d.delta.dx,
+        onHorizontalDragEnd: vertical ? null : (_) => _commitGsSplitDrag(),
+        onVerticalDragStart:
+            !vertical ? null : (_) => setState(() => _gsSplitDrag = 0),
+        onVerticalDragUpdate: !vertical
+            ? null
+            : (d) => _gsSplitDrag = (_gsSplitDrag ?? 0) + d.delta.dy,
+        onVerticalDragEnd: !vertical ? null : (_) => _commitGsSplitDrag(),
+        child: Container(
+          width: vertical ? null : 8,
+          height: vertical ? 8 : null,
+          color: Colors.white.withValues(alpha: 0.06),
+          child: Center(
+            child: Container(
+              width: vertical ? 34 : (_gsSplitDrag != null ? 3 : 2),
+              height: vertical ? (_gsSplitDrag != null ? 3 : 2) : 34,
+              decoration: BoxDecoration(
+                color: _gsSplitDrag != null
+                    ? const Color(0xFF6C63FF)
+                    : Colors.white.withValues(alpha: 0.22),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 枠 (ペイン) の右クリック: 固定する / 固定をやめる / 向き / 並べるのをやめる。
+  ///
+  /// ★ = ユーザー要望「画面分割したページを右クリックすると固定することが
+  ///   できて、 固定中は固定されていない側の画面が他のタブをクリックした時に
+  ///   切り替わるように」。
+  Future<void> _showGsPaneMenu(Offset pos, int paneTab) async {
+    if (!_isDesktop || _gsSplitTab == null || !mounted) return;
+    final p = context.read<MindMapProvider>();
+    final pinned = _pinnedPaneIndex == paneTab;
+    final sel = await showMenu<String>(
+      context: context,
+      color: const Color(0xFF22222E),
+      position:
+          RelativeRect.fromLTRB(pos.dx + 6, pos.dy + 6, pos.dx + 6, pos.dy + 6),
+      items: [
+        PopupMenuItem<String>(
+          value: pinned ? 'unpin' : 'pin',
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Icon(pinned ? Icons.push_pin_outlined : Icons.push_pin_rounded,
+                size: 15, color: const Color(0xFFFFB347)),
+            const SizedBox(width: 8),
+            Text(
+                p.t(pinned
+                    ? 'gs.unpinPane'
+                    : (_pinnedPaneIndex != null
+                        // 固定できるのは片側だけ (= ユーザー要望)。 もう片方を
+                        // 固定すると、 こちらへ移る。
+                        ? 'gs.pinPaneMove'
+                        : 'gs.pinPane')),
+                style: const TextStyle(color: Colors.white, fontSize: 13)),
+          ]),
+        ),
+        PopupMenuItem<String>(
+          value: 'splitdir',
+          child: Text(
+              p.t(_gsSplitVertical
+                  ? 'gs.splitSideBySide'
+                  : 'gs.splitStacked'),
+              style: const TextStyle(color: Colors.white, fontSize: 13)),
+        ),
+        PopupMenuItem<String>(
+          value: 'unsplit',
+          child: Text(p.t('gs.splitStop'),
+              style: const TextStyle(color: Colors.white, fontSize: 13)),
+        ),
+      ],
+    );
+    if (sel == null || !mounted) return;
+    if (sel == 'pin') {
+      setState(() => _gsPinnedTab = paneTab);
+    } else if (sel == 'unpin') {
+      setState(() => _gsPinnedTab = null);
+    } else if (sel == 'splitdir') {
+      setState(() => _gsSplitVertical = !_gsSplitVertical);
+    } else if (sel == 'unsplit') {
+      setState(() {
+        _gsSplitTab = null;
+        _gsPinnedTab = null;
+      });
     }
   }
 
@@ -4761,6 +5080,62 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   }
 
   /// 上部のタブバー（タブ一覧 + フォルダー + サイト + 新規タブ「＋」）。
+  /// 札と札の間の受け口 (= 並べ替え)。 [index] は「ここへ入れる」 位置。
+  Widget _buildGsTabGap(int index) {
+    return DragTarget<int>(
+      onWillAcceptWithDetails: (d) =>
+          d.data >= 0 && d.data < _gsTabs.length,
+      onAcceptWithDetails: (d) {
+        final from = d.data;
+        var to = index;
+        if (from < to) to -= 1;
+        if (from == to || from < 0 || from >= _gsTabs.length) return;
+        // ★ 位置ではなく**その札そのもの**を覚えてから動かす (= 動かした後に
+        //   番号だけ足し引きすると、 並べている枠が別のページを指す)。
+        final active = _gsTabs[_gsActiveTab];
+        final mate = (_gsSplitTab != null &&
+                _gsSplitTab! >= 0 &&
+                _gsSplitTab! < _gsTabs.length)
+            ? _gsTabs[_gsSplitTab!]
+            : null;
+        final pinned = (_gsPinnedTab != null &&
+                _gsPinnedTab! >= 0 &&
+                _gsPinnedTab! < _gsTabs.length)
+            ? _gsTabs[_gsPinnedTab!]
+            : null;
+        setState(() {
+          final moved = _gsTabs.removeAt(from);
+          _gsTabs.insert(to.clamp(0, _gsTabs.length), moved);
+          _gsActiveTab = _gsTabs.indexOf(active);
+          if (_gsActiveTab < 0) _gsActiveTab = 0;
+          _gsSplitTab = mate == null ? null : _gsTabs.indexOf(mate);
+          if (_gsSplitTab != null &&
+              (_gsSplitTab! < 0 || _gsSplitTab == _gsActiveTab)) {
+            _gsSplitTab = null;
+          }
+          // 固定した札も、 位置ではなく札そのもので引き直す。
+          _gsPinnedTab = pinned == null ? null : _gsTabs.indexOf(pinned);
+          if (_gsPinnedTab != null && _gsPinnedTab! < 0) _gsPinnedTab = null;
+          _gsDraggingTab = false;
+        });
+      },
+      builder: (_, cand, __) => Container(
+        width: cand.isNotEmpty ? 26 : (_gsDraggingTab ? 20 : 6),
+        height: 24,
+        margin: const EdgeInsets.symmetric(vertical: 5),
+        decoration: BoxDecoration(
+          color: cand.isEmpty
+              ? Colors.transparent
+              : const Color(0xFF4FC3F7).withValues(alpha: 0.7),
+          borderRadius: BorderRadius.circular(3),
+        ),
+      ),
+    );
+  }
+
+  /// 札を掴んでいる間か (受け口を広げて狙いやすくする)。
+  bool _gsDraggingTab = false;
+
   Widget _buildGsTabBar() {
     return Container(
       height: 34,
@@ -4770,14 +5145,48 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         Expanded(
           child: ListView.builder(
             scrollDirection: Axis.horizontal,
-            itemCount: _gsTabs.length,
-            itemBuilder: (_, i) {
+            // ★ = ユーザー要望「タブの並び順はドラッグで自由に変えられる
+            //   ように」。 札と札の**間**に受け口 (_buildGsTabGap) を挟んで、
+            //   掴んだ札をそこへ落とす。 偶数 = 受け口 / 奇数 = 札。
+            //   帯は横に流れるので、 掴むのは長押し (すぐ掴む形にすると
+            //   帯を流せなくなる。 本体のタブと同じ作法)。
+            itemCount: _gsTabs.length * 2 + 1,
+            itemBuilder: (_, raw) {
+              if (raw.isEven) return _buildGsTabGap(raw ~/ 2);
+              final i = raw ~/ 2;
               final active = i == _gsActiveTab;
               return GestureDetector(
                 onTap: () => _switchGsTab(i),
                 onSecondaryTapDown: (d) => _showGsTabMenu(d.globalPosition, i),
-                onLongPressStart: (d) => _showGsTabMenu(d.globalPosition, i),
-                child: Container(
+                // ★ 長押しの一覧は右クリックの無い端末だけ (= 点検で判明:
+                //   長押しで掴む並べ替えと同じ押し方を取り合い、 一覧が勝つと
+                //   ドラッグが一度も始まらない)。
+                onLongPressStart: _isDesktop
+                    ? null
+                    : (d) => _showGsTabMenu(d.globalPosition, i),
+                child: LongPressDraggable<int>(
+                  data: i,
+                  delay: const Duration(milliseconds: 220),
+                  dragAnchorStrategy: pointerDragAnchorStrategy,
+                  onDragStarted: () => setState(() => _gsDraggingTab = true),
+                  onDragEnd: (_) => setState(() => _gsDraggingTab = false),
+                  onDraggableCanceled: (_, __) =>
+                      setState(() => _gsDraggingTab = false),
+                  feedback: Material(
+                    color: Colors.transparent,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF3C3C6E),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(_gsTabLabel(i),
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 11.5)),
+                    ),
+                  ),
+                  child: Container(
                   constraints: const BoxConstraints(maxWidth: 180),
                   margin:
                       const EdgeInsets.symmetric(horizontal: 2, vertical: 5),
@@ -4787,8 +5196,16 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                         active ? const Color(0xFF2A2A40) : Colors.transparent,
                     borderRadius: BorderRadius.circular(8),
                     border: Border.all(
-                        color:
-                            active ? const Color(0xFF6C63FF) : Colors.white12),
+                        color: active
+                            ? const Color(0xFF6C63FF)
+                            // ★ 並べている相方の印。 = ユーザー要望「黄緑の方が
+                            //   目立つから、 ディアクティブの画面の色はもっと目立たなく」。
+                            //   明るい緑をやめて、 今見ている札より弱い色にする。
+                            : (i == _pinnedPaneIndex
+                                ? const Color(0xFFFFB347)
+                                : (i == _gsSplitTab
+                                    ? const Color(0xFF3F5A4B)
+                                    : Colors.white12))),
                   ),
                   child: Row(mainAxisSize: MainAxisSize.min, children: [
                     Flexible(
@@ -4812,6 +5229,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                         ),
                       ),
                   ]),
+                ),
                 ),
               );
             },
@@ -5142,6 +5560,88 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       return _buildIawTabWebView(idx);
     }
     // デスクトップ (webview_windows) は従来どおり全タブ保持で問題ない。
+    // ★ = ユーザー要望: 2 つのタブを並べて出す。 どちらの枠も
+    //   **同じ IndexedStack から** 1 枚だけ描く形にする (1 つの
+    //   WebviewController を 2 か所へ挿すと、 描画の受け皿 (Texture) を
+    //   取り合って片方が真っ黒になるため)。
+    // ★ 固定している札は必ず片側に残す (= ユーザー要望「固定した側は動かない
+    //   ように」)。 新しい札を開いても、 固定していない側だけが変わる。
+    final mate = _effectiveSplitTab;
+    if (mate != null &&
+        mate >= 0 &&
+        mate < _gsTabs.length &&
+        mate != idx) {
+      // ★ = ユーザー要望「最初はタブの順、 その後は切り替えた際にアクティブな側
+      //   (固定している時は固定されていない側) に新しい画面が来るように」。
+      //   どちらの側に「今のタブ」 が居るかは [_gsActiveOnLeft] が覚えている
+      //   ので、 枠そのものは動かない。 札を押すと中身だけ入れ替わる。
+      final leftIdx = _gsActiveOnLeft ? idx : mate;
+      final rightIdx = _gsActiveOnLeft ? mate : idx;
+      Widget pane(int show, bool focused) => Container(
+            decoration: BoxDecoration(
+              border: Border.all(
+                // ★ 固定している枠は一目で分かるようにする (= ユーザー要望)。
+                color: _pinnedPaneIndex == show
+                    ? const Color(0xFFFFB347)
+                    : focused
+                        ? const Color(0xFF6C63FF)
+                        // ★ 選んでいない側はほぼ見えない線にする (= ユーザー要望)。
+                        : Colors.white.withValues(alpha: 0.05),
+                width: 1.5,
+              ),
+            ),
+            // 枠を押したら、 そちらを「今のタブ」 にする (URL 欄や戻る/進むは
+            // 今のタブに付いて回るので、 これだけで道具が付いてくる)。
+            child: Listener(
+              behavior: HitTestBehavior.translucent,
+              onPointerDown: (e) {
+                // ★ 右クリックは焦点を動かさず、 枠の一覧だけ出す
+                //   (= ユーザー要望: 枠を右クリックして固定)。
+                //   ジェスチャー (onSecondaryTapDown) は WebView が右ボタンを
+                //   先に取ると来ない事があるので、 生のポインタで見る。
+                if (e.kind == PointerDeviceKind.mouse &&
+                    e.buttons == kSecondaryButton) {
+                  unawaited(_showGsPaneMenu(e.position, show));
+                  return;
+                }
+                if (_gsActiveTab == show) return;
+                // ★ 「今のタブ」 を移すだけ。 相方はもう片方のまま (= 枠は
+                //   動かさない)。 左右は上の leftIdx / rightIdx が決める。
+                final other = show == leftIdx ? rightIdx : leftIdx;
+                setState(() {
+                  // 押した枠がそのまま「今のタブ」 の居場所になる。
+                  _gsActiveOnLeft = show == leftIdx;
+                  _gsSplitTab = other;
+                  _gsActiveTab = show;
+                  _currentUrl = _gsTabs[show].url;
+                  _pageTitle = _gsTabs[show].title.isNotEmpty
+                      ? _gsTabs[show].title
+                      : 'Google';
+                });
+              },
+              child: IndexedStack(
+                index: show,
+                children: [
+                  for (int i = 0; i < _gsTabs.length; i++)
+                    i == show
+                        ? _buildWinTabWebView(i)
+                        : const SizedBox.shrink(),
+                ],
+              ),
+            ),
+          );
+      // ★ = ユーザー要望「分割境界を動かせるように」。 掴んで動かした取り分を
+      //   覚えておく (0.15〜0.85 の間)。 二度押しで半々に戻す。
+      final lf = (_gsSplitRatio.clamp(0.15, 0.85) * 1000).round();
+      final children = <Widget>[
+        Expanded(flex: lf, child: pane(leftIdx, leftIdx == idx)),
+        _buildGsSplitHandle(),
+        Expanded(flex: 1000 - lf, child: pane(rightIdx, rightIdx == idx)),
+      ];
+      return _gsSplitVertical
+          ? Column(children: children)
+          : Row(children: children);
+    }
     return IndexedStack(
       index: idx,
       children: [
@@ -5154,6 +5654,12 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   //    時間を設定して自動実行 + スクショと組み合わせ) ──
   final GlobalKey _webAreaKey = GlobalKey();
   bool _autoPanelOpen = false;
+
+  // ── オートクリッカー (= ユーザー要望: ブラウザの帯から出す道具) ──────
+  //    ★ 手順を組む「クリック手順」 とは別物。 こちらは今見ているページの
+  //      上で、 決めた場所を決めた間隔で押し続けるだけの道具。
+  bool _autoClickerOpen = false;
+  Offset _autoClickerPos = const Offset(80, 90);
 
   /// 自動操作の記録中か (= ユーザー要望: フローを組まなくても操作を覚えて
   /// 再現できるように)。 ON の間は WebView にオーバーレイを重ね、 タップを
@@ -5244,7 +5750,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   bool _autoRunning = false;
   VoidCallback? _autoStop;
 
-  /// この実行ぶんの保存先 (= ユーザー要望: フロー実行の度に別フォルダ)。
+  /// この実行分の保存先 (= ユーザー要望: フロー実行の度に別フォルダ)。
   String? _autoRunDir;
 
   /// キャプチャ中だけパネルを隠すためのフラグ (= ユーザー要望: スクショに
@@ -5326,7 +5832,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   ///
   /// WebView には「ページ全体を撮る」 口が無い (Windows の webview_windows は
   /// 撮影 API 自体が無く、 モバイルの takeScreenshot も見えている分だけ) ので、
-  /// 1 画面ぶんずつ撮って縦に繋げる。 継ぎ目がずれないよう、 送った後に
+  /// 1 画面分ずつ撮って縦に繋げる。 継ぎ目がずれないよう、 送った後に
   /// **ページが実際に何 px 動いたか**を聞いてから貼る位置を決める。
   Future<String?> _captureFullPageTall() async {
     final ev = _autoEvalJs;
@@ -5377,7 +5883,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       final startY = numOf(m0, 'y') ?? 0;
       if (viewH <= 0) return null;
 
-      /// 1 画面ぶんの絵を撮る。
+      /// 1 画面分の絵を撮る。
       Future<img.Image?> grabSegment() async {
         if (_isDesktop) {
           final box =
@@ -5474,6 +5980,82 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   ///
   /// [hidden] = 見えなくするだけ (木からは外さない)。 スクショの間に木から
   /// 外すと State ごと捨てられ、 作りかけの手順が消えてしまうため。
+  /// オートクリッカーを浮かせて出す (= ユーザー要望: ブラウザの帯から)。
+  ///
+  /// ★ ページを見ながら使う道具なので、 塞がない小さな窓にして掴んで
+  ///   動かせるようにする (「クリック手順」 の浮遊窓と同じ作法)。
+  Widget _buildFloatingAutoClicker(MindMapProvider provider) {
+    var size = MediaQuery.of(context).size;
+    if (widget.windowWidth != null || widget.windowHeight != null) {
+      size = Size(
+          widget.windowWidth ?? size.width, widget.windowHeight ?? size.height);
+    }
+    // ★ = ユーザー要望: 縦長のパレットにしたので、 幅は細くする。
+    final w = (size.width - 24).clamp(96.0, 150.0).toDouble();
+    final h = (size.height - 120).clamp(280.0, 620.0).toDouble();
+    final left = _autoClickerPos.dx.clamp(0.0, (size.width - w).clamp(0.0, 1e5));
+    final top = _autoClickerPos.dy.clamp(0.0, (size.height - 60).clamp(0.0, 1e5));
+    return Positioned(
+      left: left,
+      top: top,
+      width: w,
+      height: h,
+      child: Material(
+        color: const Color(0xFF15151F),
+        elevation: 12,
+        borderRadius: BorderRadius.circular(12),
+        clipBehavior: Clip.antiAlias,
+        child: Column(children: [
+          // 掴んで動かす帯。
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onPanUpdate: (d) => setState(() {
+              _autoClickerPos = Offset(
+                  _autoClickerPos.dx + d.delta.dx,
+                  _autoClickerPos.dy + d.delta.dy);
+            }),
+            child: Container(
+              height: 34,
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              color: const Color(0xFF1E1E2E),
+              child: Row(children: [
+                const Icon(Icons.ads_click_rounded,
+                    size: 15, color: Color(0xFF80CBC4)),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(provider.t('hdr.autoClicker'),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700)),
+                ),
+                InkWell(
+                  borderRadius: BorderRadius.circular(16),
+                  onTap: () => setState(() => _autoClickerOpen = false),
+                  child: const SizedBox(
+                    width: 30,
+                    height: 30,
+                    child: Icon(Icons.close_rounded,
+                        size: 16, color: Colors.white54),
+                  ),
+                ),
+              ]),
+            ),
+          ),
+          Expanded(
+            child: AutoClickerView(
+              provider: provider,
+              onRequestClose: () =>
+                  setState(() => _autoClickerOpen = false),
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+
   Widget _buildFloatingAutoPanel(MindMapProvider provider,
       {bool hidden = false}) {
     var size = MediaQuery.of(context).size;
@@ -5640,6 +6222,9 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                   // どちらか一方だけに)。
                   showCloseButton:
                       fillWindow && !widget.hostHasCloseButton,
+                  // ★ = ユーザー要望: ページを移った先のエラーも拾うため、
+                  //   「ページが出来るたびに流す JS」 を受け取る。
+                  installPageScript: _autoInstallPageScript,
                   exec: _autoExecJs,
                   evalJs: _autoEvalJs,
                   // ★ = ユーザー報告「HP に飛んでと言っても飛べていない」。
@@ -5684,9 +6269,11 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                     setState(() {
                       _autoRunning = running;
                       _autoStop = stop;
-                      // 実行を始めたら欄を畳んで停止ボタンだけにする
-                      // (= ユーザー要望)。 終わったら開き直す。
-                      _autoPanelCollapsed = running;
+                      // ★ 畳むのはやめた (= 上の ★ と同じ理由: 畳むと中身の
+                      //   `WebAutomationPanel` が木から外れて State が消え、
+                      //   走っている最中の処理が黙って止まる)。 走っている間は
+                      //   上で Offstage にしてあるので、 見た目は今までどおり
+                      //   「窓が引っ込んで停止ボタンだけ」 になる。
                     });
                   },
                 ),
@@ -5733,6 +6320,22 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     }
   }
 
+  /// 自動操作から預かった「ページが出来るたびに流す JS」。
+  ///
+  /// ★ = ユーザー要望「web ページでエラーが出た時のデバッグログを取れる
+  ///   ように」。 今のページに入れるだけだと、 この後 open やリンクで
+  ///   移った先のエラーが 1 つも残らない。 新しいタブを作った時にも
+  ///   入れ直せるよう、 預かった物は控えておく。
+  String? _autoPageScript;
+
+  Future<void> _autoInstallPageScript(String js) async {
+    _autoPageScript = js;
+    if (!_isDesktop) return;
+    try {
+      await _winCtrl?.addScriptToExecuteOnDocumentCreated(js);
+    } catch (_) {}
+  }
+
   Future<void> _autoExecJs(String js) async {
     try {
       if (_isDesktop) {
@@ -5765,7 +6368,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   ///   触りを webview に奪われて押せない。
   PreferredSizeWidget _buildHiddenHeaderStrip(MindMapProvider provider) {
     // ★ 点検で判明: 自前の PreferredSize は AppBar と違って状態表示の帯
-    //   (ノッチ / ステータスバー) を避けてくれない。 そのぶんを自分で足す
+    //   (ノッチ / ステータスバー) を避けてくれない。 その分を自分で足す
     //   (足さないと、 押せるはずの帯が時計や電池の下に潜る)。
     final top = MediaQuery.paddingOf(context).top;
     return PreferredSize(
@@ -7893,15 +8496,26 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
               //   止まってフローも残らない)。 木から外すとパネルの State が
               //   捨てられ、 作りかけの手順が prefs から読み直されて消え、
               //   エージェント側の !mounted で処理も終わっていた。
-              if (_autoPanelOpen &&
-                  !_autoRunning &&
-                  _pickPointCompleter == null &&
-                  _pickRectCompleter == null)
+              // ★ = ユーザー報告「AI に『URL にアクセスしてスクショ』 と頼んでも
+              //   どこにもアクセスしてくれない」 の主因。 走り始めた瞬間に
+              //   `!_autoRunning` でこのパネルを**木から外して**いたので、
+              //   `WebAutomationPanelState` が dispose され、 AI の返事を
+              //   待っていた `_runAgent` が `!mounted` で黙って終わっていた
+              //   (手順は 1 つも実行されず、 失敗の知らせも出ない)。
+              //   外さずに、 見せないだけにする (スクショの時と同じ作法。
+              //   すぐ下の `Offstage` が受け取る)。
+              if (_autoPanelOpen)
                 _buildFloatingAutoPanel(provider,
-                    hidden: _autoPanelHiddenForShot),
+                    hidden: _autoPanelHiddenForShot ||
+                        _autoRunning ||
+                        _pickPointCompleter != null ||
+                        _pickRectCompleter != null),
               // AI 欄の浮遊窓 (= ユーザー要望)
               if (_aiPanelOpen && _aiPanelFloating)
                 _buildFloatingAiPanel(provider),
+              // オートクリッカーの浮遊窓 (= ユーザー要望)
+              if (_autoClickerOpen && autoClickerSupported)
+                _buildFloatingAutoClicker(provider),
               // ── ヘッダーを隠している時に戻す小さなボタン ──
               //    ★ 隠すボタンと同じ「右上」 に出す (= ユーザー要望: 右端で
               //      押したのに左端に出てきて押しにくい)。 閉じるボタンの

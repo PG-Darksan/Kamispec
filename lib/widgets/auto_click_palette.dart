@@ -98,7 +98,7 @@ bool autoClickNeedsPoint(AutoClickKind k) =>
 bool autoClickNeedsEnd(AutoClickKind k) =>
     k == AutoClickKind.swipe || k == AutoClickKind.screenshotRect;
 
-/// 札 1 枚ぶん。
+/// 札 1 枚分。
 class AutoClickSlot {
   AutoClickSlot({
     required this.kind,
@@ -175,6 +175,7 @@ class AutoClickPalette extends StatefulWidget {
     this.onSave,
     this.compact = false,
     this.bar = false,
+    this.axis,
   });
 
   /// 言葉を引く手 (本体なら `provider.t`)。
@@ -193,6 +194,13 @@ class AutoClickPalette extends StatefulWidget {
   ///   みたいなのが画面外にも出る形で出てきて」。 縦長の窓ではなく、 画面の
   ///   どこにでも置ける薄い帯にする。 札は横に流して並べる。
   final bool bar;
+
+  /// 帯の向き (null = 置かれた場所の形で決める)。
+  ///
+  /// ★ = ユーザー要望「もっと縦長か横長のパレットが出てきて、 そこから
+  ///   クリックやスワイプなどの操作ボタンを選ぶ形に」。 横長の所では横一列、
+  ///   縦長の所では縦一列にする。
+  final Axis? axis;
 
   /// 控えの鍵 (別窓から本体へ書き戻してもらう時に使う)。
   static const String prefsKey = 'autoClickPalette_v1';
@@ -217,6 +225,9 @@ class _AutoClickPaletteState extends State<AutoClickPalette> {
   /// 控える先 (1 = 始点 / 2 = 終点)。
   int _pickWhich = 1;
   int _pickLeft = 0;
+
+  /// 場所を決め終わったら、 そのまま流すか。
+  bool _pickFire = false;
   Timer? _pickTimer;
 
   /// 始点を控えた後、 続けて終点も控えるか
@@ -309,8 +320,12 @@ class _AutoClickPaletteState extends State<AutoClickPalette> {
   //
   // アプリの窓の外は覆えないので、 数えている間に置きたい所へカーソルを
   // 動かしてもらう (自動操作・これまでのオートクリッカーと同じ考え方)。
-  void _pickPoint(int index, int which, {bool chain = false}) {
+  /// [fireWhenDone] true = 場所を決め終わったら、 そのまま流す
+  /// (= ユーザー要望: パレットから動作を選んだら、 選ぶ → 決める → 動く)。
+  void _pickPoint(int index, int which,
+      {bool chain = false, bool fireWhenDone = false}) {
     _pickTimer?.cancel();
+    _pickFire = fireWhenDone;
     setState(() {
       _pickIndex = index;
       _pickWhich = which;
@@ -353,12 +368,53 @@ class _AutoClickPaletteState extends State<AutoClickPalette> {
         //   スワイプの 2 点をポインタで決める)。 窓を開き直さずに続ける。
         if (_pickChain && _pickWhich == 1) {
           _pickChain = false;
+          final fire = _pickFire;
           WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) _pickPoint(i, 2);
+            if (mounted) _pickPoint(i, 2, fireWhenDone: fire);
+          });
+        } else if (_pickFire) {
+          _pickFire = false;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) unawaited(_fire(i));
           });
         }
       });
     });
+  }
+
+  // ─── 動作を選んですぐ流す (= ユーザー要望: パレットから操作を選ぶ形) ───
+  //
+  //   ★ 今までは「+ 追加 → 種類を選ぶ窓 → 中身を決める窓」 を通らないと
+  //     1 つも押せなかった。 動作そのものを並べて、 押したらその場で
+  //     場所を決めて流す。 流した物は札として残るので、 次からは 1 押し。
+
+  /// 押した動作をその場で流す。 場所が要る物は 3 つ数えてから今の位置を使う。
+  Future<void> _runKind(AutoClickKind k) async {
+    if (_repeatIndex >= 0) {
+      // 連打の最中は、 まず止める (同じ押し方で止められるように)。
+      _stopRepeat();
+      return;
+    }
+    final slot = AutoClickSlot(kind: k, label: _t(autoClickKindKey(k)));
+    setState(() => _slots.add(slot));
+    await _save();
+    final i = _slots.length - 1;
+    if (k == AutoClickKind.typeText || k == AutoClickKind.keys) {
+      // 打つ文字が要る物だけは、 先に中身を決めてもらう。
+      await _editSlot(i);
+      if (!mounted) return;
+      if (i < _slots.length && _slots[i].text.isNotEmpty) await _fire(i);
+      return;
+    }
+    if (autoClickNeedsEnd(k)) {
+      _pickPoint(i, 1, chain: true, fireWhenDone: true);
+      return;
+    }
+    if (autoClickNeedsPoint(k)) {
+      _pickPoint(i, 1, fireWhenDone: true);
+      return;
+    }
+    await _fire(i);
   }
 
   // ─── 流す ───────────────────────────────────────────────────────────
@@ -789,109 +845,119 @@ class _AutoClickPaletteState extends State<AutoClickPalette> {
                 child: CircularProgressIndicator(strokeWidth: 2))),
       );
     }
-    if (widget.bar) return _buildBar();
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Row(children: [
-        const Icon(Icons.dashboard_customize_rounded,
-            size: 15, color: Color(0xFF4DD0E1)),
-        const SizedBox(width: 6),
-        Expanded(
-          child: Text(_t('palette.title'),
+    // ★ = ユーザー要望「もっと縦長か横長のパレットが出てきて、 そこから
+    //   クリックやスワイプなどの操作ボタンを選ぶ形に」。 設定の欄をやめ、
+    //   **動作そのものが並ぶ細長い帯**にした。 置かれた場所が横長なら横一列、
+    //   縦長なら縦一列 (呼ぶ側が [axis] で決め打ちにもできる)。
+    return LayoutBuilder(builder: (_, c) {
+      final axis = widget.axis ??
+          (widget.bar
+              ? Axis.horizontal
+              : ((c.maxWidth.isFinite && c.maxHeight.isFinite)
+                  ? (c.maxWidth >= c.maxHeight
+                      ? Axis.horizontal
+                      : Axis.vertical)
+                  : Axis.vertical));
+      return _buildStrip(axis);
+    });
+  }
+
+  /// 細長いパレット本体。
+  ///
+  ///   前半 = 動作 (押すと、 場所を決めてその場で流す)
+  ///   後半 = これまでに流した札 (押すと同じ事をもう一度)
+  Widget _buildStrip(Axis axis) {
+    final horizontal = axis == Axis.horizontal;
+    final items = <Widget>[
+      // 連打の最中は、 まず止める口を出す (外のアプリを触っている間も
+      // 止められるよう、 見える所に置く)。
+      if (_repeatIndex >= 0)
+        _stripButton(
+          icon: Icons.stop_circle_rounded,
+          label: _t('palette.stop'),
+          color: const Color(0xFFE57373),
+          onTap: _stopRepeat,
+        ),
+      for (final k in AutoClickKind.values)
+        _stripButton(
+          icon: autoClickKindIcon(k),
+          label: _t(autoClickKindKey(k)),
+          color: const Color(0xFF4DD0E1),
+          onTap: () => unawaited(_runKind(k)),
+        ),
+      if (_slots.isNotEmpty) ...[
+        horizontal
+            ? Container(
+                width: 1,
+                height: 40,
+                margin: const EdgeInsets.symmetric(horizontal: 6),
+                color: Colors.white12)
+            : Container(
+                height: 1,
+                margin: const EdgeInsets.symmetric(vertical: 6),
+                color: Colors.white12),
+        for (var i = 0; i < _slots.length; i++) _chip(i),
+      ],
+    ];
+    final strip = SingleChildScrollView(
+      scrollDirection: axis,
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+      child: horizontal
+          ? Row(mainAxisSize: MainAxisSize.min, children: items)
+          : Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: items),
+    );
+    if (_status.isEmpty) return strip;
+    return Column(mainAxisSize: MainAxisSize.min, children: [
+      Flexible(child: strip),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(8, 0, 8, 6),
+        child: Align(
+          alignment: Alignment.centerLeft,
+          child: Text(_status,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
               style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.w700)),
+                  color: Color(0xFF9CCC65), fontSize: 10.5, height: 1.4)),
         ),
-        OutlinedButton.icon(
-          style: OutlinedButton.styleFrom(
-            foregroundColor: const Color(0xFF4DD0E1),
-            side: const BorderSide(color: Color(0xFF4DD0E1)),
-            padding: const EdgeInsets.symmetric(horizontal: 10),
-            minimumSize: const Size(0, 28),
-          ),
-          icon: const Icon(Icons.add_rounded, size: 15),
-          label:
-              Text(_t('palette.add'), style: const TextStyle(fontSize: 11)),
-          onPressed: () => unawaited(_addSlot()),
-        ),
-      ]),
-      if (!widget.compact) ...[
-        const SizedBox(height: 4),
-        Text(_t('palette.hint'),
-            style: const TextStyle(
-                color: Colors.white38, fontSize: 10.5, height: 1.5)),
-      ],
-      const SizedBox(height: 8),
-      if (_slots.isEmpty)
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 12),
-          child: Text(_t('palette.empty'),
-              style: const TextStyle(color: Colors.white24, fontSize: 11)),
-        )
-      else
-        Wrap(spacing: 8, runSpacing: 8, children: [
-          for (var i = 0; i < _slots.length; i++) _chip(i),
-        ]),
-      if (_status.isNotEmpty) ...[
-        const SizedBox(height: 10),
-        Text(_status,
-            style: const TextStyle(
-                color: Color(0xFF9CCC65), fontSize: 11.5, height: 1.5)),
-      ],
+      ),
     ]);
   }
 
-  /// 横一列の帯 (= 画面録画の操作窓と同じ構え)。
-  ///
-  /// ★ 札は横に流して並べる。 数が増えても帯の高さは変わらない。
-  Widget _buildBar() => Column(mainAxisSize: MainAxisSize.min, children: [
-        Row(children: [
-          const SizedBox(width: 4),
-          OutlinedButton.icon(
-            style: OutlinedButton.styleFrom(
-              foregroundColor: const Color(0xFF4DD0E1),
-              side: const BorderSide(color: Color(0xFF4DD0E1)),
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              minimumSize: const Size(0, 26),
-              visualDensity: VisualDensity.compact,
-            ),
-            icon: const Icon(Icons.add_rounded, size: 14),
-            label:
-                Text(_t('palette.add'), style: const TextStyle(fontSize: 10.5)),
-            onPressed: () => unawaited(_addSlot()),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: _slots.isEmpty
-                ? Text(_t('palette.empty'),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style:
-                        const TextStyle(color: Colors.white24, fontSize: 10.5))
-                : SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Row(mainAxisSize: MainAxisSize.min, children: [
-                      for (var i = 0; i < _slots.length; i++) ...[
-                        if (i > 0) const SizedBox(width: 6),
-                        _chip(i),
-                      ],
-                    ]),
-                  ),
-          ),
-        ]),
-        if (_status.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.only(top: 4),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: Text(_status,
+  /// 帯に並べる 1 つ (絵柄 + 名前)。
+  Widget _stripButton({
+    required IconData icon,
+    required String label,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.all(3),
+      child: Material(
+        color: Colors.white.withValues(alpha: 0.04),
+        borderRadius: BorderRadius.circular(8),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: onTap,
+          child: Container(
+            width: 66,
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Icon(icon, size: 19, color: color),
+              const SizedBox(height: 3),
+              Text(label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                      color: Color(0xFF9CCC65), fontSize: 10.5)),
-            ),
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.white70, fontSize: 9.5)),
+            ]),
           ),
-      ]);
+        ),
+      ),
+    );
+  }
 
   Widget _chip(int i) {
     final s = _slots[i];
@@ -926,7 +992,7 @@ class _AutoClickPaletteState extends State<AutoClickPalette> {
             //   (スワイプの 2 点や、 打ち込む文字が長い物) で横へはみ出して
             //   いた。 札は [Wrap] の中なので、 中身に上限を置いて畳む。
             ConstrainedBox(
-              // ★ 札に控える口 (2 点まとめ) を足したぶん、 名前の幅を詰める
+              // ★ 札に控える口 (2 点まとめ) を足した分、 名前の幅を詰める
               //   (検分で 360dp の端末で 2px はみ出した)。
               constraints: const BoxConstraints(maxWidth: 118),
               child: Column(

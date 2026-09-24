@@ -25,12 +25,25 @@
 //   という振り分けにしてある。 変換中の文字はカーソルの位置にそのまま出る
 //   ので、 本物の端末と同じ見え方になる (= ユーザー報告: 日本語が打てない)。
 import 'dart:async';
+import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/gestures.dart'
-    show PointerDeviceKind, kSecondaryMouseButton;
+    show
+        PointerDeviceKind,
+        PointerHoverEvent,
+        PointerScrollEvent,
+        kPrimaryMouseButton,
+        kSecondaryMouseButton;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
+// クリップボードの画像を読む (Ctrl+V で道筋を差し込む用)。
+import 'package:super_clipboard/super_clipboard.dart';
+// 出力の中の URL を押した時に、 外のブラウザーへ渡す。
+import 'package:url_launcher/url_launcher.dart';
 import 'package:xterm/xterm.dart';
 
 import '../providers/mind_map_provider.dart';
@@ -115,6 +128,14 @@ class AgentTerminalState extends State<AgentTerminal> {
   /// 画面の巻き上げ (= ユーザー要望: 上へ流れた会話を遡りたい)。
   final _scroll = ScrollController();
 
+  /// 下の帯の横巻き (= ユーザー要望: 下の項目が入らない場合は
+  /// 左右スクロール方式に)。
+  ///
+  /// ★ 横に流れる仕掛けは前からあったが、 マウスだと手が無かった
+  ///   (ホイールは縦にしか効かず、 掘ることもできない、 見た目の印も無い)。
+  ///   巻物役を持って、 ホイールを横へ振り向け、 細い帯を出す。
+  final _bottomBarScroll = ScrollController();
+
   /// 端末側の焦点。
   ///
   /// ★ **わざと焦点を取らせない**。 端末に焦点が行くと、 打ち込みが端末の
@@ -146,14 +167,54 @@ class AgentTerminalState extends State<AgentTerminal> {
   ///   改めて送らない。
   String _liveSent = '';
 
+  /// 欄を通らずに直接差し込んだ文字 (ファイルの道筋など)。
+  ///
+  /// ★ [_liveSent] は隠し入力欄との差分用なのでこれらを入れられないが、
+  ///   「キュー」へ溜める時に落とすと画像の道筋が消えるので、 別に覚えておく。
+  String _injectedText = '';
+
   /// 送り出しの最中か (入力欄を空に戻す時の呼び戻しを止める)。
   bool _flushing = false;
 
-  /// 一番下に貼り付いているか (= false の間は「最新へ」 を出す)。
+  /// 一番下に貼り付いているか。
   bool _atBottom = true;
 
+  // ── 「最新へ」 の札 (= ユーザー報告: 欄が点滅する) ──
+  //
+  //    以前は「下端から 4px 以内か」 だけで出し入れしていた。 出力が
+  //    続いている間は**下端が中身より 1 フレーム早く伸びる**ので、
+  //    貼り付いているのに一瞬だけ 4px を超え、 札が出ては消えるを
+  //    出力の速さで繰り返していた。 これが点滅の一番目立つ正体。
+  //      ・余裕を 1 行より広く取る
+  //      ・**自分で上へ遡った時だけ**出す (自動で送られた分では出さない)
+  bool _userScrolledUp = false;
+  bool _showJumpLatest = false;
+  double _lastPixels = 0;
+
   /// 端末のカーソルの位置 (この widget の中での座標)。
-  Offset? _cursorPos;
+  ///
+  /// ★ ここだけを見ている小さな欄 (隠し入力) に配り、 端末そのものを
+  ///   組み直さない (= 点滅対策)。
+  final ValueNotifier<Offset?> _cursorPosVn = ValueNotifier<Offset?>(null);
+
+  /// 指している URL の下線の場所 (この widget の中での座標)。
+  ///
+  /// ★ = ユーザー要望「codexCLI 等で出力されてハイパーリンクをクリックしたら
+  ///   そのURL先に飛べるようにして欲しい」。 ここも端末そのものを組み直さず、
+  ///   小さな札だけに配る (= 点滅対策)。
+  final ValueNotifier<Rect?> _linkRectVn = ValueNotifier<Rect?>(null);
+
+  /// 左ボタンが押された場所と時刻。
+  ///
+  /// ★ 「押して離すまで動いていない」 時だけ URL を探す。 文字選び (掘って
+  ///   選ぶ) を壊さないため、 ジェスチャーの取り合いには入らず [Listener] で
+  ///   生の押下だけを見て自分で見極める。
+  Offset? _linkDownAt;
+  int _linkDownMs = 0;
+
+  /// 直前に見極めた枡 (同じ枡の上で動いている間は読み直さない)。
+  int _hoverCellX = -1;
+  int _hoverCellY = -1;
 
   /// いま開いていると思われる CLI の画面 (/usage など)。
   /// 同じボタンをもう一度押したら Esc を送って閉じる (= ユーザー要望)。
@@ -249,13 +310,25 @@ class AgentTerminalState extends State<AgentTerminal> {
       if (!mounted || !_s.running) return;
       if (_userLeft) return;
       if (_queueFocus.hasFocus) return;
-      if (_inputFocus.hasPrimaryFocus) return;
+      if (_inputFocus.hasPrimaryFocus) {
+        _focusMissed = 0;
+        return;
+      }
+      // ★ = ユーザー報告「欄が点滅する」。 相手 (地図の押鍵の受け口など)
+      //   も焦点を取り返しに来ると、 700 ms ごとに行ったり来たりして
+      //   分割画面の枠の色まで点滅していた。 何度やっても取れない時は
+      //   諦める。 利用者がこの端末を押せば [_grabInput] が数え直す。
+      if (_focusMissed >= 3) return;
       // 他所の入力欄 (要素の名前など) が使われている間も横取りしない。
       // ★ ここで掛け金 (_userLeft) は掛けない。 掛けると、 その欄が
       //   閉じた後も見回りが止まったままになり、 二度と打てなくなる
       //   (= ユーザー報告: 他の要素を編集すると入れられなくなる)。
       //   次の見回りで判断し直せばよい。
+      // ★ 空振りに数えるのは**取りに行った時だけ**。 他所の欄を使って
+      //   いる間も数えると、 要素の名前を 2 秒ほど書いただけで見回りが
+      //   止まってしまう (= 点検で判明)。
       if (_otherEditorHasFocus()) return;
+      _focusMissed++;
       _inputFocus.requestFocus();
     });
   }
@@ -287,6 +360,13 @@ class AgentTerminalState extends State<AgentTerminal> {
     if (!identical(old.session, widget.session)) {
       old.session.removeListener(_onChanged);
       widget.session.addListener(_onChanged);
+      // ★ 別のセッションになったら、 巻物まわりの掛け金と印も下ろす
+      //   (前のタブで遡っていた事を持ち越さない)。
+      _userScrolledUp = false;
+      _showJumpLatest = false;
+      _lastPixels = 0;
+      _lastSig = '';
+      _focusMissed = 0;
       // ★ タブを切り替えた時 (= ユーザー要望: 新規タブ) に、 前のタブへ
       //   「先出し」 していた文字を持ち越さない。 持ち越すと、 次に打った
       //   文字の「消す分」 が前のタブの長さだけずれて、 新しいタブの行が
@@ -299,7 +379,7 @@ class AgentTerminalState extends State<AgentTerminal> {
       _composing = '';
       // ★ 待たせてある打鍵も捨てる。 `_flushPendingKeys` は `_s`
       //   (= いま差し替わった**新しい**セッション) へ送るので、 前のタブ
-      //   へ打った文字が新しいタブに紛れ込む (最大 400 ミリ秒ぶん)。
+      //   へ打った文字が新しいタブに紛れ込む (最大 400 ミリ秒分)。
       _pendingTimer?.cancel();
       _pendingTimer = null;
       _pendingKeys.clear();
@@ -322,6 +402,7 @@ class AgentTerminalState extends State<AgentTerminal> {
     _s.removeListener(_onChanged);
     _scroll.removeListener(_onScroll);
     _scroll.dispose();
+    _bottomBarScroll.dispose();
     _pendingTimer?.cancel();
     _focusWatch?.cancel();
     _inputCtrl.removeListener(_onInputChanged);
@@ -331,14 +412,44 @@ class AgentTerminalState extends State<AgentTerminal> {
     _queueFocus.dispose();
     _termController.dispose();
     _termFocus.dispose();
+    _cursorPosVn.dispose();
+    _linkRectVn.dispose();
     super.dispose();
   }
 
   bool _focusTried = false;
 
+  /// 焦点を取りに行って空振りした回数 (点滅止め。 [_grabInput] で 0 に戻る)。
+  int _focusMissed = 0;
+
+  /// 画面に出している値をひとまとめにした印。
+  ///
+  /// ★ = ユーザー報告「AI やターミナルの欄が点滅する」。 セッションは
+  ///   400 ms ごとの見張りや順番待ちの汲み出しでも知らせを出すので、
+  ///   そのたびに端末ごと組み直していた (TerminalView・スクロール棒・
+  ///   隠し入力まで作り直す)。 出している値が動いた時だけ組み直す。
+  String _viewSig() {
+    final lim = _s.limitUntil?.millisecondsSinceEpoch ?? 0;
+    final sent = _s.sentLines;
+    // ★ 件数だけだと控えの上限 (100 件) に達した後で「履歴」 欄が
+    //   止まるので、 最後の 1 行も見る。
+    final lastSent = sent.isEmpty ? '' : sent.last;
+    return '${_s.running}|${_s.busyForUi}|${_s.starting}|${_s.launchFailed}'
+        '|${_s.launchError}|${_s.launchDiedEarly}|${_s.stoppedByUser}'
+        '|${_s.exitCode}|${_s.queueMode}|${_s.queued.join(String.fromCharCode(1))}'
+        '|${_s.limitWaiting}|$lim|${_s.limitZoneNote}|${_s.needsResumeWord}'
+        '|${sent.length}|$lastSent|${_s.shownDirectory}|${_s.resumeWord}';
+  }
+
+  String _lastSig = '';
+
   void _onChanged() {
     if (!mounted) return;
-    setState(() {});
+    final sig = _viewSig();
+    if (sig != _lastSig) {
+      _lastSig = sig;
+      setState(() {});
+    }
     _syncCursorSoon();
     if (!_focusTried && _s.running) {
       _focusTried = true;
@@ -348,9 +459,18 @@ class AgentTerminalState extends State<AgentTerminal> {
 
   void _onScroll() {
     if (!_scroll.hasClients) return;
-    final bottom =
-        _scroll.position.pixels >= _scroll.position.maxScrollExtent - 4;
-    if (bottom != _atBottom) setState(() => _atBottom = bottom);
+    final pos = _scroll.position;
+    final bottom = pos.pixels >= pos.maxScrollExtent - 24;
+    // 自動で送られる時は必ず下へ動く。 **上へ動いた時だけ**「自分で遡った」。
+    if (pos.pixels < _lastPixels - 1) _userScrolledUp = true;
+    if (bottom) _userScrolledUp = false;
+    _lastPixels = pos.pixels;
+    _atBottom = bottom;
+    final show = _userScrolledUp && !bottom;
+    if (show != _showJumpLatest) setState(() => _showJumpLatest = show);
+    // ★ 巻き上げると下線の場所が狂うので消す (次に指した時に出し直す)。
+    if (_linkRectVn.value != null) _linkRectVn.value = null;
+    _hoverCellY = -1;
   }
 
   /// 打てる状態にする。
@@ -360,6 +480,7 @@ class AgentTerminalState extends State<AgentTerminal> {
     // 呼ばれるのは「利用者がこの端末で何かした」 時だけなので、
     // 掛け金はここで必ず下ろす。
     _userLeft = false;
+    _focusMissed = 0;
     if (!_inputFocus.hasFocus) {
       _inputFocus.requestFocus();
       // ★ 同じセッションを 2 つの画面が抱えている時は、 いま押された方に
@@ -373,9 +494,13 @@ class AgentTerminalState extends State<AgentTerminal> {
 
   /// 組み上がってから打てるようにする (1 回だと空振りする事がある)。
   void _grabFocusSoon() {
-    for (final ms in const [0, 120, 400, 900]) {
+    // ★ 4 回 (0/120/400/900) 撃っていたのを 2 回に (= 点滅対策)。 1 回の
+    //   タブ切り替えで焦点が 4 度動き、 そのたびに枠の色が変わっていた。
+    for (final ms in const [0, 300]) {
       Future<void>.delayed(Duration(milliseconds: ms), () {
         if (!mounted || !_s.running) return;
+        // 既に打てるなら何もしない。
+        if (_inputFocus.hasPrimaryFocus) return;
         // 利用者が既に他所を触っている時は横取りしない (= 上の経緯)。
         if (_userLeft || _otherEditorHasFocus()) return;
         _grabInput();
@@ -410,12 +535,200 @@ class AgentTerminalState extends State<AgentTerminal> {
     if (st == null || box is! RenderBox || !box.hasSize) return;
     try {
       final p = box.globalToLocal(st.globalCursorRect.topLeft);
-      if (_cursorPos == null || (p - _cursorPos!).distance > 1.0) {
+      final cur = _cursorPosVn.value;
+      if (cur == null || (p - cur).distance > 1.0) {
         _lastCursorSync = now;
-        setState(() => _cursorPos = p);
+        // ★ setState ではなく配るだけ (= 点滅対策)。 隠し入力の場所しか
+        //   変わらないのに、 端末ごと組み直す必要は無い。
+        _cursorPosVn.value = p;
       }
     } catch (_) {
       // まだ組み上がっていない時は何もしない。
+    }
+  }
+
+  // ── 出力の中の URL ──────────────────────────────────────────────────────
+  //
+  //   ★ = ユーザー要望「codexCLI 等で出力されてハイパーリンクをクリックしたら
+  //     そのURL先に飛べるようにして欲しい」。
+  //   ★ xterm 4.0.0 には OSC 8 (端末が自分でリンクを覚える決まり) が無く、
+  //     `TerminalView.onTapUp` も向こう側の配線違いで呼ばれない (向こうの
+  //     `gesture_detector.dart` は `onTapUp` を宣言するだけで一度も呼ばず、
+  //     実際の叩きは `onSingleTapUp` へ流れて端末自身が使っている)。 そこで
+  //     「押された場所 → 枡 → その行の字」 を自分で辿って URL を割り出す。
+  //     使っているのは向こうに実際にある口だけ:
+  //       ・`TerminalViewState.renderTerminal`
+  //       ・`RenderTerminal.getCellOffset` / `getOffset` / `cellSize`
+  //       ・`BufferLine.getCodePoint` / `length` / `isWrapped`
+
+  /// URL に見える所を拾う決まり。 後ろの句読点は下で削る。
+  static final RegExp _kUrlRe = RegExp(
+      r'''(?:https?://|www\.)[-\w.~:/?#\[\]@!$&'*+,;=%()]+''',
+      caseSensitive: false);
+
+  /// 行の字を**枡と同じ並びで**取り出す (1 枡 = きっかり 1 単位)。
+  ///
+  /// ★ `BufferLine.getText()` は空の枡 (codePoint 0) を**飛ばす**ので、
+  ///   字の位置と枡の位置がずれてしまい、 押された所を数えるのに使えない。
+  /// ★ 16bit に収まらない字 (絵文字など) も**空白 1 つ**に置き換える。
+  ///   `writeCharCode` はそういう字を 2 単位で書くので、 そのまま入れると
+  ///   以降の位置が 1 つずつずれる。 URL は ASCII なので置き換えて困らない。
+  String _cellsOf(BufferLine line, int cols) {
+    final sb = StringBuffer();
+    final n = line.length < cols ? line.length : cols;
+    for (var i = 0; i < n; i++) {
+      final cp = line.getCodePoint(i);
+      sb.writeCharCode(cp == 0 || cp > 0xFFFF ? 0x20 : cp);
+    }
+    for (var i = n; i < cols; i++) {
+      sb.writeCharCode(0x20);
+    }
+    return sb.toString();
+  }
+
+  /// 画面の座標 → 枡。
+  ///
+  /// ★ `getCellOffset` は行も列も**端へ丸めて**返すので、 余白や巻物の棒を
+  ///   押した時も一番近い枡が返ってくる。 [exact] の時は、 その枡の実際の
+  ///   場所を測り直して「本当にその枡の中を押したか」を確かめ、 丸められて
+  ///   いたら捨てる (余白の値を決め打ちしないので padding を変えても効く)。
+  /// ★ `renderTerminal` は向こうで `currentContext!` + `as` を通るため
+  ///   投げ得る。 まとめて包んでおく。
+  CellOffset? _cellAtGlobal(Offset globalPos, {bool exact = false}) {
+    final st = _viewKey.currentState;
+    if (st == null) return null;
+    try {
+      final rt = st.renderTerminal;
+      if (!rt.hasSize) return null;
+      final local = rt.globalToLocal(globalPos);
+      final cell = rt.getCellOffset(local);
+      if (exact) {
+        final cs = rt.cellSize;
+        final tl = rt.getOffset(cell);
+        if (local.dx < tl.dx ||
+            local.dx > tl.dx + cs.width ||
+            local.dy < tl.dy ||
+            local.dy > tl.dy + cs.height) {
+          return null;
+        }
+      }
+      return cell;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// [globalPos] にある URL を割り出す。
+  ///
+  /// 返す物は URL と、 **押された行の中で**何枡目から何枡目か (下線用。 前後の
+  /// 行にはみ出す時は負の値や `cols` 超えになるので、 使う側で丸める)。
+  /// 折り返してちぎれた URL も `isWrapped` を辿ってつなぎ直す。
+  ({String url, int row, int from, int to})? _urlAtGlobal(Offset globalPos) {
+    final term = _s.terminal;
+    final cols = term.viewWidth;
+    final lines = term.buffer.lines;
+    if (cols <= 0 || lines.length <= 0) return null;
+    final cell = _cellAtGlobal(globalPos, exact: true);
+    if (cell == null) return null;
+    final row = cell.y;
+    if (row < 0 || row >= lines.length) return null;
+    // 折り返しの元と続きを探す。
+    var head = row;
+    while (head > 0 && lines[head].isWrapped) {
+      head--;
+    }
+    var tail = row;
+    while (tail + 1 < lines.length && lines[tail + 1].isWrapped) {
+      tail++;
+    }
+    final sb = StringBuffer();
+    for (var i = head; i <= tail; i++) {
+      sb.write(_cellsOf(lines[i], cols));
+    }
+    final text = sb.toString();
+    final rowHead = (row - head) * cols;
+    final at = rowHead + cell.x;
+    for (final m in _kUrlRe.allMatches(text)) {
+      final s = m.start;
+      var e = m.end;
+      // 後ろの句読点・閉じ括弧は URL に入れない (「〜。」「(https://…)」)。
+      while (e > s) {
+        final ch = text[e - 1];
+        if ('.,;:!?'.contains(ch) || ch == "'" || ch == '"') {
+          e--;
+          continue;
+        }
+        if (ch == ')' && !text.substring(s, e).contains('(')) {
+          e--;
+          continue;
+        }
+        if (ch == ']' && !text.substring(s, e).contains('[')) {
+          e--;
+          continue;
+        }
+        break;
+      }
+      if (at < s || at >= e) continue;
+      var url = text.substring(s, e);
+      if (url.toLowerCase().startsWith('www.')) url = 'https://$url';
+      return (url: url, row: row, from: s - rowHead, to: e - rowHead);
+    }
+    return null;
+  }
+
+  /// 下線を出す場所を配る (この widget の中での座標)。
+  void _updateLinkRect(({String url, int row, int from, int to})? hit) {
+    final st = _viewKey.currentState;
+    final box = _stackKey.currentContext?.findRenderObject();
+    if (hit == null || st == null || box is! RenderBox || !box.hasSize) {
+      _linkRectVn.value = null;
+      return;
+    }
+    final cols = _s.terminal.viewWidth;
+    final c0 = hit.from < 0 ? 0 : (hit.from > cols ? cols : hit.from);
+    final c1 = hit.to < 0 ? 0 : (hit.to > cols ? cols : hit.to);
+    if (c1 <= c0) {
+      _linkRectVn.value = null;
+      return;
+    }
+    try {
+      final rt = st.renderTerminal;
+      final cs = rt.cellSize;
+      final tl = box.globalToLocal(
+          rt.localToGlobal(rt.getOffset(CellOffset(c0, hit.row))));
+      _linkRectVn.value =
+          Rect.fromLTWH(tl.dx, tl.dy, (c1 - c0) * cs.width, cs.height);
+    } catch (_) {
+      _linkRectVn.value = null;
+    }
+  }
+
+  /// マウスが動いた時。 URL の上に来たら下線と指の形を出す。
+  ///
+  /// ★ 枡が変わった時だけ読み直す (1px ごとに行を組み立て直すのは無駄)。
+  void _onTermHover(PointerHoverEvent e) {
+    final cell = _cellAtGlobal(e.position);
+    final cx = cell?.x ?? -1;
+    final cy = cell?.y ?? -1;
+    if (cx == _hoverCellX && cy == _hoverCellY) return;
+    _hoverCellX = cx;
+    _hoverCellY = cy;
+    _updateLinkRect(_urlAtGlobal(e.position));
+  }
+
+  /// 叩かれた所に URL があれば開く。
+  ///
+  /// ★ 出先はこのアプリの他の所と同じ**外のブラウザー**。
+  Future<void> _openLinkAt(Offset globalPos) async {
+    final hit = _urlAtGlobal(globalPos);
+    if (hit == null) return;
+    final uri = Uri.tryParse(hit.url);
+    if (uri == null || !uri.hasScheme) return;
+    _linkRectVn.value = null;
+    try {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (_) {
+      // 開けなかった時は黙って諦める (端末の表示は壊さない)。
     }
   }
 
@@ -477,6 +790,7 @@ class AgentTerminalState extends State<AgentTerminal> {
     _inputCtrl.clear();
     _flushing = false;
     _liveSent = '';
+    _injectedText = '';
     if (_composing.isNotEmpty && mounted) setState(() => _composing = '');
   }
 
@@ -583,6 +897,13 @@ class AgentTerminalState extends State<AgentTerminal> {
     // ── 矢印 / Enter / Tab などの決まった打鍵 ──
     final tk = _kTermKeys[key];
     if (tk != null) {
+      // ★ 「キュー」 に切り替えている間の Enter は、 CLI へ渡さず順番待ちへ
+      //   溜める (= ユーザー要望: プロバイダー側にその機能が無いのであれば
+      //   アプリ側で実装する)。 打った分は CLI の行に映っているので、
+      //   ^U で消してから溜める。
+      if (tk == TerminalKey.enter && !ctrl && !alt && !shift && _s.queueMode) {
+        if (_enqueueTypedLine()) return KeyEventResult.handled;
+      }
       if (_s.terminal.keyInput(tk, ctrl: ctrl, alt: alt, shift: shift)) {
         _stickToBottom();
       }
@@ -620,12 +941,148 @@ class AgentTerminalState extends State<AgentTerminal> {
     unawaited(Clipboard.setData(ClipboardData(text: text)));
   }
 
+  /// Ctrl+V。 ★ = ユーザー要望「ctrl+v でチャット欄に画像の道筋を貼り付け
+  ///   られるようにして欲しい」。 クリップボードに画像があれば、 一度
+  ///   ファイルへ書き出して**その道筋**を打ちかけの文へ差し込む
+  ///   (CLI はどれも画像を「道筋」 で受け取るため)。 画像が無ければ、
+  ///   今までどおり文字を貼る。
   Future<void> _pasteClipboard() async {
+    // ★ = 点検で判明: Excel や Web から写すと**画像と文字の両方**が
+    //   クリップボードに載る。 以前は画像だけを見て文字を捨てていたので、
+    //   写したはずの表や文章が消えていた。 両方あれば両方渡す
+    //   (道筋 → 文字の順。 CLI の行に見える並びもこの順になる)。
+    final path = await _writeClipboardImage();
+    if (path != null) {
+      // 空白や日本語を含む道筋があるので、 必ず引用符で包む。
+      // ★ [_liveSent] には足さない。 これは「隠し入力欄と CLI の行の
+      //   差分」を取るための控えなので、 欄に無い物を足すと、 次に打った
+      //   瞬間に道筋を退避で消しに行ってしまう (ファイル選択も同じ扱い)。
+      _s.sendRaw('"$path" ');
+      _injectedText = '$_injectedText"$path" ';
+      _grabInput();
+      _stickToBottom();
+      // 文字も載っていれば、 続けて貼る (どちらも捨てない)。
+      final withText = await Clipboard.getData(Clipboard.kTextPlain);
+      final tt = withText?.text ?? '';
+      if (tt.isNotEmpty) {
+        _s.terminal.paste(tt);
+        _injectedText = '$_injectedText$tt';
+        _stickToBottom();
+      }
+      return;
+    }
     final d = await Clipboard.getData(Clipboard.kTextPlain);
     final t = d?.text ?? '';
     if (t.isEmpty) return;
+    // ★ 貼った分も控えへ足す (= 点検で判明: 足さないと「キュー」 で Enter を
+    //   押した時に [_enqueueTypedLine] が拾えず、 そのうえ ^U で行ごと消える
+    //   ので、 貼り付けた中身が跡形もなく消える)。 [_liveSent] ではなく
+    //   [_injectedText] に入れるのは、 隠し入力欄に無い文字だから (画像の
+    //   道筋と同じ扱い)。
     _s.terminal.paste(t);
+    _injectedText = '$_injectedText$t';
     _stickToBottom();
+  }
+
+  /// クリップボードの画像をファイルへ書き出して、 その道筋を返す。
+  /// 画像が無ければ null (= 文字の貼り付けへ回す)。
+  ///
+  /// ★ 置き場はアプリの支え置き場の下。 1 日より古い物は開くたびに片付ける
+  ///   (= 溜め込まない。 provider の `_writeImagesForCli` と同じ決まり)。
+  Future<String?> _writeClipboardImage() async {
+    try {
+      final clipboard = SystemClipboard.instance;
+      if (clipboard == null) return null;
+      final reader = await clipboard.read();
+      for (final fmt in const [
+        Formats.png,
+        Formats.jpeg,
+        Formats.gif,
+        Formats.webp,
+        Formats.bmp,
+      ]) {
+        if (!reader.canProvide(fmt)) continue;
+        final done = Completer<Uint8List?>();
+        reader.getFile(fmt, (file) async {
+          try {
+            final chunks = <int>[];
+            await for (final c in file.getStream()) {
+              chunks.addAll(c);
+            }
+            if (!done.isCompleted) {
+              done.complete(Uint8List.fromList(chunks));
+            }
+          } catch (_) {
+            if (!done.isCompleted) done.complete(null);
+          }
+        }, onError: (_) {
+          if (!done.isCompleted) done.complete(null);
+        });
+        final bytes = await done.future
+            .timeout(const Duration(seconds: 10), onTimeout: () => null);
+        if (bytes == null || bytes.isEmpty) continue;
+        final base = await getApplicationSupportDirectory();
+        final sep = Platform.pathSeparator;
+        final dir = Directory('${base.path}${sep}cli_paste');
+        if (!await dir.exists()) await dir.create(recursive: true);
+        try {
+          final now = DateTime.now();
+          for (final f in dir.listSync()) {
+            if (f is! File) continue;
+            if (now.difference(f.statSync().modified).inHours >= 24) {
+              try {
+                f.deleteSync();
+              } catch (_) {}
+            }
+          }
+        } catch (_) {}
+        final ext = fmt == Formats.jpeg
+            ? 'jpg'
+            : fmt == Formats.gif
+                ? 'gif'
+                : fmt == Formats.webp
+                    ? 'webp'
+                    : fmt == Formats.bmp
+                        ? 'bmp'
+                        : 'png';
+        final file = File('${dir.path}${sep}paste_'
+            '${DateTime.now().millisecondsSinceEpoch}.$ext');
+        await file.writeAsBytes(bytes, flush: true);
+        return file.path;
+      }
+    } catch (e) {
+      debugPrint('クリップボードの画像の取り込みに失敗: $e');
+    }
+    return null;
+  }
+
+  /// 打ちかけの行を丸ごと消す。
+  ///
+  /// ★ = ユーザー要望「チャット欄を ctrl+a などで全消しすることって
+  ///   できないよね? できるようにするかクリアボタンで全消しできるように」。
+  ///   端末では Ctrl+A は「行頭へ移動」 なので取り上げない。 代わりに
+  ///   ^U (行を消す) を送るボタンを下の帯に置いた。 ^U を知らない相手でも
+  ///   消えるよう、 こちらが映している分だけ退避も送る。
+  void _clearInputLine() {
+    final n = _liveSent.runes.length;
+    _s.sendRaw('\x15');
+    if (n > 0) _s.sendRaw('\x7f' * n);
+    _resetMirror();
+    _grabInput();
+    _stickToBottom();
+  }
+
+  /// 打ちかけの行を順番待ちへ溜める。 溜められたら true。
+  bool _enqueueTypedLine() {
+    final t = '$_injectedText$_liveSent'.trim();
+    if (t.isEmpty) return false;
+    if (!_s.enqueue(t)) {
+      // 上限に当たった時は、 いつもどおり今すぐ渡す (消えてしまわないように)。
+      return false;
+    }
+    _clearInputLine();
+    if (mounted) setState(() {});
+    return true;
   }
 
   // ── 画面の巻き上げ ──────────────────────────────────────────────────────
@@ -642,7 +1099,11 @@ class AgentTerminalState extends State<AgentTerminal> {
     if (!_scroll.hasClients) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_scroll.hasClients) return;
-      _scroll.jumpTo(_scroll.position.maxScrollExtent);
+      final pos = _scroll.position;
+      _userScrolledUp = false;
+      // 既に下端なら触らない (毎回飛ばすと上の判定と押し合って点滅する)。
+      if ((pos.maxScrollExtent - pos.pixels).abs() < 1) return;
+      pos.jumpTo(pos.maxScrollExtent);
     });
   }
 
@@ -668,6 +1129,33 @@ class AgentTerminalState extends State<AgentTerminal> {
 
   /// 帯を開け閉めするボタン (キュー / 予約)。
   /// 送るのではなく自分の帯を出すので、 _cmdButton とは別。
+  /// 画像や文書を選んで、 その道筋を端末へ差し込む。
+  ///
+  /// ★ = ユーザー要望「CLI に画像や文書ファイルを渡せるようにして欲しい」。
+  ///   Claude Code も codex も、 受け取り方は**道筋を文中に書く**形なので、
+  ///   選んだ物の道筋を打ちかけの文へ入れるだけでよい。 送信はしない
+  ///   (「これを要約して」 などと書き足してから送れるように)。
+  Future<void> _pickFilesForCli() async {
+    try {
+      final res = await FilePicker.platform.pickFiles(allowMultiple: true);
+      final files = res?.files ?? const <PlatformFile>[];
+      if (files.isEmpty) return;
+      final parts = <String>[];
+      for (final f in files) {
+        final path = (f.path ?? '').trim();
+        if (path.isEmpty) continue;
+        // 空白や日本語を含む道筋があるので、 必ず引用符で包む。
+        parts.add('"$path"');
+      }
+      if (parts.isEmpty) return;
+      _s.sendRaw('${parts.join(' ')} ');
+      _injectedText = '$_injectedText${parts.join(' ')} ';
+      _grabInput();
+    } catch (_) {
+      // 選ばれなかった / 開けなかった時は何もしない。
+    }
+  }
+
   Widget _panelButton({
     required String label,
     required IconData icon,
@@ -1188,8 +1676,9 @@ class AgentTerminalState extends State<AgentTerminal> {
     //   Codex は Tab で自前の順番待ちを持っているので出さない。
     //   Claude Code も溜めてはくれるが、 溜めた物を**道具の切れ目で今の
     //   返事に割り込ませる**ので、 「処理が終わった後に渡す」 にはならない。
-    final wantQueue =
-        slash && (_s.cliKey == 'claude' || _s.cliKey == 'gemini');
+    // ★ = ユーザー要望「アプリ側で実装するように」。 キューへ切り替えられる
+    //   ようになったので、 溜めた物を見る帯はどの CLI でも出す。
+    final wantQueue = slash;
     // ★ この端末のどこかが押されたら、 また打てるように戻す
     //   (= ユーザー報告: 画面を動かしたり他の要素を編集すると
     //   プロンプト欄に入れられなくなる)。
@@ -1308,10 +1797,6 @@ class AgentTerminalState extends State<AgentTerminal> {
             color: const Color(0xFF0D0D14),
             child: LayoutBuilder(builder: (ctx, cons) {
               const inputW = 260.0;
-              final cx = ((_cursorPos?.dx ?? 10.0))
-                  .clamp(0.0, (cons.maxWidth - inputW).clamp(0.0, 4000.0));
-              final cy = ((_cursorPos?.dy ?? (cons.maxHeight - 24)))
-                  .clamp(0.0, (cons.maxHeight - 18).clamp(0.0, 4000.0));
               // ★ 右クリックは端末自身が使っていないので、 ここで受ける
               //   (= ユーザー要望「codexCLI の本文中で右クリックすることは
               //   無いから、 画面分割や新規タブ作成などの項目を出すように
@@ -1354,9 +1839,17 @@ class AgentTerminalState extends State<AgentTerminal> {
                   ),
                 ),
                 // ── 打ち込み口 (カーソルに重ねる。 空の間は見えない) ──
-                Positioned(
-                  left: cx,
-                  top: cy,
+                //    ★ 場所だけをここで受け取る。 端末の側は組み直さない
+                //      (= ユーザー報告: 欄が点滅する)。
+                ValueListenableBuilder<Offset?>(
+                  valueListenable: _cursorPosVn,
+                  builder: (_, cpos, child) => Positioned(
+                    left: (cpos?.dx ?? 10.0).clamp(
+                        0.0, (cons.maxWidth - inputW).clamp(0.0, 4000.0)),
+                    top: (cpos?.dy ?? (cons.maxHeight - 24))
+                        .clamp(0.0, (cons.maxHeight - 18).clamp(0.0, 4000.0)),
+                    child: child!,
+                  ),
                   child: IgnorePointer(
                     child: Container(
                       // ★★ ここが日本語が打てなかった正体 (実機で特定)。
@@ -1434,8 +1927,8 @@ class AgentTerminalState extends State<AgentTerminal> {
                     ),
                   ),
                 ),
-                // ── 最新へ戻る (遡っている間だけ出す) ──
-                if (!_atBottom)
+                // ── 最新へ戻る (自分で遡っている間だけ出す) ──
+                if (_showJumpLatest)
                   Positioned(
                     right: 18,
                     bottom: 8,
@@ -1462,23 +1955,93 @@ class AgentTerminalState extends State<AgentTerminal> {
                       ),
                     ),
                   ),
+                // ── 押せる URL の下線 (指している間だけ) ──
+                //    ★ = ユーザー要望「codexCLI 等で出力されてハイパーリンクを
+                //      クリックしたらそのURL先に飛べるようにして欲しい」。
+                //    ★ 端末そのものは組み直さない (= 点滅対策)。 場所を見て
+                //      出し入れするのはこの札だけ。
+                //    ★ `opaque: false` にすると、 この札は「指の形」 を決める
+                //      列には並ぶが**当たり判定は素通り**するので、 下の端末が
+                //      今までどおり押下・文字選び (掘って選ぶ) を受け取る。
+                //      (Flutter 本体 `RenderMouseRegion.hitTest` が
+                //       `super.hitTest(...) && _opaque` = 列には足すが false を
+                //       返す作りになっているため。)
+                //    ★ 何も指していない時も **Positioned のまま** 0 の大きさで
+                //      置く。 Positioned でない子を Stack に混ぜると、 Stack の
+                //      大きさがその子に引っぱられてしまう。
+                ValueListenableBuilder<Rect?>(
+                  valueListenable: _linkRectVn,
+                  builder: (_, r, __) => Positioned(
+                    left: r?.left ?? 0.0,
+                    top: r?.top ?? 0.0,
+                    width: r?.width ?? 0.0,
+                    height: r?.height ?? 0.0,
+                    child: r == null
+                        ? const SizedBox.shrink()
+                        : const MouseRegion(
+                            opaque: false,
+                            cursor: SystemMouseCursors.click,
+                            child: DecoratedBox(
+                              decoration: BoxDecoration(
+                                border: Border(
+                                  bottom: BorderSide(
+                                      color: Color(0xFF8AB4F8), width: 1),
+                                ),
+                              ),
+                              child: SizedBox.expand(),
+                            ),
+                          ),
+                  ),
+                ),
               ]);
               final cb = widget.onContextMenu;
-              if (cb == null) return body;
               // ★ 実機で確かめたら **GestureDetector では出なかった**。
               //   端末 (xterm) が自前の判定を持っていて、 押した瞬間に
               //   ジェスチャーの取り合いへ入るため、 こちらの「右で叩いた」
               //   は勝てずに捨てられていた。 [Listener] は取り合いに参加
               //   しないので、 押した事だけは必ず届く。 右ボタンの時だけ
               //   拾い、 左は今までどおり端末が使う。
-              return Listener(
-                behavior: HitTestBehavior.deferToChild,
-                onPointerDown: (e) {
-                  if (e.kind != PointerDeviceKind.mouse) return;
-                  if (e.buttons != kSecondaryMouseButton) return;
-                  cb(e.position);
-                },
-                child: body,
+              // ★ 左ボタンは URL を開くためだけに見る (= ユーザー要望:
+              //   出力の中のハイパーリンクを押したら飛べるように)。 ここも
+              //   取り合いには入らないので、 掘って文字を選ぶ・二度叩きで
+              //   単語を選ぶ・長押しといった端末側の操作は今までどおり動く。
+              //   「押して離すまで動いていない」 時だけ URL を探し、 文字を
+              //   選んだままの 1 回目は「選びを消す」 だけにする
+              //   (端末側が押下で選びを外すため)。
+              // ★ 右クリック一覧が無い呼び出し側 (帯なしの埋め込み) でも
+              //   URL は押せるようにしたいので、 `cb == null` でも敷く。
+              return MouseRegion(
+                onExit: (_) => _linkRectVn.value = null,
+                child: Listener(
+                  behavior: HitTestBehavior.deferToChild,
+                  onPointerHover: _onTermHover,
+                  onPointerDown: (e) {
+                    _linkDownAt = null;
+                    if (e.kind == PointerDeviceKind.mouse) {
+                      if (e.buttons == kSecondaryMouseButton) {
+                        cb?.call(e.position);
+                        return;
+                      }
+                      if (e.buttons != kPrimaryMouseButton) return;
+                    }
+                    if (_termController.selection != null) return;
+                    _linkDownAt = e.position;
+                    _linkDownMs = DateTime.now().millisecondsSinceEpoch;
+                  },
+                  onPointerUp: (e) {
+                    final down = _linkDownAt;
+                    _linkDownAt = null;
+                    if (down == null) return;
+                    if ((e.position - down).distance > 6) return;
+                    if (DateTime.now().millisecondsSinceEpoch - _linkDownMs >
+                        700) {
+                      return;
+                    }
+                    unawaited(_openLinkAt(e.position));
+                  },
+                  onPointerCancel: (_) => _linkDownAt = null,
+                  child: body,
+                ),
               );
             }),
           ),
@@ -1498,10 +2061,39 @@ class AgentTerminalState extends State<AgentTerminal> {
         ),
         child: Row(children: [
           // ★ 幅が足りない時は横に流す (ボタンが増えてもはみ出さない)。
+          //   ★ = ユーザー要望「下の項目が入らない場合は左右スクロール
+          //   方式に」。 流れることは流れていたが、 マウスで動かす手が
+          //   無かったので、 ホイールを横へ振り向け、 掘んでも動かせるようにし、
+          //   細い帯を出して「まだ先がある」と分かるようにした。
           Expanded(
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(children: [
+            child: Listener(
+              onPointerSignal: (e) {
+                if (e is! PointerScrollEvent) return;
+                if (!_bottomBarScroll.hasClients) return;
+                final d = e.scrollDelta.dy.abs() > e.scrollDelta.dx.abs()
+                    ? e.scrollDelta.dy
+                    : e.scrollDelta.dx;
+                final pos = _bottomBarScroll.position;
+                _bottomBarScroll.jumpTo(
+                    (pos.pixels + d).clamp(0.0, pos.maxScrollExtent));
+              },
+              child: ScrollConfiguration(
+                behavior: ScrollConfiguration.of(context).copyWith(
+                  dragDevices: {
+                    PointerDeviceKind.touch,
+                    PointerDeviceKind.mouse,
+                    PointerDeviceKind.trackpad,
+                    PointerDeviceKind.stylus,
+                  },
+                  scrollbars: false,
+                ),
+                child: Scrollbar(
+                  controller: _bottomBarScroll,
+                  thickness: 3,
+                  child: SingleChildScrollView(
+                    controller: _bottomBarScroll,
+                    scrollDirection: Axis.horizontal,
+                    child: Row(children: [
                 if (slash) ...[
                   _cmdButton(
                       label: 'モデル',
@@ -1555,26 +2147,60 @@ class AgentTerminalState extends State<AgentTerminal> {
                       tip: 'プランの使用量と残りを出す (/usage)',
                       command: '/usage',
                       enabled: running),
-                  // ── キュー / ステアの切り替え (codex だけ) ──
-                  //    ★ = ユーザー要望「codex の画面の下に、 キューとステア
-                  //      を入れ替えるボタンを付けて欲しい」。 codex は自前の
-                  //      順番待ちを持っていて、 **Tab** で「後で渡す
-                  //      (キュー)」 と「今すぐ割り込む (ステア)」 を行き来
-                  //      する。 その Tab をここから送るだけ (アプリ側で
-                  //      状態は持たない = codex の表示が正)。
-                  if (_s.cliKey == 'codex')
+                  // ── 画像や文書を渡す (= ユーザー要望「CLI に画像や
+                  //    文書ファイルを渡せるようにして欲しい」) ──
+                  //    ★ CLI は**道筋で**ファイルを受け取る (画像も同じ)。
+                  //      選んだ物の道筋を、 打ちかけの文の所へ差し込むだけに
+                  //      する (送らない)。 続けて「これを要約して」 などと
+                  //      書き足してから Enter を押せる。
+                  //    ★ 空白を含む道筋があるので必ず引用符で包む。
+                  if (_s.supportsSlashCommands)
                     _panelButton(
-                      label: 'キュー / ステア',
-                      icon: Icons.swap_horiz_rounded,
-                      tip: 'codex の「後で渡す (キュー)」 と「今すぐ割り込む '
-                          '(ステア)」 を切り替えます (Tab と同じ)。 '
-                          '今どちらかは codex の画面に出ます',
+                      label: 'ファイル',
+                      icon: Icons.attach_file_rounded,
+                      tip: '画像や文書を選んで、 その道筋を打ちかけの文へ'
+                          '差し込みます (送信はしません)',
                       open: false,
+                      color: const Color(0xFF4FC3F7),
+                      enabled: running,
+                      onTap: _pickFilesForCli,
+                    ),
+                  // ── 打ちかけの行を全消し (= ユーザー要望) ──
+                  _panelButton(
+                    label: 'クリア',
+                    icon: Icons.backspace_outlined,
+                    tip: '打ちかけの行を全部消します (^U と同じ)。 '
+                        '端末では Ctrl+A は「行頭へ移動」 なので、 '
+                        '全消しはこちらから',
+                    open: false,
+                    color: const Color(0xFFB0BEC5),
+                    enabled: running,
+                    onTap: _clearInputLine,
+                  ),
+                  // ── キュー / ステアの切り替え ──
+                  //    ★ = ユーザー要望「キュー/ステアのボタンを押しても何も
+                  //      起こらないからちゃんと切り替わるように。 claudecode
+                  //      などプロバイダー側にその機能がないのであれば
+                  //      アプリ側で実装するように」。 codex へ Tab を送る
+                  //      だけだったのをやめ、 **アプリ側の状態**にした
+                  //      ([AgentCliSession.queueMode])。 どの CLI でも効く。
+                  if (slash)
+                    _panelButton(
+                      label: _s.queueMode ? 'キュー' : 'ステア',
+                      icon: _s.queueMode
+                          ? Icons.playlist_add_check_rounded
+                          : Icons.bolt_rounded,
+                      tip: _s.queueMode
+                          ? '今は「キュー」。 Enter で送った文は順番待ちへ溜まり、 '
+                              '考え終わってから渡します。 押すと「ステア」 に戻ります'
+                          : '今は「ステア」。 Enter でその場で割り込みます。 '
+                              '押すと「キュー」 (考え終わってから渡す) に変わります',
+                      open: _s.queueMode,
                       color: const Color(0xFFFFB347),
                       enabled: running,
                       onTap: () {
-                        // Tab (0x09)。 見えない文字を直に置かない。
-                        _s.sendRaw(String.fromCharCode(0x09));
+                        _s.queueMode = !_s.queueMode;
+                        setState(() {});
                         _grabInput();
                       },
                     ),
@@ -1600,6 +2226,9 @@ class AgentTerminalState extends State<AgentTerminal> {
                     ),
                 ],
               ]),
+                  ),
+                ),
+              ),
             ),
           ),
           // ── 立ち上がっている最中は「起動中」 とだけ出す
@@ -1623,7 +2252,7 @@ class AgentTerminalState extends State<AgentTerminal> {
           //    CLI そのものは閉じない。 どの CLI も走っている処理を
           //    打ち切るのは Esc なので、 それを送るだけ。
           //    「終了」 (右) は CLI ごと閉じるボタンで、 別物。
-          if (running && _s.busy)
+          if (running && _s.busyForUi)
             Padding(
               padding: const EdgeInsets.only(right: 4),
               child: Tooltip(

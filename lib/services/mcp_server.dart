@@ -464,8 +464,11 @@ class McpServer {
         'Call list_pages first and use a real pageId from it - never make up '
         'an id. SCOPE: delete only the pages the user actually named. '
         '"this page" is the single page with isCurrent:true - delete that one '
-        'and stop. Do NOT walk down the page list deleting one after another, '
-        'and do not retry with another id when a delete fails. '
+        'and stop. There is no cap on how many pages you may delete: when the '
+        'user asks for several pages (or for a whole named set), delete every '
+        'one of them in the same turn without stopping to ask again. Just do '
+        'not delete pages that were not asked for, and do not retry with '
+        'another id when a delete fails. '
         'When the page is named clearly, just delete it - do not ask again. '
         'When it is NOT clear which page (two pages share a name, or the user '
         'says "the ones I do not need"), list the candidates and get an OK '
@@ -1039,9 +1042,21 @@ class McpServer {
         'lines are stacked top-to-bottom automatically. size is the font '
         'size in points, color is ARGB int (e.g. 0xFF000000). '
         'IMPORTANT: to write several lines, pass them ALL AT ONCE in '
-        '"texts" (array of strings) in a SINGLE call. Blank or whitespace-only '
-        'strings are discarded - empty lines cannot be written with this '
-        'tool.',
+        '"texts" (array of strings) in a SINGLE call - one string per '
+        'paragraph, and put the WHOLE document in one call so the layout is '
+        'computed in one go. When x/y are omitted the layout is done for you: '
+        'each string is wrapped to the width of the paper, advanced by its '
+        'real number of lines, and started BELOW whatever is already on the '
+        'sheet - so it never overlaps. When the sheet is full the rest '
+        'continues on the next tab (a new tab named "<tab> (2)" is added if '
+        'needed); the tabs used come back in "sheets". '
+        'Do NOT write a rough version first and tidy it up afterwards, and do '
+        'NOT make a scratch / draft tab: the user sees every write '
+        'immediately. Blank or whitespace-only strings are discarded - empty '
+        'lines cannot be written with this tool (use a paragraph per string '
+        'instead). Because the text is wrapped to the paper, what '
+        'read_paint_items gives back may contain extra line breaks - that is '
+        'not a mistake, do not rewrite it.',
         {
           'pageId': {'type': 'string'},
           'texts': {
@@ -1130,6 +1145,24 @@ class McpServer {
         },
         ['pageId', 'name']),
     _tool(
+        'delete_paint_item',
+        'Delete a TAB (one sheet of paper) or a whole BINDER of a FREE NOTE '
+        'page. Give "binder" and "tab" to delete that tab; give "binder" '
+        'alone to delete the binder with everything in it. Indexes come from '
+        'list_paint_tabs (call it again right before deleting - indexes shift '
+        'when tabs are added or removed). The last remaining tab of a binder, '
+        'and the last remaining binder, cannot be deleted. Everything drawn '
+        'on that tab is lost and there is no undo, so only delete a tab the '
+        'user asked you to remove, or a working tab YOU made yourself during '
+        'this task - tidy those up before you report back, never leave a '
+        'half-finished sheet behind. Returns the name of what was deleted.',
+        {
+          'pageId': {'type': 'string'},
+          'binder': {'type': 'integer'},
+          'tab': {'type': 'integer'},
+        },
+        ['pageId']),
+    _tool(
         'write_markdown',
         'Write the body of a MARKDOWN page (pageType "markdown"). This is '
         'how you fill in a page made with create_page type:"markdown" - '
@@ -1138,11 +1171,25 @@ class McpServer {
         'code fences and ```mermaid diagrams all render). By default the '
         'text REPLACES the body; pass "append":true to add to the end of '
         'what is already there. The page is opened and shown after writing, '
-        'so the user sees the result immediately.',
+        'so the user sees the result immediately. '
+        'A markdown page holds several TABS, and a long document should be '
+        'laid out over several of them: start each part with a line '
+        '"<<<PAGE: tab name>>>" and everything after that line becomes that '
+        'tab (the first part goes into the tab that is open now, the rest '
+        'are added after it). Make the first part the overview / table of '
+        'contents and link to the others with "[tab name](tab:tab name)". '
+        'Even without those marker lines a long document is split at its '
+        'headings on its own; pass "split":"single" to force one single tab, '
+        'or "split":"tabs" to split a short one too. "append" never splits. '
+        'The reply tells you how many tabs were written.',
         {
           'pageId': {'type': 'string'},
           'text': {'type': 'string'},
           'append': {'type': 'boolean'},
+          'split': {
+            'type': 'string',
+            'enum': ['auto', 'tabs', 'single'],
+          },
         },
         ['pageId', 'text']),
     _tool(
@@ -1978,7 +2025,7 @@ class McpServer {
       final ok = await _provider.mcpWriteMarkdown(page.id,
           '![$alt](file:///${path.replaceAll('\\', '/')})',
           append: true);
-      return ok
+      return ok > 0
           ? done('markdown body')
           : _err('could not write the picture into that markdown page '
               '(a web tab holds no body).');
@@ -3209,6 +3256,9 @@ class McpServer {
           //   一致しない場合がある」。 1 行ごとに prefs を読んで書いていたので、
           //   途中で開いているノートの遅延保存と競合して行が消えていた。
           //   provider 側で **1 回の読み書き**にまとめる。
+          // ★ どの紙に書いたかを返す (= 入り切らずに次のタブへ続いた時、
+          //   黙っていると AI が「1 枚に収めた」 と嘘を伝える)。
+          final usedSheets = <String>[];
           final wrote = await _provider.mcpAddPaintTexts(
             pageId,
             lines,
@@ -3220,15 +3270,22 @@ class McpServer {
             //   つもりの 0xFF0000 は α=0 で透明になり、 文字が見えない
             //   まま成功と返っていた)。
             colorValue: _argbOf(a['color']),
+            usedSheets: usedSheets,
           );
           final asked = lines.where((l) => l.trim().isNotEmpty).length;
           return wrote > 0
               ? _ok({
                   'written': wrote,
                   'asked': asked,
+                  if (usedSheets.isNotEmpty) 'sheets': usedSheets,
+                  if (usedSheets.length > 1)
+                    'continued': 'The text did not fit on one sheet and '
+                        'continues on ${usedSheets.length} tabs '
+                        '(${usedSheets.join(" / ")}). Tell the user which '
+                        'tabs it went on.',
                   if (wrote != asked)
-                    'note': 'Only $wrote of $asked lines were written. '
-                        'Tell the user the real number.',
+                    'note': 'Only $wrote of $asked paragraphs were written - '
+                        'the rest did not fit. Tell the user the real number.',
                 })
               : _err('not a free-note page, or text empty: $pageId '
                   '- add_paint_text only works on pages whose type is '
@@ -3308,6 +3365,24 @@ class McpServer {
               : _err('could not rename - check the indexes with '
                   'list_paint_tabs first');
         }
+      // ── 作業用に作ったタブを片付ける (= ユーザー要望: 崩れた下書きを
+      //    残さない) ──
+      case 'delete_paint_item':
+        {
+          final dlBinder = intOf('binder');
+          final dlTab = intOf('tab');
+          if (intErr != null) return _err(intErr!);
+          final gone = await _provider.mcpDeletePaintItem(
+              a['pageId'] as String? ?? '',
+              binder: dlBinder,
+              tab: dlTab);
+          return gone != null
+              ? _ok({'deleted': gone})
+              : _err('could not delete - check the indexes with '
+                  'list_paint_tabs first. The last tab of a binder and the '
+                  'last binder cannot be deleted (and the page must be a '
+                  'free note)');
+        }
       case 'write_markdown':
         {
           final pageId = a['pageId'] as String? ?? '';
@@ -3316,9 +3391,33 @@ class McpServer {
             return _err('"text" was empty - nothing was written. Write the '
                 'markdown you want the page to hold.');
           }
-          final ok = await _provider.mcpWriteMarkdown(pageId, text,
-              append: a['append'] == true);
-          if (ok) return _ok({'pageId': pageId, 'written': text.length});
+          // ★ 「複数タブに分ける」 を CLI からも通す (= ユーザー要望)。
+          //   文字でも真偽値でも受け取る (外の AI は enum を無視して
+          //   true / false を送ってくる事があり、 as String? では落ちる)。
+          final splitRaw = '${a['split'] ?? ''}'.trim().toLowerCase();
+          final bool? splitMode = (splitRaw == 'single' ||
+                  splitRaw == 'false' ||
+                  splitRaw == 'no' ||
+                  splitRaw == 'none')
+              ? false
+              : (splitRaw == 'tabs' ||
+                      splitRaw == 'true' ||
+                      splitRaw == 'yes' ||
+                      splitRaw == 'multi')
+                  ? true
+                  : null;
+          final tabCount = await _provider.mcpWriteMarkdown(pageId, text,
+              append: a['append'] == true, split: splitMode);
+          if (tabCount > 0) {
+            return _ok({
+              'pageId': pageId,
+              'written': text.length,
+              'tabs': tabCount,
+              if (tabCount > 1)
+                'note': 'the document was laid out over $tabCount tabs on '
+                    'this page',
+            });
+          }
           final page = _provider.mcpPageById(pageId);
           if (page == null) {
             return _err('no page has the id "$pageId" - call list_pages and '
@@ -3354,12 +3453,22 @@ class McpServer {
                 'is discarded - this app cannot insert empty lines. Tell the '
                 'user instead of retrying.');
           }
-          var wrote = 0;
-          for (final para in paras) {
-            if (await _provider.mcpAppendDocumentText(pageId, para)) wrote++;
-          }
+          // ★ = 動作検証レポート 2026-09-24 不具合 1「新規文書ページの初回
+          //   複数段落追加で先頭段落が欠落する」。 旧: 段落ごとに provider を
+          //   呼んでいたので、 その合間に走る prefs の控えの入れ替えで
+          //   先に書いた段落が無かった事になり、 作り直しで消えていた。
+          //   provider 側で **1 回の読み書き**にまとめる
+          //   (add_paint_text と同じ直し方)。
+          final wrote = await _provider.mcpAppendDocumentTexts(pageId, paras);
+          final asked = paras.where((p) => p.trim().isNotEmpty).length;
           return wrote > 0
-              ? _ok({'appended': wrote})
+              ? _ok({
+                  'appended': wrote,
+                  'asked': asked,
+                  if (wrote != asked)
+                    'note': 'Only $wrote of $asked paragraphs were appended. '
+                        'Tell the user the real number.',
+                })
               : _err('could not append to "$pageId": append_document_text '
                   'works only on pages whose type is '
                   '"paint" (free note) or "document" (notepad). For a '

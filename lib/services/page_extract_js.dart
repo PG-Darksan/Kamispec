@@ -79,8 +79,10 @@ String hrefOfJs(String selector, String text) {
 /// 外のブラウザ (CDP) は本体の仕組みでログを拾えるが、 アプリ内の
 /// WebView には覗く口が無いので、 ページ側に控えを作らせる。
 const String consoleHookJs = '(function(){'
-    'if(window.__hnHooked) { window.__hnLogs=[]; return "ok"; }'
-    'window.__hnHooked=true; window.__hnLogs=[];'
+    'window.__hnLogs=window.__hnLogs||[];'
+    'window.__hnReset=function(){window.__hnLogs=[];};'
+    'if(window.__hnHooked) { return "ok"; }'
+    'window.__hnHooked=true;'
     'function push(kind,args){try{'
     ' var p=[];for(var i=0;i<args.length;i++){var a=args[i];'
     '  p.push(typeof a==="string"?a:(function(){try{'

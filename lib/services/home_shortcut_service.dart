@@ -66,16 +66,42 @@ class HomeShortcutService {
     return null;
   }
 
+  static String? _cachedInitialCommand;
+  static bool _initialCommandRead = false;
+  static Future<String?>? _initialCommandInFlight;
+
   /// 起動時、 ショートカットから実行すべきボタン ID を返す (無ければ null)。
-  static Future<String?> initialCommandId() async {
-    if (kIsWeb) return null;
-    try {
-      if (Platform.isWindows) return windowsLaunchCommandId;
-      if (Platform.isAndroid) {
-        return await _ch.invokeMethod<String>('getInitialCommandId');
-      }
-    } catch (_) {}
-    return null;
+  ///
+  /// ★ 控えを持つ (= ユーザー要望: ショートカットからページを開かずに
+  ///   立ち上げたい)。 Android 側は intent の extra を**読んだ時点で消す**ので、
+  ///   `main()` で先に覗くと画面側が二度と受け取れなくなる。 1 回だけ聞いて
+  ///   覚え、 以後は同じ値を返す。
+  static Future<String?> initialCommandId() {
+    if (kIsWeb) return Future<String?>.value();
+    if (_initialCommandRead) return Future<String?>.value(_cachedInitialCommand);
+    // ★ 聞きに行くのは 1 回だけ。 呼び出し側が待ちきれずに諦めても
+    //   (例: `main()` の 900ms)、 同じ約束を返すので二度聞きにならない。
+    //   二度聞くと Android 側は既に extra を消しているので null が返る。
+    return _initialCommandInFlight ??= () async {
+      try {
+        if (Platform.isWindows) {
+          _cachedInitialCommand = windowsLaunchCommandId;
+        } else if (Platform.isAndroid) {
+          _cachedInitialCommand =
+              await _ch.invokeMethod<String>('getInitialCommandId');
+        }
+      } catch (_) {}
+      _initialCommandRead = true;
+      return _cachedInitialCommand;
+    }();
+  }
+
+  /// 起動時のボタン ID を「使い切った」 ことにする (= 画面側で二重に
+  /// 実行させない)。 ショートカットから直に立ち上げた時に呼ぶ。
+  static void consumeInitialCommandId() {
+    _cachedInitialCommand = null;
+    _initialCommandRead = true;
+    windowsLaunchCommandId = null;
   }
 
   static void Function(String pageId)? _onOpenPage;
@@ -195,6 +221,26 @@ class HomeShortcutService {
     final args = '--floating-web=${Uri.encodeComponent(u)} '
         '--floating-title=${Uri.encodeComponent(label.trim())}';
     return _createWindowsShortcut(args, label,
+        iconPath: iconPath, destDir: destDir);
+  }
+
+  /// 好きな起動引数のショートカットを作る (Windows 専用)。
+  ///
+  /// ★ = ユーザー要望「CLI の画面をアプリの外に出して、 ショートカットから
+  ///   ページを立ち上げずに呼べるように」。 `--command=<id>` の形に当てはまら
+  ///   ない起動の仕方 (単独窓の旗など) を渡すための入口。
+  ///   [arguments] の**先頭**が旗になるように組むこと (`main()` は
+  ///   `args.first` で振り分ける)。
+  static Future<bool> pinArgsShortcut({
+    required String arguments,
+    required String label,
+    String? destDir,
+    String? iconPath,
+  }) async {
+    if (kIsWeb || !Platform.isWindows) return false;
+    final a = arguments.trim();
+    if (a.isEmpty) return false;
+    return _createWindowsShortcut(a, label,
         iconPath: iconPath, destDir: destDir);
   }
 

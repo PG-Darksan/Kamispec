@@ -314,6 +314,10 @@ FFI_PLUGIN_EXPORT PtyHandle *pty_create(PtyOptions *options)
     if (!CreatePipe(&outputReadSide, &outputWriteSide, NULL, 0))
     {
         error_message = "Failed to create output pipe";
+        /* ★ HisatorNotebook のパッチ: 1 本目の pipe 対を閉じる。 元は
+         *   閉じずに戻っていたので、 転ぶたびに手が 2 本漏れていた。 */
+        CloseHandle(inputReadSide);
+        CloseHandle(inputWriteSide);
         return NULL;
     }
 
@@ -329,6 +333,14 @@ FFI_PLUGIN_EXPORT PtyHandle *pty_create(PtyOptions *options)
     if (FAILED(result))
     {
         error_message = "Failed to create pseudo console";
+        /* ★ HisatorNotebook のパッチ: 転んだ時に後始末する。 元は何も
+         *   閉じずに戻っていたので、 開けなかった端末を押し直すたびに
+         *   パイプが積み上がっていた。 hPty はまだ出来ていないので
+         *   閉じない。 */
+        CloseHandle(inputReadSide);
+        CloseHandle(inputWriteSide);
+        CloseHandle(outputReadSide);
+        CloseHandle(outputWriteSide);
         return NULL;
     }
 
@@ -351,6 +363,15 @@ FFI_PLUGIN_EXPORT PtyHandle *pty_create(PtyOptions *options)
     if (!ok)
     {
         error_message = "Failed to initialize proc thread attribute list";
+        /* ★ HisatorNotebook のパッチ: 後始末。 `hPty` を閉じないと
+         *   conhost.exe が居残る。 属性表は初期化に失敗しているので
+         *   `DeleteProcThreadAttributeList` は呼ばず free だけ。 */
+        free(startupInfo.lpAttributeList);
+        ClosePseudoConsole(hPty);
+        CloseHandle(inputReadSide);
+        CloseHandle(inputWriteSide);
+        CloseHandle(outputReadSide);
+        CloseHandle(outputWriteSide);
         return NULL;
     }
 
@@ -365,6 +386,15 @@ FFI_PLUGIN_EXPORT PtyHandle *pty_create(PtyOptions *options)
     if (!ok)
     {
         error_message = "Failed to update proc thread attribute list";
+        /* ★ HisatorNotebook のパッチ: 後始末。 ここは既に属性表が出来て
+         *   いるので Delete も要る。 */
+        DeleteProcThreadAttributeList(startupInfo.lpAttributeList);
+        free(startupInfo.lpAttributeList);
+        ClosePseudoConsole(hPty);
+        CloseHandle(inputReadSide);
+        CloseHandle(inputWriteSide);
+        CloseHandle(outputReadSide);
+        CloseHandle(outputWriteSide);
         return NULL;
     }
 
@@ -407,15 +437,42 @@ FFI_PLUGIN_EXPORT PtyHandle *pty_create(PtyOptions *options)
 
     if (!ok)
     {
-        error_message = "Failed to create process";
+        /* ★ HisatorNotebook のパッチ: 転んだ時に全部片付ける
+         *   (= ユーザー報告: ターミナルを開こうとするとセキュリティソフトに
+         *   ブロックされてアプリが落ちてしまう)。 子だけ撃たれた時はここへ
+         *   来る。 元は擬似端末もパイプも属性表も閉じずに戻っていたので、
+         *   「もう一度」 を押すたびに conhost.exe が 1 つずつ居残り、
+         *   *画面のあるアプリが小さなプロセスを次々起こす* という一番
+         *   疑われる形を自分で作っていた。
+         *   ★ `GetLastError` は他の API を呼ぶ前に取る。 番号は画面へ回す
+         *     (1260 = 規則で禁止された、 577 = 署名が不正 など。 どの規則に
+         *     撃たれたのかの唯一の手掛かり)。 `printf` は窓だけのアプリに
+         *     標準出力が無いので外す。 */
         DWORD error = GetLastError();
-        printf("error no: %d\n", error);
+        static char create_process_error[96];
+        snprintf(create_process_error, sizeof(create_process_error),
+                 "Failed to create process (win32 error %lu)",
+                 (unsigned long)error);
+        error_message = create_process_error;
+        DeleteProcThreadAttributeList(startupInfo.lpAttributeList);
+        free(startupInfo.lpAttributeList);
+        ClosePseudoConsole(hPty);
+        CloseHandle(inputReadSide);
+        CloseHandle(inputWriteSide);
+        CloseHandle(outputReadSide);
+        CloseHandle(outputWriteSide);
         return NULL;
     }
 
-    // free(startupInfo.lpAttributeList);
+    /* ★ HisatorNotebook のパッチ: 起きた後に要らなくなる物を閉じる
+     *   (元は両方コメントアウトされていて、 端末を開くたびに手が漏れて
+     *   いた)。 属性表は CreateProcessW の間だけ要る物で、 `hThread` は
+     *   このファイルのどこにも保存されていない (`hProcess` だけが
+     *   `start_wait_exit_thread` へ渡り、 :256 で閉じられる)。 */
+    DeleteProcThreadAttributeList(startupInfo.lpAttributeList);
+    free(startupInfo.lpAttributeList);
 
-    // CloseHandle(processInfo.hThread);
+    CloseHandle(processInfo.hThread);
 
     HANDLE mutex = CreateSemaphore(
         NULL, // default security attributes

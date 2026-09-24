@@ -24,7 +24,7 @@ import 'dart:typed_data';
 import 'package:ffi/ffi.dart' as pkgffi;
 import 'package:flutter/foundation.dart';
 
-/// 1 台ぶんの拡大率の情報。
+/// 1 台分の拡大率の情報。
 class MonitorScale {
   /// 画面の左上の位置と大きさ (アプリ側の並びと突き合わせるのに使う)。
   final int left;
@@ -60,7 +60,7 @@ class MonitorScale {
   });
 }
 
-/// 1 台ぶんの壁紙の宛先 (IDesktopWallpaper の monitor id)。
+/// 1 台分の壁紙の宛先 (IDesktopWallpaper の monitor id)。
 class WallpaperMonitor {
   final String id;
   final int left;
@@ -102,7 +102,7 @@ class DisplayControl {
     100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500
   ];
 
-  /// まだ繋いでいない画面ぶんに出す、 よく使う拡大率
+  /// まだ繋いでいない画面分に出す、 よく使う拡大率
   /// (= ユーザー要望: 繋いでいない時でも予め決めておけるように)。
   /// 本物が繋がれば、 その画面が返す本当の選択肢に差し替わる。
   ///

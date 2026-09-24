@@ -26,7 +26,7 @@
 //     そちらは engine 側でも同じ倍率が掛かっているので、 一緒に直して正しい
 //     (= 入れ直した時と同じ動きになる)。
 //   ・Windows 以外と Web は倍率 1.0 のまま (dart:ffi を一切触らない)。
-//   ・「1 画面ぶん」 (WHEEL_PAGESCROLL = -1) と 0 は比が作れないので何もしない。
+//   ・「1 画面分」 (WHEEL_PAGESCROLL = -1) と 0 は比が作れないので何もしない。
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/widgets.dart';
@@ -83,7 +83,7 @@ class WheelScrollScale {
   static void captureBaseline() {
     if (!isSupported) return;
     final int n = _readOsLines();
-    if (n <= 0) return; // 1 画面ぶん / 読めなかった → 何もしない。
+    if (n <= 0) return; // 1 画面分 / 読めなかった → 何もしない。
     _bakedLines = n;
     _osLines = n;
     _factor = 1.0;
@@ -101,7 +101,7 @@ class WheelScrollScale {
     _sinceRead
       ..reset()
       ..start();
-    if (n <= 0) return; // 1 画面ぶん / 読めなかった → 前の倍率のまま。
+    if (n <= 0) return; // 1 画面分 / 読めなかった → 前の倍率のまま。
     _osLines = n;
     _factor = n / _bakedLines;
   }

@@ -68,7 +68,7 @@ const String _kCacheDirName = 'pdf_markup_cache';
 /// これより大きいファイルは触らない (開くのが遅くなるため)。
 const int _kMaxBytes = 120 * 1024 * 1024;
 
-/// 1 本ぶんの覚え書き。 [out] が null = 「調べたが焼き込む物は無かった」。
+/// 1 本分の覚え書き。 [out] が null = 「調べたが焼き込む物は無かった」。
 class _Entry {
   final String? out;
   final int mtimeMs;

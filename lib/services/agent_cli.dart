@@ -57,7 +57,7 @@ List<_UnpackedFile> _unpackTgz(List<int> bytes) {
 /// ★ gemini は一覧から外した (= ユーザー判断)。 Gemini CLI の Google
 ///   ログインは CLI 自身が 127.0.0.1 の待ち受けを立てる形で、 この環境では
 ///   セキュリティソフトに必ず止められる。 残る道は API キーを渡す事だけで、
-///   それは「契約しているぶんを使うので AI の残高は減りません」 という
+///   それは「契約している分を使うので AI の残高は減りません」 という
 ///   この画面の前提と食い違う (API キーは使った分だけ課金される)。
 ///   種別そのものは、 控えの読み書き等で参照が残っているので消さない。
 enum AgentCliKind { claude, codex, gemini }
@@ -221,7 +221,7 @@ class AgentCli {
   ///
   /// ★ 画面は `FutureBuilder(future: findAll())` の形で作られており、 描き
   ///   直しのたびに新しい探索が始まる。 控えに入る前に次が始まると、 その
-  ///   ぶんだけ余計に走ってしまう。 走っている物があればそれを使い回す。
+  ///   分だけ余計に走ってしまう。 走っている物があればそれを使い回す。
   static final Map<AgentCliKind, Future<AgentCliFound>> _inflight = {};
 
   /// 調べ直す (入れた直後に押してもらう用)。
@@ -271,7 +271,11 @@ class AgentCli {
       }
       found ??= await _search(spec);
     }
-    final launch = found == null ? null : resolveLauncher(found);
+    // ★ シェルを挟まない形を最後まで探す (= ユーザー報告: ターミナルを
+    //   開こうとするとブロックされてアプリが落ちる)。 割り出せた時は
+    //   [AgentCliFound.needsShell] が false になり、 `cmd.exe /c` を
+    //   起こす道へ落ちなくなる。
+    final launch = found == null ? null : shellFreeLaunch(found);
     final loggedIn = found == null ? null : await _loggedInHint(kind);
     // ★ 宛名は「入っていそう」 な時だけ調べる (= 無駄にファイルを読まない)。
     //   ここで求めた物は _cache に入るので、 描き直しのたびには読まない。
@@ -427,6 +431,111 @@ class AgentCli {
       return null;
     }
   }
+
+  /// 薄皮から本体を割り出す最後の手 (npm の置き方をたどる)。
+  ///
+  /// ★ = ユーザー報告「ターミナルを開こうとするとセキュリティソフトに
+  ///   ブロックされてアプリが落ちてしまう」。 [resolveLauncher] は薄皮の
+  ///   **中身**を読む形なので、 npm の版で書き方が変わると割り出せず、
+  ///   そのたびに `cmd.exe /c <薄皮>` という「画面のあるアプリが黙って
+  ///   シェルを起こす」 形へ落ちていた。 落ちる前にもう一手打つ。
+  ///
+  ///   npm のグローバル導入は置き方が決まっている
+  ///   (`<prefix>\<名前>.cmd` と `<prefix>\node_modules\<包>\<入口>`)。
+  ///   薄皮の名前で `bin` を引いている包を探し、 その入口を node に渡す。
+  static ({String exe, List<String> args})? nodeLaunchFromShim(
+      String shimPath) {
+    if (!Platform.isWindows) return null;
+    final low = shimPath.toLowerCase();
+    if (!low.endsWith('.cmd') &&
+        !low.endsWith('.bat') &&
+        !low.endsWith('.ps1')) {
+      return null;
+    }
+    try {
+      final file = File(shimPath);
+      if (!file.existsSync()) return null;
+      final dir = file.parent.path;
+      final sep = Platform.pathSeparator;
+      var base = shimPath.split(RegExp(r'[\\/]')).last;
+      final dot = base.lastIndexOf('.');
+      if (dot > 0) base = base.substring(0, dot);
+      if (base.isEmpty) return null;
+      // ★ 数を区切る。 利用者のプロジェクトの薄皮を渡された時、
+      //   `node_modules` は数千件になり得る (= 画面が固まる)。
+      var scanned = 0;
+      for (final root in <String>[
+        '$dir${sep}node_modules',
+        '${Directory(dir).parent.path}${sep}node_modules',
+      ]) {
+        final rootDir = Directory(root);
+        if (!rootDir.existsSync()) continue;
+        // 包の置き場を洗い出す (`@scope/名前` は 1 つ下)。
+        final pkgDirs = <Directory>[];
+        try {
+          for (final e in rootDir.listSync(followLinks: false)) {
+            if (e is! Directory) continue;
+            final name =
+                e.path.split(RegExp(r'[\\/]')).where((s) => s.isNotEmpty).last;
+            if (name.startsWith('@')) {
+              try {
+                for (final s in e.listSync(followLinks: false)) {
+                  if (s is Directory) pkgDirs.add(s);
+                }
+              } catch (_) {}
+            } else {
+              pkgDirs.add(e);
+            }
+          }
+        } catch (_) {
+          continue;
+        }
+        for (final pkg in pkgDirs) {
+          if (++scanned > 400) break;
+          final manifest = File('${pkg.path}${sep}package.json');
+          if (!manifest.existsSync()) continue;
+          var rel = '';
+          try {
+            final m = jsonDecode(manifest.readAsStringSync());
+            if (m is! Map) continue;
+            final bin = m['bin'];
+            if (bin is String) {
+              // 入口が 1 つだけの形。 包の名前が薄皮の名前と合う時だけ。
+              if ('${m['name'] ?? ''}'.split('/').last != base) continue;
+              rel = bin;
+            } else if (bin is Map) {
+              final hit = bin[base];
+              if (hit == null) continue;
+              rel = '$hit';
+            }
+          } catch (_) {
+            continue;
+          }
+          if (rel.isEmpty) continue;
+          final entry = '${pkg.path}$sep${rel.replaceAll('/', sep)}';
+          if (!File(entry).existsSync()) continue;
+          if (entry.toLowerCase().endsWith('.exe')) {
+            // ★ 置き札 (中身が文字だけの .exe) は起こさない。
+            if (!_isRealExe(entry)) continue;
+            return (exe: ptySafePath(entry), args: const <String>[]);
+          }
+          final node = _findNodeExe(dir);
+          if (node == null) return null;
+          return (exe: ptySafePath(node), args: <String>[ptySafePath(entry)]);
+        }
+      }
+    } catch (e) {
+      debugPrint('nodeLaunchFromShim failed: $e');
+    }
+    return null;
+  }
+
+  /// シェルを 1 枚も挟まずに起こせる形 (どうしても無理なら null)。
+  ///
+  /// ★ 呼ぶ側はこれを使う。 null が返った時だけ `cmd.exe /c` へ落ちる
+  ///   (= その形はセキュリティソフトに咎められ得るので、 最後の手)。
+  static ({String exe, List<String> args})? shellFreeLaunch(String exePath) =>
+      resolveLauncher(exePath) ?? nodeLaunchFromShim(exePath);
 
   /// 本物の実行ファイルか (先頭が `MZ` = PE)。
   ///
@@ -955,6 +1064,21 @@ class AgentCli {
     exe ??= shellExeFor('pwsh');
     exe ??= shellExeFor('cmd');
     exe ??= systemShell(preferPowerShell: preferPowerShell);
+    // ★ 前回これで起こそうとしたまま戻って来なかった (= セキュリティソフト
+    //   にアプリごと撃たれた) 殻は、 既定には使わない。 コマンド プロンプト
+    //   へ落とす (= ユーザー報告: ターミナルを開こうとするとブロックされて
+    //   アプリが落ちる)。 その場で選ばれた時は今までどおり通す
+    //   (= 利用者の指定を勝手にすり替えない)。 どの殻で開いたかは
+    //   [AgentCliSession.start] が端末の 1 行目に出すので目で分かる。
+    if (once.isEmpty &&
+        blockedShellExe.isNotEmpty &&
+        exe.toLowerCase() == blockedShellExe.toLowerCase()) {
+      final fallback = shellExeFor('cmd');
+      if (fallback != null && fallback.toLowerCase() != exe.toLowerCase()) {
+        debugPrint('shellLaunch: $exe は前回撃たれたので $fallback へ落とします');
+        exe = fallback;
+      }
+    }
     final low = exe.toLowerCase();
     final isPs =
         low.endsWith('powershell.exe') || low.endsWith('pwsh.exe');
@@ -1020,19 +1144,38 @@ class AgentCli {
         _ => Platform.environment['SHELL'],
       };
     }
-    final root = Platform.environment['SystemRoot'] ?? r'C:\\Windows';
-    final pf = Platform.environment['ProgramFiles'] ?? r'C:\\Program Files';
+    // ★ 既定値の `\\` は書き間違い (raw 文字列なので区切りが 2 本のまま渡って
+    //   いた)。 Windows は重なった区切りを通すので実害は出ていなかったが直す。
+    final root = Platform.environment['SystemRoot'] ?? r'C:\Windows';
+    final pf = Platform.environment['ProgramFiles'] ?? r'C:\Program Files';
     final pf86 =
-        Platform.environment['ProgramFiles(x86)'] ?? r'C:\\Program Files (x86)';
+        Platform.environment['ProgramFiles(x86)'] ?? r'C:\Program Files (x86)';
+    // 64 bit 側の Program Files (32 bit で動いている時もこちらを向く)。
+    final pf64 = Platform.environment['ProgramW6432'] ?? '';
+    final drive = (Platform.environment['SystemDrive'] ?? 'C:').trim();
     final local = Platform.environment['LOCALAPPDATA'] ?? '';
     List<String> cands;
     switch (id) {
       case 'pwsh':
+        // ★ = ユーザー報告「シェルの選択肢から PowerShell の 7 系が消えた」。
+        //   入れ方で置き場がばらけるので、 考えられる所を全部挙げる。
+        //   ・全員用の MSI   … %ProgramFiles%\PowerShell\7
+        //   ・自分用の MSI   … %LOCALAPPDATA%\Programs\PowerShell\7
+        //   ・ストア版の別名 … %LOCALAPPDATA%\Microsoft\WindowsApps
+        //   ・winget の中継  … %LOCALAPPDATA%\Microsoft\WinGet\Links
+        //   ・環境変数が渡っていない起こし方 (ショートカットや別の窓から
+        //     起こされた時) … ドライブ名から組み立てた決め打ちで押さえる
+        //   ここで全滅した時は PATH → [_scanPwshDirs] (`7-preview` や `8`)。
         cands = <String>[
           '$pf\\PowerShell\\7\\pwsh.exe',
+          if (pf64.isNotEmpty) '$pf64\\PowerShell\\7\\pwsh.exe',
           '$pf86\\PowerShell\\7\\pwsh.exe',
-          if (local.isNotEmpty)
+          '$drive\\Program Files\\PowerShell\\7\\pwsh.exe',
+          if (local.isNotEmpty) ...[
+            '$local\\Programs\\PowerShell\\7\\pwsh.exe',
             '$local\\Microsoft\\WindowsApps\\pwsh.exe',
+            '$local\\Microsoft\\WinGet\\Links\\pwsh.exe',
+          ],
         ];
         break;
       case 'powershell':
@@ -1072,11 +1215,18 @@ class AgentCli {
       } catch (_) {}
     }
     // 見つからなければ PATH も見る (入れ方はいろいろあるので)。
-    return _searchPath(id == 'cmd'
+    final viaPath = _searchPath(id == 'cmd'
         ? 'cmd.exe'
         : id == 'powershell'
             ? 'powershell.exe'
             : '$id.exe');
+    if (viaPath != null && viaPath.isNotEmpty) return viaPath;
+    // ★ PowerShell 7 だけは、 最後に置き場を舐めて探す (`7-preview` や `8`
+    //   のように `7` 以外の名前で入る版があるため)。 ここまで来るのは決まった
+    //   置き場も PATH も当てにならない時だけなので、 普段の描き直しで
+    //   フォルダーを舐める事にはならない。
+    if (id == 'pwsh') return _scanPwshDirs();
+    return null;
   }
 
   /// 今このパソコンで選べる殻 (入っている物だけ)。
@@ -1088,6 +1238,68 @@ class AgentCli {
       out.add((id: c.id, label: c.label, exe: exe));
     }
     return out;
+  }
+
+  // ── 起こそうとして撃たれた殻を覚える ──────────────────────────────
+  //
+  //   ★ = ユーザー報告「ターミナルを開こうとするとセキュリティソフトに
+  //     ブロックされてアプリが落ちてしまう」。 撃たれているのは**アプリの
+  //     プロセスそのもの**なので Dart の例外では拾えず、 画面に赤い帯も
+  //     出せない ([AgentCliSession] の受け止めは全部素通りする)。
+  //     出来るのは「起こす直前に紙を置いて、 動き出したら剥がす」 形だけ。
+  //     次に立ち上がった時に紙が残っていれば、 その殻で撃たれたと見て
+  //     **既定には二度と使わない** (= 落ちる輪を切る)。
+  //   ★ prefs は使わない。 非同期なので、 撃たれる瞬間までに書き終わって
+  //     いる保証が無い。 同期でファイルに置く。
+  //   ★ 利用者がその場で選んだ時は今までどおり通す (格下げは「おまかせ」
+  //     の時だけ = 選んだ物を勝手にすり替えない)。
+
+  static String? _launchMarkerPath() {
+    if (!Platform.isWindows) return null;
+    final local = Platform.environment['LOCALAPPDATA'] ?? '';
+    if (local.isEmpty) return null;
+    return '$local\\HisatorNotebook\\terminal_launch.txt';
+  }
+
+  /// 前回、 起こそうとしたまま戻って来なかった実行ファイル (無ければ空)。
+  static String blockedShellExe = '';
+
+  /// 起動時に 1 回読む。 紙が残っていれば控えて、 剥がす。
+  static void loadBlockedShell() {
+    final p = _launchMarkerPath();
+    if (p == null) return;
+    try {
+      final f = File(p);
+      if (!f.existsSync()) return;
+      blockedShellExe = f.readAsStringSync().trim();
+      f.deleteSync();
+      if (blockedShellExe.isNotEmpty) {
+        debugPrint('前回 $blockedShellExe で戻って来なかったので既定から外します');
+      }
+    } catch (e) {
+      debugPrint('loadBlockedShell failed: $e');
+    }
+  }
+
+  /// 起こす直前に紙を置く (同期。 撃たれても残る)。
+  static void markLaunchAttempt(String exePath) {
+    final p = _launchMarkerPath();
+    if (p == null) return;
+    try {
+      final f = File(p);
+      if (!f.parent.existsSync()) f.parent.createSync(recursive: true);
+      f.writeAsStringSync(exePath, flush: true);
+    } catch (_) {}
+  }
+
+  /// 動き出した / ちゃんと終わったので紙を剥がす。
+  static void clearLaunchAttempt() {
+    final p = _launchMarkerPath();
+    if (p == null) return;
+    try {
+      final f = File(p);
+      if (f.existsSync()) f.deleteSync();
+    } catch (_) {}
   }
 
   /// 利用者が選んだシェルの id。 画面側が prefs から入れる。
@@ -1110,6 +1322,54 @@ class AgentCli {
     if (shellExeFor('pwsh') != null) return 'pwsh';
     if (shellExeFor('powershell') != null) return 'powershell';
     return 'cmd';
+  }
+
+  /// PowerShell 7 (`pwsh.exe`) を置き場を舐めて探す (最後の手段)。
+  ///
+  /// ★ = ユーザー報告「シェルの選択肢から PowerShell の 7 系が消えた」。
+  ///   `PowerShell` の下は `7` という決まった名前しか見ていなかったので、
+  ///   `7-preview` や `8` のように違う名前で入っていると **入っているのに
+  ///   一覧から消えて**いた。 決まった置き場と PATH で見付からなかった時
+  ///   だけここへ来る。
+  /// ★ `where pwsh` のような外のプログラムは呼ばない (画面を出さずに
+  ///   cmd / PowerShell を起こす形はセキュリティソフトに撃たれる)。
+  ///   見るのはフォルダーとファイルの有無だけ。
+  static String? _scanPwshDirs() {
+    final env = Platform.environment;
+    final drive = (env['SystemDrive'] ?? 'C:').trim();
+    final local = env['LOCALAPPDATA'] ?? '';
+    final roots = <String>{
+      if ((env['ProgramFiles'] ?? '').isNotEmpty) env['ProgramFiles']!,
+      if ((env['ProgramW6432'] ?? '').isNotEmpty) env['ProgramW6432']!,
+      if ((env['ProgramFiles(x86)'] ?? '').isNotEmpty)
+        env['ProgramFiles(x86)']!,
+      '$drive\\Program Files',
+      '$drive\\Program Files (x86)',
+      if (local.isNotEmpty) '$local\\Programs',
+    };
+    final hits = <String>[];
+    for (final base in roots) {
+      try {
+        final dir = Directory('$base\\PowerShell');
+        if (!dir.existsSync()) continue;
+        for (final e in dir.listSync().whereType<Directory>()) {
+          final exe = '${e.path}\\pwsh.exe';
+          if (File(exe).existsSync()) hits.add(exe);
+        }
+      } catch (_) {}
+    }
+    if (hits.isEmpty) return null;
+    // `7-preview` のような別名より `7` / `8` のような素の番号を先に。
+    // 番号どうしなら大きい方 (新しい方) を先に。 列挙の順はファイルシステム
+    // 任せで保証が無いので、 ここで必ず同じ物が選ばれるようにしておく。
+    int rank(String p) {
+      final parts = p.split(RegExp(r'[\\/]'));
+      final ver = parts.length >= 2 ? parts[parts.length - 2] : '';
+      return int.tryParse(ver) ?? -1;
+    }
+
+    hits.sort((a, b) => rank(b).compareTo(rank(a)));
+    return hits.first;
   }
 
   /// PATH から実行ファイルを探す (無ければ null)。
@@ -1314,12 +1574,20 @@ class AgentCli {
   ///   既定を用意すること (待たせない = 描画を止めない)。
   static List<AgentCliFound> cachedAll() => _cache.values.toList();
 
-  static Future<AgentCliFound?> pickForPrompt() async {
+  /// [kindOverride] … この 1 回だけ優先する種類 (空なら
+  /// [preferredPromptKind])。
+  ///
+  /// ★ = 点検で判明: 欄ごとに違う CLI へ聞けるようにした時、 全体の設定を
+  ///   一時的に書き換えて戻す形にしていた。 2 つの問い合わせが重なると
+  ///   互いの設定を踏むので、 **1 回きりの指定**を引数で受け取る。
+  static Future<AgentCliFound?> pickForPrompt({String kindOverride = ''}) async {
     if (!supported) return null;
     final found = await findAll();
+    final want =
+        kindOverride.trim().isNotEmpty ? kindOverride.trim() : preferredPromptKind;
     final order = <AgentCliKind>[
       for (final k in AgentCliKind.values)
-        if (k.name == preferredPromptKind) k,
+        if (k.name == want) k,
       AgentCliKind.claude,
       AgentCliKind.codex,
       AgentCliKind.gemini,
@@ -1330,7 +1598,11 @@ class AgentCli {
       for (final f in found) {
         if (f.spec.kind != k) continue;
         // ★ .ps1 はそのまま起こせないので選ばない。
-        final exe = (f.exePath ?? '').toLowerCase();
+        //   ★ ただし見るのは**実際に起こす物** ([runExe])。
+        //     [shellFreeLaunch] が node.exe + JS を割り出せていれば、
+        //     見つかった物が .ps1 でも起こせる (= せっかく割り出した物を
+        //     捨てて「使える CLI が見つかりません」 にしない)。
+        final exe = (f.runExe ?? '').toLowerCase();
         if (exe.endsWith('.ps1')) continue;
         if (f.installed && f.loggedInHint == true) {
           lastPickKind = f.spec.kind;
@@ -1424,42 +1696,87 @@ class AgentCli {
   /// ★ = ユーザー指摘「『CLI の設定のまま』 が何を指しているか分からない」。
   ///   これは「アプリからモデルを指定せず、 その CLI 自身の設定に任せる」
   ///   という意味。 どの CLI の設定かが分かるように名前を付け直す。
+  /// ★ = ユーザー要望「指定しないの項目は消して」。 一覧からは外したが、
+  ///   「何も選んでいない」 状態 (= CLI 自身の設定のまま) は今までどおり
+  ///   あるので、 どこかで名前が要る時のために残してある。
+  // ignore: unused_element
   static String defaultModelLabel(AgentCliKind kind) =>
       '指定しない (${AgentCliSpec.of(kind).label} の設定のまま)';
 
   static List<({String id, String label})> modelChoices(AgentCliKind kind) {
     switch (kind) {
+      // ★ = ユーザー要望「指定しないの項目は消して」。 選ばない状態
+      //   (cliAiModelChoice が空) は残るが、 一覧には出さない。
       case AgentCliKind.claude:
         return [
-          (id: '', label: defaultModelLabel(kind)),
+          const (id: 'fable', label: 'Fable'),
           const (id: 'opus', label: 'Opus'),
           const (id: 'sonnet', label: 'Sonnet'),
           const (id: 'haiku', label: 'Haiku'),
         ];
       case AgentCliKind.codex:
         return [
-          (id: '', label: defaultModelLabel(kind)),
-          const (id: 'gpt-5-codex', label: 'GPT-5 Codex'),
-          const (id: 'o4-mini', label: 'o4-mini'),
+          // ★ = ユーザー要望: 5.6 sol / terra / luna / 6 Astra を足す。
+          //   id は codex にそのまま --model へ渡る名前。 端末の名乗りで
+          //   `gpt-5.6-sol` と出ていたので、 同じ付け方にそろえてある。
+          //   知らない名前を渡された時は codex が断るだけなので、
+          //   並べても害は無い (選ばなければ CLI の設定のまま)。
+          const (id: 'gpt-5.6-sol', label: '5.6 sol'),
+          const (id: 'gpt-5.6-terra', label: '5.6 terra'),
+          const (id: 'gpt-5.6-luna', label: '5.6 luna'),
+          const (id: 'gpt-6-astra', label: '6 Astra'),
+          // ★ = ユーザー要望「GPT-5 Codex の項目と o4-mini も消して」。
         ];
       case AgentCliKind.gemini:
         return [
-          (id: '', label: defaultModelLabel(kind)),
           const (id: 'gemini-2.5-pro', label: '2.5 Pro'),
           const (id: 'gemini-2.5-flash', label: '2.5 Flash'),
         ];
     }
   }
 
-  /// 選んだモデル (prefs の控えを画面から入れてもらう)。
-  static String chosenModel = '';
-
-  /// 考える深さ ('low' / 'medium' / 'high'、 空 = CLI の設定のまま)。
+  /// 種類ごとに選んだモデル (prefs の控えを画面から入れてもらう)。
   ///
-  /// ★ = ユーザー要望「API で呼んだ時に比べて CLI だと資料作成が遅すぎる」。
-  ///   1 回聞くだけの問い合わせに深く考えさせても待ち時間が伸びるだけなので、
-  ///   画面で選んだ深さをそのまま渡す。
-  static String chosenReasoning = '';
+  /// ★ = ユーザー報告「luna を選んでも sol になっている」。 以前は
+  ///   **1 つの入れ物を全部の CLI で共有**していたので、
+  ///   ・Claude Code の欄で Opus を選ぶ → codex にも `-m opus` が渡る
+  ///   ・codex の欄で luna を選ぶ → Claude Code にも渡る
+  ///   という取り違えが起きていた。 相手ごとに分けて覚える。
+  static final Map<String, String> modelByKind = <String, String>{};
+
+  /// 種類ごとに選んだ推論の強さ (空 = その CLI の設定のまま)。
+  ///
+  /// ★ = ユーザー要望「じっくり・普通と誤魔化さず、 そのプロバイダー毎に
+  ///   設定できる xhigh などの値を設定できるように」。 値は各 CLI が
+  ///   そのまま受け取る生の名前 ([reasoningChoices])。
+  static final Map<String, String> reasoningByKind = <String, String>{};
+
+  /// その相手に渡すモデル名 (選んでいなければ空 = CLI の設定のまま)。
+  static String modelFor(AgentCliKind kind) =>
+      (modelByKind[kind.name] ?? '').trim();
+
+  /// その相手に渡す推論の強さ (選んでいなければ空)。
+  static String reasoningFor(AgentCliKind kind) =>
+      (reasoningByKind[kind.name] ?? '').trim();
+
+  /// その CLI が受け付ける推論の強さ (**その CLI の生の値**)。
+  ///
+  /// ★ 言い換えたり 3 段階に丸めたりしない (= ユーザー要望)。
+  ///   ・Claude Code … `--effort <low|medium|high|xhigh|max>`
+  ///   ・codex … `-c model_reasoning_effort="<low|medium|high|xhigh|max>"`
+  ///     (`minimal` は今どのモデルも受け付けない。 `ultra` は luna に無い
+  ///      ので出さない — codex 0.155.1 の `debug models` で確かめた)
+  ///   ・Gemini CLI … 指定する口が無いので空 (欄そのものを出さない)。
+  static List<String> reasoningChoices(AgentCliKind kind) {
+    switch (kind) {
+      case AgentCliKind.claude:
+        return const ['low', 'medium', 'high', 'xhigh', 'max'];
+      case AgentCliKind.codex:
+        return const ['low', 'medium', 'high', 'xhigh', 'max'];
+      case AgentCliKind.gemini:
+        return const <String>[];
+    }
+  }
 
   /// 直前に選ばれた CLI の種類 (モデルの候補を出すのに使う)。
   static AgentCliKind? lastPickKind;
@@ -1513,6 +1830,8 @@ class AgentCli {
       // 会話を引き継ぐプロジェクトのフォルダー (= ユーザー要望: VSCode の
       // codex / Claude Code の会話履歴を引き継いで答える)。 空なら今までどおり。
       String continueDir = '',
+      // この 1 回だけ使う CLI の種類 (空 = 画面で選んでいる物)。
+      String preferKind = '',
       Map<String, String> extraEnvironment = const <String, String>{}}) async {
     lastPromptError = '';
     if (!supported || prompt.trim().isEmpty) return null;
@@ -1532,7 +1851,7 @@ class AgentCli {
     //   指定しないとアプリの置き場 (実行ファイルの隣) で動いてしまい、
     //   そこにある設定を読みに行ったり、 余計なファイルを見に行ったりする。
     workingDir ??= await _promptWorkingDir(guide, allowFiles: allowFiles);
-    final pick = await pickForPrompt();
+    final pick = await pickForPrompt(kindOverride: preferKind);
     // ★ 起こすのは薄皮 (.cmd) ではなく、 割り出した本体。 薄皮を
     //   `runInShell` で起こすと裏で `cmd.exe` が立ち、 頼むたびに
     //   セキュリティソフトに咎められていた (= ユーザー報告)。
@@ -1565,7 +1884,9 @@ class AgentCli {
       }
     }
     // 選んだモデルがあれば指定する (空なら CLI の既定に任せる)。
-    final m = chosenModel.trim();
+    // ★ **その相手の**選択を使う (= ユーザー報告: luna を選んでも sol)。
+    final m = modelFor(pick.spec.kind);
+    final effort = reasoningFor(pick.spec.kind);
     final args = <String>[
       ...pick.launchPrefixArgs,
       ...switch (pick.spec.kind) {
@@ -1581,6 +1902,9 @@ class AgentCli {
             //   サーバーが 1 つでもあると、 毎回その分だけ起動が伸びる。
             '--strict-mcp-config',
             if (m.isNotEmpty) ...['--model', m],
+            // ★ 推論の強さ (= ユーザー要望)。 Claude Code は `--effort` で
+            //   low / medium / high / xhigh / max を受け取る。
+            if (effort.isNotEmpty) ...['--effort', effort],
           ],
         AgentCliKind.codex => <String>[
             'exec',
@@ -1612,9 +1936,9 @@ class AgentCli {
             'notify=[]',
             '-c',
             'mcp_servers={}',
-            if (chosenReasoning.isNotEmpty) ...[
+            if (effort.isNotEmpty) ...[
               '-c',
-              'model_reasoning_effort="$chosenReasoning"',
+              'model_reasoning_effort="$effort"',
             ],
             // ★ 返事だけを別のファイルへ書かせる (= ユーザー報告: PC 内の
             //   codex に自動操作のフロー作成を頼んでも、 何も作られない
@@ -2122,6 +2446,16 @@ class AgentCli {
         final plain =
             mcpUrl.contains('?') ? mcpUrl.split('?').first : mcpUrl;
         return <String>[
+          // ★ = ユーザー報告「luna の浅く速くを選んでも sol の xhigh に
+          //   なっている」。 これまで**端末で開く時だけ何も渡していなかった**
+          //   ので、 画面で何を選んでも `~/.codex/config.toml` の設定
+          //   (= sol / xhigh) のまま始まっていた。 1 回聞くだけの道
+          //   ([runPrompt]) と同じ物をここでも渡す。
+          if (modelFor(kind).isNotEmpty) ...['-m', modelFor(kind)],
+          if (reasoningFor(kind).isNotEmpty) ...[
+            '-c',
+            'model_reasoning_effort="${reasoningFor(kind)}"',
+          ],
           // 任せ方 (上の [autonomy] の説明)。
           '--sandbox',
           _noLimit ? 'danger-full-access' : 'workspace-write',
@@ -2163,6 +2497,12 @@ class AgentCli {
         //   acceptEdits … 書き換えは通す (その他は都度たずねる)
         //   bypassPermissions … たずねない
         return <String>[
+          // ★ 画面で選んだモデルと推論の強さ (= ユーザー報告: 端末で開くと
+          //   反映されない)。 `--effort` は low / medium / high / xhigh /
+          //   max を受け取る。
+          if (modelFor(kind).isNotEmpty) ...['--model', modelFor(kind)],
+          if (reasoningFor(kind).isNotEmpty)
+            ...['--effort', reasoningFor(kind)],
           if (_noLimit)
             ...['--permission-mode', 'bypassPermissions']
           else if (_noAsk)
@@ -2182,6 +2522,8 @@ class AgentCli {
         // Gemini CLI は `--approval-mode`。
         final extra = outsideReadDirs(kind).map(ptySafePath).toList();
         return <String>[
+          // Gemini CLI には推論の強さを指定する旗が無いので、 モデルだけ。
+          if (modelFor(kind).isNotEmpty) ...['-m', modelFor(kind)],
           if (_noLimit)
             ...['--approval-mode', 'yolo']
           else if (_noAsk)

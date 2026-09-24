@@ -38,7 +38,7 @@ Future<Directory> automationFilesDir() async {
   return dir;
 }
 
-/// フロー実行 1 回ぶんの保存先を作る (= ユーザー要望: 実行の度に別フォルダ)。
+/// フロー実行 1 回分の保存先を作る (= ユーザー要望: 実行の度に別フォルダ)。
 /// 例: automation_shots/run_20260802_143012
 Future<Directory> newAutomationRunDir() async {
   final root = await automationShotsDir();

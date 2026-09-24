@@ -31,6 +31,8 @@ import '../services/talk_reference.dart';
 import '../utils/build_flags.dart';
 // ★ 絵の拡張子の共通一覧 (jpe / jfif 対応)。
 import '../utils/image_file_types.dart';
+// ★ 紙に置く文字の折り返しと行の高さ (画面と共用 = 双子を作らない)。
+import '../utils/canvas_text_wrap.dart';
 
 /// カレンダーのイベント（1 日の予定）
 /// [startTime] / [endTime] は "HH:mm" 形式で、null なら終日イベント
@@ -426,7 +428,7 @@ class MindMapPage {
   int shelfPerRow;
 
   /// ギャラリーページの段数 (= 縦の要素数)。 0 = 自動 (要素数から算出)。
-  /// 1 以上なら +ボックスをこの段数ぶんだけ表示する (= ユーザー要望: +ボックスが
+  /// 1 以上なら +ボックスをこの段数分だけ表示する (= ユーザー要望: +ボックスが
   /// 勝手に増えないよう、 縦横の要素数を手動で固定できる)。
   int shelfRows;
 
@@ -1115,7 +1117,7 @@ class AiPageContext {
   }) : qaHistory = [];
 }
 
-/// 1 回ぶんの追加質問と回答 (Q&A 1 ターン)。
+/// 1 回分の追加質問と回答 (Q&A 1 ターン)。
 class AiQAEntry {
   final String question;
   final String answer;
@@ -1162,7 +1164,7 @@ class FolderFileHit {
 /// = ユーザー報告「他のページに要素を転送した後の動作を Ctrl+Z で取り消せない」。
 ///
 /// ★ なぜページ内の履歴 (`_undoStacks`) では足りないのか
-///   履歴はページ 1 枚ぶんしか持てず、 `undo()` も開いているページにしか
+///   履歴はページ 1 枚分しか持てず、 `undo()` も開いているページにしか
 ///   書き戻せない。 転送は**2 枚のページを同時に変える**ので、 片方だけ戻すと
 ///   「転送元にも転送先にも同じ要素が居る」 「どこにも居なくなる」 という
 ///   壊れ方をする。 そこで、 ページ削除の復元 ([_DeletedPageUndoRecord]) と
@@ -1196,7 +1198,7 @@ class _CrossPageMoveUndoRecord {
   final Map<String, List<int>> shelfCells;
   final String? selectedNodeId;
 
-  /// 付箋の見た目 (2 ページぶん)。 key = ページ id。
+  /// 付箋の見た目 (2 ページ分)。 key = ページ id。
   final Map<String, Map<String, int>> groupColors;
   final Map<String, Map<String, double>> groupFontSizes;
   final Map<String, Map<String, String>> groupFontFamilies;
@@ -1634,6 +1636,147 @@ String _toHalfWidthDigits(String s) {
 String _toFullWidthDigits(String s) {
   return s.replaceAllMapped(RegExp(r'[0-9]'),
       (m) => String.fromCharCode(m.group(0)!.codeUnitAt(0) + 0xFEE0));
+}
+
+// ── Markdown を複数タブへ切り分ける (画面と MCP で共用) ──────────────
+//
+// = ユーザー要望「マークダウンのサイドメニュー外の CLI などからマークダウンを
+//   作成して等とお願いしたら、 自動で適切なタブに切り分けて表示されるように
+//   して欲しい」。
+//   側欄の「複数タブに分ける」 が使う切り分けは画面の私有メソッド
+//   (_splitMarkdownPages) にしかなく、 MCP 経路からは通せずに 1 枚のタブへ
+//   丸ごと書いていた。 規則をここへ引き上げ、 両方が**同じ関数**を通す。
+
+/// 「<<<PAGE: 名前>>>」 で区切られた Markdown を (タブ名, 本文) に分ける。
+/// 区切りが無ければ 1 つだけ返す (= 今までどおり)。
+///
+/// [byHeadingWhenNoMarker] が true の時だけ、 区切りの無い本文も見出しで
+/// 分けてみる (CLI が区切りの書き方を知らずに 1 本で書いてきた時のため)。
+/// 短い文書を勝手に割らないよう、 [headingMinChars] 文字以上で、 同じ高さの
+/// 見出しが [headingMinSections]〜[headingMaxSections] 個ある時に限る。
+/// [force] が true なら長さの条件を外す (= はっきり「分けて」 と言われた時)。
+List<({String name, String text})> splitMarkdownIntoTabs(
+  String body, {
+  bool byHeadingWhenNoMarker = false,
+  bool force = false,
+  int headingMinChars = 3000,
+  int headingMinSections = 3,
+  int headingMaxSections = 12,
+}) {
+  final re = RegExp(r'^<<<PAGE:\s*(.+?)\s*>>>\s*$', multiLine: true);
+  final hits = re.allMatches(body).toList();
+  if (hits.isNotEmpty) {
+    final out = <({String name, String text})>[];
+    for (var i = 0; i < hits.length; i++) {
+      final m = hits[i];
+      final end = i + 1 < hits.length ? hits[i + 1].start : body.length;
+      final text = body.substring(m.end, end).trim();
+      final name = (m.group(1) ?? '').trim();
+      if (text.isEmpty) continue;
+      out.add((name: name.isEmpty ? '${i + 1}' : name, text: text));
+    }
+    return out.isEmpty ? [(name: '', text: body)] : out;
+  }
+  if (!byHeadingWhenNoMarker) return [(name: '', text: body)];
+  return _splitMarkdownByHeading(body,
+      minChars: force ? 0 : headingMinChars,
+      minSections: force ? 2 : headingMinSections,
+      maxSections: headingMaxSections);
+}
+
+/// 区切りの無い Markdown を見出しで分ける ([splitMarkdownIntoTabs] の控え)。
+///
+/// ★ コードフェンス (``` / ~~~) の中の # は見出しではない。 数に入れると
+///   mermaid やシェルのコメント行で割ってしまう。
+List<({String name, String text})> _splitMarkdownByHeading(
+  String body, {
+  required int minChars,
+  required int minSections,
+  required int maxSections,
+}) {
+  final single = [(name: '', text: body)];
+  if (body.trim().length < minChars) return single;
+  final lines = body.split('\n');
+  final heads = <({int line, int level, String title})>[];
+  var fence = '';
+  for (var i = 0; i < lines.length; i++) {
+    final t = lines[i].trimLeft();
+    final f = RegExp(r'^(`{3,}|~{3,})').firstMatch(t);
+    if (f != null) {
+      final mark = f.group(1)![0];
+      if (fence.isEmpty) {
+        fence = mark;
+      } else if (fence == mark) {
+        fence = '';
+      }
+      continue;
+    }
+    if (fence.isNotEmpty) continue;
+    final h = RegExp(r'^(#{1,4})\s+(.+?)\s*#*$').firstMatch(t);
+    if (h == null) continue;
+    heads.add((line: i, level: h.group(1)!.length, title: h.group(2)!.trim()));
+  }
+  if (heads.isEmpty) return single;
+  // 同じ高さの見出しがちょうど良い数だけある、 一番浅い所で分ける。
+  var level = 0;
+  for (var lv = 1; lv <= 4; lv++) {
+    final n = heads.where((h) => h.level == lv).length;
+    if (n >= minSections && n <= maxSections) {
+      level = lv;
+      break;
+    }
+  }
+  if (level == 0) return single;
+  final cuts = [
+    for (final h in heads)
+      if (h.level == level) h
+  ];
+  final out = <({String name, String text})>[];
+  // 1 つ目の見出しより前 (表題・前書き・目次) は 1 枚目として残す。
+  final lead = lines.take(cuts.first.line).join('\n').trim();
+  if (lead.isNotEmpty) {
+    var leadTitle = '';
+    for (final h in heads) {
+      if (h.line < cuts.first.line) {
+        leadTitle = h.title;
+        break;
+      }
+    }
+    out.add((name: markdownTabNameFrom(leadTitle), text: lead));
+  }
+  for (var i = 0; i < cuts.length; i++) {
+    final to = i + 1 < cuts.length ? cuts[i + 1].line : lines.length;
+    final text = lines.sublist(cuts[i].line, to).join('\n').trim();
+    if (text.isEmpty) continue;
+    out.add((name: markdownTabNameFrom(cuts[i].title), text: text));
+  }
+  return out.length > 1 ? out : single;
+}
+
+/// 見出しの文字をタブ名にする (長いと帯に収まらないので詰める)。
+/// 絵文字で切れないよう runes で数える (見出しに絵文字を付ける決まりがある)。
+String markdownTabNameFrom(String title) {
+  var s = title.replaceAll(RegExp(r'[*_`~\[\]#]'), '').trim();
+  final r = s.runes.toList();
+  if (r.length > 14) s = '${String.fromCharCodes(r.take(14))}…';
+  return s;
+}
+
+/// タブ名がかち合った時に番号を足す。
+///
+/// リンク (`[名前](tab:名前)`) の行き先が迷子にならないよう、 なるべく元の
+/// 名前を保つ。 [want] が空なら [fallbackIndex] を名前にする。
+String uniqueMarkdownTabName(String want, Iterable<String> existing,
+    {required int fallbackIndex}) {
+  final taken = existing.toList();
+  final base = want.trim().isEmpty ? '$fallbackIndex' : want.trim();
+  var name = base;
+  var k = 2;
+  while (taken.contains(name)) {
+    name = '$base ($k)';
+    k++;
+  }
+  return name;
 }
 
 /// 連番タイトルの「次の値」を返す。 認識できなければ null。
@@ -5101,7 +5244,7 @@ class MindMapProvider extends ChangeNotifier {
     // ページ削除は現在ページのスナップショット履歴には入らないため、
     // 通常の Ctrl+Z API の先頭で直前の削除を復元する。
     if (undoLastDeletedPage()) return;
-    // 他のページへの転送も、 ページ 1 枚ぶんの履歴には収まらないので
+    // 他のページへの転送も、 ページ 1 枚分の履歴には収まらないので
     //   ここで先に戻す (= ユーザー報告: 転送した後に Ctrl+Z が効かない)。
     if (undoLastCrossPageMove()) return;
     final id = _pageId;
@@ -6220,7 +6363,7 @@ class MindMapProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 下部ツールバー (モバイル下のカスタムボタン群) を SnackBar の高さぶん
+  /// 下部ツールバー (モバイル下のカスタムボタン群) を SnackBar の高さ分
   /// 持ち上げているか。SnackBar 表示中だけ true になり、SnackBar が閉じたら
   /// false に戻る。`_buildBottomToolBar` が AnimatedPositioned でこの値を
   /// 監視し、240ms かけて 96px 上にスライドする。
@@ -6550,7 +6693,7 @@ class MindMapProvider extends ChangeNotifier {
   // ── AI 用語解説 (網羅モード) のキャンセル / 一時停止 / 再開 ────────────
   // 網羅モードは Plan → Expand (バッチ反復) → Merge という長時間処理になる。
   // ユーザーが SnackBar の「停止」ボタンで止めた時、それまでに完了した
-  // 子テーマぶんは既にページへ書き出した上で、残り未処理を `_pausedExplainSession`
+  // 子テーマ分は既にページへ書き出した上で、残り未処理を `_pausedExplainSession`
   // に保存して再開できるようにする。
   bool _explainInProgress = false;
   bool get isExplainInProgress => _explainInProgress;
@@ -6945,6 +7088,11 @@ class MindMapProvider extends ChangeNotifier {
     //   (= ユーザー報告: Dev なのに AI が呼べない)。 実際に使えるかは
     //   呼ぶ直前の ensureRelayReady とサーバーが決める。
     if (relayApiBase.isNotEmpty && isDevPlan) return true;
+    // ★ = ユーザー要望「codexCLI や claudecode は Free 版でも使えるように」。
+    //   PC の CLI に頼む設定の時は、 代行サーバーの残高が 0 でも答えられる。
+    //   ここを見ている入口 (クイズ・資料作成など 40 か所以上) が
+    //   「キーがありません」 で止めてしまうと、 開放した意味が無い。
+    if (useCliAi) return true;
     return canUseAiRelay;
     // ignore: dead_code
     if (canUseAiRelay) return true;
@@ -18840,7 +18988,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': '{n} ч.',
     },
     'mcp.reasoning': {
-      'ja': '考える深さ',
+      'ja': '推論',
       'en': 'Reasoning effort',
       'zh': '思考深度',
       'ko': '추론 깊이',
@@ -18850,47 +18998,27 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Nivel de raciocinio',
       'ru': 'Глубина рассуждения',
     },
-    'mcp.reasoning.low': {
-      'ja': '浅く速く',
-      'en': 'Low',
-      'zh': '浅',
-      'ko': '낮음',
-      'es': 'Bajo',
-      'fr': 'Faible',
-      'de': 'Gering',
-      'pt': 'Baixo',
-      'ru': 'Низкая',
-    },
-    'mcp.reasoning.medium': {
-      // 「浅く速く」 と字面を揃える (= ユーザー要望: 漢字で書くなら統一)。
-      'ja': '普通',
-      'en': 'Medium',
-      'zh': '中',
-      'ko': '보통',
-      'es': 'Medio',
-      'fr': 'Moyen',
-      'de': 'Mittel',
-      'pt': 'Medio',
-      'ru': 'Средняя',
-    },
-    'mcp.reasoning.high': {
-      'ja': 'じっくり',
-      'en': 'High',
-      'zh': '深',
-      'ko': '높음',
-      'es': 'Alto',
-      'fr': 'Eleve',
-      'de': 'Hoch',
-      'pt': 'Alto',
-      'ru': 'Высокая',
+    // ★ = ユーザー要望「考える深さではなく、 推論とちゃんと表記して」。
+    //   値の方も言い換えず、 その相手が受け取る生の名前 (low / medium /
+    //   high / xhigh / max …) をそのまま出す。
+    'cli.reasoning': {
+      'ja': '推論',
+      'en': 'Reasoning',
+      'zh': '推理',
+      'ko': '추론',
+      'es': 'Razonamiento',
+      'fr': 'Raisonnement',
+      'de': 'Schlussfolgern',
+      'pt': 'Raciocinio',
+      'ru': 'Рассуждение',
     },
     'mcp.reasoningNote': {
-      'ja': '深いほど答えは良くなりやすい代わりに、考えた分もトークンとして'
+      'ja': '強いほど答えは良くなりやすい代わりに、考えた分もトークンとして'
           '掛かるので料金と待ち時間が伸びます。'
-          '「普通」が既定です。',
+          '既定は medium です。',
       'en': 'Deeper thinking tends to improve answers, but the thinking itself '
           'is billed as tokens, so it costs more and takes longer. '
-          '"Medium" is the default.',
+          'The default is medium.',
       'zh': '思考越深答案越好，但思考本身也计入 token，费用与等待时间会增加。',
       'ko': '깊을수록 답이 좋아지지만, 사고 과정도 토큰으로 과금되어 비용과 시간이 늘어납니다.',
       'es': 'Mas razonamiento mejora la respuesta pero cuesta mas tokens.',
@@ -24051,19 +24179,68 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'API',
     },
     'md.aiEngineCli': {
-      'ja': 'PC内AI',
-      'en': 'PC AI',
-      'zh': 'PC 内 AI',
-      'ko': 'PC 내 AI',
-      'es': 'IA del PC',
-      'fr': 'IA du PC',
-      'de': 'PC-KI',
-      'pt': 'IA do PC',
-      'ru': 'ИИ на ПК',
+      'ja': 'CLI',
+      'en': 'CLI',
+      'zh': 'CLI',
+      'ko': 'CLI',
+      'es': 'CLI',
+      'fr': 'CLI',
+      'de': 'CLI',
+      'pt': 'CLI',
+      'ru': 'CLI',
+    },
+    // ★ = ユーザー要望: 同じフォルダーをもう一度開こうとした時。
+    'cli.dirAlreadyOpen': {
+      'ja': 'このフォルダーは既に開かれています',
+      'en': 'This folder is already open',
+      'zh': '该文件夹已经打开',
+      'ko': '이 폴더는 이미 열려 있습니다',
+      'es': 'Esta carpeta ya esta abierta',
+      'fr': 'Ce dossier est deja ouvert',
+      'de': 'Dieser Ordner ist bereits geoeffnet',
+      'pt': 'Esta pasta ja esta aberta',
+      'ru': 'Эта папка уже открыта',
+    },
+    // ★ = ユーザー要望: 下のチャット欄だけ別の相手にする。
+    'md.aiEngineApp': {
+      'ja': 'アプリの設定のまま',
+      'en': 'Follow the app setting',
+      'zh': '跟随应用设置',
+      'ko': '앱 설정을 따름',
+      'es': 'Seguir la configuracion de la app',
+      'fr': 'Suivre le reglage de l’application',
+      'de': 'Der App-Einstellung folgen',
+      'pt': 'Seguir a configuracao do app',
+      'ru': 'Как в настройках приложения',
+    },
+    // ★ = ユーザー要望: 「書いてもらう相手」「チャットの相手」 は一般的な
+    //   言い方でないので、 欄の役割 (何をする所か) を見出しにする。
+    //   相手を選ぶ札は、 見出しの右にそのまま残る。
+    'md.aiWriteSection': {
+      'ja': '本文を書き出す',
+      'en': 'Write the document',
+      'zh': '撰写正文',
+      'ko': '본문 작성',
+      'es': 'Redactar el texto',
+      'fr': 'Rédiger le texte',
+      'de': 'Text schreiben',
+      'pt': 'Escrever o texto',
+      'ru': 'Написать текст',
+    },
+    'md.aiChatSection': {
+      'ja': 'チャット',
+      'en': 'Chat',
+      'zh': '聊天',
+      'ko': '채팅',
+      'es': 'Chat',
+      'fr': 'Discussion',
+      'de': 'Chat',
+      'pt': 'Chat',
+      'ru': 'Чат',
     },
     'md.aiUseCli': {
-      'ja': 'PC内AI に戻す',
-      'en': 'Back to the PC AI',
+      'ja': 'CLI に戻す',
+      'en': 'Back to the CLI',
       'zh': '切回 PC 内 AI',
       'ko': 'PC 내 AI 로 되돌리기',
       'es': 'Volver a la IA del PC',
@@ -24446,6 +24623,18 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Leiste anzeigen',
       'pt': 'Mostrar a barra',
       'ru': 'Показать панель',
+    },
+    // ★ = ユーザー要望「Zen モードの様に…表示ボタンが現れるように」。
+    'zen.showBars': {
+      'ja': '上のバーを出す',
+      'en': 'Show the top bars',
+      'zh': '显示上方的栏',
+      'ko': '위쪽 바 표시',
+      'es': 'Mostrar las barras superiores',
+      'fr': 'Afficher les barres du haut',
+      'de': 'Obere Leisten anzeigen',
+      'pt': 'Mostrar as barras superiores',
+      'ru': 'Показать верхние панели',
     },
     'md.fromFileEmpty': {
       'ja': 'そのファイルから文字を取り出せませんでした',
@@ -27110,6 +27299,119 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Favorit {n} aktualisiert',
       'pt': 'Favorito {n} atualizado',
       'ru': 'Избранное {n} обновлено',
+    },
+    // ★ = ユーザー要望: タブの右クリックから分割ビューへ。
+    'gs.openInSplit': {
+      'ja': '分割ビューで開く',
+      'en': 'Open in split view',
+      'zh': '在分屏视图中打开',
+      'ko': '분할 보기로 열기',
+      'es': 'Abrir en vista dividida',
+      'fr': 'Ouvrir en vue divisée',
+      'de': 'In geteilter Ansicht öffnen',
+      'pt': 'Abrir na visão dividida',
+      'ru': 'Открыть в разделённом виде',
+    },
+    'gs.openedInSplit': {
+      'ja': '分割ビューで開きました',
+      'en': 'Opened in split view',
+      'zh': '已在分屏视图中打开',
+      'ko': '분할 보기로 열었습니다',
+      'es': 'Abierto en vista dividida',
+      'fr': 'Ouvert en vue divisée',
+      'de': 'In geteilter Ansicht geöffnet',
+      'pt': 'Aberto na visão dividida',
+      'ru': 'Открыто в разделённом виде',
+    },
+    // ★ = ユーザー要望: 開いている別のタブと並べて出す。
+    'gs.splitWithTab': {
+      'ja': '今のタブと並べて表示',
+      'en': 'Show beside the current tab',
+      'zh': '与当前标签页并排显示',
+      'ko': '현재 탭과 나란히 보기',
+      'es': 'Mostrar junto a la pestaña actual',
+      'fr': 'Afficher à côté de l’onglet actuel',
+      'de': 'Neben dem aktuellen Tab anzeigen',
+      'pt': 'Mostrar ao lado da aba atual',
+      'ru': 'Показать рядом с текущей вкладкой',
+    },
+    'gs.splitWithNext': {
+      'ja': '隣のタブと並べて表示',
+      'en': 'Show beside the next tab',
+      'zh': '与相邻标签页并排显示',
+      'ko': '옆 탭과 나란히 보기',
+      'es': 'Mostrar junto a la pestaña siguiente',
+      'fr': 'Afficher à côté de l’onglet voisin',
+      'de': 'Neben dem nächsten Tab anzeigen',
+      'pt': 'Mostrar ao lado da próxima aba',
+      'ru': 'Показать рядом со следующей вкладкой',
+    },
+    'gs.splitSideBySide': {
+      'ja': '左右に並べる',
+      'en': 'Side by side',
+      'zh': '左右并排',
+      'ko': '좌우로 나란히',
+      'es': 'Lado a lado',
+      'fr': 'Côte à côte',
+      'de': 'Nebeneinander',
+      'pt': 'Lado a lado',
+      'ru': 'Рядом',
+    },
+    'gs.splitStacked': {
+      'ja': '上下に並べる',
+      'en': 'Stacked',
+      'zh': '上下并排',
+      'ko': '위아래로',
+      'es': 'Uno encima del otro',
+      'fr': 'L’un au-dessus de l’autre',
+      'de': 'Übereinander',
+      'pt': 'Um sobre o outro',
+      'ru': 'Друг над другом',
+    },
+    // ★ = ユーザー要望: 枠を右クリックして固定。
+    'gs.pinPane': {
+      'ja': 'この枠を固定する',
+      'en': 'Pin this pane',
+      'zh': '固定此窗格',
+      'ko': '이 창을 고정',
+      'es': 'Fijar este panel',
+      'fr': 'Épingler ce volet',
+      'de': 'Diesen Bereich anheften',
+      'pt': 'Fixar este painel',
+      'ru': 'Закрепить эту панель',
+    },
+    'gs.pinPaneMove': {
+      'ja': '固定をこの枠へ移す',
+      'en': 'Move the pin to this pane',
+      'zh': '将固定移到此窗格',
+      'ko': '고정을 이 창으로 옮기기',
+      'es': 'Mover la fijación a este panel',
+      'fr': 'Déplacer l’épingle sur ce volet',
+      'de': 'Anheftung auf diesen Bereich verschieben',
+      'pt': 'Mover a fixação para este painel',
+      'ru': 'Перенести закрепление сюда',
+    },
+    'gs.unpinPane': {
+      'ja': '固定をやめる',
+      'en': 'Unpin',
+      'zh': '取消固定',
+      'ko': '고정 해제',
+      'es': 'Dejar de fijar',
+      'fr': 'Désépingler',
+      'de': 'Lösen',
+      'pt': 'Desafixar',
+      'ru': 'Открепить',
+    },
+    'gs.splitStop': {
+      'ja': '並べるのをやめる',
+      'en': 'Stop showing side by side',
+      'zh': '停止并排',
+      'ko': '나란히 보기 해제',
+      'es': 'Dejar de mostrar en paralelo',
+      'fr': 'Arrêter l’affichage côte à côte',
+      'de': 'Nebeneinander beenden',
+      'pt': 'Parar de mostrar lado a lado',
+      'ru': 'Перестать показывать рядом',
     },
     'gs.saveToFolder': {
       'ja': 'フォルダーに保存',
@@ -30977,7 +31279,7 @@ class MindMapProvider extends ChangeNotifier {
     },
     // ── 動画の共有 = 要約を頼む (= ユーザー要望: 共有の文面が長すぎる。
     //    共有というより要約して欲しい) ──
-    //   以前は概要欄を 1200 字ぶん貼り付けて「質問を待って」 と伝えていたので、
+    //   以前は概要欄を 1200 字分貼り付けて「質問を待って」 と伝えていたので、
     //   入力欄が文字で埋まり、 しかも本題に入るまでもう 1 往復かかっていた。
     //   今は 見出し + URL + 今見ている所 だけを渡して、 その場で要約させる。
     'fsv.videoSummarizePrompt': {
@@ -33457,7 +33759,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Нельзя разделить у края — щёлкните правой кнопкой внутри полосы',
     },
     'gantt.splitTooShort': {
-      'ja': '1単位ぶんのタスクはこれ以上分割できません',
+      'ja': '1単位分のタスクはこれ以上分割できません',
       'en': 'A one-unit task cannot be split any further',
       'zh': '只有一个单位的任务无法继续拆分',
       'ko': '1단위 길이의 작업은 더 이상 분할할 수 없습니다',
@@ -39801,27 +40103,31 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Cupom ativo',
       'ru': 'Купон активен',
     },
+    // ★ = ユーザー要望で「作る枚数」 から「開ける枚数」 へ移した (3 ページ目
+    //   以降は Pro 以上)。 見出しも値 (usage.pagesUsed) に合わせる。
     'usage.pages': {
-      'ja': 'ページ種類の作成枠',
-      'en': 'Page type limit',
-      'zh': '页面类型限制',
-      'ko': '페이지 종류 제한',
-      'es': 'Límite por tipo de página',
-      'fr': 'Limite par type de page',
-      'de': 'Limit pro Seitentyp',
-      'pt': 'Limite por tipo de página',
-      'ru': 'Лимит по типу страницы',
+      'ja': '開けるページ数',
+      'en': 'Pages you can open',
+      'zh': '可打开的页面数',
+      'ko': '열 수 있는 페이지 수',
+      'es': 'Páginas que puedes abrir',
+      'fr': 'Pages ouvrables',
+      'de': 'Seiten, die sich öffnen lassen',
+      'pt': 'Páginas que você pode abrir',
+      'ru': 'Сколько страниц можно открыть',
     },
+    // ★ = ユーザー要望「3 ページ目以降は Pro 以上でないと開けない」。
+    //   作る枚数に制限は無いので、 「開ける枚数」を出す。
     'usage.pagesUsed': {
-      'ja': 'Free は同じ種類につき {limit} ページまで ({used} 種類使用中)',
-      'en': 'Free allows {limit} page per type ({used} types in use)',
-      'zh': '免费版每种类型可创建 {limit} 页（已使用 {used} 种类型）',
-      'ko': '무료 플랜은 종류별 {limit}페이지까지 가능 ({used}종류 사용 중)',
-      'es': 'Free permite {limit} página por tipo ({used} tipos en uso)',
-      'fr': 'Free autorise {limit} page par type ({used} types utilisés)',
-      'de': 'Free erlaubt {limit} Seite pro Typ ({used} Typen genutzt)',
-      'pt': 'Free permite {limit} página por tipo ({used} tipos em uso)',
-      'ru': 'Free: {limit} страница каждого типа ({used} типов используется)',
+      'ja': 'Free で開けるのは先頭 {limit} ページ ({used} ページ作成済み)',
+      'en': 'Free can open the first {limit} pages ({used} pages created)',
+      'zh': '免费版可打开前 {limit} 页（已创建 {used} 页）',
+      'ko': '무료 플랜은 앞 {limit}페이지까지 열 수 있음 ({used}페이지 생성됨)',
+      'es': 'Free abre las {limit} primeras páginas ({used} creadas)',
+      'fr': 'Free ouvre les {limit} premières pages ({used} créées)',
+      'de': 'Free öffnet die ersten {limit} Seiten ({used} erstellt)',
+      'pt': 'Free abre as {limit} primeiras páginas ({used} criadas)',
+      'ru': 'Free открывает первые {limit} страниц ({used} создано)',
     },
     'usage.pagesUnlimited': {
       'ja': '{used} ページ作成中 (上限なし)',
@@ -41097,6 +41403,18 @@ class MindMapProvider extends ChangeNotifier {
       'de': '{n} ausgefuehrt',
       'pt': '{n} executado',
       'ru': '{n} vypolneno',
+    },
+    // ★ = ユーザー要望: パレットの先頭に出す「止める」。
+    'palette.stop': {
+      'ja': '止める',
+      'en': 'Stop',
+      'zh': '停止',
+      'ko': '중지',
+      'es': 'Detener',
+      'fr': 'Arrêter',
+      'de': 'Stopp',
+      'pt': 'Parar',
+      'ru': 'Стоп',
     },
     'palette.repeatOn': {
       'ja': '{n} を連打しています (もう一度押すと止まります)',
@@ -48012,7 +48330,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Сегодня',
     },
     'plan.diagramNewMonthly': {
-      'ja': '{plan}（1 か月ぶん）',
+      'ja': '{plan}（1 か月分）',
       'en': '{plan} (one month)',
       'zh': '{plan}（一个月）',
       'ko': '{plan}(1개월분)',
@@ -48023,7 +48341,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': '{plan} (один месяц)',
     },
     'plan.diagramNewYearly': {
-      'ja': '{plan}（1 年ぶん）',
+      'ja': '{plan}（1 年分）',
       'en': '{plan} (one year)',
       'zh': '{plan}（一年）',
       'ko': '{plan}(1년분)',
@@ -48181,7 +48499,7 @@ class MindMapProvider extends ChangeNotifier {
     //     プランを選ぶ画面に「この機能」 は無く、 意味が通らなかった
     //     (= ユーザー指摘)。 差額で請求されることの案内に差し替える。
     'usage.upgradeToMaxPrompt': {
-      'ja': 'Pro から Max への変更は、 重なっている期間ぶんを差し引いた'
+      'ja': 'Pro から Max への変更は、 重なっている期間分を差し引いた'
           '差額のみが請求されます。 お支払い日は変わりません。',
       'en': 'Upgrading from Pro to Max only charges the difference for the '
           'overlapping period. Your billing date stays the same.',
@@ -48202,7 +48520,7 @@ class MindMapProvider extends ChangeNotifier {
     'plan.changeAmountUnknown': {
       'ja': '{plan} に変更します。\n\n'
           '今すぐ請求される正確な額はここに出せませんでした。\n'
-          '重なっている期間ぶんは差し引かれ、 残り期間の差額だけが'
+          '重なっている期間分は差し引かれ、 残り期間の差額だけが'
           '登録済みのカードに請求されます。\nお支払い日は変わりません。',
       'en': 'Change to {plan}.\n\n'
           'We could not show the exact amount here. Only the difference '
@@ -51727,6 +52045,18 @@ class MindMapProvider extends ChangeNotifier {
       'pt': '"{name}" não terminou (código {code})',
       'ru': '«{name}» не завершено (код {code})',
     },
+    // ★ 更新が済んだら、 探し直して新しいセッションを開く (= ユーザー要望)。
+    'cli.updateReopened': {
+      'ja': '更新が済んだので、 新しいセッションで開き直しました',
+      'en': 'Updated — reopened in a new session',
+      'zh': '已更新 — 已在新会话中重新打开',
+      'ko': '업데이트 후 새 세션으로 다시 열었습니다',
+      'es': 'Actualizado: reabierto en una sesión nueva',
+      'fr': 'Mis à jour — réouvert dans une nouvelle session',
+      'de': 'Aktualisiert – in einer neuen Sitzung erneut geöffnet',
+      'pt': 'Atualizado — reaberto em uma nova sessão',
+      'ru': 'Обновлено — открыто в новом сеансе',
+    },
     // ★ CLI が返事をする言葉 (= ユーザー要望: 言語設定を変えられるように)。
     'cli.langSameAsApp': {
       'ja': 'アプリと同じ言葉',
@@ -53304,6 +53634,54 @@ class MindMapProvider extends ChangeNotifier {
       'ru':
           'Открыть папку',
     },
+    // ── ページ一覧のメニュー「エクスプローラーで場所を開く」 (= ユーザー要望) ──
+    'page.revealInOs': {
+      'ja': 'エクスプローラーで場所を開く',
+      'en': 'Show file in file manager',
+      'zh': '在文件管理器中显示文件',
+      'ko': '파일 관리자에서 위치 열기',
+      'es': 'Mostrar el archivo en el explorador',
+      'fr': 'Afficher le fichier dans le gestionnaire',
+      'de': 'Datei im Datei-Manager anzeigen',
+      'pt': 'Mostrar o arquivo no gerenciador',
+      'ru': 'Показать файл в проводнике',
+    },
+    'page.revealNoDest': {
+      'ja': 'データの保存先を決めると、ページがファイルになって出てきます',
+      'en': 'Choose where your data is kept, and pages appear there as files',
+      'zh': '设定数据保存位置后，页面会作为文件出现在那里',
+      'ko': '데이터 보관 위치를 정하면 페이지가 파일로 저장됩니다',
+      'es':
+          'Elige dónde guardar tus datos y las páginas aparecerán como archivos',
+      'fr':
+          "Choisissez où conserver vos données : les pages y apparaîtront comme fichiers",
+      'de': 'Wähle einen Speicherort — dann liegen die Seiten dort als Dateien',
+      'pt':
+          'Escolha onde guardar seus dados e as páginas aparecerão como arquivos',
+      'ru': 'Выберите папку для данных — страницы появятся там как файлы',
+    },
+    'page.revealMissing': {
+      'ja': 'このページのファイルはまだディスクに出ていません',
+      'en': 'This page has no file on disk yet',
+      'zh': '此页面尚未生成磁盘文件',
+      'ko': '이 페이지의 파일이 아직 디스크에 없습니다',
+      'es': 'Esta página aún no tiene archivo en el disco',
+      'fr': "Cette page n'a pas encore de fichier sur le disque",
+      'de': 'Für diese Seite gibt es noch keine Datei',
+      'pt': 'Esta página ainda não tem arquivo no disco',
+      'ru': 'У этой страницы пока нет файла на диске',
+    },
+    'page.revealFallbackDir': {
+      'ja': 'ファイルが見つからないのでフォルダーを開きました',
+      'en': 'File not found — opened the folder instead',
+      'zh': '未找到文件，已打开所在文件夹',
+      'ko': '파일을 찾을 수 없어 폴더를 열었습니다',
+      'es': 'Archivo no encontrado: se abrió la carpeta',
+      'fr': 'Fichier introuvable : dossier ouvert à la place',
+      'de': 'Datei nicht gefunden — Ordner geöffnet',
+      'pt': 'Arquivo não encontrado: abrimos a pasta',
+      'ru': 'Файл не найден — открыта папка',
+    },
     'cli.login': {
       'ja': 'ログイン',
       'en': 'Sign in',
@@ -53597,8 +53975,10 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Вернуться',
     },
     'cli.title': {
+      // ★ = ユーザー要望「PC内AI って表記じゃなくて CodexCLI と
+      //   ClaudeCode って表記して欲しい」。
       'ja':
-          'PC内AI',
+          'Claude Code / Codex CLI',
       'en':
           'Use the AI tools installed on this PC',
       'zh':
@@ -53618,7 +53998,7 @@ class MindMapProvider extends ChangeNotifier {
     },
     'cli.note': {
       'ja':
-          'この PC の AI コマンドをここで動かします。契約しているぶんを使うので AI の残高は減りません。',
+          'この PC の AI コマンドをここで動かします。契約している分を使うので AI の残高は減りません。',
       'en':
           'Runs the AI commands on this PC. Uses your own subscription, so your AI balance is untouched.',
       'zh':
@@ -53701,15 +54081,15 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Использовано за сеанс',
     },
     'ai.cliUsageNone': {
-      'ja': 'PC内AI は契約しているぶんを使います (残量は出せません)',
-      'en': 'PC AI runs on your own subscription (no remaining balance)',
-      'zh': 'PC 内 AI 使用你的订阅额度 (无法显示余量)',
-      'ko': 'PC 내 AI 는 본인 구독을 사용합니다 (잔량 표시 불가)',
-      'es': 'La IA del PC usa tu suscripcion (sin saldo restante)',
-      'fr': "L'IA du PC utilise votre abonnement (pas de solde)",
-      'de': 'Die PC-KI nutzt Ihr Abo (kein Restguthaben)',
-      'pt': 'A IA do PC usa sua assinatura (sem saldo restante)',
-      'ru': 'ИИ на ПК использует вашу подписку (остаток недоступен)',
+      'ja': 'CLI は契約している分を使います (残量は出せません)',
+      'en': 'The CLI runs on your own subscription (no remaining balance)',
+      'zh': 'CLI 使用你的订阅额度 (无法显示余量)',
+      'ko': 'CLI 는 본인 구독을 사용합니다 (잔량 표시 불가)',
+      'es': 'La CLI usa tu suscripcion (sin saldo restante)',
+      'fr': "La CLI utilise votre abonnement (pas de solde)",
+      'de': 'Die CLI nutzt Ihr Abo (kein Restguthaben)',
+      'pt': 'A CLI usa sua assinatura (sem saldo restante)',
+      'ru': 'CLI использует вашу подписку (остаток недоступен)',
     },
     // ── npm を使わない入れ方 (= ユーザー報告: npm の途中で node が
     //    止められ、 コード 3221226528 で終わって入れ終わらない) ──
@@ -54041,19 +54421,22 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'O npm vem com o Node.js. Instale o Node.js primeiro.',
       'ru': 'npm поставляется с Node.js. Сначала установите Node.js.',
     },
+    // ★ = ユーザー要望「そもそも PC内AI って表記じゃなくて CodexCLI と
+    //   ClaudeCode って表記して欲しい」。 1 つを選ぶ欄は CLI の名前その物を
+    //   出すようにしたので、 ここに残るのは「この下は CLI の話」という見出しだけ。
     'ai.modeCli': {
-      'ja': 'PC内AI',
-      'en': 'AI on this PC',
-      'zh': '装在这台电脑上的 AI (Claude Code 等)',
-      'ko': '이 PC 에 설치한 AI (Claude Code 등)',
-      'es': 'Una IA instalada en este PC (Claude Code, etc.)',
-      'fr': 'Une IA installee sur ce PC (Claude Code, etc.)',
-      'de': 'Eine auf diesem PC installierte KI (Claude Code usw.)',
-      'pt': 'Uma IA instalada neste PC (Claude Code, etc.)',
-      'ru': 'ИИ, установленный на этом ПК (Claude Code и др.)',
+      'ja': 'Claude Code / Codex CLI',
+      'en': 'Claude Code / Codex CLI',
+      'zh': 'Claude Code / Codex CLI',
+      'ko': 'Claude Code / Codex CLI',
+      'es': 'Claude Code / Codex CLI',
+      'fr': 'Claude Code / Codex CLI',
+      'de': 'Claude Code / Codex CLI',
+      'pt': 'Claude Code / Codex CLI',
+      'ru': 'Claude Code / Codex CLI',
     },
     'ai.modeCliBody': {
-      'ja': '契約しているぶんをそこで使うので、 AI の残高は減りません。',
+      'ja': '契約している分をそこで使うので、 AI の残高は減りません。',
       'en': 'Runs on your own CLI subscription, so your AI credit is untouched.',
       'zh': '使用你自己的订阅，不会消耗 AI 余额。',
       'ko': '본인 구독으로 동작하므로 AI 잔액이 줄지 않습니다.',
@@ -54064,7 +54447,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Работает по вашей подписке, баланс ИИ не тратится.',
     },
     'ai.modeHint': {
-      'ja': 'あとから変えられます。 ボタンを右クリック (長押し) してください。',
+      'ja': '後から変えられます。 ボタンを右クリック (長押し) してください。',
       'en': 'You can change this later: right-click (or long-press) the button.',
       'zh': '之后可以更改：右键 (或长按) 该按钮。',
       'ko': '나중에 바꿀 수 있습니다. 버튼을 오른쪽 클릭 (또는 길게 누르기) 하세요.',
@@ -55181,6 +55564,13 @@ class MindMapProvider extends ChangeNotifier {
       'es': 'Renombrar', 'fr': 'Renommer',
       'de': 'Umbenennen', 'pt': 'Renomear',
       'ru': 'Переименовываю',
+    },
+    'mcp.actDeleteTab': {
+      'ja': 'タブを消す', 'en': 'Deleting a tab',
+      'zh': '删除标签页', 'ko': '탭을 삭제',
+      'es': 'Eliminando una pestaña', 'fr': 'Suppression d’un onglet',
+      'de': 'Tab löschen', 'pt': 'Excluindo uma aba',
+      'ru': 'Удаляю вкладку',
     },
     'mcp.retrying': {
       'ja': 'やり直しています…',
@@ -57119,7 +57509,7 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Прокрутите колесо на один щелчок над этой рамкой.',
     },
     'mouse.wheelTestResult': {
-      'ja': '1 段で {app} 行ぶん動きました (Windows の今の設定は {os} 行)。',
+      'ja': '1 段で {app} 行分動きました (Windows の今の設定は {os} 行)。',
       'en': 'One notch moved {app} lines (Windows is currently set to {os}).',
       'zh': '滚动一格移动了 {app} 行（Windows 当前设置为 {os} 行）。',
       'ko': '한 칸에 {app}줄 이동했습니다 (Windows 현재 설정 {os}줄).',
@@ -62828,22 +63218,57 @@ class MindMapProvider extends ChangeNotifier {
     },
     'paywall.body': {
       'ja':
-          '無料プランでは、デフォルトで作成されているページを含めて同じ種類のページは 1 ページまで作成できます。同じ種類のページをさらに作成するには Pro 以上のプランへの加入が必要です。',
+          '無料プランで開けるのは、並びの先頭 2 ページまでです。ページの作成に制限はありませんが、3 ページ目以降を開くには Pro 以上のプランへの加入が必要です。',
       'en':
-          'The free plan supports one page of each type, including the default page. To create another page of the same type, please upgrade to a Pro or higher plan.',
-      'zh': '免费方案中，每种类型只能创建 1 个页面（包括默认页面）。要创建同类型的更多页面，请升级到 Pro 或更高方案。',
+          'The free plan can open the first 2 pages in the list. Creating pages is unlimited, but opening the 3rd page onward requires a Pro or higher plan.',
+      'zh': 
+          '免费方案只能打开列表中前 2 个页面。创建页面不受限制，但打开第 3 个以后的页面需要 Pro 或更高方案。',
       'ko':
-          '무료 플랜에서는 기본으로 생성된 페이지를 포함해 같은 종류의 페이지를 1개만 만들 수 있습니다. 같은 종류를 더 만들려면 Pro 이상 플랜에 가입해 주세요.',
+          '무료 플랜은 목록의 앞 2개 페이지만 열 수 있습니다. 페이지 생성은 제한이 없지만, 3번째 이후를 열려면 Pro 이상 플랜이 필요합니다.',
       'es':
-          'El plan gratuito permite una página de cada tipo, incluida la página predeterminada. Para crear otra página del mismo tipo, suscríbete al plan Pro o superior.',
+          'El plan gratuito puede abrir las 2 primeras páginas de la lista. Crear páginas es ilimitado, pero abrir la 3.ª en adelante requiere un plan Pro o superior.',
       'fr':
-          'Le plan gratuit permet une page de chaque type, y compris la page par défaut. Pour créer une autre page du même type, abonnez-vous à un plan Pro ou supérieur.',
+          'Le plan gratuit permet d’ouvrir les 2 premières pages de la liste. La création de pages est illimitée, mais ouvrir la 3e et les suivantes nécessite un plan Pro ou supérieur.',
       'de':
-          'Im kostenlosen Plan ist pro Seitentyp eine Seite möglich, einschließlich der Standardseite. Für weitere Seiten desselben Typs ist ein Pro- oder höheres Abo erforderlich.',
+          'Im kostenlosen Plan lassen sich die ersten 2 Seiten der Liste öffnen. Seiten anlegen ist unbegrenzt, doch ab der 3. Seite ist ein Pro-Abo oder höher nötig.',
       'pt':
-          'O plano gratuito permite uma página de cada tipo, incluindo a página padrão. Para criar outra página do mesmo tipo, assine o plano Pro ou superior.',
+          'O plano gratuito abre as 2 primeiras páginas da lista. Criar páginas é ilimitado, mas abrir da 3.ª em diante exige o plano Pro ou superior.',
       'ru':
-          'Бесплатный план позволяет создать одну страницу каждого типа, включая страницу по умолчанию. Чтобы создать ещё одну страницу того же типа, нужен план Pro или выше.',
+          'Бесплатный план позволяет открывать первые 2 страницы списка. Создавать страницы можно без ограничений, но для 3-й и далее нужен план Pro или выше.',
+    },
+    // ★ = ユーザー要望「3 ページ目以降を作成しても Pro 以上でないと
+    //   開けない様にして欲しい」。 鍵の掛かったページを開こうとした時に出す。
+    'paywall.pageOpenLimit': {
+      'ja':
+          '無料プランで開けるのは、並びの先頭 2 ページまでです。\nページの作成に制限はありませんが、3 ページ目以降を開くには Pro 以上のプランへの加入が必要です。\n一覧でページを先頭へ並べ替えれば、そのページを開けるようになります。',
+      'en':
+          'The free plan can open the first 2 pages in the list.\nCreating pages is unlimited, but opening the 3rd page onward requires a Pro or higher plan.\nYou can drag a page to the top of the list to open it instead.',
+      'zh':
+          '免费方案只能打开列表中前 2 个页面。\n创建页面不受限制，但要打开第 3 个以后的页面需要 Pro 或更高方案。',
+      'ko':
+          '무료 플랜에서는 목록의 앞 2개 페이지만 열 수 있습니다.\n페이지 생성은 제한이 없지만, 3번째 이후를 열려면 Pro 이상 플랜이 필요합니다.',
+      'es':
+          'El plan gratuito puede abrir las 2 primeras páginas de la lista.\nCrear páginas es ilimitado, pero abrir la 3.ª en adelante requiere un plan Pro o superior.',
+      'fr':
+          'Le plan gratuit permet d’ouvrir les 2 premières pages de la liste.\nLa création de pages est illimitée, mais ouvrir la 3e et les suivantes nécessite un plan Pro ou supérieur.',
+      'de':
+          'Im kostenlosen Plan lassen sich die ersten 2 Seiten der Liste öffnen.\nSeiten anlegen ist unbegrenzt, doch ab der 3. Seite ist ein Pro-Abo oder höher nötig.',
+      'pt':
+          'O plano gratuito abre as 2 primeiras páginas da lista.\nCriar páginas é ilimitado, mas abrir da 3.ª em diante exige o plano Pro ou superior.',
+      'ru':
+          'Бесплатный план позволяет открывать первые 2 страницы списка.\nСоздавать страницы можно без ограничений, но для 3-й и далее нужен план Pro или выше.',
+    },
+    // ★ 一覧の札に出す鍵の印の説明。
+    'paywall.pageLockedTip': {
+      'ja': 'Pro 以上で開けます (無料プランは先頭 2 ページまで)',
+      'en': 'Opens with Pro or higher (free plan: first 2 pages)',
+      'zh': 'Pro 以上可打开（免费方案：前 2 页）',
+      'ko': 'Pro 이상에서 열 수 있음 (무료는 앞 2개)',
+      'es': 'Se abre con Pro o superior (gratis: 2 primeras)',
+      'fr': 'Ouvrable avec Pro ou supérieur (gratuit : 2 premières)',
+      'de': 'Mit Pro oder höher zu öffnen (kostenlos: erste 2)',
+      'pt': 'Abre com Pro ou superior (grátis: as 2 primeiras)',
+      'ru': 'Открывается с Pro или выше (бесплатно: первые 2)',
     },
     'paywall.proRequiredVideoDl': {
       'ja': 'YouTube 動画のダウンロードには Pro 以上のプランへの加入が必要です。',
@@ -63202,9 +63627,11 @@ class MindMapProvider extends ChangeNotifier {
       'ja': 'Max で解禁（Pro の全機能を含む）',
       'en': 'Unlocked with Max (includes all Pro features)',
     },
+    // ★ = ユーザー要望で線引きを「作る枚数」から「開ける枚数」へ移した。
+    //   作成はどのプランでも無制限なので、 Pro の売りは「何枚でも開ける」。
     'plan.proPages': {
-      'ja': 'ページの無制限作成',
-      'en': 'Create unlimited pages',
+      'ja': 'ページを何枚でも開ける (無料は先頭 2 ページ)',
+      'en': 'Open any number of pages (free: the first 2)',
     },
     'plan.proSplit': {
       'ja': '画面分割の無制限利用',
@@ -64794,6 +65221,29 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Pressione Enter para confirmar e fechar',
       'ru': 'Нажмите Enter для подтверждения',
     },
+    // ★ = ユーザー要望: よく使うボタンと、 選択肢を探す欄。
+    'header.frequent': {
+      'ja': 'よく使うボタン',
+      'en': 'Frequently used',
+      'zh': '常用按钮',
+      'ko': '자주 쓰는 버튼',
+      'es': 'De uso frecuente',
+      'fr': 'Souvent utilisés',
+      'de': 'Häufig genutzt',
+      'pt': 'Mais usados',
+      'ru': 'Часто используемые',
+    },
+    'header.searchHint': {
+      'ja': 'ボタンを探す',
+      'en': 'Search buttons',
+      'zh': '搜索按钮',
+      'ko': '버튼 검색',
+      'es': 'Buscar botones',
+      'fr': 'Rechercher un bouton',
+      'de': 'Schaltflächen suchen',
+      'pt': 'Buscar botões',
+      'ru': 'Поиск кнопок',
+    },
     // ヘッダーカスタマイズ
     'header.customizeTitle': {
       'ja': '操作ボタンのカスタマイズ',
@@ -65481,6 +65931,150 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Es war nicht erkennbar, was geladen werden soll',
       'pt': 'Não foi possível saber o que transferir',
       'ru': 'Не удалось определить, что скачивать',
+    },
+    // ★ = ユーザー要望: ブレイクポイントと、 実行の録画。
+    'auto.bpOn': {
+      'ja': 'ここで止める',
+      'en': 'Pause here',
+      'zh': '在此暂停',
+      'ko': '여기서 멈추기',
+      'es': 'Pausar aquí',
+      'fr': 'Faire une pause ici',
+      'de': 'Hier anhalten',
+      'pt': 'Pausar aqui',
+      'ru': 'Остановиться здесь',
+    },
+    'auto.bpOff': {
+      'ja': '止めるのをやめる',
+      'en': 'Do not pause here',
+      'zh': '取消此处暂停',
+      'ko': '여기서 멈추지 않기',
+      'es': 'No pausar aquí',
+      'fr': 'Ne plus faire de pause ici',
+      'de': 'Hier nicht anhalten',
+      'pt': 'Não pausar aqui',
+      'ru': 'Не останавливаться здесь',
+    },
+    'auto.bpHit': {
+      'ja': '印の手前で止まりました',
+      'en': 'Paused at a breakpoint',
+      'zh': '已在断点处暂停',
+      'ko': '중단점에서 멈췄습니다',
+      'es': 'Pausado en un punto de interrupción',
+      'fr': 'En pause à un point d’arrêt',
+      'de': 'An einem Haltepunkt angehalten',
+      'pt': 'Pausado em um ponto de parada',
+      'ru': 'Остановлено на точке останова',
+    },
+    'auto.bpPaused': {
+      'ja': '{n} の手前で止まっています。 画面を見て、 手順を直してから続けられます。',
+      'en': 'Paused before step {n}. Look at the page, edit the flow, then continue.',
+      'zh': '已在第 {n} 步前暂停。可以查看页面、修改流程后继续。',
+      'ko': '{n} 번째 앞에서 멈췄습니다. 페이지를 보고 흐름을 고친 뒤 계속하세요.',
+      'es': 'En pausa antes del paso {n}. Mira la página, edita el flujo y continúa.',
+      'fr': 'En pause avant l’étape {n}. Regardez la page, modifiez le flux, puis continuez.',
+      'de': 'Vor Schritt {n} angehalten. Seite ansehen, Ablauf anpassen, dann fortfahren.',
+      'pt': 'Pausado antes da etapa {n}. Veja a página, edite o fluxo e continue.',
+      'ru': 'Пауза перед шагом {n}. Посмотрите страницу, поправьте флоу и продолжите.',
+    },
+    'auto.bpContinue': {
+      'ja': '続ける',
+      'en': 'Continue',
+      'zh': '继续',
+      'ko': '계속',
+      'es': 'Continuar',
+      'fr': 'Continuer',
+      'de': 'Fortfahren',
+      'pt': 'Continuar',
+      'ru': 'Продолжить',
+    },
+    'auto.bpStep': {
+      'ja': '1 手ずつ',
+      'en': 'Step',
+      'zh': '单步',
+      'ko': '한 단계씩',
+      'es': 'Paso a paso',
+      'fr': 'Pas à pas',
+      'de': 'Einzelschritt',
+      'pt': 'Passo a passo',
+      'ru': 'По шагам',
+    },
+    'auto.bpAbort': {
+      'ja': 'やめる',
+      'en': 'Stop',
+      'zh': '停止',
+      'ko': '중지',
+      'es': 'Detener',
+      'fr': 'Arrêter',
+      'de': 'Abbrechen',
+      'pt': 'Parar',
+      'ru': 'Остановить',
+    },
+    'auto.optBp': {
+      'ja': '印で止まる',
+      'en': 'Breakpoints',
+      'zh': '断点',
+      'ko': '중단점',
+      'es': 'Puntos de interrupción',
+      'fr': 'Points d’arrêt',
+      'de': 'Haltepunkte',
+      'pt': 'Pontos de parada',
+      'ru': 'Точки останова',
+    },
+    'auto.optBpOn': {
+      'ja': '止まる',
+      'en': 'On',
+      'zh': '开',
+      'ko': '켬',
+      'es': 'Sí',
+      'fr': 'Oui',
+      'de': 'An',
+      'pt': 'Sim',
+      'ru': 'Вкл.',
+    },
+    'auto.optBpOff': {
+      'ja': '止まらない',
+      'en': 'Off',
+      'zh': '关',
+      'ko': '끕',
+      'es': 'No',
+      'fr': 'Non',
+      'de': 'Aus',
+      'pt': 'Não',
+      'ru': 'Выкл.',
+    },
+    'auto.optRec': {
+      'ja': '実行を録画',
+      'en': 'Record the run',
+      'zh': '录制本次执行',
+      'ko': '실행 녹화',
+      'es': 'Grabar la ejecución',
+      'fr': 'Enregistrer l’exécution',
+      'de': 'Lauf aufzeichnen',
+      'pt': 'Gravar a execução',
+      'ru': 'Записывать запуск',
+    },
+    'auto.optRecOn': {
+      'ja': '録る',
+      'en': 'On',
+      'zh': '开',
+      'ko': '켬',
+      'es': 'Sí',
+      'fr': 'Oui',
+      'de': 'An',
+      'pt': 'Sim',
+      'ru': 'Вкл.',
+    },
+    'auto.optRecOff': {
+      'ja': '録らない',
+      'en': 'Off',
+      'zh': '关',
+      'ko': '끕',
+      'es': 'No',
+      'fr': 'Non',
+      'de': 'Aus',
+      'pt': 'Não',
+      'ru': 'Выкл.',
     },
     'auto.logStarted': {
       'ja': 'ページのログを集め始めました',
@@ -68883,6 +69477,28 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Nenhum resultado',
       'ru': 'Ничего не найдено',
     },
+    'overlay.colorBg': {
+      'ja': '背景',
+      'en': 'Fill',
+      'zh': '背景',
+      'ko': '배경',
+      'es': 'Fondo',
+      'fr': 'Fond',
+      'de': 'Fuell',
+      'pt': 'Fundo',
+      'ru': 'Fon',
+    },
+    'overlay.colorText': {
+      'ja': '文字',
+      'en': 'Text',
+      'zh': '文字',
+      'ko': '문자',
+      'es': 'Texto',
+      'fr': 'Texte',
+      'de': 'Text',
+      'pt': 'Texto',
+      'ru': 'Tekst',
+    },
     'overlay.textColorAuto': {
       'ja': '文字色: 自動 (長押しでこの背景色の既定に)',
       'en': 'Text color: auto (hold to make it the default for this background)',
@@ -68926,6 +69542,80 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Textfarbe für diesen Hintergrund ist wieder automatisch',
       'pt': 'A cor do texto deste fundo voltou a automática',
       'ru': 'Цвет текста для этого фона снова автоматический',
+    },
+    // ★ = ユーザー要望「(長押しで背景色を固定) とか書かれているが、 これは
+    //   モバイル版での話じゃないの? パソコン版でも背景色や文字色を固定
+    //   できるようにして」。 パソコンは右クリックなので、 説明文も分ける。
+    'overlay.textColorAutoPc': {
+      'ja': '文字色: 自動 (右クリックでこの背景色の既定に)',
+      'en': 'Text color: auto (right-click to make it the default for this '
+          'background)',
+      'zh': '文字颜色: 自动 (右键设为此背景色的默认)',
+      'ko': '글자색: 자동 (오른쪽 클릭으로 이 배경색의 기본으로)',
+      'es': 'Color de texto: auto (clic derecho para hacerlo predeterminado)',
+      'fr': 'Couleur du texte : auto (clic droit pour en faire le défaut)',
+      'de': 'Textfarbe: automatisch (Rechtsklick = Standard für diese '
+          'Hintergrundfarbe)',
+      'pt': 'Cor do texto: automática (clique direito para tornar padrão)',
+      'ru': 'Цвет текста: авто (правый клик, чтобы сделать по умолчанию)',
+    },
+    'overlay.textColorHoldPc': {
+      'ja': '文字色 (右クリックでこの背景色の既定に)',
+      'en': 'Text color (right-click to make it the default for this '
+          'background)',
+      'zh': '文字颜色 (右键设为此背景色的默认)',
+      'ko': '글자색 (오른쪽 클릭으로 이 배경색의 기본으로)',
+      'es': 'Color de texto (clic derecho para hacerlo predeterminado)',
+      'fr': 'Couleur du texte (clic droit pour en faire le défaut)',
+      'de': 'Textfarbe (Rechtsklick = Standard für diese Hintergrundfarbe)',
+      'pt': 'Cor do texto (clique direito para tornar padrão)',
+      'ru': 'Цвет текста (правый клик, чтобы сделать по умолчанию)',
+    },
+    // 背景色のパレット。 既定にすると、 これから作る要素がこの色になる。
+    'overlay.bgColorHold': {
+      'ja': '背景色 (長押しで新しい要素の既定に)',
+      'en': 'Background color (hold to make it the default for new elements)',
+      'zh': '背景色 (长按设为新元素的默认)',
+      'ko': '배경색 (길게 눌러 새 요소의 기본으로)',
+      'es': 'Color de fondo (mantén para usarlo en los nuevos elementos)',
+      'fr': 'Couleur de fond (maintenir pour en faire le défaut des nouveaux)',
+      'de': 'Hintergrundfarbe (halten = Standard für neue Elemente)',
+      'pt': 'Cor de fundo (segure para tornar padrão dos novos elementos)',
+      'ru': 'Цвет фона (удерживайте, чтобы сделать его для новых элементов)',
+    },
+    'overlay.bgColorHoldPc': {
+      'ja': '背景色 (右クリックで新しい要素の既定に)',
+      'en': 'Background color (right-click to make it the default for new '
+          'elements)',
+      'zh': '背景色 (右键设为新元素的默认)',
+      'ko': '배경색 (오른쪽 클릭으로 새 요소의 기본으로)',
+      'es': 'Color de fondo (clic derecho para usarlo en los nuevos elementos)',
+      'fr': 'Couleur de fond (clic droit pour en faire le défaut des nouveaux)',
+      'de': 'Hintergrundfarbe (Rechtsklick = Standard für neue Elemente)',
+      'pt': 'Cor de fundo (clique direito para tornar padrão dos novos)',
+      'ru': 'Цвет фона (правый клик, чтобы сделать его для новых элементов)',
+    },
+    'overlay.bgColorRemembered': {
+      'ja': 'これから作る要素は、 この背景色になります',
+      'en': 'New elements will use this background color from now on',
+      'zh': '今后新建的元素将使用这个背景色',
+      'ko': '앞으로 만드는 요소는 이 배경색이 됩니다',
+      'es': 'Los nuevos elementos usarán este color de fondo',
+      'fr': 'Les nouveaux éléments utiliseront cette couleur de fond',
+      'de': 'Neue Elemente bekommen ab jetzt diese Hintergrundfarbe',
+      'pt': 'Os novos elementos passam a usar esta cor de fundo',
+      'ru': 'Новые элементы теперь будут с этим цветом фона',
+    },
+    'overlay.bgColorForgot': {
+      'ja': '背景色の固定を解除しました (順番に変わります)',
+      'en': 'Background color is no longer fixed (it cycles again)',
+      'zh': '已取消固定背景色 (恢复循环)',
+      'ko': '배경색 고정을 해제했습니다 (다시 순환합니다)',
+      'es': 'El color de fondo ya no está fijado (vuelve a alternar)',
+      'fr': 'La couleur de fond n\'est plus fixée (elle alterne de nouveau)',
+      'de': 'Hintergrundfarbe ist nicht mehr fest (wechselt wieder)',
+      'pt': 'A cor de fundo deixou de ser fixa (volta a alternar)',
+      'ru': 'Цвет фона больше не закреплён (снова чередуется)',
     },
     'imgAnno.memo': {
       'ja': 'メモ',
@@ -73813,6 +74503,127 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Отключено',
     },
     // ── 集中ロック (Android のみ) ────────────────────────────────────
+    // ── 集中ロックの設定を畳んだ時に足した言葉 (= ユーザー要望:
+    //    項目数が多くて設定が大変) ──
+    'focusLock.outside': {
+      'ja': 'ロック中に使える物',
+      'en': 'What you can still use',
+      'zh': '锁定期间可用的功能',
+      'ko': '잠금 중에 쓸 수 있는 것',
+    },
+    'focusLock.outsideNone': {
+      'ja': '使わない',
+      'en': 'Nothing',
+      'zh': '不使用',
+      'ko': '사용 안 함',
+    },
+    'focusLock.outsideResearch': {
+      'ja': '調べ物だけ',
+      'en': 'Research only',
+      'zh': '仅查资料',
+      'ko': '검색만',
+    },
+    'focusLock.outsideAll': {
+      'ja': '全部',
+      'en': 'Everything',
+      'zh': '全部',
+      'ko': '전부',
+    },
+    'focusLock.outsideHint': {
+      'ja': '調べ物だけ = メモから AI と Google 検索、ページの中身まで。'
+          '全部 = 動画も (メモの言葉を含む物だけ)。',
+      'en': 'Research only = AI and Google from your notes, plus page content. '
+          'Everything = video too (limited to words in your notes).',
+    },
+    'focusLock.showOnLock': {
+      'ja': 'ロック画面に出す物',
+      'en': 'Show on the lock screen',
+      'zh': '锁定画面上显示',
+      'ko': '잠금 화면에 표시',
+    },
+    'focusLock.chipSeconds': {
+      'ja': '秒',
+      'en': 'Seconds',
+      'zh': '秒',
+      'ko': '초',
+    },
+    'focusLock.chipUnlock': {
+      'ja': '解除ボタン',
+      'en': 'Unlock button',
+      'zh': '解除按钮',
+      'ko': '해제 버튼',
+    },
+    'focusLock.chipPomodoro': {
+      'ja': 'ポモドーロ',
+      'en': 'Pomodoro',
+    },
+    'focusLock.chipAlarm': {
+      'ja': 'アラーム',
+      'en': 'Alarm',
+      'zh': '闹钟',
+      'ko': '알람',
+    },
+    'focusLock.chipAmbient': {
+      'ja': '自然音',
+      'en': 'Ambient sound',
+      'zh': '自然音',
+      'ko': '자연음',
+    },
+    'focusLock.autoStart': {
+      'ja': '時刻で自動的に始める',
+      'en': 'Start automatically at a set time',
+      'zh': '按时间自动开始',
+      'ko': '시간에 맞춰 자동 시작',
+    },
+    'focusLock.makeShortcut': {
+      'ja': 'ショートカットを作る',
+      'en': 'Create a shortcut',
+      'zh': '创建快捷方式',
+      'ko': '바로 가기 만들기',
+    },
+    'focusLock.shortcutDone': {
+      'ja': 'ショートカットを作りました。ここから始めるとページを開かずに'
+          'ロックが始まります。',
+      'en': 'Shortcut created. Launching it starts the lock without opening '
+          'the map.',
+    },
+    'focusLock.shortcutFailed': {
+      'ja': 'ショートカットを作れませんでした。',
+      'en': 'Could not create the shortcut.',
+    },
+    // ── CLI の画面を外に出す (= ユーザー要望) ──
+    'cli.popOut': {
+      'ja': '別の窓で開く',
+      'en': 'Open in its own window',
+      'zh': '在独立窗口中打开',
+      'ko': '별도 창으로 열기',
+    },
+    'cli.popOutHint': {
+      'ja': '別の窓はこのアプリとは別に動きます。走らせている CLI は'
+          'こちらに残るので、外の窓では開き直してください。',
+      'en': 'The separate window runs on its own. CLIs already running stay '
+          'here, so start them again in the new window.',
+    },
+    'cli.popOutDone': {
+      'ja': '別の窓で開いています。',
+      'en': 'Opening in a separate window.',
+    },
+    'cli.makeShortcut': {
+      'ja': 'ショートカットを作る',
+      'en': 'Create a shortcut',
+      'zh': '创建快捷方式',
+      'ko': '바로 가기 만들기',
+    },
+    'cli.shortcutDone': {
+      'ja': 'デスクトップにショートカットを作りました。ここから始めると'
+          'ページを開かずに CLI の画面だけが出ます。',
+      'en': 'Shortcut created on the desktop. Launching it opens just the CLI '
+          'window, without the map.',
+    },
+    'cli.shortcutFailed': {
+      'ja': 'ショートカットを作れませんでした。',
+      'en': 'Could not create the shortcut.',
+    },
     'focusLock.menuTitle': {
       'ja': '集中ロック',
       'en': 'Focus Lock',
@@ -75440,7 +76251,7 @@ class MindMapProvider extends ChangeNotifier {
     return Exception('${t('credit.insufficient')} (${t('devCap.marker')})');
   }
 
-  /// 画像 1 枚ぶんの見積もり (USD)。
+  /// 画像 1 枚分の見積もり (USD)。
   ///
   /// ★ = 動作検証 2026-09-17「$0.01 の上限に対して、 最初の 1 回で $0.0468 を
   ///   計上した」。 実際の値段を決めているのは代行サーバーなので、 呼ぶ前に
@@ -75448,7 +76259,7 @@ class MindMapProvider extends ChangeNotifier {
   ///   おけば、 上限を跨ぐ呼び出しは始まらない。
   static const double kEstimatedImageUsd = 0.06;
 
-  /// 文字の生成 1 回ぶんの見積もり (USD)。 上限判定にだけ使う控えめな値。
+  /// 文字の生成 1 回分の見積もり (USD)。 上限判定にだけ使う控えめな値。
   static double estimatedTextUsd({int? maxTokens}) {
     // 出力の上限が分かっていればそれで、 分からなければ 4k トークン相当。
     final out = (maxTokens == null || maxTokens <= 0) ? 4000 : maxTokens;
@@ -75471,7 +76282,7 @@ class MindMapProvider extends ChangeNotifier {
         _devSelfSpentUsd + estimatedUsd > _devSelfCapUsd + 1e-9) {
       throw _devSelfCapError();
     }
-    // ここを通ったら 1 回ぶん数える (通らなかった呼び出しは数えない)。
+    // ここを通ったら 1 回分数える (通らなかった呼び出しは数えない)。
     // ignore: discarded_futures
     _addDevSelfCall();
   }
@@ -75884,7 +76695,7 @@ class MindMapProvider extends ChangeNotifier {
             .toDouble();
     _connectionElbowPointCount =
         (prefs.getInt('connectionElbowPointCount') ?? 2).clamp(1, 8).toInt();
-    _connectionStrokeWidth = (prefs.getDouble('connectionStrokeWidth') ?? 3.5)
+    _connectionStrokeWidth = (prefs.getDouble('connectionStrokeWidth') ?? 4.0)
         .clamp(1.0, 8.0)
         .toDouble();
     _connectionShowArrow = prefs.getBool('connectionShowArrow') ?? true;
@@ -76606,6 +77417,9 @@ class MindMapProvider extends ChangeNotifier {
     if (!_initialLoadCompleter.isCompleted) {
       _initialLoadCompleter.complete();
     }
+    if (!_settingsLoadCompleter.isCompleted) {
+      _settingsLoadCompleter.complete();
+    }
   }
 
   /// 初期化用 Completer。`_loadGeminiApiKey` (= 言語フラグ・色設定など多くの
@@ -76615,6 +77429,15 @@ class MindMapProvider extends ChangeNotifier {
   /// 判定すれば、確実にロード完了後の値で初回起動フローを分岐できる。
   final Completer<void> _initialLoadCompleter = Completer<void>();
   Future<void> get initialLoadDone => _initialLoadCompleter.future;
+
+  /// **全部の設定**を読み終わった合図。
+  ///
+  /// ★ [initialLoadDone] は軽い方 ([_loadEssentialUiState]) が先に済ませて
+  ///   しまうので、 集中ロックのような「[_loadGeminiApiKey] の中で読む設定」
+  ///   を待つ物差しには使えない (= 点検で判明: ショートカットから始めると、
+  ///   やること制も分数も既定のまま読まれていた)。 そちらを待つ時はこれ。
+  final Completer<void> _settingsLoadCompleter = Completer<void>();
+  Future<void> get settingsLoadDone => _settingsLoadCompleter.future;
 
   /// 最初の読み込みが終わったか (画面の分岐用の同期版)。
   ///
@@ -77900,7 +78723,7 @@ class MindMapProvider extends ChangeNotifier {
   int _connectionElbowPointCount = 2;
   int get connectionElbowPointCount => _connectionElbowPointCount;
   // ★ = ユーザー要望「デフォルトのリンク線が細すぎる」。
-  double _connectionStrokeWidth = 3.5;
+  double _connectionStrokeWidth = 4.0;
   double get connectionStrokeWidth => _connectionStrokeWidth;
   bool _connectionShowArrow = true;
   bool get connectionShowArrow => _connectionShowArrow;
@@ -81548,6 +82371,142 @@ class MindMapProvider extends ChangeNotifier {
     return SubscriptionPlan.free;
   }
 
+  // ── 開けるページ数 (= ユーザー要望「3 ページ目以降を作成しても Pro 以上
+  //    でないと開けない様にして欲しい」) ──────────────────────────
+  //
+  //    作るのは自由 ([canCreatePageType] は常に true)。 無料プランで**開ける**
+  //    のは、 並びの先頭 [kFreeOpenPageLimit] 枚まで。 3 枚目以降は鍵が掛かり、
+  //    開こうとすると加入案内 ([onPageOpenBlocked]) が出る。
+  //
+  //    ★ 並びは `pages` (= `_pages`) の順。 画面の並べ替え (drawer のドラッグ
+  //      = [reorderPages]) で先頭へ持ってくれば、 どのページでも開ける枠に
+  //      入れられる。 「2 枚だけ使える作業机」 という考え方。
+
+  /// 無料プランで開けるページ数。
+  static const int kFreeOpenPageLimit = 2;
+
+  /// 鍵の判定に使う並び (= 一覧に見えている順)。
+  ///
+  /// ★ = 点検で判明: 生の [_pages] の順で鍵を掛けると、 一覧はフォルダー
+  ///   ごと + ピン留めを先頭に並べ替えて出すので、 「上の 2 枚」 と
+  ///   「開ける 2 枚」 が一致せず、 どれが開けるのか見ても分からなかった。
+  ///   一覧と同じ並びで数える。 ピン留め (お気に入り) すれば先頭へ来るので、
+  ///   それが「開ける枠を入れ替える」 手立てになる。
+  List<String> planOpenOrder() {
+    final out = <String>[];
+    // ★ 重複よけは Set で見る (= 点検で判明: List.contains で見ていたので
+    //   ページ数の 2 乗に膨らみ、 一覧の行ごとにこれを作り直していた)。
+    //   並びも中身も今までと同じ。
+    final seen = <String>{};
+    for (final f in _folders) {
+      for (final pg in pagesInFolder(f.id)) {
+        if (seen.add(pg.id)) out.add(pg.id);
+      }
+    }
+    for (final pg in pagesInFolder(null)) {
+      if (seen.add(pg.id)) out.add(pg.id);
+    }
+    // 一覧に出ない物 (隠しページなど) も末尾に足して、 数え落としを防ぐ。
+    for (final pg in _pages) {
+      if (seen.add(pg.id)) out.add(pg.id);
+    }
+    return out;
+  }
+
+  /// そのページを開けるか (知らない id は true = 邪魔をしない)。
+  bool canOpenPage(String pageId) {
+    if (hasUnlimitedPages) return true;
+    if (pageId.isEmpty) return true;
+    final order = planOpenOrder();
+    var rank = 0;
+    for (final id in order) {
+      if (id == pageId) return rank < kFreeOpenPageLimit;
+      rank++;
+    }
+    return true;
+  }
+
+  /// 並びの [index] 番目 (生の `pages` の位置) のページを開けるか。
+  bool canOpenPageIndex(int index) {
+    if (hasUnlimitedPages) return true;
+    if (index < 0 || index >= _pages.length) return true;
+    return canOpenPage(_pages[index].id);
+  }
+
+  /// プランのせいで開けないページか (画面が鍵の印を出すのに使う)。
+  bool isPageLockedByPlan(String pageId) => !canOpenPage(pageId);
+
+  /// 並びが変わって、 今開いているページに鍵が掛かってしまった時の後始末。
+  ///
+  /// ★ = 点検で判明:
+  ///   ・戻り先を `_pages[0]` と書くと、 フォルダー分けやピン留めのせいで
+  ///     **その先頭自体が鍵の向こう**という事があり得る。 戻り先は
+  ///     [planOpenOrder] の、 実際に開ける先頭。
+  ///   ・鍵の順番はページの並べ替えだけでなく、 ピン留め・フォルダーへの
+  ///     出し入れ・フォルダーの並べ替えでも変わるのに、 後始末が
+  ///     [reorderPages] にしか無かった。 そのため「他を 2 枚ピン留めすると
+  ///     今見ているページが鍵の向こうへ下がったまま編集できる」「鍵の
+  ///     掛かったページをピン留めして開き、 その場でピンを外せば居座れる」
+  ///     という抜けがあった。 並びを触る所すべてからここを呼ぶ。
+  void _ensureCurrentPageOpenable() {
+    if (hasUnlimitedPages || _pages.isEmpty) return;
+    if (_currentPageIndex >= 0 &&
+        _currentPageIndex < _pages.length &&
+        canOpenPageIndex(_currentPageIndex)) {
+      return;
+    }
+    for (final id in planOpenOrder()) {
+      final idx = _pages.indexWhere((p) => p.id == id);
+      if (idx >= 0 && canOpenPageIndex(idx)) {
+        _currentPageIndex = idx;
+        _selectedNodeId = null;
+        return;
+      }
+    }
+    _currentPageIndex = 0;
+  }
+
+  /// 今から 1 枚作ったら、 それは鍵の掛かるページになるか。
+  ///
+  /// ★ = 点検で判明: 「要素を新しいページへ送る」 のように**作った所へ
+  ///   中身を移す**流れは、 作ってから鍵に当たると要素が見えない所へ
+  ///   行ってしまう。 そういう流れは作る前にここで断る。
+  bool get wouldNewPageBeLocked {
+    if (hasUnlimitedPages) return false;
+    return _pages.length >= kFreeOpenPageLimit;
+  }
+
+  /// 無料プランで、 鍵の掛かっているページが 1 枚でもあるか。
+  bool get hasPlanLockedPages =>
+      !hasUnlimitedPages && _pages.length > kFreeOpenPageLimit;
+
+  /// 鍵が掛かっていて開けなかった時に画面へ知らせる口。
+  ///
+  /// ★ 開く入口は 20 か所以上あるので、 1 つずつ加入案内を出す代わりに
+  ///   **断った所で 1 回だけ**知らせる。 画面 (`_MindMapScreenState`) が
+  ///   起動時に登録して、 プラン案内のモーダルを出す。
+  void Function()? onPageOpenBlocked;
+
+  void _notifyPageOpenBlocked() {
+    try {
+      onPageOpenBlocked?.call();
+    } catch (_) {}
+  }
+
+  /// 作った直後のページを開く (鍵が掛かっていれば開かずに案内だけ出す)。
+  ///
+  /// ★ = ユーザー要望「3 ページ目以降を作成しても開けない」。 作る事自体は
+  ///   通すので、 ページは並びに残る (プランを上げればすぐ開ける)。
+  void _openAfterCreate(MindMapPage page) {
+    final idx = _pages.indexWhere((p) => p.id == page.id);
+    if (idx < 0) return;
+    if (!canOpenPageIndex(idx)) {
+      _notifyPageOpenBlocked();
+      return;
+    }
+    _currentPageIndex = idx;
+  }
+
   /// Pro / クーポン / 開発者モード によってページ無制限になっているか。
   /// UI 側のペイウォール出し分けで使う。
   /// 開発者モードは演じプラン (`_devImpersonatePlan`) で切り替わるので、
@@ -81582,28 +82541,31 @@ class MindMapProvider extends ChangeNotifier {
     // ★ ストア提出版ではビデオエディターを丸ごと隠す (= ffmpeg.exe を
     //   取りに行けないため)。 hasUnlimitedPages の前に置くこと。
     if (kStoreBuild && pageType == 'videoEditor') return false;
-    if (hasUnlimitedPages) return true;
-    // ── モバイル無料版: 既定の 4 ページ (マップ / ギャラリー / フリーノート /
-    //    ビデオ) が最初から用意され、 それ以外の新規作成は Pro 以上
-    //    (= ユーザー要望)。 ──
-    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) return false;
-    // ── フリーノート (ノート自体の新規作成) は Pro 以上限定
-    //    (= ユーザー要望: ノート内のページはいくらでも増やせるが、 ノートを
-    //    新規に作るには Pro への加入が必要)。 ──
-    if (pageType == 'paint') return false;
-    return pageTypeCount(pageType) < kFreePageLimit;
+    // ★ = ユーザー要望「3 ページ目以降を作成しても Pro 以上でないと開けない
+    //   様にして欲しい」。 プランの線引きを**作る所から開く所へ移した**ので、
+    //   作るのはどのプランでも自由。 開ける枚数は [canOpenPageIndex] が見る。
+    //   (以前はここで「同じ種類は 1 枚まで」「モバイルは新規不可」
+    //    「フリーノートは Pro 以上」 と止めていた)
+    return true;
   }
 
   /// Web の自動操作が使えるか (= ユーザー要望: Pro 以上限定)。
   bool get canUseWebAutomation => isProUnlocked;
 
-  /// PC 内 AI (CLI) とアプリの中のターミナルを使えるか
-  /// (= ユーザー要望: CLI を利用する機能は Pro 以上の特権に)。
+  /// PC 内の CLI (Claude Code / Codex CLI) とアプリの中のターミナルを
+  /// 使えるか。
   ///
-  /// アプリ側ではプランだけを見る。Codex / Gemini / Claude の認証は、一覧の
-  /// 各 CLI がそれぞれ自分のプロバイダーへ行うため、HisatorNotebook 自体への
-  /// Google ログインは要求しない。
-  bool get canUseCliAi => isProUnlocked;
+  /// ★ = ユーザー要望「codexCLI や claudecode は Free 版でも使えるように
+  ///   して欲しい」。 以前は Pro 以上限定 (`isProUnlocked`) だったが、
+  ///   **開放した**。 これらは利用者自身が契約している CLI をこちらの
+  ///   画面から動かすだけで、 こちらの代行サーバーの残高は使わないため。
+  ///   その代わりの線引きが「開けるページ数」 ([kFreeOpenPageLimit])。
+  /// ★ 使えるかどうかの残りの条件は [AgentCli.supported] (デスクトップのみ /
+  ///   ストア版は除く) が持っている。 ここはプランの話だけを見る。
+  /// ★ アプリ側ではプランだけを見る。Codex / Claude の認証は、一覧の
+  ///   各 CLI がそれぞれ自分のプロバイダーへ行うため、HisatorNotebook 自体
+  ///   への Google ログインは要求しない。
+  bool get canUseCliAi => true;
 
   /// プランは足りているのに、 ログインしていないだけか。
   /// 画面側が「加入して」 と「ログインして」 を書き分けるために使う。
@@ -83714,7 +84676,7 @@ class MindMapProvider extends ChangeNotifier {
   ///   待ち時間は最長 3 時間で済む。
   static const int kInquiryDailyLimit = 10;
 
-  /// 数える幅 (この時間ぶんだけ遡って数える)。
+  /// 数える幅 (この時間分だけ遡って数える)。
   static const Duration kInquiryWindow = Duration(hours: 3);
 
   /// 直近 3 時間に送信した問い合わせ数を返す。
@@ -85377,7 +86339,7 @@ class MindMapProvider extends ChangeNotifier {
             // 代行で使うモデル (Gemini / ChatGPT / Claude)。
             'model': _relayModel,
             // 考える深さ (= ユーザー要望: 推論レベルの設定)。
-            'reasoning': _relayReasoning,
+            'reasoning': relayReasoning,
             // 構造化 (JSON) の生成は長くなるので、 呼び出し側が上限を指定する。
             //   指定が無ければ代行サーバー側の既定 (4096) を使う。
             if (maxTokens != null) 'maxTokens': maxTokens,
@@ -85649,7 +86611,7 @@ class MindMapProvider extends ChangeNotifier {
   //
   //    ヘッダーのアイコンを右クリックして選んだ物をそのまま使う。
   //    'cli' の時は、 画面のどの AI 機能もまず PC の CLI に聞く
-  //    (契約しているぶんを使うので、 AI の残高は減らない)。
+  //    (契約している分を使うので、 AI の残高は減らない)。
   String _aiAssistantMode = 'api';
   String get aiAssistantMode => _aiAssistantMode;
   /// ★ Pro 以上でない時は、 控えに 'cli' が残っていても効かせない
@@ -85699,8 +86661,18 @@ class MindMapProvider extends ChangeNotifier {
       // ★ = ユーザー指摘「おまかせは何が開かれるか分からないから辞めて。
       //   Windows なら既定で PowerShell が選ばれているように」。 保存が
       //   無ければ既定 (PowerShell 7 → 5.1 → コマンド プロンプト) を入れる。
-      AgentCli.preferredShellId =
-          saved.isEmpty ? AgentCli.defaultShellId() : saved;
+      // ★ = ユーザー報告「シェルの選択肢から PowerShell の 7 系が消えた」。
+      //   覚えている殻がこのパソコンで見付からないと、 一覧に無い物が選ばれた
+      //   ままになり、 **どの札も光っていないのに端末は別の殻 (cmd) で開く**
+      //   という食い違いが起きていた ([AgentCli.shellLaunch] が黙って落ちる)。
+      //   その時は今動く物へ寄せる。 prefs は書き換えないので、 入れ直せば
+      //   次に立ち上げた時に元の選択へ戻る。
+      //   端末を使えない環境 (モバイル / ストア版) では調べない = 無駄に
+      //   ディスクを見に行かない。
+      final usable = saved.isNotEmpty &&
+          (!AgentCli.supported ||
+              AgentCli.availableShells().any((s) => s.id == saved));
+      AgentCli.preferredShellId = usable ? saved : AgentCli.defaultShellId();
       notifyListeners();
     } catch (_) {}
   }
@@ -85768,7 +86740,7 @@ class MindMapProvider extends ChangeNotifier {
   ///   されてしまう」 への迂回で、 Gemini CLI の Google ログインは CLI 自身が
   ///   127.0.0.1 の待ち受けを立てる形なので必ず止められていたため。
   ///   その後 Gemini CLI は一覧から外した (= API キーでしか使えないなら、
-  ///   「契約しているぶんを使う」 というこの画面の前提に合わない) ので、
+  ///   「契約している分を使う」 というこの画面の前提に合わない) ので、
   ///   渡す物は無くなった。 呼び口は残してあるので、 必要になったら足す。
   Map<String, String> cliAiEnvironment() {
     // ★ Gemini CLI を一覧から外したので、 ここで渡す物はもう無い
@@ -85788,11 +86760,26 @@ class MindMapProvider extends ChangeNotifier {
   /// 実際に答えたモデル (例 `Opus 5`)。 1 回目の返事で分かる。
   String _cliAiModel = '';
 
-  String get cliAiLabel {
-    if (_cliAiName.isEmpty) return t('ai.modeCli');
-    final m = _cliAiModel.isEmpty ? '' : ' · $_cliAiModel';
-    return '${t('ai.modeCli')} ($_cliAiName$m)';
+  /// 今えらんでいる CLI の種類 (選んでいなければ直前に使った物 → Claude Code)。
+  ///
+  /// ★ = ユーザー要望「Codex CLI と ClaudeCode が混ざってしまっているので分けて」。
+  ///   「PC内AI」というひとくくりの言い方をやめ、 どこでもこの種類を名前で出す。
+  AgentCliKind get cliAiKindEnum {
+    for (final k in AgentCliKind.values) {
+      if (k.name == _cliAiKind) return k;
+    }
+    return AgentCli.lastPickKind ?? AgentCliKind.claude;
   }
+
+  /// その CLI の名前 (`Claude Code` / `Codex CLI`)。
+  String get cliAiKindLabel => AgentCliSpec.of(cliAiKindEnum).label;
+
+  String get cliAiLabel {
+    final name = _cliAiName.isEmpty ? cliAiKindLabel : _cliAiName;
+    final m = _cliAiModel.isEmpty ? '' : ' · $_cliAiModel';
+    return '$name$m';
+  }
+
 
   /// 今その CLI がどのアカウントでログインしているか (読めなければ空)。
   ///
@@ -85815,19 +86802,21 @@ class MindMapProvider extends ChangeNotifier {
         _cliAiModel = m;
         notifyListeners();
       }
-      final c = p.getString('cliAiModelChoice') ?? '';
-      if (c != _cliAiModelChoice) {
-        _cliAiModelChoice = c;
-        notifyListeners();
-      }
-      AgentCli.chosenModel = _cliAiModelChoice;
       // どの CLI を使うかの控え (= ユーザー指摘: codex に切り替えたい)。
+      // ★ **モデルより先に**読む。 後にすると、 昔の 1 つだけの控えを
+      //   引き継ぐ時に相手がまだ空で、 おまかせの初期値 (Claude Code) の
+      //   物として書き込んでしまう (= 点検で判明: codex で選んだ luna が
+      //   Claude Code の欄に入る)。
       final k = p.getString('cliAiKind') ?? '';
       if (k != _cliAiKind) {
         _cliAiKind = k;
         notifyListeners();
       }
       AgentCli.preferredPromptKind = _cliAiKind;
+      // ★ モデルと推論の強さは**相手ごと**に覚える (= ユーザー報告:
+      //   luna を選んでも sol になる)。 1 つだけだった昔の控えは、
+      //   いま選んでいる相手の物として引き継ぐ。
+      await _readCliChoiceMaps(p);
     } catch (_) {}
   }
 
@@ -85842,40 +86831,149 @@ class MindMapProvider extends ChangeNotifier {
   Future<void> setCliAiKind(String kindName) async {
     _cliAiKind = kindName;
     AgentCli.preferredPromptKind = kindName;
-    // 種類を変えたらモデルの指定は持ち越さない (相手ごとに候補が違う)。
-    _cliAiModelChoice = '';
-    AgentCli.chosenModel = '';
+    // ★ モデルの指定は**消さない**。 相手ごとに覚えるようになったので
+    //   (= ユーザー報告: luna を選んでも sol)、 戻ってきた時に
+    //   前に選んだ物がそのまま残っている方が正しい。
     _cliAiName = '';
     _cliAiModel = '';
     notifyListeners();
     try {
       final p = await SharedPreferences.getInstance();
       await p.setString('cliAiKind', kindName);
-      await p.remove('cliAiModelChoice');
       await p.remove('cliAiModel');
     } catch (_) {}
     await refreshCliAiName();
   }
 
-  /// PC 内 AI で使うモデルの指定 (空 = CLI の既定に任せる)。
-  String _cliAiModelChoice = '';
-  String get cliAiModelChoice => _cliAiModelChoice;
+  // ── PC 内 AI で使うモデルと推論の強さ (空 = その CLI の設定のまま) ──
+  //
+  //    ★ = ユーザー報告「luna の浅く速くを選んでも sol の xhigh になる」。
+  //      以前は**全部の CLI で 1 つの入れ物を共有**していたので、
+  //      Claude Code の欄で選んだ物が codex にも渡っていた。 相手ごとに
+  //      分けて覚え、 [AgentCli] にも同じ形で渡す。
+  final Map<String, String> _cliModelByKind = {};
+  final Map<String, String> _cliReasoningByKind = {};
 
-  Future<void> setCliAiModelChoice(String id) async {
-    _cliAiModelChoice = id;
-    AgentCli.chosenModel = id;
+  /// その相手に選んでいるモデル (空 = CLI の設定のまま)。
+  String cliModelFor(String kindName) =>
+      (_cliModelByKind[kindName] ?? '').trim();
+
+  /// その相手に選んでいる推論の強さ (空 = CLI の設定のまま)。
+  String cliReasoningFor(String kindName) =>
+      (_cliReasoningByKind[kindName] ?? '').trim();
+
+  /// いま使う相手 (おまかせの時は直前に使った物)。
+  String get activeCliKindName => cliAiKindEnum.name;
+
+  /// 昔からの呼び名 (いま使う相手のモデル)。
+  String get cliAiModelChoice => cliModelFor(activeCliKindName);
+
+  /// 控えを [AgentCli] へ写す (起こす時も 1 回聞く時も、 ここの値を使う)。
+  void _pushCliChoices() {
+    AgentCli.modelByKind
+      ..clear()
+      ..addAll(_cliModelByKind);
+    AgentCli.reasoningByKind
+      ..clear()
+      ..addAll(_cliReasoningByKind);
+  }
+
+  /// 端末を起こす直前に呼ぶ用 (控えが [AgentCli] へ確実に入っている状態に)。
+  void syncCliChoices() => _pushCliChoices();
+
+  /// prefs から種類ごとの控えを読む (昔の 1 つだけの控えも引き継ぐ)。
+  Future<void> _readCliChoiceMaps(SharedPreferences p) async {
+    var changed = false;
+    void readMap(String key, Map<String, String> into) {
+      try {
+        final raw = p.getString(key) ?? '';
+        if (raw.isEmpty) return;
+        final d = jsonDecode(raw);
+        if (d is! Map) return;
+        for (final e in d.entries) {
+          final v = '${e.value}'.trim();
+          if (v.isEmpty) continue;
+          if (into['${e.key}'] != v) {
+            into['${e.key}'] = v;
+            changed = true;
+          }
+        }
+      } catch (_) {}
+    }
+
+    readMap('cliModelByKind', _cliModelByKind);
+    readMap('cliReasoningByKind', _cliReasoningByKind);
+    // ★ その CLI が受け付けない値は捨てる (= 点検で判明: 昔の一覧に
+    //   あった値が残っていると、 端末を開くたびに CLI が断り続ける)。
+    //   捨てた時は「CLI の設定のまま」 に戻るだけなので害は無い。
+    _cliReasoningByKind.removeWhere((k, v) {
+      for (final kind in AgentCliKind.values) {
+        if (kind.name == k) return !AgentCli.reasoningChoices(kind).contains(v);
+      }
+      return true;
+    });
+    // ★ 昔の控え (相手を分けていなかった頃) を、 その頃使っていた相手の
+    //   物として**1 回だけ**拾う。 残したままにすると、 相手を変えるたびに
+    //   同じ値が次の CLI へも撒かれる (= 点検で判明)。
+    // ★ 相手がまだ分からない時 (どの CLI も見つかっていない起動直後など)
+    //   は引き継がない。 分からないまま拾うと、 使っていない CLI の物と
+    //   して書き込んだ上で旧控えを消してしまう (= 点検で判明)。
+    final legacy = (_cliAiKind.trim().isNotEmpty || AgentCli.lastPickKind != null)
+        ? (p.getString('cliAiModelChoice') ?? '').trim()
+        : '';
+    if (legacy.isNotEmpty) {
+      if (_cliModelByKind[activeCliKindName] == null) {
+        _cliModelByKind[activeCliKindName] = legacy;
+        changed = true;
+      }
+      try {
+        await p.setString('cliModelByKind', jsonEncode(_cliModelByKind));
+        // 書けた時だけ消す (書けずに消すと、 次の起動で行方不明になる)。
+        await p.remove('cliAiModelChoice');
+      } catch (_) {}
+    }
+    _pushCliChoices();
+    if (changed) notifyListeners();
+  }
+
+  Future<void> setCliAiModelChoice(String id, {String forKind = ''}) async {
+    final kind = forKind.trim().isEmpty ? activeCliKindName : forKind.trim();
+    if (id.trim().isEmpty) {
+      _cliModelByKind.remove(kind);
+    } else {
+      _cliModelByKind[kind] = id.trim();
+    }
     // 指定を変えたら、 札のモデル名も一度忘れる (次の返事で更新される)。
-    _cliAiModel = '';
+    if (kind == activeCliKindName) _cliAiModel = '';
+    _pushCliChoices();
     notifyListeners();
     try {
       final p = await SharedPreferences.getInstance();
-      await p.setString('cliAiModelChoice', id);
-      await p.remove('cliAiModel');
+      await p.setString('cliModelByKind', jsonEncode(_cliModelByKind));
+      if (kind == activeCliKindName) await p.remove('cliAiModel');
+    } catch (_) {}
+  }
+
+  /// 推論の強さを決める (値は [AgentCli.reasoningChoices] の生の名前)。
+  Future<void> setCliReasoning(String level, {String forKind = ''}) async {
+    final kind = forKind.trim().isEmpty ? activeCliKindName : forKind.trim();
+    final v = level.trim();
+    // 同じ物をもう一度押したら「CLI の設定のまま」 へ戻す。
+    if (v.isEmpty || _cliReasoningByKind[kind] == v) {
+      _cliReasoningByKind.remove(kind);
+    } else {
+      _cliReasoningByKind[kind] = v;
+    }
+    _pushCliChoices();
+    notifyListeners();
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setString('cliReasoningByKind', jsonEncode(_cliReasoningByKind));
     } catch (_) {}
   }
 
   // ── PC 内 AI で使ったトークン (= ユーザー要望: 消費量を出して欲しい) ──
-  //    こちらは契約しているぶんを使うので「残り」 は分からない。 分かるのは
+  //    こちらは契約している分を使うので「残り」 は分からない。 分かるのは
   //    「この起動で使った量」 だけなので、 それを出す。
   int _cliInTokens = 0;
   int _cliOutTokens = 0;
@@ -86006,30 +87104,42 @@ class MindMapProvider extends ChangeNotifier {
     return out;
   }
 
+  /// [engineOverride] … この 1 回だけ相手を変える ('api' / 'cli'、 空 =
+  /// アプリ全体の設定のまま)。 [cliKindOverride] … 'claude' / 'codex'。
+  ///
+  /// ★ = ユーザー要望「下のチャット欄だけブラウザ版に渡すとか独立で変えられる
+  ///   ように」。 以前は全体の設定を一時的に書き換えていたが、 2 つの
+  ///   問い合わせが重なると互いを踏むので、 **引数で 1 回きり**渡す形にした。
   Future<String> askAi(String prompt,
       {int? maxTokensOverride,
       Duration? timeoutOverride,
       List<AiInputImage>? images,
-      bool allowFiles = false}) async {
+      bool allowFiles = false,
+      String engineOverride = '',
+      String cliKindOverride = ''}) async {
+    final wantCli = engineOverride.isEmpty
+        ? useCliAi
+        : (engineOverride == 'cli' && AgentCli.supported && canUseCliAi);
     // ★ PC の CLI に頼む設定なら、 まずそちらへ (= ユーザー要望)。
     //   写真も渡せるようになった (= ユーザー要望: codex CLI や Claude Code に
     //   画像を渡せるように)。 一度ファイルへ書き出して、 その道を渡す。
     //   書き出せなかった時だけ、 今までどおり API へ回す。
-    final cliImages = (useCliAi && images != null && images.isNotEmpty)
+    final cliImages = (wantCli && images != null && images.isNotEmpty)
         ? await _writeImagesForCli(images)
         : const <String>[];
     final cliCanTakeImages =
         images == null || images.isEmpty || cliImages.isNotEmpty;
-    if (useCliAi && cliCanTakeImages) {
-      // ★ 考える深さを渡す (= ユーザー要望: API より遅すぎる)。 画面で
-      //   「低い」 を選んでいれば、 CLI 側もそれで動く。
-      AgentCli.chosenReasoning = reasoningFor('cli');
+    if (wantCli && cliCanTakeImages) {
+      // ★ 考える深さ (推論) は相手ごとに覚えてあるので
+      //   ([AgentCli.reasoningByKind])、 走る相手が決まった所で
+      //   [AgentCli] 側が選ぶ。
       final out = await AgentCli.runPrompt(prompt,
           timeout: timeoutOverride,
           guide: languageInstructionForAi().trim(),
           allowFiles: allowFiles,
           imagePaths: cliImages,
           continueDir: _cliContinueDir,
+          preferKind: cliKindOverride,
           extraEnvironment: cliAiEnvironment());
       _rememberCliModel();
       _addCliUsage();
@@ -86516,7 +87626,6 @@ Art direction:
       // ★ 形 (オブジェクトか配列か) は**指定しない**。 呼び出し側の文面が
       //   既に決めているので、 ここで「オブジェクト 1 つ」 と言い足すと
       //   配列を求めている所 (スライド生成など) と食い違う (= 点検で判明)。
-      AgentCli.chosenReasoning = reasoningFor('cli');
       final out = await AgentCli.runPrompt(
           '$prompt\n\n※ 返事は JSON だけ。 前置きも囲み (```) も付けない。',
           guide: languageInstructionForAi().trim(),
@@ -87071,10 +88180,17 @@ $docGuide$instruction
       }
     }
 
+    // ★ = 点検で判明: `addPage` は「鍵の掛かる位置なら開かない」 ように
+    //   なったので、 `_currentPageIndex` をそのまま使うと**今開いている
+    //   ページへ AI の木が流れ込む**。 作った物の位置を自分で数える。
+    var pageIdx = _currentPageIndex;
     if (!addToCurrentPage) {
+      final before = _pages.length;
       addPage(name: pageTitle);
+      if (_pages.length > before) {
+        pageIdx = _pages.length - 1; // 作った物は必ず末尾
+      }
     }
-    final pageIdx = _currentPageIndex;
 
     const minVerticalGap = 40.0;
     const interRootGap = 80.0; // ルートツリー間に追加で空ける
@@ -90447,6 +91563,10 @@ $cleanQ
     unawaited(_loadCodexSandbox());
     unawaited(_loadTerminalShellId());
     unawaited(_loadAiEditDir());
+    // ★ 前回、 端末を起こそうとしたまま戻って来なかったか (= セキュリティ
+    //   ソフトにアプリごと撃たれたか) を読む。 同期で済む
+    //   (紙は %LOCALAPPDATA% の小さなテキスト 1 枚)。
+    AgentCli.loadBlockedShell();
     // npm を使わずに入れた CLI の置き場を思い出す。
     unawaited(AgentCli.loadManualInstalls());
     // どのアカウントで CLI を使うか (= ユーザー要望: 複数垢の切り替え)。
@@ -95651,7 +96771,7 @@ $cleanQ
     if (save) await _savePublishedPages();
     // 管理用の記録。 失敗しても共有自体 (セッション) は成立するので握り潰す。
     // ★ 結果を見ていないので待たない (= ユーザー要望: まとめて共有が遅い)。
-    //   ここを待つと 1 枚ごとに 1 往復ぶん止まっていた。
+    //   ここを待つと 1 枚ごとに 1 往復分止まっていた。
     unawaited(() async {
     try {
       await _lc.patch(
@@ -96137,7 +97257,7 @@ $cleanQ
   /// 共同編集を終了する (自分の参加者情報も消す)。
   Future<void> stopLiveSession() async {
     // ★ 閉じる前に未送信分を送り切る (= 検証で判明: 直前の編集が最大 1.2 秒
-    //   ぶん相手に届かないまま消えていた)。 ページ切替でもここを通る。
+    //   分相手に届かないまま消えていた)。 ページ切替でもここを通る。
     if (_liveCode != null && liveCanEdit && !_disposed) {
       try {
         await _livePush();
@@ -99362,6 +100482,11 @@ $cleanQ
   /// 他インスタンスの書き込みを一定間隔で見張る。
   void _startCrossInstanceWatch() {
     if (kIsWeb) return;
+    // ★ 道具だけの窓 (クリック手順 / CLI の単独窓) は見回りに入れない
+    //   (= ユーザー要望で足した単独窓。 ページを一切見ない窓が、 本体の
+    //    編集を merge しに行く必要はない。 入れると閉じる時の書き戻しで
+    //    本体の変更と競う)。
+    if (externalToolWindow) return;
     // ★ 以前は「もう 1 つ立ち上げた窓」 (fastStartWindow) では動かして
     //   いなかった。 Windows の標準の設定ストアが**プロセスごとに 1 回しか**
     //   設定ファイルを読まず (shared_preferences_windows の
@@ -100244,7 +101369,8 @@ $cleanQ
   void addPage({String? name, String? folderId}) {
     final page = _addDefaultPage(name: name, folderId: folderId);
     if (page == null) return;
-    _currentPageIndex = _pages.length - 1;
+    // ★ 鍵が掛かる枚数なら開かない (= ユーザー要望: 作成はできるが開けない)。
+    _openAfterCreate(page);
     _selectedNodeId = null;
     _saveToStorage();
     notifyListeners();
@@ -100261,7 +101387,8 @@ $cleanQ
     final page =
         _addDefaultPage(name: name, folderId: folderId, pageType: 'bookshelf');
     if (page == null) return;
-    _currentPageIndex = _pages.length - 1;
+    // ★ 鍵が掛かる枚数なら開かない (= ユーザー要望: 作成はできるが開けない)。
+    _openAfterCreate(page);
     _selectedNodeId = null;
     _saveToStorage();
     notifyListeners();
@@ -100276,7 +101403,8 @@ $cleanQ
     final page =
         _addDefaultPage(name: name, folderId: folderId, pageType: 'paint');
     if (page == null) return;
-    _currentPageIndex = _pages.length - 1;
+    // ★ 鍵が掛かる枚数なら開かない (= ユーザー要望: 作成はできるが開けない)。
+    _openAfterCreate(page);
     _selectedNodeId = null;
     _saveToStorage();
     notifyListeners();
@@ -100293,7 +101421,8 @@ $cleanQ
     final page = _addDefaultPage(
         name: name, folderId: folderId, pageType: 'videoEditor');
     if (page == null) return;
-    _currentPageIndex = _pages.length - 1;
+    // ★ 鍵が掛かる枚数なら開かない (= ユーザー要望: 作成はできるが開けない)。
+    _openAfterCreate(page);
     _selectedNodeId = null;
     _saveToStorage();
     notifyListeners();
@@ -100312,7 +101441,8 @@ $cleanQ
     final page =
         _addDefaultPage(name: name, folderId: folderId, pageType: 'markdown');
     if (page == null) return;
-    _currentPageIndex = _pages.length - 1;
+    // ★ 鍵が掛かる枚数なら開かない (= ユーザー要望: 作成はできるが開けない)。
+    _openAfterCreate(page);
     _selectedNodeId = null;
     _saveToStorage();
     notifyListeners();
@@ -100332,7 +101462,8 @@ $cleanQ
     final page = _addDefaultPage(
         name: name, folderId: folderId, pageType: 'automation');
     if (page == null) return;
-    _currentPageIndex = _pages.length - 1;
+    // ★ 鍵が掛かる枚数なら開かない (= ユーザー要望: 作成はできるが開けない)。
+    _openAfterCreate(page);
     _selectedNodeId = null;
     _saveToStorage();
     notifyListeners();
@@ -100348,7 +101479,8 @@ $cleanQ
     final page =
         _addDefaultPage(name: name, folderId: folderId, pageType: 'document');
     if (page == null) return;
-    _currentPageIndex = _pages.length - 1;
+    // ★ 鍵が掛かる枚数なら開かない (= ユーザー要望: 作成はできるが開けない)。
+    _openAfterCreate(page);
     _selectedNodeId = null;
     _saveToStorage();
     notifyListeners();
@@ -100364,6 +101496,13 @@ $cleanQ
     // ignore: discarded_futures
     _pollOtherInstances();
     if (index < 0 || index >= _pages.length) return;
+    // ★ = ユーザー要望「3 ページ目以降は Pro 以上でないと開けない」。
+    //   ここは開く入口の大半 (drawer / Ctrl+1〜9 / 埋め込みリンク / 検索 /
+    //   MCP など約 26 か所) が通る所なので、 **副作用の前**で止める。
+    if (!canOpenPageIndex(index)) {
+      _notifyPageOpenBlocked();
+      return;
+    }
     _currentPageIndex = index;
     _selectedNodeId = null;
     // ギャラリーページに切り替えたら整列して格子キャッシュを最新化する。
@@ -100429,7 +101568,8 @@ $cleanQ
       final shortcutId = await HomeShortcutService.initialPageId();
       if (shortcutId != null && shortcutId.isNotEmpty) {
         final sidx = _pages.indexWhere((p) => p.id == shortcutId);
-        if (sidx >= 0) {
+        // ★ 鍵の掛かったページは復元しない (= ユーザー要望)。 先頭のままにする。
+        if (sidx >= 0 && canOpenPageIndex(sidx)) {
           _currentPageIndex = sidx;
           notifyListeners();
           return;
@@ -100439,7 +101579,7 @@ $cleanQ
       final saved = prefs.getString('last_opened_page_id');
       if (saved == null || saved.isEmpty) return;
       final idx = _pages.indexWhere((p) => p.id == saved);
-      if (idx >= 0 && idx < _pages.length) {
+      if (idx >= 0 && idx < _pages.length && canOpenPageIndex(idx)) {
         _currentPageIndex = idx;
         notifyListeners();
       }
@@ -100451,6 +101591,11 @@ $cleanQ
   void openPageById(String pageId) {
     final idx = _pages.indexWhere((p) => p.id == pageId);
     if (idx >= 0 && idx < _pages.length) {
+      // ★ ショートカットから直接開く道も、 同じ決まりで止める (= ユーザー要望)。
+      if (!canOpenPageIndex(idx)) {
+        _notifyPageOpenBlocked();
+        return;
+      }
       _currentPageIndex = idx;
       _selectedNodeId = null;
       notifyListeners();
@@ -100537,7 +101682,7 @@ $cleanQ
 
   // ── 他のページへの転送を Ctrl+Z で戻す (= ユーザー報告) ────────────────
   //
-  //   転送は 2 枚のページを同時に変えるので、 ページ 1 枚ぶんしか持てない
+  //   転送は 2 枚のページを同時に変えるので、 ページ 1 枚分しか持てない
   //   `_undoStacks` では戻せない。 ページ削除の復元と同じ「履歴の外側の
   //   1 発枠」 として、 両ページの控えを丸ごと持つ。
 
@@ -100575,7 +101720,7 @@ $cleanQ
       targetSnap:
           _PageSnapshot.from(target, _namedGroups[target.id] ?? const {}),
       // ★ 升目はページ別ではなくアプリ全体で 1 つの表だが、 **この 2 枚に
-      //   居る要素のぶんだけ**控える (= 点検で判明: 丸ごと控えて丸ごと
+      //   居る要素の分だけ**控える (= 点検で判明: 丸ごと控えて丸ごと
       //   書き戻すと、 転送の後に別のギャラリーで並べ替えた分まで巻き戻る)。
       shelfCells: {
         for (final id in [...source.nodes.keys, ...target.nodes.keys])
@@ -100636,7 +101781,7 @@ $cleanQ
     put<String>(_groupLayoutModes, rec.groupLayoutModes, (v) => v);
     put<List<double>>(
         _groupPadding, rec.groupPadding, (v) => List<double>.from(v));
-    // ★ 升目は、 この 2 枚に居る要素のぶんだけ書き戻す (= 点検で判明:
+    // ★ 升目は、 この 2 枚に居る要素の分だけ書き戻す (= 点検で判明:
     //   表を丸ごと入れ替えると、 他のギャラリーで並べ替えた分まで戻る)。
     final touched = <String>{
       ..._pages[si].nodes.keys,
@@ -100720,9 +101865,17 @@ $cleanQ
       }
       _autoBlankPageId = null;
     }
-    _currentPageIndex = _pages.indexWhere((e) => e.id == pageId);
-    if (_currentPageIndex < 0) _currentPageIndex = insertAt;
-    _currentPageIndex = _clampPageIndex(_currentPageIndex);
+    // ★ = 点検で判明: 「消して元に戻す」 が鍵を素通りする抜け道になっていた。
+    //   戻す事自体は通すが、 鍵の掛かる位置なら開かない。
+    final restoredAt = _pages.indexWhere((e) => e.id == pageId);
+    if (restoredAt >= 0 && !canOpenPage(pageId)) {
+      _notifyPageOpenBlocked();
+      _currentPageIndex = _clampPageIndex(_currentPageIndex);
+    } else {
+      _currentPageIndex = restoredAt;
+      if (_currentPageIndex < 0) _currentPageIndex = insertAt;
+      _currentPageIndex = _clampPageIndex(_currentPageIndex);
+    }
     _selectedNodeId = null;
     if (record.undoStack != null) {
       _undoStacks[pageId] = List<_PageSnapshot>.from(record.undoStack!);
@@ -100937,6 +102090,8 @@ $cleanQ
     if (to == oldIndex) return;
     final f = _folders.removeAt(oldIndex);
     _folders.insert(to, f);
+    // ★ 並びが変わると鍵の順番も変わる (= 点検で判明)。
+    _ensureCurrentPageOpenable();
     _saveFoldersToStorage();
     notifyListeners();
   }
@@ -100963,6 +102118,10 @@ $cleanQ
       final newCurrent = _pages.indexWhere((p) => p.id == currentId);
       if (newCurrent >= 0) _currentPageIndex = newCurrent;
     }
+    // ★ = ユーザー要望「3 ページ目以降は Pro 以上でないと開けない」。
+    //   並べ替えで、 今見ているページが鍵の掛かる位置へ下がることがある。
+    //   その時は先頭へ戻す (鍵の向こうを見たままにしない)。
+    _ensureCurrentPageOpenable();
     _saveToStorage();
     notifyListeners();
   }
@@ -100989,6 +102148,23 @@ $cleanQ
     final root = _dataRootDir?.trim();
     if (root != null && root.isNotEmpty) return root;
     return null;
+  }
+
+  /// そのページがディスクに出ている .json の道筋 (出し先が無ければ null)。
+  ///
+  /// ★ ファイル名の決め方は [autoSavePageIfLinked] / [syncFolderToLinkedDir]
+  ///   と**必ず同じ**にする事。 ずれると在りもしないファイルを指す。
+  /// ★ ここでは実在を確かめない (メニューを組む時に呼ぶので、 ディスクには
+  ///   触らない)。 在るかどうかは呼ぶ側が見る。
+  String? diskFilePathForPage(String pageId) {
+    final p = _pages.firstWhere((e) => e.id == pageId,
+        orElse: () => MindMapPage(id: '', name: ''));
+    if (p.id.isEmpty) return null;
+    final dir = linkedDirectoryForPage(pageId);
+    if (dir == null || dir.trim().isEmpty) return null;
+    var safeName = p.name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
+    if (safeName.isEmpty) safeName = p.id;
+    return '$dir${Platform.pathSeparator}$safeName.json';
   }
 
   /// 新規フォルダーを作成して、その ID を返す
@@ -101487,6 +102663,8 @@ $cleanQ
       return;
     }
     p.folderId = folderId;
+    // ★ 並びが変わると鍵の順番も変わる (= 点検で判明)。
+    _ensureCurrentPageOpenable();
     _saveToStorage();
     notifyListeners();
     // 移動先が連動フォルダーなら、そのページもディスクに書き出す
@@ -101510,6 +102688,8 @@ $cleanQ
       changed = true;
     }
     if (changed) {
+      // ★ 並びが変わると鍵の順番も変わる (= 点検で判明)。
+      _ensureCurrentPageOpenable();
       _saveToStorage();
       notifyListeners();
       // 移動先が連動フォルダーなら、移動した全ページをディスクに書き出す
@@ -102130,7 +103310,14 @@ $cleanQ
     // 「作成しました」 とだけ言われる事故を防ぐ)。
     if (pageId.trim().isEmpty) return _pages.isEmpty ? null : currentPage;
     for (final p in _pages) {
-      if (p.id == pageId) return p;
+      if (p.id == pageId) {
+        // ★ = 点検で判明: CLI / アシスタントを Free へ開放したので、
+        //   道具 (MCP) から鍵の掛かったページの中身を読み書きできてしまうと、
+        //   開けないという線引きが意味をなさない。 ここは MCP の道具が
+        //   ページを引く唯一の口 (58 か所) なので、 ここで止める。
+        if (!canOpenPage(p.id)) return null;
+        return p;
+      }
     }
     return null;
   }
@@ -103463,22 +104650,14 @@ $cleanQ
     return b.applyEdits(edits);
   }
 
-  /// 直近に MCP から消したページの時刻 (暴走の歯止め用)。
-  final List<DateTime> _mcpRecentPageDeletes = [];
-
-  /// ひと続きの作業で MCP から消してよいページ数と、 その「ひと続き」の幅。
-  /// = ユーザー報告: 「このページ消して」 と頼んだのに、 一覧を上から順に
-  ///   消していって最後の 1 枚しか残らなかった。 説明文だけでは事故を
-  ///   防ぎきれないので、 消し過ぎそのものを止める。
-  static const int _kMcpDeleteBurstLimit = 2;
-  static const Duration _kMcpDeleteBurstWindow = Duration(seconds: 90);
-
-  /// 歯止めを外す。 利用者から新しい指示が来た時 (= 改めて頼まれた時) だけ。
-  void mcpResetDeleteBrake() => _mcpRecentPageDeletes.clear();
-
   /// ページを削除する (= ユーザー要望: 明示的に頼んだら消せるように)。
   /// 最後の 1 枚は消さない (アプリが空になるため)。
   /// 成功なら null、 失敗ならその理由 (AI にそのまま渡す文面) を返す。
+  ///
+  /// ★ = ユーザー要望「90 秒で 2 ページまでという制限はやめて上限を撤廃」。
+  ///   以前は短い間に消せる枚数に歯止めを掛けていたが、 まとめて片付けたい
+  ///   時に邪魔になるため撤廃した。 消し過ぎの防止は、 消した物を後から
+  ///   戻せる控え (deletePageBackup) と、 道具の説明文に任せる。
   Future<String?> mcpDeletePage(String pageId) async {
     final i = _pages.indexWhere((p) => p.id == pageId);
     if (i < 0) {
@@ -103487,16 +104666,6 @@ $cleanQ
     }
     // ★ 最後の 1 枚でも消せる (= ユーザー要望)。
     //   消した後は自動で白紙が 1 枚置かれる。
-    final now = DateTime.now();
-    _mcpRecentPageDeletes
-        .removeWhere((t) => now.difference(t) > _kMcpDeleteBurstWindow);
-    if (_mcpRecentPageDeletes.length >= _kMcpDeleteBurstLimit) {
-      return 'refused: ${_mcpRecentPageDeletes.length} pages were already '
-          'deleted moments ago, so this looks like deleting more than was '
-          'asked. Stop deleting, tell the user exactly which pages are gone, '
-          'and let them confirm before any further deletion.';
-    }
-    _mcpRecentPageDeletes.add(now);
     deletePage(i);
     return null;
   }
@@ -103873,6 +105042,11 @@ $cleanQ
     const known = {'bookshelf', 'paint', 'videoEditor', 'document', 'markdown'};
     final t = known.contains(type) ? type : 'normal';
     if (!canCreatePageType(t)) return null;
+    // ★ = 点検で判明: 鍵の掛かる枚数で作ると、 道具 (MCP) には id を返すのに
+    //   [mcpPageById] が null を返すので、 以後の書き込みが全部
+    //   「ページが見つかりません」 になる。 しかも利用者が何も触っていないのに
+    //   プラン案内のモーダルが開く。 画面側の作成口と同じく、 作る前に断る。
+    if (wouldNewPageBeLocked) return null;
     switch (t) {
       case 'bookshelf':
         addBookshelfPage(name: name, folderId: dest);
@@ -104519,11 +105693,32 @@ $cleanQ
     _paintSelectHandler = h;
   }
 
+  /// prefs に置いた本文 (paint_ / document_ 等) を読む。
+  /// 空に見えた時だけ、 1 回だけ読み直して確かめる。
+  ///
+  /// ★ = 動作検証レポート 2026-09-24 の不具合 1 / 2 の共通の原因。
+  ///   shared_preferences は Dart 側に控え (_preferenceCache) を持っていて、
+  ///   `reload()` はそれを**丸ごと入れ替える**。 このアプリはページ JSON を
+  ///   保存するたび (_writeCoordinatedPageStorage) に reload() を呼ぶので、
+  ///   MCP が本文を書いた直後にそれが挟まると、 書いたばかりの中身が控えから
+  ///   消えて「空」 に見える (ファイルには既に書けている)。
+  ///   空に見えた時だけ読み直せば、 本当に空なのか、 控えが入れ替わった
+  ///   だけなのかを区別できる。 読み直しは高く付くので、 空の時だけ払う。
+  Future<String> _readBodyPrefFresh(
+      SharedPreferences prefs, String key) async {
+    final raw = prefs.getString(key) ?? '';
+    if (raw.trim().isNotEmpty) return raw;
+    try {
+      await prefs.reload();
+    } catch (_) {}
+    return prefs.getString(key) ?? '';
+  }
+
   /// paint_<pageId> の中身を読む (無ければ null)。
   Future<dynamic> _mcpPaintBody(String pageId) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString('paint_$pageId') ?? '';
+      final raw = await _readBodyPrefFresh(prefs, 'paint_$pageId');
       if (raw.trim().isEmpty) return null;
       return jsonDecode(raw);
     } catch (_) {
@@ -104738,6 +105933,51 @@ $cleanQ
     return true;
   }
 
+  /// バインダー / タブを消す。
+  ///
+  /// = ユーザー要望「作り終わったら下書きは削除して」。 これまで paint に
+  ///   消す道具が無かったので、 AI は作業用に作ったタブを片付けられず
+  ///   置き去りにするしかなかった (だから「下書き」 が残っていた)。
+  ///
+  /// [tab] を渡せばそのタブ 1 枚、 [binder] だけならバインダーごと。
+  /// 最後の 1 枚 / 最後のバインダーは残す (空のノートは画面が開けない)。
+  /// 戻り値は消した物の名前。 消せなかった時は null。
+  Future<String?> mcpDeletePaintItem(String pageId,
+      {int? binder, int? tab}) async {
+    final page = mcpPageById(pageId);
+    if (page == null || page.pageType != 'paint') return null;
+    final body = await _mcpPaintBody(pageId);
+    final binders = _mcpPaintBinders(body);
+    if (binders == null || binders.isEmpty) return null;
+    final bi = binder ?? ((body['noteSel'] as num?)?.toInt() ?? 0);
+    if (bi < 0 || bi >= binders.length) return null;
+    final note = binders[bi];
+    if (note is! Map) return null;
+    final String gone;
+    if (tab == null) {
+      if (binders.length <= 1) return null;
+      gone = '${note['n'] ?? ''}';
+      binders.removeAt(bi);
+      var sel = (body['noteSel'] as num?)?.toInt() ?? 0;
+      if (sel > bi) sel -= 1;
+      if (sel >= binders.length) sel = binders.length - 1;
+      body['noteSel'] = sel < 0 ? 0 : sel;
+    } else {
+      final pages = note['pages'];
+      if (pages is! List || tab < 0 || tab >= pages.length) return null;
+      if (pages.length <= 1) return null;
+      final t = pages[tab];
+      gone = (t is Map) ? '${t['n'] ?? ''}' : '';
+      pages.removeAt(tab);
+      var sel = (note['sel'] as num?)?.toInt() ?? 0;
+      if (sel > tab) sel -= 1;
+      if (sel >= pages.length) sel = pages.length - 1;
+      note['sel'] = sel < 0 ? 0 : sel;
+    }
+    await _mcpSavePaintBody(pageId, body);
+    return gone;
+  }
+
   ({dynamic doc, Map<dynamic, dynamic> sheet}) _mcpPaintSheetOf(
       dynamic decoded) {
     Map<dynamic, dynamic>? sheet;
@@ -104852,7 +106092,15 @@ $cleanQ
       final cellW = (paperW * 0.86 / cols).clamp(46.0, 170.0);
       final cellH = (paperH * 0.55 / rowCount).clamp(26.0, 46.0);
       final x0 = math.max(24.0, (paperW - cellW * cols) / 2);
-      final y0 = math.max(40.0, paperH * 0.07);
+      // ★ 既に書かれている物の下へ置く (= ユーザー報告: レイアウトが崩れる)。
+      //   以前は紙の上端 7% 決め打ちだったので、 文字を書いた紙に表を置くと
+      //   本文の上に重なっていた。 ただし紙からは出さない (出すと見えない)。
+      final bodyBottom = _mcpPaintContentBottom(sheet);
+      final top0 = math.max(40.0, paperH * 0.07);
+      final maxTop = math.max(top0, paperH - cellH * rowCount - 24);
+      final y0 = bodyBottom == null
+          ? top0
+          : math.min(maxTop, math.max(top0, bodyBottom + 24));
 
       final shapes = (sheet['sh'] is List) ? sheet['sh'] as List : <dynamic>[];
       final texts = (sheet['t'] is List) ? sheet['t'] as List : <dynamic>[];
@@ -104923,7 +106171,7 @@ $cleanQ
         for (var c = 0; c < cols; c++) {
           final v = c < rows[r].length ? rows[r][c].trim() : '';
           if (v.isEmpty) continue;
-          // 幅からはみ出さない程度に切る (全角を 2 文字ぶんとして数える)。
+          // 幅からはみ出さない程度に切る (全角を 2 文字分として数える)。
           final maxChars = math.max(3, (cellW / (fontSize * 0.62)).floor());
           final shown = v.length > maxChars
               ? '${v.substring(0, math.max(1, maxChars - 1))}…'
@@ -104976,6 +106224,125 @@ $cleanQ
     'b4p': (976, 1378),
   };
 
+  /// 紙 1 枚の寸法 (分からなければ A4 縦)。
+  static (double, double) _mcpPaintPaperOf(Map<dynamic, dynamic> sheet) {
+    final sz = '${sheet['sz'] ?? 'a4p'}';
+    if (sz == 'custom') {
+      return (
+        (sheet['cw'] as num?)?.toDouble() ?? 1000.0,
+        (sheet['ch'] as num?)?.toDouble() ?? 1000.0,
+      );
+    }
+    return _kMcpPaperSizes[sz] ?? (794.0, 1123.0);
+  }
+
+  /// その紙に置く文字 1 行の高さ (罫線があれば罫線の間隔に合わせる)。
+  static double _mcpPaintLineH(Map<dynamic, dynamic> sheet, double fontSize) =>
+      canvasTextLineHeight(fontSize, (sheet['rule'] as num?)?.toDouble() ?? 0.0);
+
+  /// その紙に既に置かれている物の**一番下**。 何も無ければ null。
+  ///
+  /// ★ 「既にある文字の**個数** × 44px」 で位置を決めていたのが
+  ///   重なりの原因だった (= ユーザー報告: 本文が同じ所に重なって読めない)。
+  ///   実際に描かれている下端を測って、 その下から書き始める。
+  ///   (画面側 _embedExplanationOnSheet と同じ考え方)
+  static double? _mcpPaintContentBottom(Map<dynamic, dynamic> sheet) {
+    double? bottom;
+    void bump(double v) {
+      if (bottom == null || v > bottom!) bottom = v;
+    }
+
+    final tl = sheet['t'];
+    if (tl is List) {
+      for (final e in tl) {
+        if (e is! Map) continue;
+        final es = (e['s'] as num?)?.toDouble() ?? 22.0;
+        // 文字要素は中に改行を持てる (= 何行分の高さか数える)。
+        final n = '${e['t'] ?? ''}'.split('\n').length;
+        bump(((e['y'] as num?)?.toDouble() ?? 0) + n * _mcpPaintLineH(sheet, es));
+      }
+    }
+    final il = sheet['im'];
+    if (il is List) {
+      for (final e in il) {
+        // 画像は 'l','t','w','h' (t = 上端。 文字の 't' とは別物)。
+        if (e is! Map) continue;
+        bump(((e['t'] as num?)?.toDouble() ?? 0) +
+            ((e['h'] as num?)?.toDouble() ?? 0));
+      }
+    }
+    final shl = sheet['sh'];
+    if (shl is List) {
+      for (final e in shl) {
+        if (e is! Map) continue;
+        bump(math.max((e['ay'] as num?)?.toDouble() ?? 0,
+            (e['by'] as num?)?.toDouble() ?? 0));
+      }
+    }
+    final sl = sheet['s'];
+    if (sl is List) {
+      for (final e in sl) {
+        if (e is! Map) continue;
+        final pts = e['p'];
+        if (pts is! List) continue;
+        for (final p in pts) {
+          if (p is List && p.length >= 2) {
+            bump((p[1] as num?)?.toDouble() ?? 0);
+          }
+        }
+      }
+    }
+    // 文書の層 (Quill) がある紙は、 打たれた行数から下端を見積もる
+    // (画面側の _kPaintDocPadT / _paintDocLineH と同じ寸法)。
+    final doc = sheet['doc'];
+    if (doc is List && doc.isNotEmpty) {
+      var lines = 0;
+      for (final op in doc) {
+        if (op is Map && op['insert'] is String) {
+          lines += (op['insert'] as String).split('\n').length - 1;
+        }
+      }
+      final rule = (sheet['rule'] as num?)?.toDouble() ?? 0;
+      final dLineH = rule > 0 ? math.max(rule, 17.6) : 30.0;
+      bump((rule > 0 ? rule : 48.0) + (lines + 1) * dLineH);
+    }
+    return bottom;
+  }
+
+  /// 続きを書く紙を返す。 次のタブが白紙ならそこへ、 無ければ今の紙と
+  /// 同じ体裁で 1 枚足す (名前は「〜 (2)」)。 続けられない形なら null。
+  ///
+  /// = ユーザー要望「入り切らない場合は適切な位置で区切って複数ページに」。
+  ({Map<dynamic, dynamic> sheet, int index})? _mcpPaintNextSheet(
+      List? pages, int index, Map<dynamic, dynamic> template) {
+    if (pages == null || index < 0 || index >= pages.length) return null;
+    if (index + 1 < pages.length) {
+      final nx = pages[index + 1];
+      if (nx is Map && _mcpPaintContentBottom(nx) == null) {
+        return (sheet: nx, index: index + 1);
+      }
+    }
+    final base = '${template['n'] ?? ''}'.trim();
+    final m = RegExp(r'^(.*) \((\d+)\)$').firstMatch(base);
+    final root = (m == null ? base : m.group(1)!).trim();
+    final used = <String>{
+      for (final p in pages)
+        if (p is Map) '${p['n'] ?? ''}',
+    };
+    var n = (m == null ? 1 : (int.tryParse(m.group(2)!) ?? 1)) + 1;
+    while (used.contains('$root ($n)')) {
+      n++;
+    }
+    final made = _mcpNewPaintTab(
+        root.isEmpty ? 'Tab ($n)' : '$root ($n)', '${template['sz'] ?? 'a4p'}');
+    if (template['cw'] != null) made['cw'] = template['cw'];
+    if (template['ch'] != null) made['ch'] = template['ch'];
+    if (template['rule'] != null) made['rule'] = template['rule'];
+    // 今の紙のすぐ後ろへ入れる (前に入れると選んでいる番号がずれる)。
+    pages.insert(index + 1, made);
+    return (sheet: made, index: index + 1);
+  }
+
   /// 紙に文字を 1 行足す (中身はまとめ書きの 1 行版)。
   Future<bool> mcpAddPaintText(
     String pageId,
@@ -105005,6 +106372,9 @@ $cleanQ
   ///   遅延保存が途中の (古い) 中身を書き戻し、 足した行が消えていた。
   ///   読み書きを **1 回**にまとめれば、 途中の状態が見えないので競合しない。
   ///   (速さも N 回 → 1 回になる)。
+  /// [usedSheets] を渡すと、 実際に書いた紙 (タブ) の名前が入る。
+  /// 入り切らずに次のタブへ続いた事を、 呼んだ側が利用者に言えるように
+  /// (= 黙って別の紙に書くのが一番たちが悪い)。
   Future<int> mcpAddPaintTexts(
     String pageId,
     List<String> lines, {
@@ -105012,6 +106382,7 @@ $cleanQ
     double? y,
     double? size,
     int? colorValue,
+    List<String>? usedSheets,
   }) async {
     final wanted = [
       for (final l in lines)
@@ -105026,14 +106397,22 @@ $cleanQ
       final prefs = await _prefsWithRetry();
       final key = 'paint_$pageId';
       dynamic decoded;
-      final raw = prefs.getString(key);
-      if (raw != null && raw.trim().isNotEmpty) {
+      // ★ 空に見えた時は読み直して確かめる ([_readBodyPrefFresh] 参照)。
+      //   ここで「空」 と誤解すると、 下で白紙を作って既にある中身を
+      //   上書きして消してしまう。
+      final raw = await _readBodyPrefFresh(prefs, key);
+      if (raw.trim().isNotEmpty) {
         try {
           decoded = jsonDecode(raw);
         } catch (_) {}
       }
       // 今開いているシートを探す (無ければ 1 枚作る)。
+      // ★ 紙が埋まった時に次のタブへ続けられるよう、 紙の束 (sheetList) と
+      //   その中の何枚目か (sheetIdx) も控えておく (= ユーザー要望: 入り
+      //   切らない文章は適切な位置で区切って複数ページに)。
       Map<dynamic, dynamic>? sheet;
+      List? sheetList;
+      var sheetIdx = 0;
       if (decoded is Map) {
         List? pages;
         if (decoded['notes'] is List && (decoded['notes'] as List).isNotEmpty) {
@@ -105047,6 +106426,8 @@ $cleanQ
             if (si < 0 || si >= pages.length) si = 0;
             if (pages.isNotEmpty && pages[si] is Map) {
               sheet = pages[si] as Map;
+              sheetList = pages;
+              sheetIdx = si;
             }
           }
         } else if (decoded['pages'] is List) {
@@ -105059,7 +106440,11 @@ $cleanQ
         if (sheet == null && pages != null && pages.isNotEmpty) {
           var si = (decoded['sel'] as num?)?.toInt() ?? 0;
           if (si < 0 || si >= pages.length) si = 0;
-          if (pages[si] is Map) sheet = pages[si] as Map;
+          if (pages[si] is Map) {
+            sheet = pages[si] as Map;
+            sheetList = pages;
+            sheetIdx = si;
+          }
         }
       }
       if (sheet == null) {
@@ -105071,35 +106456,118 @@ $cleanQ
           'sh': [],
           'im': [],
         };
+        final made = <dynamic>[sheet];
         decoded = {
           'notes': [
             {
               'n': 'Binder 1',
               'sel': 0,
-              'pages': [sheet],
+              'pages': made,
             }
           ],
           'noteSel': 0,
         };
+        sheetList = made;
+        sheetIdx = 0;
       }
-      final texts = (sheet['t'] is List) ? sheet['t'] as List : <dynamic>[];
+      // ── 紙に収まる形に組んでから、 まとめて 1 回で置く ──
+      // ★ = ユーザー要望「途中処理であっても、 レイアウトが崩れた下書きを
+      //   作らない」。 旧: 要素 1 つにつき 44px ずつ下げるだけだったので
+      //   (1) 中に改行を含む段落は次の段落と丸ごと重なり
+      //       (AI は「空白だけの行は書けない」 ため段落を \n で繋いで
+      //        送ってくる → これが「本文が同じ所に重なって読めない」 の正体)、
+      //   (2) 長い行は折り返さず紙の右外へ流れ、
+      //   (3) 20 行あたりで紙の下端を越えて見えなくなっていた。
+      //   ここで 用紙幅に合わせて折り返し、 実際の行数ぶん送り、 収まら
+      //   なければ次のタブへ続ける。 紙へ書くのは組み終えてから 1 回だけ。
+      final fontSize = (size ?? 22.0).clamp(6.0, 200.0).toDouble();
+      // 置く場所を指定された呼び出し (1 行版) は、 言われた所にそのまま置く。
+      // 勝手に次のタブへ送ると驚かせるので、 送り先を増やすのは自動配置の時だけ。
+      final autoFlow = y == null;
+      var target = sheet;
+      var targetIdx = sheetIdx;
+      var paper = _mcpPaintPaperOf(target);
+      var lineH = _mcpPaintLineH(target, fontSize);
+      var left =
+          (x ?? 80.0).clamp(0.0, math.max(0.0, paper.$1 - 120)).toDouble();
+      var maxW = math.max(80.0, paper.$1 - left - 56);
+      var limit = paper.$2 - math.max(24.0, lineH);
+      var texts = (target['t'] is List) ? target['t'] as List : <dynamic>[];
+      // 位置を指定されなければ、 既に描かれている物の**下端**の下から。
+      var cursor = y ??
+          math.max(80.0, (_mcpPaintContentBottom(target) ?? 0) + lineH * 0.8);
       var wrote = 0;
-      for (final text in wanted) {
-        // 位置を指定されなければ、 既にある文字の下に順に積む。
-        // まとめ書きの途中でも数え直すので、 行が重ならない。
-        final auto = 80.0 + texts.length * 44.0;
-        texts.add({
-          'x': x ?? 80.0,
-          // ★ 座標を指定されたまとめ書きでも、 同じ所に重ねないよう
-          //   2 行目からは下へずらす。
-          'y': y == null ? auto : y + wrote * 44.0,
-          't': text,
-          'c': colorValue ?? 0xFF000000,
-          's': size ?? 22.0,
-        });
-        wrote++;
+      var stopped = false;
+      var addedSheets = 0;
+      void useSheet() {
+        final nm = '${target['n'] ?? ''}';
+        final us = usedSheets;
+        if (us != null && !us.contains(nm)) us.add(nm);
       }
-      sheet['t'] = texts;
+
+      for (final raw in wanted) {
+        // 用紙の幅に収まる位置で改行を入れる (キャンバスの文字は自分では
+        // 折り返さない → utils/canvas_text_wrap.dart)。
+        var lines = wrapTextForCanvas(raw, maxW, fontSize).split('\n');
+        var placed = false;
+        while (lines.isNotEmpty) {
+          final room =
+              autoFlow ? ((limit - cursor) / lineH).floor() : lines.length;
+          if (room <= 0) {
+            // 紙が尽きた → 次のタブへ (無ければ 1 枚足す)。
+            if (addedSheets >= 40) {
+              stopped = true;
+              break;
+            }
+            final next = _mcpPaintNextSheet(sheetList, targetIdx, target);
+            if (next == null) {
+              // 続けられない形 (古い控え) では紙の外に書かない。
+              stopped = true;
+              break;
+            }
+            addedSheets++;
+            target = next.sheet;
+            targetIdx = next.index;
+            texts = (target['t'] is List) ? target['t'] as List : <dynamic>[];
+            paper = _mcpPaintPaperOf(target);
+            lineH = _mcpPaintLineH(target, fontSize);
+            // 紙の大きさが変わることがあるので測り直す。
+            left = left.clamp(0.0, math.max(0.0, paper.$1 - 120)).toDouble();
+            maxW = math.max(80.0, paper.$1 - left - 56);
+            limit = paper.$2 - math.max(24.0, lineH);
+            cursor = 80.0;
+            lines =
+                wrapTextForCanvas(lines.join('\n'), maxW, fontSize).split('\n');
+            if (limit - cursor < lineH) {
+              // 1 行も入らない紙 (極端に小さい用紙) — 増やしても無駄。
+              stopped = true;
+              break;
+            }
+            continue;
+          }
+          // 段落の途中で切る時も、 折り返しで入れた行の切れ目で切る。
+          final take = lines.length <= room ? lines.length : room;
+          texts.add({
+            'x': left,
+            'y': cursor,
+            't': lines.take(take).join('\n'),
+            'c': colorValue ?? 0xFF000000,
+            's': fontSize,
+          });
+          target['t'] = texts;
+          useSheet();
+          placed = true;
+          cursor += take * lineH;
+          lines = lines.sublist(take);
+        }
+        // 1 行でも置けた段落は書けたものとして数える
+        // (途中で紙が尽きた時に 0 を返して「フリーノートではない」 と
+        //  誤った理由を返すのを防ぐ)。
+        if (placed) wrote++;
+        if (stopped) break;
+        // 段落の間に少し隙間を空ける。
+        cursor += lineH * 0.4;
+      }
       // ★ 書き込みも知らせも **全部足し終わってから 1 回だけ**。
       await prefs.setString(key, jsonEncode(decoded));
       // ★ = ユーザー報告 (動作検証 2026-09-17)「written の件数と、 読み直した
@@ -105197,8 +106665,11 @@ $cleanQ
     if (page.pageType != 'document' && page.pageType != 'paint') return null;
     try {
       final prefs = await _prefsWithRetry();
-      final raw = prefs.getString('document_${page.id}');
-      if (raw == null || raw.trim().isEmpty) {
+      // ★ = 動作検証レポート 2026-09-24。 書いた直後でも、 ページ JSON 保存の
+      //   prefs.reload() が控えを入れ替えた後だと中身が空に見える。
+      //   空に見えた時だけ読み直して確かめる ([_readBodyPrefFresh] 参照)。
+      final raw = await _readBodyPrefFresh(prefs, 'document_${page.id}');
+      if (raw.trim().isEmpty) {
         return {'pageId': page.id, 'papers': const []};
       }
       final decoded = jsonDecode(raw);
@@ -105240,9 +106711,12 @@ $cleanQ
     if (page == null || page.pageType != 'paint') return null;
     try {
       final prefs = await _prefsWithRetry();
-      final raw = prefs.getString('paint_${page.id}');
+      // ★ = 動作検証レポート 2026-09-24 不具合 2「書込み直後に本文が空で
+      //   返ることがある」。 空に見えた時だけ読み直して確かめる
+      //   ([_readBodyPrefFresh] 参照)。
+      final raw = await _readBodyPrefFresh(prefs, 'paint_${page.id}');
       dynamic decoded;
-      if (raw != null && raw.trim().isNotEmpty) {
+      if (raw.trim().isNotEmpty) {
         try {
           decoded = jsonDecode(raw);
         } catch (_) {}
@@ -105342,17 +106816,28 @@ $cleanQ
     }
   }
 
-  Future<bool> mcpWriteMarkdown(String pageId, String text,
-      {bool append = false}) async {
+  /// マークダウンページの本文を書く。 返り値は**書いたタブの数**
+  /// (0 = 書けなかった)。
+  ///
+  /// ★ = ユーザー要望「サイドメニュー外の CLI などからマークダウンを作成して
+  ///   と頼んだら、 自動で適切なタブに切り分けて表示されるように」。
+  ///   切り分けは側欄の「複数タブに分ける」 と**同じ**
+  ///   [splitMarkdownIntoTabs] を通す (二重実装にしない)。
+  ///   [split] が false なら必ず 1 枚に書き、 true なら短くても分ける。
+  ///   null (既定) は「区切り <<<PAGE:…>>> があれば必ず分け、 無ければ長い
+  ///   文書だけ見出しで分ける」。
+  ///   末尾へ足す時 ([append]) は、 足す 1 行を割らないよう分けない。
+  Future<int> mcpWriteMarkdown(String pageId, String text,
+      {bool append = false, bool? split}) async {
     final page = mcpPageById(pageId);
-    if (page == null) return false;
-    if (page.pageType != 'markdown') return false;
+    if (page == null) return 0;
+    if (page.pageType != 'markdown') return 0;
     // ★ 鍵は見つかったページの id で作る。 mcpPageById は空の pageId を
     //   「今開いているページ」 に読み替えるので、 引数のまま使うと
     //   'markdown_' という誰も読まない場所へ書いて成功を返してしまう。
     final id = page.id;
     final body = text.trimRight();
-    if (body.trim().isEmpty && append) return false;
+    if (body.trim().isEmpty && append) return 0;
     try {
       final prefs = await _prefsWithRetry();
       final key = 'markdown_$id';
@@ -105402,11 +106887,46 @@ $cleanQ
       //   注意書きに頼らず、 ここで断る。
       if ('${tabs[sel]['url'] ?? ''}'.trim().isNotEmpty) {
         debugPrint('mcpWriteMarkdown: refused - tab $sel is a web tab');
-        return false;
+        return 0;
       }
-      final cur = '${tabs[sel]['text'] ?? ''}'.trimRight();
-      tabs[sel]['text'] =
-          append ? (cur.isEmpty ? body : '$cur\n\n$body') : body;
+      // ★ 側欄の「複数タブに分ける」 と**同じ**切り分けを通す (= ユーザー
+      //   要望。 二重実装にしない)。 末尾へ足す時と split:false の時は
+      //   分けない (絵を 1 行足す generate_image の経路がここを通る)。
+      final parts = (append || split == false)
+          ? <({String name, String text})>[]
+          : splitMarkdownIntoTabs(body,
+              byHeadingWhenNoMarker: true, force: split == true);
+      if (parts.length > 1) {
+        // ★ 前に**この仕組みが**足したタブは、 同じ文書を書き直した時に
+        //   古い写しが積み上がるので先に外す (= ユーザー要望「崩れた下書きが
+        //   そのまま残らないように」 と同じ筋)。 印の付いた id の物だけ、
+        //   かつ末尾から連なっている分だけ外す
+        //   (人が作ったタブ・Web タブ・選ばれているタブは残す)。
+        const splitIdPrefix = 'mdsplit';
+        while (tabs.length > sel + 1 &&
+            '${tabs.last['id'] ?? ''}'.startsWith(splitIdPrefix) &&
+            '${tabs.last['url'] ?? ''}'.trim().isEmpty) {
+          tabs.removeLast();
+        }
+        // 1 枚目は今選ばれているタブへ、 残りは後ろへ足す
+        //   (画面側 _applyMarkdownPages と同じ割り振り)。
+        tabs[sel]['text'] = parts.first.text;
+        if (parts.first.name.isNotEmpty) tabs[sel]['name'] = parts.first.name;
+        for (var i = 1; i < parts.length; i++) {
+          tabs.add({
+            'id': '$splitIdPrefix${DateTime.now().microsecondsSinceEpoch}'
+                '_${tabs.length}',
+            'name': uniqueMarkdownTabName(
+                parts[i].name, [for (final t in tabs) '${t['name'] ?? ''}'],
+                fallbackIndex: tabs.length + 1),
+            'text': parts[i].text,
+          });
+        }
+      } else {
+        final cur = '${tabs[sel]['text'] ?? ''}'.trimRight();
+        tabs[sel]['text'] =
+            append ? (cur.isEmpty ? body : '$cur\n\n$body') : body;
+      }
       final encoded = jsonEncode({'v': 2, 'sel': sel, 'tabs': tabs});
       await prefs.setString(key, encoded);
       // 成功を返す前にメモリ側も更新し、直後の read が古い遅延保存や
@@ -105419,41 +106939,67 @@ $cleanQ
       _touchPageBody(id);
       notifyListeners();
       _requestMcpFocus(id);
-      return true;
+      return parts.length > 1 ? parts.length : 1;
     } catch (e) {
       debugPrint('mcpWriteMarkdown failed: $e');
-      return false;
+      return 0;
     }
   }
 
   /// 文書ページの末尾に文章を足す。
   /// 保存形式は `{v:2, pages:[ Quill デルタ, … ]}`。
-  Future<bool> mcpAppendDocumentText(String pageId, String text) async {
-    if (text.trim().isEmpty) return false;
+  Future<bool> mcpAppendDocumentText(String pageId, String text) async =>
+      (await mcpAppendDocumentTexts(pageId, [text])) > 0;
+
+  /// 文書ページ (とフリーノートの文書モード) へ、 段落をまとめて足す。
+  /// 足せた段落数を返す (0 = 何も足せなかった)。
+  ///
+  /// ★ = 動作検証レポート 2026-09-24 不具合 1「新規文書ページの初回複数段落
+  ///   追加で先頭段落が欠落する」。
+  ///   旧: 呼ぶ側が段落の数だけこれを回していたので、 1 段落ごとに
+  ///   「読む → 足す → 書く」 を繰り返していた。 その読み書きの**間**に、
+  ///   ページ JSON の保存が挟む `prefs.reload()` が走ると、 さっき書いた
+  ///   段落が Dart 側の控えから消える ([_readBodyPrefFresh] の説明を参照)。
+  ///   次の周回は「まだ何も無い」 と判断して先頭から作り直し、 前の段落を
+  ///   **上書きして消して**いた。 これが「appended:3 なのに 2 段落しか
+  ///   残らない」 の正体。
+  ///   → 読み書きは全段落まとめて **1 回だけ**にする (フリーノートの
+  ///   [mcpAddPaintTexts] と同じ直し方)。 空に見えた時の読み直しも入れて、
+  ///   万一割り込まれても作り直しにならないようにする。
+  Future<int> mcpAppendDocumentTexts(String pageId, List<String> texts) async {
+    // 空白だけの段落は入れられない (= 呼ぶ側が文面で説明する)。
+    final wanted = [
+      for (final t in texts)
+        if (t.trim().isNotEmpty) t,
+    ];
+    if (wanted.isEmpty) return 0;
     final page = mcpPageById(pageId);
-    if (page == null) return false;
+    if (page == null) return 0;
     // 文書ページ本体のほか、 フリーノートの中の文書モードも同じ入れ物を使う。
-    if (page.pageType != 'document' && page.pageType != 'paint') return false;
+    if (page.pageType != 'document' && page.pageType != 'paint') return 0;
     try {
       final prefs = await _prefsWithRetry();
       final key = 'document_$pageId';
       // 追記する中身 (改行で終わっていないと Quill が段落を閉じない)。
-      final body = text.endsWith('\n') ? text : '$text\n';
-      final ins = {'insert': body};
+      final inserts = <dynamic>[
+        for (final t in wanted) {'insert': t.endsWith('\n') ? t : '$t\n'},
+      ];
       dynamic decoded;
-      final raw = prefs.getString(key);
-      if (raw != null && raw.trim().isNotEmpty) {
+      // ★ 空に見えた時は読み直して確かめる ([_readBodyPrefFresh] 参照)。
+      final raw = await _readBodyPrefFresh(prefs, key);
+      if (raw.trim().isNotEmpty) {
         try {
           decoded = jsonDecode(raw);
         } catch (_) {}
       }
       Map<String, dynamic> out;
-      if (decoded is Map && decoded['pages'] is List &&
+      if (decoded is Map &&
+          decoded['pages'] is List &&
           (decoded['pages'] as List).isNotEmpty) {
         final pages = List<dynamic>.from(decoded['pages'] as List);
         final last = pages.last;
         final delta = last is List ? List<dynamic>.from(last) : <dynamic>[];
-        delta.add(ins);
+        delta.addAll(inserts);
         pages[pages.length - 1] = delta;
         out = {
           'v': 2,
@@ -105463,22 +107009,28 @@ $cleanQ
         };
       } else if (decoded is List) {
         // 旧形式 (デルタそのもの)。
-        final delta = List<dynamic>.from(decoded)..add(ins);
+        final delta = List<dynamic>.from(decoded)..addAll(inserts);
         out = {'v': 2, 'pages': [delta]};
       } else {
-        out = {'v': 2, 'pages': [[ins]]};
+        out = {'v': 2, 'pages': [inserts]};
       }
       await prefs.setString(key, jsonEncode(out));
+      // ★ 書けたと言う前に読み返して確かめる (= フリーノート側と同じ作法。
+      //   黙って「書きました」 と答えるのが一番たちが悪い)。
+      if ((prefs.getString(key) ?? '').isEmpty) {
+        debugPrint('mcpAppendDocumentTexts: 書いた直後に読み返せませんでした');
+        return 0;
+      }
       _mcpContentTick++;
       // ★ 本文はページ JSON の外にあるので、 時刻は自分で進める
       //   (= ユーザー報告: 本文を直しても lastModified が変わらない)。
       _touchPageBody(pageId);
       notifyListeners();
       _requestMcpFocus(pageId);
-      return true;
+      return wanted.length;
     } catch (e) {
-      debugPrint('mcpAppendDocumentText failed: $e');
-      return false;
+      debugPrint('mcpAppendDocumentTexts failed: $e');
+      return 0;
     }
   }
 
@@ -106741,6 +108293,8 @@ $cleanQ
       ..addAll(reordered);
     final at = _pages.indexWhere((p) => p.id == currentId);
     if (at >= 0) _currentPageIndex = at;
+    // ★ 画面からの並べ替え ([reorderPages]) と同じ後始末。
+    _ensureCurrentPageOpenable();
     _saveToStorage();
     notifyListeners();
     return [for (final p in _pages) p.id];
@@ -106777,30 +108331,16 @@ $cleanQ
   /// フォルダーを消す。 成功なら null、 駄目なら理由を返す。
   ///
   /// 既定 (deletePages=false) は中のページを残して、 フォルダーから出すだけ。
-  /// deletePages=true は中のページごと消える = **戻せない**ので、 ページ削除と
-  /// 同じ暴走止め (_mcpRecentPageDeletes) を通す。
+  /// deletePages=true は中のページごと消える。
+  ///
+  /// ★ = ユーザー要望「90 秒で 2 ページまでという制限はやめて上限を撤廃」。
+  ///   以前は [mcpDeletePage] と同じ歯止めを通していたが、 撤廃した。
   String? mcpDeleteFolder(String folderId, {bool deletePages = false}) {
     if (!_folders.any((f) => f.id == folderId)) return 'folder not found';
     // ★ 本物のフォルダーを開いた物は、 外からは消せない (= ユーザー要望)。
     if (folderIsDiskLinked(folderId)) {
       return 'this folder is linked to a real directory on disk; '
           'ask the user to remove it from the list by hand';
-    }
-    if (deletePages) {
-      final inside = _pages.where((p) => p.folderId == folderId).length;
-      if (inside > 0) {
-        final now = DateTime.now();
-        _mcpRecentPageDeletes
-            .removeWhere((t) => now.difference(t) > _kMcpDeleteBurstWindow);
-        if (_mcpRecentPageDeletes.length + inside > _kMcpDeleteBurstLimit) {
-          return 'too many page deletions at once; ask the user to confirm '
-              'and delete the pages one by one (or delete the folder without '
-              'deletePages)';
-        }
-        for (var i = 0; i < inside; i++) {
-          _mcpRecentPageDeletes.add(now);
-        }
-      }
     }
     deleteFolder(folderId, deletePages: deletePages);
     return null;
@@ -107090,7 +108630,7 @@ $cleanQ
       const double colStep = 270.0; // 横ピッチ (メモ幅240 + 余白)
       final int col = existingChildren;
       position = Offset(
-        // 親の右端 + colGap が 1 列目の左端。 そこから col 個ぶん右へずらす。
+        // 親の右端 + colGap が 1 列目の左端。 そこから col 個分右へずらす。
         parent.position.dx + parent.width + colGap + col * colStep,
         parent.position.dy,
       );
@@ -108358,7 +109898,7 @@ $cleanQ
   ///
   /// - [targetId] が「親」、[sourceIds] の各ノードが「子」になる。
   /// - 移動 (delta) も同時に適用するので、ドラッグ&ドロップで複数まとめて
-  ///   既存ノードに紐付ける UX を 1 操作 (= Undo 1 回ぶん) で実現できる。
+  ///   既存ノードに紐付ける UX を 1 操作 (= Undo 1 回分) で実現できる。
   /// - 既に接続済み / target 自身 / 存在しない id はスキップする。
   /// - delta が `Offset.zero` でも正常に動く (= 接続のみ作りたい場合)。
   void moveAndConnectToTarget(
@@ -108456,7 +109996,7 @@ $cleanQ
     }
   }
 
-  /// [nodeId] の枝が縦に広がった / 縮んだぶん、 同じ親を持つ兄弟の枝を
+  /// [nodeId] の枝が縦に広がった / 縮んだ分、 同じ親を持つ兄弟の枝を
   /// 上下へ押し広げる / 詰める (= ユーザー要望: 孫を足したら周りのノードが
   /// 動いて場所を空け、 格納したら詰まるように)。
   ///
@@ -108561,7 +110101,7 @@ $cleanQ
     return lines * 16.0 + 10 + 8; // 行 + 内余白 + ノードとの隙間
   }
 
-  /// 説明書きのぶんだけ、 上にある要素を押し上げて場所を空ける。
+  /// 説明書きの分だけ、 上にある要素を押し上げて場所を空ける。
   void makeRoomForCaption(String nodeId) {
     final node = currentPage.nodes[nodeId];
     if (node == null) return;
@@ -109458,7 +110998,7 @@ $cleanQ
     _saveShelfCells();
   }
 
-  /// ギャラリーの (fromCol,row) に [count] 個ぶんの空きセルを確保する
+  /// ギャラリーの (fromCol,row) に [count] 個分の空きセルを確保する
   /// (= ユーザー要望: 動画の数分ブロックを確保 / 既存要素をずらして間に挿入)。
   /// 同じ行で col が fromCol 以上の既存セルを右へ count ずらす。 これで
   /// [fromCol, fromCol+count) が空き、 そこへ新要素を重ならず置ける。
@@ -109510,7 +111050,7 @@ $cleanQ
     });
   }
 
-  /// 範囲選択したギャラリー要素を、 ドラッグ量ぶんセル単位でまとめて移動する
+  /// 範囲選択したギャラリー要素を、 ドラッグ量分セル単位でまとめて移動する
   /// (= ユーザー要望: ギャラリーの要素を範囲選択してまとめて移動できるように)。
   /// ピクセルの移動量をセル数に換算して、 各要素の (col,row) をその分ずらす。
   void moveShelfCellsByDelta(Set<String> ids, Offset pixelDelta) {
@@ -109729,7 +111269,7 @@ $cleanQ
 
   /// ギャラリーの有効な段数 (= 縦の要素数)。 shelfRows が 0 なら既定値 (5)。
   /// 旧データの -1 (無制限) は、現在は最大行数までの自動拡張として扱う。
-  /// ただし要素が指定段数を超えたら +ボックスを 1 段ぶん出せるよう拡張する
+  /// ただし要素が指定段数を超えたら +ボックスを 1 段分出せるよう拡張する
   /// (= ユーザー要望: 既定 5×5、 勝手には増えないが満杯時は追加できる)。
   int _shelfGridRows([MindMapPage? p]) {
     final page = p ?? currentPage;
@@ -110084,10 +111624,10 @@ $cleanQ
   /// 実際の可変行高グリッドに基づいて求める。
   /// = ユーザー要望: 「要素が入っている行をドラッグして移動しようとすると時々
   ///   移動できない」 の修正。 旧実装は全行一律の「最大行高」 でドラッグ量を
-  ///   行数に換算していたため、 背の低い行が混ざると 1 行ぶんドラッグしても
+  ///   行数に換算していたため、 背の低い行が混ざると 1 行分ドラッグしても
   ///   閾値 (0.5 行) に届かず round() が 0 になって動かないことがあった。
   ///   実グリッド (rowY/rowH) を使い、 掴んだ行の中心をポインター移動量だけ
-  ///   動かした位置に最も近い行を返す。端同士の交差で判定すると、隙間ぶんの
+  ///   動かした位置に最も近い行を返す。端同士の交差で判定すると、隙間分の
   ///   小さな移動だけで次の行へ飛び、ドラッグ感度が過剰になるため。
   int bookshelfTargetRow(int fromRow, double deltaY) {
     final page = currentPage;
@@ -110546,7 +112086,7 @@ $cleanQ
     return best;
   }
 
-  /// ギャラリーの (startCol,startRow) から [count] 個ぶんのマス目を押さえる。
+  /// ギャラリーの (startCol,startRow) から [count] 個分のマス目を押さえる。
   ///
   /// ★ = ユーザー要望「まとめてファイルを投げた時にギャラリーページで
   ///   レイアウトが崩れないようにして欲しくて、 例えば 9 ファイル投げたら
@@ -110695,7 +112235,7 @@ $cleanQ
     if (dragged == null) return;
     // 可変サイズ格子 (#4/#5) に合わせ、 セル中心との距離で最寄り列/行を求める。
     // ドラッグ中の見た目 (= 配置に使ったキャッシュ格子) と同じ格子で判定する。
-    // ライブ再構築だと stretch 後の高さぶん行が下へずれ、 (0,0) の要素を
+    // ライブ再構築だと stretch 後の高さ分行が下へずれ、 (0,0) の要素を
     // (2,2) 以降へ落としても 1 つ手前のセルと判定される等のズレが出ていた。
     final grid = _shelfGridFor(page);
     // 要素左上ではなく要素中心を使う。これにより (0,0) の先頭要素も、
@@ -112635,6 +114175,10 @@ $cleanQ
     } else {
       _favoritePageIds.add(pageId);
     }
+    // ★ ピン留めで並びが変わる = 鍵の順番も変わる (= 点検で判明:
+    //   他を 2 枚ピン留めすると今見ているページが鍵の向こうへ下がるし、
+    //   鍵の掛かったページをピン留めして開き、 その場で外せば居座れた)。
+    _ensureCurrentPageOpenable();
     _persistFavoritePages();
     notifyListeners();
   }
@@ -117025,7 +118569,7 @@ $example
     //   渡すと、 中身の変わらない控えが残り、 次の Ctrl+Z がそれに食われて
     //   「戻らない」 うえ、 両ページの redo まで消えていた)。
     if (!ids.any((id) => source.nodes.containsKey(id))) return;
-    // ★ 転送は 2 枚のページを同時に変えるので、 ページ 1 枚ぶんの控え
+    // ★ 転送は 2 枚のページを同時に変えるので、 ページ 1 枚分の控え
     //   (`_pushUndo`) では戻せない。 以前は転送元だけ積んでいたため、
     //   Ctrl+Z すると同じ要素が転送元と転送先の両方に生えていた。
     _captureCrossPageMove(source, target);
@@ -117360,13 +118904,28 @@ $example
       // 統合元ページもクラウド上には残す (deletePage と同じ理由)。
     }
     final mergedIndex = _pages.indexWhere((p) => p.id == merged.id);
-    _currentPageIndex = mergedIndex >= 0
-        ? mergedIndex
-        : (_pages.isEmpty ? 0 : _pages.length - 1);
+    // ★ = ユーザー要望「3 ページ目以降は Pro 以上でないと開けない」。
+    //   合体したページが鍵の掛かる位置に来た時は、 作るだけ作って開かない。
+    if (mergedIndex >= 0 && !canOpenPageIndex(mergedIndex)) {
+      // ★ = 点検で判明: ここで何もしないと、 消えた統合元の分だけ番号が
+      //   ずれて**別のページ**を見ている事になっていた。 先頭へ戻す。
+      _notifyPageOpenBlocked();
+      _ensureCurrentPageOpenable();
+    } else {
+      _currentPageIndex = mergedIndex >= 0
+          ? mergedIndex
+          : (_pages.isEmpty ? 0 : _pages.length - 1);
+    }
     _selectedNodeId = null;
     _saveNamedGroups();
     _saveToStorage();
-    _persistLastOpenedPageId(merged.id);
+    // 開けなかった時は「最後に開いたページ」 に覚えさせない (次の起動で
+    // また断られるだけなので)。
+    if (_currentPageIndex >= 0 &&
+        _currentPageIndex < _pages.length &&
+        _pages[_currentPageIndex].id == merged.id) {
+      _persistLastOpenedPageId(merged.id);
+    }
     notifyListeners();
     return _currentPageIndex;
   }

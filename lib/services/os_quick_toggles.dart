@@ -68,7 +68,7 @@ final class _Guid extends ffi.Struct {
   external ffi.Array<ffi.Uint8> d4;
 }
 
-/// 起動中のアプリの窓 1 つぶん (= 仮想デスクトップへ移す相手)。
+/// 起動中のアプリの窓 1 つ分 (= 仮想デスクトップへ移す相手)。
 class DesktopWindowInfo {
   /// 窓のハンドル。
   final int hwnd;
@@ -143,7 +143,7 @@ class DesktopWindowInfo {
   bool get canSend => isSelf;
 }
 
-/// 仮想デスクトップ 1 つぶん (並びはタスクビューの左から)。
+/// 仮想デスクトップ 1 つ分 (並びはタスクビューの左から)。
 ///
 /// ★ = ユーザー要望「windows本家の様に仮想デスクトップに window を
 ///   送ったりできるようにして欲しい」。 Win+Tab の画面と同じように
@@ -575,7 +575,7 @@ class OsQuickToggles {
         break;
       }
     }
-    // ④ 元いたデスクトップへ戻る。 閉じたぶん並び順がずれているので、
+    // ④ 元いたデスクトップへ戻る。 閉じた分並び順がずれているので、
     //    番号ではなく GUID から数え直す。
     await _goHome(home);
     return gone ? DesktopRemoveResult.ok : DesktopRemoveResult.failed;
@@ -593,7 +593,7 @@ class OsQuickToggles {
   /// [hwnd] の窓に「閉じてください」 と伝える (WM_CLOSE)。
   ///
   /// ★ = ユーザー要望「現在いないデスクトップから別のデスクトップや
-  ///   その窓を削除できるようにして欲しい」 の**窓のぶん**。 窓を閉じるのは
+  ///   その窓を削除できるようにして欲しい」 の**窓の分**。 窓を閉じるのは
   ///   公開された道で出来て、 しかも**どのデスクトップに居ても効く**
   ///   (WM_CLOSE は持ち主のメッセージの列に入るだけで、 仮想デスクトップ
   ///   とは関わりが無い)。 移動 ([moveWindowToDesktop]) と違って断られない。
@@ -1166,7 +1166,7 @@ class OsQuickToggles {
   /// [from] 番目のデスクトップから [to] 番目へ移る。
   ///
   /// ★ 「デスクトップ N へ飛ぶ」 公開 API は無いので、 Ctrl+Win+←/→ を
-  ///   差のぶん送る (利用者が普段押すのと同じ手順)。 [verifyHwnd] を渡すと、
+  ///   差の分送る (利用者が普段押すのと同じ手順)。 [verifyHwnd] を渡すと、
   ///   その窓が今のデスクトップに居るかどうかで着いたかを確かめる。
   static Future<DesktopSwitchResult> switchToDesktopIndex({
     required int from,

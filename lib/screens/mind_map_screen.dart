@@ -62,6 +62,8 @@ import '../services/recycle_bin.dart';
 import '../utils/gantt_time_utils.dart';
 import '../utils/build_flags.dart';
 import '../utils/embedded_oauth_guard.dart';
+// ★ 紙に置く文字の折り返し (AI / MCP の書き込みと共用 = 双子を作らない)。
+import '../utils/canvas_text_wrap.dart';
 // ★ 絵の拡張子と絵を選ぶダイアログの共通部品 (jpe / jfif 対応)。
 import '../utils/image_file_types.dart';
 // メッセージ機能 (messaging_dialog.dart) はユーザー要望で廃止したため import 削除。
@@ -73,7 +75,11 @@ import '../widgets/node_widget.dart';
 import '../widgets/google_search_dialog.dart';
 import '../widgets/auto_click_palette.dart' show AutoClickPalette;
 import '../widgets/auto_clicker.dart';
+import '../services/ffmpeg_path.dart';
 import '../widgets/paywall_hook.dart';
+// ★ ffmpeg の探し方は葉っぱのファイルへ出した (自動操作のパネルからも使う
+// ため)。 この画面を import している所が今までどおり使えるよう再輸出する。
+export '../services/ffmpeg_path.dart' show findFfmpegExe, ffmpegInstallDir;
 import '../widgets/read_aloud.dart';
 import '../widgets/pdf_draw_layer.dart';
 import '../widgets/doc_preview.dart';
@@ -658,7 +664,7 @@ Future<T?> showDialogNearWidget<T>(
       // ★ 浮遊窓 (AI アシスタントなど) の中では、 このダイアログは
       //   **窓自身の Navigator の Overlay** に載る。 Positioned はその
       //   Overlay のローカル座標なので、 画面全体の座標をそのまま
-      //   渡すと窓の左上のぶんだけずれる (窓は自分の大きさを
+      //   渡すと窓の左上の分だけずれる (窓は自分の大きさを
       //   画面の大きさとして見せる MediaQuery も被せているので、
       //   端へ貼り付く形になる)。
       //   根っこの Navigator では Overlay の原点が (0,0) なので、
@@ -1504,7 +1510,7 @@ const String _kWebAudioKeepAliveJs = r'''
 ///   モデル名と入力 / 出力それぞれの残りトークン、 残額を出す。
 /// AI チャットと AI 編集の両方から使う (表示を揃えるため 1 か所にまとめた)。
 String aiRemainText(MindMapProvider provider) {
-  // ★ PC 内 AI は契約しているぶんを使うので、 API の残りは意味が無い
+  // ★ PC 内 AI は契約している分を使うので、 API の残りは意味が無い
   //   (= ユーザー指摘: Dev 枠は API の残量)。 代わりに使った量を出す。
   if (provider.useCliAi) return provider.cliUsageText;
   double inRate = 0, outRate = 0;
@@ -1666,7 +1672,8 @@ String _aiProviderLabel(MindMapProvider provider, String id) {
     case 'gemini':
       return 'Gemini';
     case 'cli':
-      return provider.t('ai.modeCli');
+      // ★ = ユーザー要望: 「PC内AI」 ではなく、 今選んでいる CLI の名前を出す。
+      return provider.cliAiKindLabel;
   }
   return id;
 }
@@ -1752,7 +1759,7 @@ Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
       final avail = fieldSize.width - inset * 2;
       final wide = avail >= 680;
       final dialogW = wide ? 720.0 : math.max(240.0, avail);
-      // 1 社ぶんの列 (横並び / 縦積みの両方で使い回す)。
+      // 1 社分の列 (横並び / 縦積みの両方で使い回す)。
       Widget groupCol((String, String) g) {
         final collapsed = _aiPickerCollapsed.contains(g.$1);
         final count =
@@ -1877,96 +1884,164 @@ Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
             // ── PC に入れた AI を使う (= ユーザー要望: 自動化や pptx など
             //    どの AI 欄からも CLI に切り替えられるように) ──
             //    ここで選ぶと、 この後の問い合わせはすべて PC の CLI が
-            //    答える (契約しているぶんを使うので AI の残高は減らない)。
+            //    答える (契約している分を使うので AI の残高は減らない)。
             if (AgentCli.supported && provider.canUseCliAi) ...[
-              InkWell(
-                borderRadius: BorderRadius.circular(8),
-                onTap: () async {
-                  await _setAiEngineMode(provider, 'cli');
-                  setD(() {});
-                  onChanged?.call();
-                },
-                child: Container(
-                  width: double.infinity,
-                  margin: const EdgeInsets.only(bottom: 8),
-                  padding: const EdgeInsets.fromLTRB(10, 9, 10, 9),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF9CCC65)
-                        .withValues(alpha: provider.useCliAi ? 0.16 : 0.06),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
-                        color: const Color(0xFF9CCC65).withValues(
-                            alpha: provider.useCliAi ? 0.8 : 0.3)),
-                  ),
-                  child: Row(children: [
-                    Icon(
-                        provider.useCliAi
-                            ? Icons.radio_button_checked_rounded
-                            : Icons.radio_button_unchecked_rounded,
-                        size: 14,
-                        color: provider.useCliAi
-                            ? const Color(0xFF9CCC65)
-                            : Colors.white24),
-                    const SizedBox(width: 8),
-                    // ★ 他の項目と色をそろえる (= ユーザー要望: PC内AI だけ
-                    //   色が違って目立つ)。
-                    const Icon(Icons.terminal_rounded,
-                        size: 15, color: Color(0xFF80CBC4)),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(provider.cliAiLabel,
-                                style: const TextStyle(
-                                    color: Colors.white, fontSize: 12)),
-                            Text(provider.t('ai.modeCliBody'),
-                                style: const TextStyle(
-                                    color: Colors.white38, fontSize: 9.5)),
-                          ]),
-                    ),
-                  ]),
-                ),
-              ),
-              // ★ PC 内 AI の中のモデルもここで選べるように
-              //   (= ユーザー要望: pptx や自動操作からも切り替えたい)。
-              if (provider.useCliAi)
-                Padding(
-                  padding: const EdgeInsets.only(left: 30, bottom: 8),
-                  child: Wrap(spacing: 6, runSpacing: 6, children: [
-                    for (final c in AgentCli.modelChoices(
-                        AgentCli.lastPickKind ?? AgentCliKind.claude))
-                      InkWell(
-                        borderRadius: BorderRadius.circular(6),
-                        onTap: () async {
-                          await provider.setCliAiModelChoice(c.id);
-                          setD(() {});
-                          onChanged?.call();
-                        },
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 9, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: provider.cliAiModelChoice == c.id
-                                ? const Color(0xFF9CCC65)
-                                    .withValues(alpha: 0.18)
-                                : Colors.transparent,
-                            borderRadius: BorderRadius.circular(6),
-                            border: Border.all(
-                                color: provider.cliAiModelChoice == c.id
-                                    ? const Color(0xFF9CCC65)
-                                    : Colors.white24),
-                          ),
-                          child: Text(c.label,
-                              style: TextStyle(
-                                  color: provider.cliAiModelChoice == c.id
-                                      ? const Color(0xFF9CCC65)
-                                      : Colors.white60,
-                                  fontSize: 11)),
+              // ★ = ユーザー要望「codexCLI と ClaudeCode の Opus が混ざって
+              //   しまっているので分けて」+「PC内AI って表記じゃなくて」。
+              //   1 つの「PC内AI」の行だったのを、 CLI の種類ごとの行にして、
+              //   それぞれの下に**その CLI のモデル**を並べる。
+              for (final k in const [AgentCliKind.claude, AgentCliKind.codex])
+                ...() {
+                  final on = provider.useCliAi && provider.cliAiKindEnum == k;
+                  return <Widget>[
+                    InkWell(
+                      borderRadius: BorderRadius.circular(8),
+                      onTap: () async {
+                        await _setAiEngineMode(provider, 'cli');
+                        await provider.setCliAiKind(k.name);
+                        setD(() {});
+                        onChanged?.call();
+                      },
+                      child: Container(
+                        width: double.infinity,
+                        margin: const EdgeInsets.only(bottom: 8),
+                        padding: const EdgeInsets.fromLTRB(10, 9, 10, 9),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF9CCC65)
+                              .withValues(alpha: on ? 0.16 : 0.06),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                              color: const Color(0xFF9CCC65)
+                                  .withValues(alpha: on ? 0.8 : 0.3)),
                         ),
+                        child: Row(children: [
+                          Icon(
+                              on
+                                  ? Icons.radio_button_checked_rounded
+                                  : Icons.radio_button_unchecked_rounded,
+                              size: 14,
+                              color: on
+                                  ? const Color(0xFF9CCC65)
+                                  : Colors.white24),
+                          const SizedBox(width: 8),
+                          // ★ 他の項目と色をそろえる (= ユーザー要望)。
+                          const Icon(Icons.terminal_rounded,
+                              size: 15, color: Color(0xFF80CBC4)),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                      on
+                                          ? provider.cliAiLabel
+                                          : AgentCliSpec.of(k).label,
+                                      style: const TextStyle(
+                                          color: Colors.white, fontSize: 12)),
+                                  Text(provider.t('ai.modeCliBody'),
+                                      style: const TextStyle(
+                                          color: Colors.white38,
+                                          fontSize: 9.5)),
+                                ]),
+                          ),
+                        ]),
                       ),
-                  ]),
-                ),
+                    ),
+                    // その CLI のモデル (選んでいる時だけ出す)。
+                    if (on)
+                      Padding(
+                        padding: const EdgeInsets.only(left: 30, bottom: 8),
+                        child: Wrap(spacing: 6, runSpacing: 6, children: [
+                          for (final c in AgentCli.modelChoices(k))
+                            Builder(builder: (_) {
+                              // ★ 選択は**この CLI の物**として覚える
+                              //   (= ユーザー報告: luna を選んでも sol)。
+                              final sel = provider.cliModelFor(k.name) == c.id;
+                              return InkWell(
+                                borderRadius: BorderRadius.circular(6),
+                                onTap: () async {
+                                  await provider.setCliAiModelChoice(c.id,
+                                      forKind: k.name);
+                                  setD(() {});
+                                  onChanged?.call();
+                                },
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 9, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: sel
+                                        ? const Color(0xFF9CCC65)
+                                            .withValues(alpha: 0.18)
+                                        : Colors.transparent,
+                                    borderRadius: BorderRadius.circular(6),
+                                    border: Border.all(
+                                        color: sel
+                                            ? const Color(0xFF9CCC65)
+                                            : Colors.white24),
+                                  ),
+                                  child: Text(c.label,
+                                      style: TextStyle(
+                                          color: sel
+                                              ? const Color(0xFF9CCC65)
+                                              : Colors.white60,
+                                          fontSize: 11)),
+                                ),
+                              );
+                            }),
+                        ]),
+                      ),
+                    // ── その CLI の推論 (= ユーザー要望: 「じっくり」 等と
+                    //    誤魔化さず、 その相手が受け取る生の値を出す) ──
+                    if (on && AgentCli.reasoningChoices(k).isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(left: 30, bottom: 8),
+                        child: Wrap(
+                            spacing: 6,
+                            runSpacing: 6,
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            children: [
+                              Text(provider.t('cli.reasoning'),
+                                  style: const TextStyle(
+                                      color: Colors.white38, fontSize: 10.5)),
+                              for (final lv in AgentCli.reasoningChoices(k))
+                                Builder(builder: (_) {
+                                  final sel =
+                                      provider.cliReasoningFor(k.name) == lv;
+                                  return InkWell(
+                                    borderRadius: BorderRadius.circular(6),
+                                    onTap: () async {
+                                      await provider.setCliReasoning(lv,
+                                          forKind: k.name);
+                                      setD(() {});
+                                      onChanged?.call();
+                                    },
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 9, vertical: 4),
+                                      decoration: BoxDecoration(
+                                        color: sel
+                                            ? const Color(0xFF80CBC4)
+                                                .withValues(alpha: 0.18)
+                                            : Colors.transparent,
+                                        borderRadius: BorderRadius.circular(6),
+                                        border: Border.all(
+                                            color: sel
+                                                ? const Color(0xFF80CBC4)
+                                                : Colors.white24),
+                                      ),
+                                      child: Text(lv,
+                                          style: TextStyle(
+                                              color: sel
+                                                  ? const Color(0xFF80CBC4)
+                                                  : Colors.white60,
+                                              fontSize: 11)),
+                                    ),
+                                  );
+                                }),
+                            ]),
+                      ),
+                  ];
+                }(),
               const Divider(height: 10, color: Colors.white12),
             ],
             if (models.isEmpty)
@@ -2007,7 +2082,7 @@ Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
               // ★ どの相手に対する設定かを書く (= ユーザー要望: 3 段階の
               //   共通設定ではなく、 プロバイダーごとにセットできるように)。
               child: Text(
-                  '${provider.t('mcp.reasoning')}'
+                  '${provider.t('cli.reasoning')}'
                   '  (${_aiProviderLabel(provider, provider.currentAiProvider)})',
                   style: const TextStyle(
                       color: Color(0xFF80CBC4),
@@ -2020,8 +2095,9 @@ Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
               child: Wrap(spacing: 6, runSpacing: 6, children: [
                 for (final lv in MindMapProvider.relayReasoningLevels)
                   ChoiceChip(
-                    label: Text(provider.t('mcp.reasoning.$lv'),
-                        style: const TextStyle(fontSize: 11.5)),
+                    // ★ 言い換えない (= ユーザー要望: じっくり・普通と
+                    //   誤魔化さず、 送っている値そのものを出す)。
+                    label: Text(lv, style: const TextStyle(fontSize: 11.5)),
                     selected: provider.relayReasoning == lv,
                     backgroundColor: const Color(0xFF2A2A44),
                     selectedColor: const Color(0xFF80CBC4),
@@ -2113,51 +2189,6 @@ String stripToolEchoFromReply(String reply) {
 }
 
 /// アプリが自動インストールした ffmpeg/ffprobe を置くフォルダー。
-Future<Directory> ffmpegInstallDir() async {
-  final base = await getApplicationSupportDirectory();
-  final dir = Directory('${base.path}${Platform.pathSeparator}ffmpeg_bin');
-  if (!await dir.exists()) await dir.create(recursive: true);
-  return dir;
-}
-
-/// ffmpeg の実体を探す (アプリ専用フォルダー → PATH → 定番の場所)。
-///
-/// ビデオエディターだけでなく、 ヘッダーの画面録画ボタンからも使うので
-/// 画面の外に置いてある。
-Future<String?> findFfmpegExe() async {
-  if (Platform.isWindows) {
-    // ★ まずアプリ本体の隣を見る (= 同梱した時に使えるように)。 ストア版は
-    //   自動ダウンロードを落としてあるので、 同梱するならここに置く。
-    try {
-      final near = File('${File(Platform.resolvedExecutable).parent.path}'
-          '${Platform.pathSeparator}ffmpeg.exe');
-      if (await near.exists()) return near.path;
-    } catch (_) {}
-    try {
-      final dir = await ffmpegInstallDir();
-      final p = '${dir.path}${Platform.pathSeparator}ffmpeg.exe';
-      if (await File(p).exists()) return p;
-    } catch (_) {}
-  }
-  for (final c in ['ffmpeg', 'ffmpeg.exe']) {
-    try {
-      final r = await Process.run(c, ['-version']);
-      if (r.exitCode == 0) return c;
-    } catch (_) {}
-  }
-  if (Platform.isWindows) {
-    for (final p in [
-      r'C:\ffmpeg\bin\ffmpeg.exe',
-      r'C:\Program Files\ffmpeg\bin\ffmpeg.exe',
-    ]) {
-      try {
-        if (await File(p).exists()) return p;
-      } catch (_) {}
-    }
-  }
-  return null;
-}
-
 /// 動画の再生速度を WebView 内へ流し込む JS。
 /// 外の窓 (main.dart の `_FloatingWebWindowApp`) からも使うので公開。
 String webVideoRateJs(double rawRate) {
@@ -3411,11 +3442,6 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// Esc キー or 画面タップで解除。
   bool _reorderHeaderMode = false;
 
-  /// カスタマイズ画面の「配置中のボタン」 リストの高さ (画面高に対する割合)。
-  /// 0 以下 = 既定 (デスクトップ 0.26 / モバイル 0.32)。 境界のドラッグで
-  /// 変更でき、 prefs `hdrCustPlacedFrac` に保存される (= ユーザー要望)。
-  double _hcbPlacedFrac = 0;
-
   /// カスタマイズ画面で「これから追加するボタン」 を入れる端 (= ユーザー要望:
   /// 上下左右のボタンが今から配置するボタンに適用されるように)。
   String _hcbTargetPlacement = 'top';
@@ -3462,6 +3488,37 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 返す係と対で登録する (メニューの文言を変えるため)。
   void Function()? _markdownHeaderToggle;
   bool Function()? _markdownHeaderIsHidden;
+
+  // ── Zen モード (= ユーザー要望「マークダウン等でヘッダーの非表示状態に
+  //    したら Zen モードの様にタスクバーやページ名の行まで非表示にできる
+  //    ように」) ──
+  //
+  // 編集画面 (マークダウン / フリーノート / テキスト …) は自分のヘッダー
+  // しか触れないので、 本体の帯 (ページ名の行 + 自分で並べたボタンの帯) は
+  // 本体が消す。 伝え道はトップレベルの入口
+  // `setAppChromeHiddenFromAnywhere` (ページ一覧 / 設定と同じ作法)。
+
+  /// 今「帯を隠して」 と言っている画面たち (State をそのまま鍵に使う)。
+  ///
+  /// ★ 1 枚の bool にすると、 分割で .md と .txt を同時に開いた時に片方を
+  ///   閉じただけで帯が戻ってしまう。 集合にして「誰も居なくなったら戻す」
+  ///   形にする。
+  final Set<Object> _zenHiders = <Object>{};
+
+  /// 本体の帯を隠しているか (= `_zenHiders` が空でない)。
+  ///
+  /// ★ 控え (prefs) は持たない。 マークダウンは `markdownHeaderHidden`、
+  ///   フリーノートは `paintHeaderHidden` を自分で覚えているので、 次に
+  ///   開いた時はそれに追従して自動でこうなる。 逆にこの印だけを覚えると、
+  ///   普通のマップで帯の無い状態に取り残されて戻す入口が無くなる。
+  bool _zenChromeHidden = false;
+
+  /// 上端の中央にカーソルが来ているか (= 札を太くして文字を出す合図)。
+  bool _zenRevealHover = false;
+
+  /// Esc で札を出した (カーソルを動かさなくても出せるように)。
+  bool _zenRevealPinned = false;
+  Timer? _zenRevealPinTimer;
 
   /// 右クリックのメニューから「プレビュー画面の切り替え」 と「AI で編集」
   /// を使うための受け口 (= ユーザー要望)。 文言は「次に何になるか」 を
@@ -6318,6 +6375,10 @@ class _MindMapScreenState extends State<MindMapScreen>
       if (!mounted) return;
       _showSettingsSheet(ctx, context.read<MindMapProvider>());
     };
+    // ── Zen モード: 編集画面が「ヘッダーを隠す」 になったら、 本体の帯
+    //    (ページ名の行 + 自分で並べたボタンの帯) まで消す (= ユーザー要望)。
+    //    戻り道は上端中央の札 (_buildZenRevealBar) と Esc。 ──
+    setAppChromeHiddenFromAnywhere = _setZenChromeHidden;
     // ── 編集画面からターミナルを呼ぶ入口 ──
     // ★ = ユーザー要望「txt や json、 markdown などのテキスト編集画面に
     //   ターミナルを呼び出せるボタンを付けて欲しい」。
@@ -6326,6 +6387,10 @@ class _MindMapScreenState extends State<MindMapScreen>
     openTerminalFromAnywhere = ({String? baseDir}) async {
       if (!mounted) return;
       final p = context.read<MindMapProvider>();
+      // ★ = 点検で判明: CLI を Free へ開放したことで、 ここの唯一の
+      //   関門だったプラン判定が常に通るようになった。 擬似端末を持てない
+      //   相手 (モバイル / ストア版) では、 殻を起こそうとしてはいけない。
+      if (!AgentCli.supported) return;
       if (!p.canUseCliAi) {
         _showPaywallDialog(p);
         return;
@@ -6429,6 +6494,26 @@ class _MindMapScreenState extends State<MindMapScreen>
       if (!mounted) return;
       _showPaywallDialog(context.read<MindMapProvider>(),
           bodyOverride: message);
+    };
+    // ── 鍵の掛かったページ (無料プランの 3 枚目以降) を開こうとした時
+    //    (= ユーザー要望「3 ページ目以降を作成しても Pro 以上でないと
+    //     開けない様にして欲しい」) ──
+    //    開く入口は 20 か所以上あるので、 断った provider から 1 回だけ
+    //    知らせてもらい、 ここでプラン案内を出す。
+    //    ★ 二度出しを防ぐため、 出している間は次の知らせを捨てる。
+    context.read<MindMapProvider>().onPageOpenBlocked = () {
+      if (!mounted || _planLockDialogOpen) return;
+      final p = context.read<MindMapProvider>();
+      _planLockDialogOpen = true;
+      // ★ 掛け金はモーダルが**閉じた時**に下ろす (= 点検で判明: 時間で
+      //   下ろしていたので、 ファイルをまとめて落とした時のように断りが
+      //   続けざまに起きると、 同じ案内が何枚も積み上がって 1 枚ずつ
+      //   閉じる羽目になっていた)。
+      unawaited(
+          _showPaywallDialog(p, bodyOverride: p.t('paywall.pageOpenLimit'))
+              .whenComplete(() {
+        if (mounted) _planLockDialogOpen = false;
+      }));
     };
     _inlineShelfEditFocus.addListener(_handleShelfInlineFocusChanged);
     _inlineNodeEditFocus.addListener(_handleNodeInlineFocusChanged);
@@ -7043,6 +7128,14 @@ class _MindMapScreenState extends State<MindMapScreen>
         });
         return true;
       }
+      // ── Zen モード中の Esc = 「上のバーを出す」 の札を出す (= ユーザー
+      //    要望: Esc キーかヘッダー中央付近にカーソルが来たら表示ボタンが
+      //    現れるように)。
+      //    ★ 打鍵は飲まない (= return true しない)。 Esc の他の用途
+      //      (入力の取り消し / 選択の解除 など) を奪わないため。 先客
+      //      (マップ名の編集 / 同期の中断 / ギャラリーの掴み) は上で既に
+      //      return しているので、 ここは一番最後に置く。 ──
+      if (_zenChromeHidden) _pinZenReveal();
     }
     // ── Tab: 親 → 一番上の子 → 兄弟を順に (= ユーザー要望) ──
     // 文字入力中でも効かせたいので、 インライン編集中は確定してから移る。
@@ -7370,7 +7463,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     setState(() => _editingCaptionNodeId = null);
     final provider = context.read<MindMapProvider>();
     provider.updateNodeCaption(id, text);
-    // 説明書きのぶん、 上にある要素をどかして被らないようにする。
+    // 説明書きの分、 上にある要素をどかして被らないようにする。
     provider.makeRoomForCaption(id);
   }
 
@@ -7387,7 +7480,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       final w = _captionWidthFor(n);
       out.add(Positioned(
         left: n.position.dx + n.width / 2 - w / 2,
-        // 下端をノードのすぐ上に固定して、 中身の高さぶん上へ伸ばす。
+        // 下端をノードのすぐ上に固定して、 中身の高さ分上へ伸ばす。
         bottom: canvasSize - (n.position.dy - gap),
         width: w,
         child: _captionBubble(provider, n, editing),
@@ -8327,6 +8420,99 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
   }
 
+  /// OS のファイル管理で**そのファイルを選んだ状態**で開く。
+  ///
+  /// ★ 隠しの powershell / cmd は起こさない (= セキュリティソフトに撃たれる)。
+  ///   既にある 4 か所と同じ `explorer /select,` の形をそのまま使う。
+  /// ★ Linux には「選んで開く」 が無いので、 入れ物のフォルダーを開く。
+  Future<void> _revealFileInOs(String path) async {
+    final p = path.trim();
+    if (p.isEmpty) return;
+    try {
+      if (Platform.isWindows) {
+        await Process.start('explorer', ['/select,', p.replaceAll('/', '\\')],
+            mode: ProcessStartMode.detached);
+      } else if (Platform.isMacOS) {
+        await Process.start('open', ['-R', p], mode: ProcessStartMode.detached);
+      } else {
+        final sep = Platform.pathSeparator;
+        final i = p.lastIndexOf(sep);
+        await _revealDirectory(i > 0 ? p.substring(0, i) : p);
+      }
+    } catch (e) {
+      debugPrint('reveal file failed: $e');
+    }
+  }
+
+  /// ページ一覧のメニューの「エクスプローラーで場所を開く」 (= ユーザー要望)。
+  ///
+  /// ページの本体は「フォルダーの連動先 → 無ければアプリの保存先」 に
+  /// <ページ名>.json として出ている (= MindMapProvider.autoSavePageIfLinked)。
+  /// ★ 保存先を決めていない時は黙って何もしない … ではなく、 決める口を出す
+  ///   (項目は常に出すので、 押して何も起きないのを避ける)。
+  /// ★ まだ出ていない / 名前を変えた直後は、 その場で 1 枚だけ書き出してから
+  ///   開く (次の保存を待たせない)。
+  Future<void> _revealPageFile(
+      MindMapProvider provider, MindMapPage page) async {
+    final dir = (provider.linkedDirectoryForPage(page.id) ?? '').trim();
+    if (dir.isEmpty) {
+      if (!mounted) return;
+      _appSnack(
+        context,
+        SnackBar(
+          content: Text(provider.t('page.revealNoDest'),
+              style: const TextStyle(fontSize: 12)),
+          backgroundColor: const Color(0xFFFFB347),
+          duration: const Duration(seconds: 5),
+          action: SnackBarAction(
+            label: provider.t('dataDir.title'),
+            textColor: Colors.white,
+            onPressed: () => unawaited(_showDataFolderPicker(provider)),
+          ),
+        ),
+      );
+      return;
+    }
+    final path = provider.diskFilePathForPage(page.id) ?? '';
+    Future<bool> fileThere() async {
+      if (path.isEmpty) return false;
+      try {
+        return await File(path).exists();
+      } catch (_) {
+        return false;
+      }
+    }
+
+    if (!await fileThere()) {
+      try {
+        await provider.autoSavePageIfLinked(page.id);
+      } catch (e) {
+        debugPrint('reveal page: autosave failed: $e');
+      }
+    }
+    if (await fileThere()) {
+      await _revealFileInOs(path);
+      return;
+    }
+    var dirThere = false;
+    try {
+      dirThere = await Directory(dir).exists();
+    } catch (_) {}
+    if (dirThere) await _revealDirectory(dir);
+    if (!mounted) return;
+    _appSnack(
+      context,
+      SnackBar(
+        content: Text(
+            provider
+                .t(dirThere ? 'page.revealFallbackDir' : 'page.revealMissing'),
+            style: const TextStyle(fontSize: 12)),
+        backgroundColor: const Color(0xFFE57373),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
   /// データの保存先フォルダーを決めてもらう (= ユーザー要望)。
   ///
   /// 決めた場所に「連動フォルダー」 を 1 つ作り、 今あるページをそこへ入れる。
@@ -8663,7 +8849,16 @@ class _MindMapScreenState extends State<MindMapScreen>
     openUrlInAppFromAnywhere = null;
     openPageListFromAnywhere = null;
     openSettingsFromAnywhere = null;
+    setAppChromeHiddenFromAnywhere = null;
+    _zenRevealPinTimer?.cancel();
     openTerminalFromAnywhere = null;
+    // ★ = 点検で判明: 起動時に登録したこの 2 つだけ外し忘れていた。
+    //   provider は画面より長生きするので、 外さないと消えた画面を掴んだ
+    //   ままになり、 2 枚目の画面が出た時に古い方へ案内が飛ぶ。
+    paywallPresenter = null;
+    try {
+      context.read<MindMapProvider>().onPageOpenBlocked = null;
+    } catch (_) {}
     embedOpenFileFromAnywhere = null;
     isFileEmbeddedFromAnywhere = null;
     commandIdForKeyEventFromAnywhere = null;
@@ -8805,7 +9000,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (state != AppLifecycleState.resumed) {
       _cancelInterruptedCanvasGesture();
       // 保存はまとめて遅延実行しているので (= フリーズ対策)、 前面から外れる
-      //   時に待機中のぶんを確実に書き出す。
+      //   時に待機中の分を確実に書き出す。
       try {
         unawaited(context.read<MindMapProvider>().flushSaveToStorage());
       } catch (_) {}
@@ -8936,7 +9131,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
 
     // 格納ノードの中に畳んだ物は並びに出ていないので数えない
-    // (数えると、 昔の位置に居るぶんだけ範囲が横に広がってしまう)。
+    // (数えると、 昔の位置に居る分だけ範囲が横に広がってしまう)。
     for (final n in (pageOverride ?? provider.currentPage).nodes.values) {
       if (n.hiddenInContainer != null) continue;
       acc(n.position.dx, n.position.dy, n.position.dx + n.width,
@@ -8950,7 +9145,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     return Rect.fromLTRB(minX, minY, maxX, maxY);
   }
 
-  /// マップが実際に見えている大きさ (分割パネルのぶんを差し引く)。
+  /// マップが実際に見えている大きさ (分割パネルの分を差し引く)。
   ///
   /// ★ 分割ペインを開くと Flex でマップ側が狭くなるので、 画面全体の幅で
   ///   考えると右端の列がパネルの裏に固定されて手前に引き出せない。
@@ -9020,7 +9215,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     return b.width * scale <= viewW + 1.0;
   }
 
-  /// ギャラリー (本棚) の内容範囲に translation を収める、 1 軸ぶんの計算。
+  /// ギャラリー (本棚) の内容範囲に translation を収める、 1 軸分の計算。
   ///
   /// ★ パンのクランプ (_clampBookshelfPan) と矢印キー
   ///   (_handleBookshelfArrowKey) で**同じ四角・同じ式**を使うために
@@ -9073,7 +9268,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     final view = _mapViewportSize();
     final viewW = view.width;
     final viewH = view.height;
-    // 端にわずかな余白は許す。 キャンバス座標 120px ぶん (スクロールバーの
+    // 端にわずかな余白は許す。 キャンバス座標 120px 分 (スクロールバーの
     // 可動域計算 _canvasBoundaryMarginForScrollbars と同じ値にして、 バーが
     // ちょうど端に来る位置でパンも止まるようにする = ユーザー要望)。
     final buffer = 120.0 * scale;
@@ -9283,7 +9478,7 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// 知っている基準位置を provider へ渡す (= ユーザー要望: 位置の指定が
   /// 無い時は基準位置の付近に作る)。 基準位置は画面側が持っているので、
-  /// MCP / AI が使えるように控えてもらう。 ページ数ぶんの代入だけなので
+  /// MCP / AI が使えるように控えてもらう。 ページ数分の代入だけなので
   /// 切り替えのたびに呼んでも軽い。
   void _syncReferencesToProvider(MindMapProvider provider) {
     for (final p in provider.pages) {
@@ -10133,13 +10328,12 @@ class _MindMapScreenState extends State<MindMapScreen>
         ..addAll(mates);
     });
     // エッジスクロールタイマー開始
-    // ★ 「境界を跨いでデータを渡す」 モードの間は始めない (= ユーザー要望。
+    // ★ 「境界を跨いでデータを渡す」 モードの間も始める (= ユーザー要望。
+    //   どの辺で追わないかは [_transferSuppressedEdges] が辺ごとに決める。
     //   理由は [_onLongPressNodeMove] の末尾に書いた)。
     _lastDragGlobalPos = globalPos;
     _edgeScrollCtrl = ctrl;
-    if (!(_splitTransferMode && _mapSplitOpen)) {
-      _startEdgeScrollTimer();
-    }
+    _startEdgeScrollTimer();
   }
 
   /// 長押しドラッグ中：位置とスナップ更新
@@ -10268,17 +10462,16 @@ class _MindMapScreenState extends State<MindMapScreen>
 
     // 画面端に近づいたらビューポートを自動スクロール
     //
-    // ★ ただし「境界を跨いでデータを渡す」 モードの間はしない
-    //   (= ユーザー要望:「境界を跨いだデータ転送モードになって要素を掴んだ
-    //   場合、 境界付近での画面追跡は行わずそのまま跨ぐ形にして欲しい」)。
-    //   分割中はペインの縁がそのまま境界なので、 端に寄った途端に画面が
-    //   追って動き出し、 隣へ渡したいだけなのに手元の地図が流れていた。
-    //   渡す事が目的の間は、 画面は動かさず素通りさせる。
-    if (_splitTransferMode && _mapSplitOpen) {
-      _stopEdgeScroll();
-    } else {
-      _autoScrollIfNeeded(globalPos, ctrl);
-    }
+    // ★ 「境界を跨いでデータを渡す」 モードでも追跡する (= ユーザー要望:
+    //   「分割境界でない画面外に要素をドラッグしようとしても画面追跡され
+    //   ないから、 分割境界でないなら追跡されるようにして」)。
+    //   旧: このモードの間は辺を問わず追跡を丸ごと止めていたので、 隣の
+    //   ペインと接していない外側の端まで運んでも画面が動かず、 セルの外に
+    //   ある物を取りに行けなかった。
+    //   隣のペインと接している辺 (= 分割境界) だけは今までどおり素通り
+    //   させる。 そこで画面が追うと、 隣へ渡したいだけなのに手元の地図が
+    //   流れてしまうため。 辺の選り分けは [_transferSuppressedEdges]。
+    _autoScrollIfNeeded(globalPos, ctrl);
   }
 
   /// カーソル位置を更新（onPanUpdateから呼ばれる）
@@ -10359,6 +10552,41 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (right - left < 50) right = (left + 50).clamp(0.0, size.width);
     if (bottom - top < 50) bottom = (top + 50).clamp(0.0, size.height);
     return Rect.fromLTRB(left, top, right, bottom);
+  }
+
+  /// 「境界を跨いでデータを渡す」 モードの間、 画面追跡を止める辺
+  /// (0=左 1=右 2=上 3=下。 番号の付け方は [_edgePanHeldEdges] と同じ)。
+  ///
+  /// ★ = ユーザー要望「分割境界でない画面外に要素をドラッグしようとしても
+  ///   画面追跡されないから、 分割境界でないなら追跡されるようにして」。
+  ///   旧: このモードの間は辺を問わず追跡を丸ごと止めていた。 止めたいのは
+  ///   「隣のペインと接している辺」 だけ (そこで画面が追うと、 隣へ渡したい
+  ///   だけなのに手元の地図が流れる)。 外側の端は普通の全画面と同じに
+  ///   追いかけて良い。
+  ///
+  ///   どの辺が隣と接しているかは、 編集キャンバスが入っているセルの番号と
+  ///   分割の形から決まる ([_splitCellGlobalRect] の矩形計算と同じ規則)。
+  ///   2 分割・左右: 0=左 (右辺が境界) / 1=右 (左辺が境界)
+  ///   2 分割・上下: 0=上 (下辺が境界) / 1=下 (上辺が境界)
+  ///   4 分割: 0=左上 1=右上 2=左下 3=右下 (横と縦に 1 辺ずつ境界)
+  Set<int> _transferSuppressedEdges() {
+    if (!_splitTransferMode || !_mapSplitOpen) return const <int>{};
+    // 分割に乗らないページ (= 文書やフリーノート等) の時は、
+    // _visibleMapRectForAutoScroll もセルまで狭めないので抑止もしない。
+    if (!_splitEligiblePage(context.read<MindMapProvider>().currentPage)) {
+      return const <int>{};
+    }
+    final k = _mapSplitEditorSlot;
+    final edges = <int>{};
+    if (_mapSplitQuad) {
+      edges.add((k % 2) == 0 ? 1 : 0);
+      edges.add((k ~/ 2) == 0 ? 3 : 2);
+    } else if (_mapSplitStacked) {
+      edges.add(k == 0 ? 3 : 2);
+    } else {
+      edges.add(k == 0 ? 1 : 0);
+    }
+    return edges;
   }
 
   /// エッジスクロールタイマーを開始
@@ -10536,17 +10764,30 @@ class _MindMapScreenState extends State<MindMapScreen>
         (_draggingDecoration && _decoDragFollowsScroll);
     if (dragsContent && !pointerLive) return;
 
+    // ★ = ユーザー要望「分割境界でないなら追跡されるようにして」。
+    //   「境界を跨いでデータを渡す」 モードでは、 隣のペインと接している辺
+    //   だけ追わない。 それ以外の外側の端は普通に追いかける。
+    final transferEdges = _transferSuppressedEdges();
+
     // 左端: ノード(またはカーソル)の左端が visible.left に近づいたら
-    if (nearL && !_edgePanHeldEdges.containsKey(0)) {
+    if (nearL &&
+        !_edgePanHeldEdges.containsKey(0) &&
+        !transferEdges.contains(0)) {
       dx = speed * ((visible.left + margin - leftEdge) / margin);
-    } else if (nearR && !_edgePanHeldEdges.containsKey(1)) {
+    } else if (nearR &&
+        !_edgePanHeldEdges.containsKey(1) &&
+        !transferEdges.contains(1)) {
       // 右端: ノードの右端が visible.right に近づいたら
       dx = -speed * ((rightEdge - (visible.right - margin)) / margin);
     }
     // 上端 / 下端も同様にノードの上端 / 下端で判定
-    if (nearT && !_edgePanHeldEdges.containsKey(2)) {
+    if (nearT &&
+        !_edgePanHeldEdges.containsKey(2) &&
+        !transferEdges.contains(2)) {
       dy = speed * ((visible.top + margin - topEdge) / margin);
-    } else if (nearB && !_edgePanHeldEdges.containsKey(3)) {
+    } else if (nearB &&
+        !_edgePanHeldEdges.containsKey(3) &&
+        !transferEdges.contains(3)) {
       dy = -speed * ((bottomEdge - (visible.bottom - margin)) / margin);
     }
     // 旧仕様の保険: ポインタが完全に画面外 (= screen の物理端の外側) に
@@ -13328,31 +13569,54 @@ class _MindMapScreenState extends State<MindMapScreen>
               style: TextStyle(
                   color: Colors.white.withValues(alpha: 0.5), fontSize: 11)),
         ),
-        for (final m in const ['api', 'cli'])
+        // ★ = ユーザー要望「PC内AI って表記じゃなくて CodexCLI と
+        //   ClaudeCode って表記して欲しい」+「混ざってしまっているので分けて」。
+        //   1 つだった「PC内AI」の項目を、 CLI の種類ごとに分けて並べる。
+        PopupMenuItem<String>(
+          value: 'mode:api',
+          height: 36,
+          child: Row(children: [
+            Icon(Icons.auto_awesome_rounded,
+                size: 16,
+                color: aiMode == 'api'
+                    ? const Color(0xFF80CBC4)
+                    : Colors.white54),
+            const SizedBox(width: 8),
+            Text(provider.t('ai.modeApi'),
+                style: TextStyle(
+                    color: aiMode == 'api'
+                        ? const Color(0xFF80CBC4)
+                        : Colors.white,
+                    fontSize: 12.5)),
+            if (aiMode == 'api') ...[
+              const Spacer(),
+              const Icon(Icons.check_rounded,
+                  size: 15, color: Color(0xFF80CBC4)),
+            ],
+          ]),
+        ),
+        for (final k in const [AgentCliKind.claude, AgentCliKind.codex])
           PopupMenuItem<String>(
-            value: 'mode:$m',
+            value: 'mode:cli:${k.name}',
             height: 36,
-            child: Row(children: [
-              Icon(
-                  m == 'api'
-                      ? Icons.auto_awesome_rounded
-                      : Icons.terminal_rounded,
-                  size: 16,
-                  color: m == aiMode
-                      ? const Color(0xFF80CBC4)
-                      : Colors.white54),
-              const SizedBox(width: 8),
-              Text(provider.t(m == 'api' ? 'ai.modeApi' : 'ai.modeCli'),
-                  style: TextStyle(
-                      color:
-                          m == aiMode ? const Color(0xFF80CBC4) : Colors.white,
-                      fontSize: 12.5)),
-              if (m == aiMode) ...[
-                const Spacer(),
-                const Icon(Icons.check_rounded,
-                    size: 15, color: Color(0xFF80CBC4)),
-              ],
-            ]),
+            child: Builder(builder: (_) {
+              final on = aiMode == 'cli' && provider.cliAiKindEnum == k;
+              return Row(children: [
+                Icon(Icons.terminal_rounded,
+                    size: 16,
+                    color: on ? const Color(0xFF80CBC4) : Colors.white54),
+                const SizedBox(width: 8),
+                Text(AgentCliSpec.of(k).label,
+                    style: TextStyle(
+                        color: on ? const Color(0xFF80CBC4) : Colors.white,
+                        fontSize: 12.5)),
+                if (on) ...[
+                  const Spacer(),
+                  const Icon(Icons.check_rounded,
+                      size: 15, color: Color(0xFF80CBC4)),
+                ],
+              ]);
+            }),
           ),
         const PopupMenuDivider(height: 9),
         PopupMenuItem<String>(
@@ -13401,13 +13665,18 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (picked == null || !mounted) return;
     // ── どちらの AI で動かすかを選んだ時 (開き方はそのまま) ──
     if (picked.startsWith('mode:')) {
-      final m = picked.substring(5);
+      var m = picked.substring(5);
+      // ★ 'cli:<種類>' の形 (= ユーザー要望: Codex CLI と Claude Code を分ける)。
+      if (m.startsWith('cli:')) {
+        await provider.setCliAiKind(m.substring(4));
+        m = 'cli';
+      }
       await _saveAiAssistantMode(m);
       if (!mounted) return;
       if (m == 'cli') _McpChatDialogState.openCliListOnStart = true;
       setState(() {});
       // ★ 今出している会話欄は先に閉じる (= 「全画面」 を選べるように
-      //   したぶん、 浮遊窓を出したまま全画面のダイアログが重なって出る
+      //   した分、 浮遊窓を出したまま全画面のダイアログが重なって出る
       //   道ができた)。 2 枚同時に出ると、 どちらも「前に見ていた端末」 を
       //   映し直そうとして、 1 つの [Terminal] に端末が 2 枚ぶら下がり、
       //   幅を取り合って CLI の画面が壊れる。
@@ -13422,7 +13691,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (!mounted) return;
     setState(() {});
     // ★ 今出している会話欄は先に閉じる (= 「全画面」 を選べるように
-    //   したぶん、 浮遊窓を出したまま全画面のダイアログが重なって出る
+    //   した分、 浮遊窓を出したまま全画面のダイアログが重なって出る
     //   道ができた)。 2 枚同時に出ると、 どちらも「前に見ていた端末」 を
     //   映し直そうとして、 1 つの [Terminal] に端末が 2 枚ぶら下がり、
     //   幅を取り合って CLI の画面が壊れる。
@@ -17604,7 +17873,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       for (final c in n.children) {
         total += units(c);
       }
-      if (n.omitted > 0) total += 1; // 「他 N 件」 ノードのぶん
+      if (n.omitted > 0) total += 1; // 「他 N 件」 ノードの分
       n.unitsCache = total < 1 ? 1 : total;
       return n.unitsCache!;
     }
@@ -19294,8 +19563,12 @@ class _MindMapScreenState extends State<MindMapScreen>
     );
   }
 
-  void _showPaywallDialog(MindMapProvider provider, {String? bodyOverride}) {
-    showDialog<void>(
+  /// プラン案内のモーダルを出している最中か (二度出し防止)。
+  bool _planLockDialogOpen = false;
+
+  Future<void> _showPaywallDialog(MindMapProvider provider,
+      {String? bodyOverride}) {
+    return showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E1E1E),
@@ -21931,7 +22204,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     } catch (_) {}
   }
 
-  /// 操作バー 2 段ぶんの概算高さ。 ノードの下にこれだけ余白があれば、
+  /// 操作バー 2 段分の概算高さ。 ノードの下にこれだけ余白があれば、
   /// 「ボタンは上・色/サイズは下」 の既定配置で収まる。
   static const double _kActionBarsRoom = 200.0;
 
@@ -22143,6 +22416,28 @@ class _MindMapScreenState extends State<MindMapScreen>
                 }
               },
               nodeTextColor: n.textColor == null ? null : Color(n.textColor!),
+              // ★ = ユーザー要望「(長押しで背景色を固定) とか書かれているが、
+              //   これはモバイル版での話じゃないの? パソコン版でも背景色や
+              //   文字色を固定できるようにして」。 背景色の丸を長押し
+              //   (パソコンは右クリック) すると、 これから作る要素の既定の
+              //   背景色になる。 既に既定の色なら、 もう一度で解除して
+              //   順番に変わる方へ戻す。
+              onPinBgColor: (color) {
+                final p = context.read<MindMapProvider>();
+                final idx = MindMapProvider.nodePalette
+                    .indexWhere((c) => c.value == color.value);
+                if (idx < 0) return;
+                final bool already =
+                    p.colorMode == 'fixed' && p.fixedColorIndex == idx;
+                if (already) {
+                  unawaited(p.setColorMode('cycle'));
+                  _showLockToast(p.t('overlay.bgColorForgot'));
+                } else {
+                  unawaited(p.setFixedColorIndex(idx));
+                  unawaited(p.setColorMode('fixed'));
+                  _showLockToast(p.t('overlay.bgColorRemembered'));
+                }
+              },
               onCollapse: () {
                 _removeOverlay();
                 context.read<MindMapProvider>().toggleNodeCollapsed(nodeId);
@@ -24539,7 +24834,7 @@ class _MindMapScreenState extends State<MindMapScreen>
   ///
   /// = ユーザー要望「最初は小さめで、 書いた分だけ動的に広がるように」。
   ///   以前は空でも 96px の高さを取っていたため、 一行も書いていない時点で
-  ///   大きな空欄が出ていた。 最初は一行ぶんだけにして、 打った量に応じて
+  ///   大きな空欄が出ていた。 最初は一行分だけにして、 打った量に応じて
   ///   下の TextPainter の測り直しで伸ばす (上限は 360px のまま)。
   static const double _kInlineEditMinWidth = 280.0;
   static const double _kInlineEditMinHeight = 44.0;
@@ -25816,6 +26111,26 @@ class _MindMapScreenState extends State<MindMapScreen>
     //   codex 側に吸われてしまう」)。 キャンバスを押した時点で返させる。
     if (AgentTerminalState.live.isNotEmpty) {
       for (final t in AgentTerminalState.live.toList()) {
+        if (!t.mounted) continue;
+        // ★ 押されたのが**その端末自身**なら手放させない (= 点検で判明)。
+        //   分割セルに埋めた端末はこのキャンバスの Listener の**中**に
+        //   居るので、 端末を押すと 1 回の押下で
+        //     端末の Listener が掛け金を下ろす → こちらが掛け直す
+        //   となり、 押しても押しても打てないままになっていた。
+        //   [terminal-userleft-latch] と同じ形。 当たり判定は隠し入力欄の
+        //   `onTapOutside` と同じ「枠の中か」 で見る。
+        try {
+          final box = t.context.findRenderObject() as RenderBox?;
+          if (box != null && box.hasSize) {
+            final q = box.globalToLocal(event.position);
+            if (q.dx >= 0 &&
+                q.dy >= 0 &&
+                q.dx <= box.size.width &&
+                q.dy <= box.size.height) {
+              continue;
+            }
+          }
+        } catch (_) {}
         t.releaseKeyboard();
       }
     }
@@ -29720,10 +30035,12 @@ class _MindMapScreenState extends State<MindMapScreen>
     final sh = mq.size.height;
 
     // メニュー項目を構築
-    // モバイル版では、ノード追加 / リンク挿入 / ファイル添付 / 範囲選択 の
-    // 4 つは画面下部のボタンバーに既にデフォルト搭載されているため、
+    // モバイル版では、ノード追加 / リンク挿入 / ファイル添付 の
+    // 3 つは画面下部のボタンバーに既にデフォルト搭載されているため、
     // この空き領域メニューに同じ項目を出すと冗長 + ボタン領域が狭くなる。
-    // → モバイル時はこの 4 項目をスキップする (デスクトップでは従来通り表示)。
+    // → モバイル時はこの 3 項目をスキップする (デスクトップでは従来通り表示)。
+    // ★ 範囲選択だけは例外で、 モバイルでもこのメニューに出す
+    //   (= ユーザー要望: モバイルの右クリック相当の項目に範囲選択が無い)。
     // 「マップを分割表示」 を押した時に、 その下へ割り方 (上下 / 左右 /
     // 4 分割) を差し込むか (= ユーザー要望: 右クリックではなく左クリックで、
     // 元の項目を出したまま 2〜4 分割の設定が出てくるように)。
@@ -29747,23 +30064,26 @@ class _MindMapScreenState extends State<MindMapScreen>
       //    なるように、 この 3 つを先頭で固める。 2 行目 (範囲選択) が
       //    カーソルの高さに来るよう、 下の nodeGenAnchorOffset で位置を
       //    合わせている。
-      //    モバイルは 「ノードを追加」「範囲選択」 を下のボタンバーに常設
-      //    しているのでここには出さない (その時は ページ切り替え が先頭)。
-      if (_isDesktop)
-        _CtxMenuItem(
-          menuId: 'rangeSelect',
-          icon: Icons.select_all_rounded,
-          label: provider.t('ctx.rangeSelect'),
-          color: const Color(0xFF4FC3F7),
-          onTap: () {
-            _removeOverlay();
-            setState(() {
-              _rangeSelectMode = true;
-              _rangeSelectedIds.clear();
-              _rangeSelectedDecorationIds.clear();
-            });
-          },
-        ),
+      //    モバイルは 「ノードを追加」 を下のボタンバーに常設しているので
+      //    ここには出さない。
+      //    ★ 範囲選択はモバイルにも出す (= ユーザー要望「モバイル版、
+      //      右クリックの項目に範囲選択が含まれていないから含めて欲しい」)。
+      //      下のボタンバーは並べ替えで外せるので、 ここに無いと入口が
+      //      無くなる事がある。
+      _CtxMenuItem(
+        menuId: 'rangeSelect',
+        icon: Icons.select_all_rounded,
+        label: provider.t('ctx.rangeSelect'),
+        color: const Color(0xFF4FC3F7),
+        onTap: () {
+          _removeOverlay();
+          setState(() {
+            _rangeSelectMode = true;
+            _rangeSelectedIds.clear();
+            _rangeSelectedDecorationIds.clear();
+          });
+        },
+      ),
       if (_isDesktop)
         _CtxMenuItem(
           menuId: 'addNode',
@@ -31928,7 +32248,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                 icon: const Icon(Icons.play_arrow_rounded, size: 18),
                 label: Text(provider.t('flash.study')),
                 onPressed: () => _showFlashcardStudy(
-                    ctx,
+                    // ★ 窓の中で作られた context を渡す (画面の `ctx` だと
+                    //   一番近い Navigator が根っこ = 窓の裏に出てしまう)。
+                    dctx,
                     cards
                         .map((c) => (
                               front: c.front,
@@ -31950,8 +32272,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                 icon: const Icon(Icons.forum_rounded, size: 16),
                 label: Text(provider.t('flash.aiChat')),
                 onPressed: () => showDialog<void>(
-                  context: ctx,
-                  useRootNavigator: !inPane,
+                  // ★ 窓の中で作られた context を渡す。 画面の `ctx` を渡すと
+                  //   一番近い Navigator が根っこになり、 useRootNavigator を
+                  //   false にしても窓の裏に出てしまう。
+                  context: dctx,
+                  useRootNavigator: _dialogUseRootNav(dctx, inPane: inPane),
                   builder: (_) => _FlashcardChatDialog(
                       cards: cards
                           .map((c) =>
@@ -32292,6 +32617,25 @@ class _MindMapScreenState extends State<MindMapScreen>
     disposePaneCtrls();
   }
 
+  /// ダイアログを積む Navigator を決める (true = 根っこの Navigator)。
+  ///
+  /// ★ 浮遊窓 (`_showFloatingPanelWindow`) は**根っこの Overlay に挿した
+  ///   OverlayEntry** なので、 根っこの Navigator に積んだ route を全部
+  ///   覆い隠す。 そのため窓の中から既定 (useRootNavigator: true) のまま
+  ///   showDialog すると、 ダイアログは窓の裏 = アプリ本体側に出る
+  ///   (= ユーザー報告: 「カードを追加」 の項目がフラッシュカードの
+  ///   フローティング画面の下に出ている)。 false なら一番近い Navigator =
+  ///   その窓自身の Navigator になり、 窓の手前に重なって出る。
+  /// ★ 呼ぶ側それぞれに書かせると必ず付け忘れるので、 渡された context から
+  ///   自分で見て決める (`showAiModelDialog` と同じ形)。 渡す context は
+  ///   **窓の中で作られた物** (= dctx) でなければ意味が無い。 画面の
+  ///   `context` は浮遊窓の先祖ではないため、 必ず null になる。
+  /// ★ [inPane] (分割ペイン) の時は今までどおり false = ペインに立てた
+  ///   `_PaneDialogHost` の Navigator に載せる。
+  bool _dialogUseRootNav(BuildContext c, {bool inPane = false}) =>
+      !inPane &&
+      c.findAncestorStateOfType<_FloatingPanelWindowState>() == null;
+
   /// 1 枚のカードを追加/編集するダイアログ。 index==null なら新規。
   Future<void> _editFlashcardDialog(
       BuildContext ctx, String pageId, int? index,
@@ -32320,7 +32664,11 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (!ctx.mounted) return;
     await showDialog<void>(
       context: ctx,
-      useRootNavigator: !inPane,
+      // ★ = ユーザー報告「カードを追加ボタンを押した時に項目がフローティング
+      //   画面の下に出ている」。 浮遊窓は根っこの Overlay なので、 根っこの
+      //   Navigator に積むと窓の裏に隠れる。 窓の中から呼ばれた時 (呼び元は
+      //   窓の中の context = dctx を渡している) は窓自身の Navigator へ。
+      useRootNavigator: _dialogUseRootNav(ctx, inPane: inPane),
       builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
         // = ユーザー要望: フラッシュカードに画像を貼り付け。 画像を選んで
         //   アプリ領域へコピーし、 パスを保持する。
@@ -32629,7 +32977,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     final ctrl = TextEditingController();
     return showDialog<String>(
       context: ctx,
-      useRootNavigator: !inPane,
+      // ★ 浮遊窓の中では窓自身の Navigator に積む (窓の裏に隠れないように)。
+      useRootNavigator: _dialogUseRootNav(ctx, inPane: inPane),
       builder: (dctx) => AlertDialog(
         backgroundColor: const Color(0xFF2A2A3E),
         title: Text(provider.t('flash.newFolder'),
@@ -32997,7 +33346,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       return;
     }
     // 直った内容で置き換える (対象と同じ順番・同じ枚数で返るのが前提。
-    //   ずれた時は返ってきたぶんだけ当てる)。
+    //   ずれた時は返ってきた分だけ当てる)。
     final updated = <_FCard>[];
     for (var i = 0; i < all.length; i++) {
       final c = all[i];
@@ -33532,7 +33881,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     final ctrl = TextEditingController();
     return showDialog<String>(
       context: dctx,
-      useRootNavigator: !inPane,
+      // ★ 浮遊窓の中では窓自身の Navigator に積む (窓の裏に隠れないように)。
+      useRootNavigator: _dialogUseRootNav(dctx, inPane: inPane),
       builder: (c) => AlertDialog(
         backgroundColor: const Color(0xFF1E1E32),
         title: Text(provider.t('flash.moveToFolder'),
@@ -33763,7 +34113,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     bool mistakeFiled = false;
     showDialog<void>(
       context: ctx,
-      useRootNavigator: !inPane,
+      // ★ 浮遊窓の中では窓自身の Navigator に積む (窓の裏に隠れないように)。
+      useRootNavigator: _dialogUseRootNav(ctx, inPane: inPane),
       barrierColor: Colors.black87,
       builder: (dctx) => StatefulBuilder(builder: (dctx, setS) {
         final card = cards[idx];
@@ -38069,6 +38420,20 @@ class _MindMapScreenState extends State<MindMapScreen>
       }
     }
     provider.moveNodesToPage(ids, targetIdx);
+    // ★ = ユーザー報告「要素を境界を越えて他のページへ送った直後の
+    //   1 動作後は掴めなくなっている」。 送った要素の id が「範囲で選んだ
+    //   一覧」 に残ったままだったのが原因。 残っていると画面は「範囲を
+    //   選んでいる最中」 のままなので、 他の要素には長押しの受け口が
+    //   付かなくなり (node_widget は isRangeMode だと onLongPressStart を
+    //   外す)、 1 回目の押し込みが空振りしていた。 送った分を落とす。
+    _rangeSelectedIds.removeAll(ids);
+    if (_rangeSelectedIds.isEmpty && _rangeSelectedDecorationIds.isEmpty) {
+      _rangeSelectMode = false;
+    }
+    if (_actionNodeId != null && ids.contains(_actionNodeId)) {
+      _actionNodeId = null;
+      _removeOverlay();
+    }
     if (targetIsShelf) {
       if (shelfCell != null) {
         provider.placeShelfItemsAtCell(
@@ -43156,10 +43521,14 @@ class _MindMapScreenState extends State<MindMapScreen>
           final tabBodyHeight =
               (MediaQuery.of(dctx).size.height - 240).clamp(360.0, 780.0);
 
+          // ★ = ユーザー要望「3 ページ目以降は Pro 以上でないと開けない」。
+          //   数える対象を「作った種類の数 / 種類ごとの上限」から
+          //   「持っているページ数 / 開ける枚数」へ改めた (以前は
+          //   種類数を枚数の上限と並べていたので「3 / 1」のように出ていた)。
           final pagesUsed = provider.pages.length;
-          final pageTypesUsed = provider.freePageTypesUsed;
-          final pageLimit = MindMapProvider.kFreePageLimit;
-          final pagePercent = 0.0;
+          final pageLimit = MindMapProvider.kFreeOpenPageLimit;
+          final pagePercent =
+              unlimited ? 0.0 : (pagesUsed / pageLimit).clamp(0.0, 1.0);
 
           final inquiryUsed = remainingInquiries == null
               ? null
@@ -43499,7 +43868,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                               .replaceAll('{used}', '$pagesUsed')
                           : provider
                               .t('usage.pagesUsed')
-                              .replaceAll('{used}', '$pageTypesUsed')
+                              .replaceAll('{used}', '$pagesUsed')
                               .replaceAll('{limit}', '$pageLimit'),
                       percent: pagePercent,
                       unlimited: unlimited,
@@ -44991,23 +45360,17 @@ class _MindMapScreenState extends State<MindMapScreen>
     // 「ヘッダーに表示中」 リストの RawScrollbar とその子 SingleChildScrollView
     // で共有することで、 サムが常時表示される。
     final ScrollController hcsScrollCtrl = ScrollController();
-    // ── 配置済みリストの高さ (画面高に対する割合)。 境界のドラッグで変更
-    //    できる (= ユーザー要望)。 前回の値を prefs から読み込む。 ──
-    if (_hcbPlacedFrac <= 0) {
-      // ignore: discarded_futures
-      SharedPreferences.getInstance().then((sp) {
-        final v = sp.getDouble('hdrCustPlacedFrac');
-        if (v != null && v > 0) {
-          _hcbPlacedFrac = v.clamp(0.12, 0.68).toDouble();
-        }
-      });
-    }
     // ── Ctrl / Shift でまとめて選択して追加する状態 (= ユーザー要望) ──
     //   候補チップを Ctrl(個別トグル)/Shift(範囲) で複数選択し、「まとめて追加」で
     //   一度にバーへ送れるようにする。 StatefulBuilder の setS をまたいで保持
     //   したいのでダイアログ寿命のローカル変数に置く。
     final Set<String> multiSelIds = <String>{};
     String? multiSelAnchor;
+    // ── 選択肢を探す (= ユーザー要望: 選択肢を検索するボタンを付けて欲しい) ──
+    //   ダイアログを開いている間だけ持つ。 打つたびに候補 (availableCmds) を
+    //   絞るので、 カテゴリの見出しも自動で減る。
+    final TextEditingController hcbSearchCtrl = TextEditingController();
+    String hcbQuery = '';
     showDialog(
       context: ctx,
       barrierColor: Colors.black54,
@@ -45015,7 +45378,11 @@ class _MindMapScreenState extends State<MindMapScreen>
         builder: (sctx2, setS) {
           // 画面サイズに応じてダイアログの上限を決める（縦長モバイル対応）
           final screen = MediaQuery.of(sctx).size;
-          final maxW = screen.width.clamp(320.0, 560.0);
+          // ★ = ユーザー要望「ヘッダーのカスタマイズ設定は 2 列にして横に
+          //   広げて、 選択肢が右の列に来るように」。 入る広さの時だけ
+          //   2 列にして、 その時は窓もぐっと広く取る。
+          final twoCol = screen.width >= 880;
+          final maxW = screen.width.clamp(320.0, twoCol ? 1040.0 : 560.0);
           // 高さは固定にする (下の ConstrainedBox 参照) ので、 極端に低い
           // ウィンドウでもはみ出さないよう insetPadding (上下 24) を引いた
           // 実利用可能高さで必ず頭打ちにする。
@@ -45098,6 +45465,16 @@ class _MindMapScreenState extends State<MindMapScreen>
                           _isDesktop ||
                           !provider.customBottomButtons.contains(c['id']))
                       .where((c) => _isDesktop || c['id'] != 'shortcuts')
+                      // ★ 探す言葉で絞る (= ユーザー要望)。 名前と id の
+                      //   どちらでも当たるようにする。
+                      .where((c) {
+                        if (hcbQuery.isEmpty) return true;
+                        final k = c['labelKey'] as String?;
+                        final id = (c['id'] as String?) ?? '';
+                        final lab = k != null ? provider.t(k) : id;
+                        return lab.toLowerCase().contains(hcbQuery) ||
+                            id.toLowerCase().contains(hcbQuery);
+                      })
                       // 開発者モード限定項目 (`devOnly: true`) は、
                       // 開発者モード ON の時だけ追加候補に出す。
                       // OFF のユーザーには項目自体を見せない。
@@ -45188,33 +45565,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                     });
                   }
 
-                  return Column(
-                    // ダイアログ高さは固定になったので、 Column も高さいっぱいを
-                    // 使い、 余りは「追加できるボタン」エリア (Expanded) が
-                    // 吸収する。 これで項目の増減があってもレイアウトが動かない。
-                    mainAxisSize: MainAxisSize.max,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Row(children: [
-                        Icon(Icons.dashboard_customize_rounded,
-                            color: accentColor, size: 22),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            provider.t('header.customizeTitle'),
-                            style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 15,
-                                fontWeight: FontWeight.w700),
-                          ),
-                        ),
-                      ]),
-                      const SizedBox(height: 4),
-                      Text(provider.t('header.emptyHint'),
-                          style: const TextStyle(
-                              color: Colors.white54, fontSize: 11)),
-                      const SizedBox(height: 14),
-
+                  final leftItems = <Widget>[
                       Text(provider.t('hdr.color'),
                           style: const TextStyle(
                               color: Colors.white70,
@@ -45235,18 +45586,34 @@ class _MindMapScreenState extends State<MindMapScreen>
                               runSpacing: 8,
                               children: [
                                 for (final c in const <Color>[
-                                  Color(0xFF1A1A2E),
+                                  // ★ = ユーザー要望「似ている色合いは近くに寄るように」。
+                                  //   無彩色 → 青 → 青緑 → 緑 → 黄茶 → 赤 → 赤紫 → 紫 の
+                                  //   順に並べてある (同じ系統は際どうしになる)。
+                                  // 無彩色
                                   Color(0xFF12121C),
-                                  Color(0xFF263238),
-                                  Color(0xFF1B3A2E),
-                                  Color(0xFF1B2A4A),
-                                  Color(0xFF311B4A),
-                                  Color(0xFF4A1B2B),
-                                  Color(0xFF4A2B1B),
-                                  Color(0xFF0F2A2A),
-                                  Color(0xFF3A1B2E),
-                                  Color(0xFF2E2A1B),
+                                  Color(0xFF1A1A2E),
+                                  Color(0xFF242424),
                                   Color(0xFF333333),
+                                  // 青系
+                                  Color(0xFF14243A),
+                                  Color(0xFF1B2A4A),
+                                  Color(0xFF263238),
+                                  Color(0xFF203A43),
+                                  // 青緑 → 緑
+                                  Color(0xFF0F2A2A),
+                                  Color(0xFF1C2B2B),
+                                  Color(0xFF1E3B2F),
+                                  Color(0xFF1B3A2E),
+                                  // 黄茶
+                                  Color(0xFF2E2A1B),
+                                  Color(0xFF3C2F1E),
+                                  Color(0xFF4A2B1B),
+                                  // 赤 → 赤紫 → 紫
+                                  Color(0xFF4A1B2B),
+                                  Color(0xFF3A1B2E),
+                                  Color(0xFF3A2438),
+                                  Color(0xFF2B1B3A),
+                                  Color(0xFF311B4A),
                                 ])
                                   GestureDetector(
                                     onTap: () async {
@@ -45399,12 +45766,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                       // 削除で候補側に戻る分のスペースは最初から確保してあるので、
                       // 追加/削除しても枠のサイズも下の「追加できるボタン」の
                       // 位置も動かない。 中身が溢れる場合は内側でスクロールする。
-                      SizedBox(
-                        // 境界のドラッグで高さを変えられる (= ユーザー要望)。
-                        height: maxH *
-                            (_hcbPlacedFrac > 0
-                                ? _hcbPlacedFrac
-                                : (_isDesktop ? 0.26 : 0.32)),
+                      // ★ = ユーザー要望「表示領域を広げるバーはもう必要ない
+                      //   から消して、 下まで表示されている状態に」。 高さを
+                      //   決め打ち + 掴んで動かす形をやめ、 残りをそのまま
+                      //   使い切る (Expanded)。
+                      Expanded(
                         child: Container(
                           padding: const EdgeInsets.all(8),
                           decoration: BoxDecoration(
@@ -45490,48 +45856,51 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 ),
                         ),
                       ),
-                      // ── 境界のドラッグバー (= ユーザー要望: 配置済みと
-                      //    追加できるボタンの間の境界を動かして表示領域を
-                      //    変えられるように)。 変更した高さは次回も引き継ぐ。 ──
-                      MouseRegion(
-                        cursor: SystemMouseCursors.resizeUpDown,
-                        child: GestureDetector(
-                          behavior: HitTestBehavior.opaque,
-                          onVerticalDragUpdate: (d) {
-                            setS(() {
-                              final cur = _hcbPlacedFrac > 0
-                                  ? _hcbPlacedFrac
-                                  : (_isDesktop ? 0.26 : 0.32);
-                              // ★ 下げすぎると下の「追加できるボタン」 が欄の外へ
-                              //   押し出される (= ユーザー報告)。 半分までにして
-                              //   下半分は必ず残す。
-                              _hcbPlacedFrac = (cur + d.delta.dy / maxH)
-                                  .clamp(0.12, 0.50)
-                                  .toDouble();
-                            });
-                          },
-                          onVerticalDragEnd: (_) {
-                            // ignore: discarded_futures
-                            SharedPreferences.getInstance().then((sp) => sp
-                                .setDouble(
-                                    'hdrCustPlacedFrac', _hcbPlacedFrac));
-                          },
-                          child: SizedBox(
-                            height: 14,
-                            child: Center(
-                              child: Container(
-                                width: 64,
-                                height: 4,
-                                decoration: BoxDecoration(
-                                  color: Colors.white24,
-                                  borderRadius: BorderRadius.circular(2),
-                                ),
+                  ];
+                  final rightItems = <Widget>[
+                      // ── 選択肢を探す (= ユーザー要望) ──
+                      Row(children: [
+                        const Icon(Icons.search_rounded,
+                            size: 16, color: Colors.white38),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: TextField(
+                            controller: hcbSearchCtrl,
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 12.5),
+                            decoration: InputDecoration(
+                              isDense: true,
+                              contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 8),
+                              hintText: provider.t('header.searchHint'),
+                              hintStyle: const TextStyle(
+                                  color: Colors.white30, fontSize: 12),
+                              filled: true,
+                              fillColor: Colors.white.withValues(alpha: 0.05),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(8),
+                                borderSide: BorderSide.none,
                               ),
+                              suffixIcon: hcbQuery.isEmpty
+                                  ? null
+                                  : IconButton(
+                                      icon: const Icon(Icons.close_rounded,
+                                          size: 15, color: Colors.white38),
+                                      onPressed: () {
+                                        hcbSearchCtrl.clear();
+                                        hcbQuery = '';
+                                        setS(() {});
+                                      },
+                                    ),
                             ),
+                            onChanged: (v) {
+                              hcbQuery = v.trim().toLowerCase();
+                              setS(() {});
+                            },
                           ),
                         ),
-                      ),
-
+                      ]),
+                      const SizedBox(height: 10),
                       // 追加可能なボタン一覧。
                       // 候補ゼロでもセクションごと消さずに枠だけ残す
                       // (= ユーザー要望: 削除でここに項目が戻ってきた瞬間に
@@ -45764,6 +46133,70 @@ class _MindMapScreenState extends State<MindMapScreen>
                           ),
                         ),
                       ],
+                  ];
+                  return Column(
+                    // ダイアログ高さは固定になったので、 Column も高さいっぱいを
+                    // 使い、 余りは「追加できるボタン」エリア (Expanded) が
+                    // 吸収する。 これで項目の増減があってもレイアウトが動かない。
+                    mainAxisSize: MainAxisSize.max,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(children: [
+                        Icon(Icons.dashboard_customize_rounded,
+                            color: accentColor, size: 22),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            provider.t('header.customizeTitle'),
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 15,
+                                fontWeight: FontWeight.w700),
+                          ),
+                        ),
+                      ]),
+                      const SizedBox(height: 4),
+                      Text(provider.t('header.emptyHint'),
+                          style: const TextStyle(
+                              color: Colors.white54, fontSize: 11)),
+                      const SizedBox(height: 14),
+
+                      // ★ = ユーザー要望「2 列にして横に広げて、 選択肢が右の
+                      //   列に来るように」。 狭い窓では今までどおり 1 列。
+                      Expanded(
+                        child: twoCol
+                            ? Row(
+                                crossAxisAlignment:
+                                    CrossAxisAlignment.start,
+                                children: [
+                                  Expanded(
+                                    flex: 5,
+                                    // ★ 巻物にしない (= 「配置中のボタン」 を
+                                    //   下まで伸ばすため。 巻物の中では高さが
+                                    //   決まらず Expanded が使えない)。
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.stretch,
+                                      children: leftItems,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 18),
+                                  Expanded(
+                                    flex: 6,
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.stretch,
+                                      children: rightItems,
+                                    ),
+                                  ),
+                                ],
+                              )
+                            : Column(
+                                crossAxisAlignment:
+                                    CrossAxisAlignment.stretch,
+                                children: [...leftItems, ...rightItems],
+                              ),
+                      ),
                     ],
                   );
                 }),
@@ -46612,7 +47045,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       'color': Color(0xFF4DB6AC),
       // ★ = ユーザー要望「ファイル検索はカスタムボタンとしては必要ない」。
       //   置ける物の候補からは外す。 探すこと自体は Ctrl+F の「中身まで
-      //   探す」 から今までどおり使える。 既に置いている人のぶんは
+      //   探す」 から今までどおり使える。 既に置いている人の分は
       //   そのまま動くよう、 定義は残す ('legacy' はそのための印)。
       'legacy': true,
     },
@@ -48829,7 +49262,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       //    55% を上限に丸める。
       // ★ showOverlay / resizeOverlay の width・height は「dp」。
       //   プラグインが内部で dpToPx() するので、 ここで画素に直すと
-      //   端末倍率ぶん巨大化する (= ユーザー報告: 画面全体を覆う)。
+      //   端末倍率分巨大化する (= ユーザー報告: 画面全体を覆う)。
       final w = math.min(300.0, mq.size.width * 0.80).round();
       final h = math.min(380.0, mq.size.height * 0.55).round();
       // ── 実画面サイズ (dp) をオーバーレイに引き渡す (= ユーザー報告:
@@ -49017,8 +49450,11 @@ class _MindMapScreenState extends State<MindMapScreen>
   Future<void> _pickAiAssistantMode(MindMapProvider provider,
       {bool openAfter = true}) async {
     if (!mounted) return;
-    final current = await _loadAiAssistantMode();
+    final saved = await _loadAiAssistantMode();
     if (!mounted) return;
+    // ★ 選んでいる物の印 ('cli' は今選んでいる CLI の種類まで見る)。
+    final current =
+        saved == 'cli' ? 'cli:${provider.cliAiKindEnum.name}' : saved;
     Widget tile(String mode, IconData icon, Color color, String title,
             String body) =>
         InkWell(
@@ -49070,8 +49506,12 @@ class _MindMapScreenState extends State<MindMapScreen>
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             tile('api', Icons.auto_awesome_rounded, const Color(0xFF80CBC4),
                 provider.t('ai.modeApi'), provider.t('ai.modeApiBody')),
-            tile('cli', Icons.terminal_rounded, const Color(0xFF9CCC65),
-                provider.t('ai.modeCli'), provider.t('ai.modeCliBody')),
+            // ★ = ユーザー要望「PC内AI って表記じゃなくて CodexCLI と
+            //   ClaudeCode って表記して欲しい」。 1 つにまとめず、 種類ごとに並べる。
+            for (final k in const [AgentCliKind.claude, AgentCliKind.codex])
+              tile('cli:${k.name}', Icons.terminal_rounded,
+                  const Color(0xFF9CCC65), AgentCliSpec.of(k).label,
+                  provider.t('ai.modeCliBody')),
             Padding(
               padding: const EdgeInsets.only(top: 2),
               child: Text(provider.t('ai.modeHint'),
@@ -49090,9 +49530,15 @@ class _MindMapScreenState extends State<MindMapScreen>
       ),
     );
     if (picked == null || !mounted) return;
-    await _saveAiAssistantMode(picked);
+    // ★ 'cli:<種類>' の形 (= Codex CLI と Claude Code を分けた)。
+    var mode = picked;
+    if (mode.startsWith('cli:')) {
+      await provider.setCliAiKind(mode.substring(4));
+      mode = 'cli';
+    }
+    await _saveAiAssistantMode(mode);
     if (!mounted || !openAfter) return;
-    await _openAiAssistantByMode(provider, forced: picked);
+    await _openAiAssistantByMode(provider, forced: mode);
   }
 
   /// 覚えている呼び方で AI アシスタントを開く。 まだ選んでいなければ聞く。
@@ -49366,7 +49812,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     //   一杯になってしまうから、 立ち上がっているものが既にある時は
     //   立ち上がらないようにして欲しい」。
     //   これらは fire-and-forget で呼ばれていて再入の見張りが無く、 連打の
-    //   ぶんだけファイル選択窓やカメラ画面が積み上がっていた。
+    //   分だけファイル選択窓やカメラ画面が積み上がっていた。
     if (_kSingleFlightCommands.contains(commandId)) {
       if (_runningSingleFlight.contains(commandId)) return;
       _runningSingleFlight.add(commandId);
@@ -49845,9 +50291,11 @@ class _MindMapScreenState extends State<MindMapScreen>
           break;
         }
         // 開き方 (全画面 / 浮かせる / 左右分割) は他の道具と同じ作法。
+        // ★ = ユーザー要望: 設定の欄をやめて縦長のパレットにしたので、
+        //   窓も細長くする。
         unawaited(_openToolCommandStyled(
           'autoClicker',
-          width: 480,
+          width: 150,
           height: 560,
           floating: (_) => AutoClickerView(
             provider: provider,
@@ -50116,6 +50564,9 @@ class _MindMapScreenState extends State<MindMapScreen>
         //   基点。 右クリック (長押し) は管理者として別窓で開く。
         // ★ CLI の機能は Pro 以上 (= ユーザー要望)。
         _removeOverlay();
+        // ★ 擬似端末を持てない相手では出さない (= 点検で判明。 CLI を Free へ
+        //   開放したので、 プランだけを見ていたこの道が素通りになる)。
+        if (!AgentCli.supported) break;
         if (!provider.canUseCliAi) {
           _showPaywallDialog(provider);
           break;
@@ -53850,6 +54301,10 @@ class _MindMapScreenState extends State<MindMapScreen>
     // プリセットは「選択」ではなく加算ボタンとして扱う。0分から始めることで
     // +5 → +5 → +15 のように、押した回数どおりの合計時間になる。
     int selectedMin = 0;
+    // 「ロック中に使える物」 の段 (0=使わない / 1=調べ物だけ / 2=全部)。
+    // ★ 書き込みは 5 つの設定を順に await するので、 押した段はここで持つ
+    //   (= 点検で判明: provider から読み直すと古い段が出る)。
+    int outsideLv = _focusLockOutsideLevel(context.read<MindMapProvider>());
     // 数値入力用 (ユーザー要望: カスタムを押さなくても直接分数を指定できる)。
     final minCtrl = TextEditingController(text: '$selectedMin');
     final taskCtrl = TextEditingController();
@@ -54083,244 +54538,181 @@ class _MindMapScreenState extends State<MindMapScreen>
                       const SizedBox(height: 14),
                       const Divider(color: Colors.white12, height: 1),
                       const SizedBox(height: 10),
-                      // ── 秒表示設定 ──
-                      // キー名は hideSeconds だが、現行UI文言に合わせて
-                      // true = 秒を表示する、として扱う。
-                      // カウントダウンが無いタスク制では意味がないので、
-                      // タイマー制の時だけ出す (= ユーザー指摘)。
-                      if (provider.focusLockMode == 'timer')
+                      // ── ロック中に使える物 (= ユーザー要望: 項目が
+                      //    多くて設定が大変。 5 つの許可を 3 択に畳む) ──
+                      //    ★ 控え (prefs) の鍵は今までどおり 5 つのまま。
+                      //      書き手をこの 3 択に変えただけなので、 前から
+                      //      使っている人の設定はそのまま残る。
                       Row(children: [
-                        const Icon(Icons.timer_rounded,
+                        const Icon(Icons.travel_explore_rounded,
                             color: Colors.white60, size: 18),
                         const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(provider.t('focusLock.hideSeconds'),
-                              style: const TextStyle(
-                                  color: Colors.white, fontSize: 13)),
-                        ),
-                        Switch(
-                          value: provider.focusLockHideSeconds,
-                          activeColor: const Color(0xFFEF5350),
-                          onChanged: (v) {
-                            // ignore: discarded_futures
-                            provider.setFocusLockHideSeconds(v);
-                            setS(() {});
-                          },
-                        ),
+                        Text(provider.t('focusLock.outside'),
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 13)),
                       ]),
-                      // ── 解除ボタン表示設定 ──
-                      // キー名は hideUnlockButton だが、現行UI文言に合わせて
-                      // true = 解除ボタンを表示する、として扱う。
+                      const SizedBox(height: 6),
                       Row(children: [
-                        const Icon(Icons.lock_outline_rounded,
-                            color: Colors.white60, size: 18),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(provider.t('focusLock.hideUnlockButton'),
-                              style: const TextStyle(
-                                  color: Colors.white, fontSize: 13)),
-                        ),
-                        Switch(
-                          value: provider.focusLockHideUnlockButton,
-                          activeColor: const Color(0xFFEF5350),
-                          onChanged: (v) {
-                            // ignore: discarded_futures
-                            provider.setFocusLockHideUnlockButton(v);
-                            setS(() {});
-                          },
-                        ),
-                      ]),
-                      // ── ポモドーロタイマーを置くか (= ユーザー要望:
-                      //    配置するかの設定項目) ──
-                      Row(children: [
-                        const Icon(Icons.timer_rounded,
-                            color: Colors.white60, size: 18),
-                        const SizedBox(width: 8),
-                        const Expanded(
-                          child: Text('ポモドーロタイマーを置く',
-                              style: TextStyle(
-                                  color: Colors.white, fontSize: 13)),
-                        ),
-                        Switch(
-                          value: provider.focusLockShowPomodoro,
-                          activeColor: const Color(0xFFFF6B6B),
-                          onChanged: (v) {
-                            // ignore: discarded_futures
-                            provider.setFocusLockShowPomodoro(v);
-                            setS(() {});
-                          },
-                        ),
-                      ]),
-                      // ── アラームを置くか (= ユーザー要望) ──
-                      Row(children: [
-                        const Icon(Icons.alarm_rounded,
-                            color: Colors.white60, size: 18),
-                        const SizedBox(width: 8),
-                        const Expanded(
-                          child: Text('アラームを置く',
-                              style: TextStyle(
-                                  color: Colors.white, fontSize: 13)),
-                        ),
-                        Switch(
-                          value: provider.focusLockShowAlarm,
-                          activeColor: const Color(0xFFFFB347),
-                          onChanged: (v) {
-                            // ignore: discarded_futures
-                            provider.setFocusLockShowAlarm(v);
-                            setS(() {});
-                          },
-                        ),
-                      ]),
-                      // ── 自然音をロック画面から聞けるようにするか
-                      //    (= ユーザー要望の設定項目) ──
-                      Row(children: [
-                        const Icon(Icons.spa_rounded,
-                            color: Colors.white60, size: 18),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(provider.t('lock.ambientEnabled'),
-                              style: const TextStyle(
-                                  color: Colors.white, fontSize: 13)),
-                        ),
-                        Switch(
-                          value: provider.lockAmbientEnabled,
-                          activeColor: const Color(0xFF66BB6A),
-                          onChanged: (v) {
-                            // ignore: discarded_futures
-                            provider.setLockAmbientEnabled(v);
-                            setS(() {});
-                          },
-                        ),
-                      ]),
-                      Row(children: [
-                        const Icon(Icons.auto_awesome_rounded,
-                            color: Colors.white60, size: 18),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(context.read<MindMapProvider>().t('lock.memoToAi'),
-                              style: const TextStyle(
-                                  color: Colors.white, fontSize: 13)),
-                        ),
-                        Switch(
-                          value: provider.focusLockAllowMemoAi,
-                          activeColor: const Color(0xFFBA68C8),
-                          onChanged: (v) {
-                            // ignore: discarded_futures
-                            provider.setFocusLockAllowMemoAi(v);
-                            setS(() {});
-                          },
-                        ),
-                      ]),
-                      Row(children: [
-                        const Icon(Icons.manage_search_rounded,
-                            color: Colors.white60, size: 18),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(context.read<MindMapProvider>().t('lock.memoGoogle'),
-                              style: const TextStyle(
-                                  color: Colors.white, fontSize: 13)),
-                        ),
-                        Switch(
-                          value: provider.focusLockAllowMemoGoogle,
-                          activeColor: const Color(0xFF4FC3F7),
-                          onChanged: (v) {
-                            // ignore: discarded_futures
-                            provider.setFocusLockAllowMemoGoogle(v);
-                            setS(() {});
-                          },
-                        ),
-                      ]),
-                      // ── ロック中のページ内コンテンツ表示 ──
-                      // ── メモから YouTube を探す (= ユーザー要望) ──
-                      Row(children: [
-                        const Icon(Icons.smart_display_rounded,
-                            color: Colors.white60, size: 18),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                              context
-                                  .read<MindMapProvider>()
-                                  .t('lock.youtubeEnable'),
-                              style: const TextStyle(
-                                  color: Colors.white, fontSize: 13)),
-                        ),
-                        Switch(
-                          value: provider.focusLockAllowMemoYoutube,
-                          activeColor: const Color(0xFFEF5350),
-                          onChanged: (v) {
-                            // ignore: discarded_futures
-                            provider.setFocusLockAllowMemoYoutube(v);
-                            setS(() {});
-                          },
-                        ),
-                      ]),
-                      if (provider.focusLockAllowMemoYoutube)
-                        Row(children: [
-                          const SizedBox(width: 26),
+                        for (final e in <({int lv, String key})>[
+                          (lv: 0, key: 'focusLock.outsideNone'),
+                          (lv: 1, key: 'focusLock.outsideResearch'),
+                          (lv: 2, key: 'focusLock.outsideAll'),
+                        ])
                           Expanded(
-                            child: Text(
-                                context
-                                    .read<MindMapProvider>()
-                                    .t('lock.youtubeGateEnable'),
-                                style: const TextStyle(
-                                    color: Colors.white70, fontSize: 12)),
+                            child: Padding(
+                              padding: const EdgeInsets.only(right: 6),
+                              child: _focusLockPickChip(
+                                label: provider.t(e.key),
+                                // ★ 控えは**この場の値**で見せる (= 点検で
+                                //   判明)。 書き込みは 5 つの設定を順に
+                                //   await するので、 押した直後に provider
+                                //   から読み直すと古い段が出てしまう。
+                                on: outsideLv == e.lv,
+                                color: const Color(0xFF4FC3F7),
+                                onTap: () {
+                                  setS(() => outsideLv = e.lv);
+                                  unawaited(_setFocusLockOutsideLevel(
+                                      provider, e.lv));
+                                },
+                              ),
+                            ),
                           ),
-                          Switch(
-                            value: provider.focusLockYoutubeKeywordGate,
-                            activeColor: const Color(0xFF9CCC65),
-                            onChanged: (v) {
-                              // ignore: discarded_futures
-                              provider.setFocusLockYoutubeKeywordGate(v);
+                      ]),
+                      const SizedBox(height: 5),
+                      Text(provider.t('focusLock.outsideHint'),
+                          style: const TextStyle(
+                              color: Colors.white38,
+                              fontSize: 10.5,
+                              height: 1.45)),
+                      const SizedBox(height: 12),
+                      // ── ロック画面に出す物 (= 飾り 4 つ + 解除ボタンを
+                      //    1 行に畳む) ──
+                      Row(children: [
+                        const Icon(Icons.widgets_rounded,
+                            color: Colors.white60, size: 18),
+                        const SizedBox(width: 8),
+                        Text(provider.t('focusLock.showOnLock'),
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 13)),
+                      ]),
+                      const SizedBox(height: 6),
+                      Wrap(spacing: 6, runSpacing: 6, children: [
+                        // 秒はカウントダウンのある時間制でしか意味が無い。
+                        if (provider.focusLockMode == 'timer')
+                          _focusLockPickChip(
+                            label: provider.t('focusLock.chipSeconds'),
+                            on: provider.focusLockHideSeconds,
+                            color: const Color(0xFF80CBC4),
+                            onTap: () {
+                              unawaited(provider.setFocusLockHideSeconds(
+                                  !provider.focusLockHideSeconds));
                               setS(() {});
                             },
                           ),
-                        ]),
-                      Row(children: [
-                        const Icon(Icons.folder_open_rounded,
-                            color: Colors.white60, size: 18),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(context.read<MindMapProvider>().t('lock.openPageContent'),
-                              style: const TextStyle(
-                                  color: Colors.white, fontSize: 13)),
+                        _focusLockPickChip(
+                          label: provider.t('focusLock.chipUnlock'),
+                          on: provider.focusLockHideUnlockButton,
+                          color: const Color(0xFFEF5350),
+                          onTap: () {
+                            unawaited(provider.setFocusLockHideUnlockButton(
+                                !provider.focusLockHideUnlockButton));
+                            setS(() {});
+                          },
                         ),
-                        Switch(
-                          value: provider.focusLockAllowContentAccess,
-                          activeColor: const Color(0xFF43B97F),
-                          onChanged: (v) {
-                            // ignore: discarded_futures
-                            provider.setFocusLockAllowContentAccess(v);
+                        _focusLockPickChip(
+                          label: provider.t('focusLock.chipPomodoro'),
+                          on: provider.focusLockShowPomodoro,
+                          color: const Color(0xFFFF6B6B),
+                          onTap: () {
+                            unawaited(provider.setFocusLockShowPomodoro(
+                                !provider.focusLockShowPomodoro));
+                            setS(() {});
+                          },
+                        ),
+                        _focusLockPickChip(
+                          label: provider.t('focusLock.chipAlarm'),
+                          on: provider.focusLockShowAlarm,
+                          color: const Color(0xFFFFB347),
+                          onTap: () {
+                            unawaited(provider.setFocusLockShowAlarm(
+                                !provider.focusLockShowAlarm));
+                            setS(() {});
+                          },
+                        ),
+                        _focusLockPickChip(
+                          label: provider.t('focusLock.chipAmbient'),
+                          on: provider.lockAmbientEnabled,
+                          color: const Color(0xFF66BB6A),
+                          onTap: () {
+                            unawaited(provider.setLockAmbientEnabled(
+                                !provider.lockAmbientEnabled));
                             setS(() {});
                           },
                         ),
                       ]),
-                      // ── スケジュールによる自動ロックは Android のみ ──
-                      //   判定を回す _checkFocusLockSchedule が Android 限定
-                      //   なので、 PC で設定できても実際には何も起きない。
-                      //   出来ないことを設定させないよう、 PC では出さない
-                      //   (= ユーザー要望: PC 版にスケジュール画面ロックは不要)。
+                      // ── 時刻で自動的に始める (Android のみ) ──
+                      //    ★ 判定を回す `_checkFocusLockSchedule` が Android
+                      //      限定なので、 PC では出さない。 ふだんは畳んで
+                      //      おき、 使う人だけ開く (= 項目を減らす)。
                       if (!_isDesktop) ...[
-                        Row(children: [
-                          const Icon(Icons.schedule_rounded,
-                              color: Colors.white60, size: 18),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(provider.t('focusLock.scheduleEnable'),
+                        const SizedBox(height: 6),
+                        Theme(
+                          data: Theme.of(context)
+                              .copyWith(dividerColor: Colors.transparent),
+                          child: ExpansionTile(
+                            initiallyExpanded:
+                                provider.focusLockScheduleEnabled,
+                            tilePadding: EdgeInsets.zero,
+                            childrenPadding:
+                                const EdgeInsets.only(bottom: 6),
+                            leading: const Icon(Icons.schedule_rounded,
+                                color: Colors.white60, size: 18),
+                            title: Text(provider.t('focusLock.autoStart'),
                                 style: const TextStyle(
                                     color: Colors.white, fontSize: 13)),
+                            children: [
+                              Row(children: [
+                                Expanded(
+                                  child: Text(
+                                      provider.t('focusLock.scheduleEnable'),
+                                      style: const TextStyle(
+                                          color: Colors.white70,
+                                          fontSize: 12)),
+                                ),
+                                Switch(
+                                  value: provider.focusLockScheduleEnabled,
+                                  activeColor: const Color(0xFFEF5350),
+                                  onChanged: (v) {
+                                    unawaited(provider
+                                        .setFocusLockScheduleEnabled(v));
+                                    setS(() {});
+                                  },
+                                ),
+                              ]),
+                              if (provider.focusLockScheduleEnabled)
+                                _buildFocusLockScheduleEditor(provider, setS),
+                            ],
                           ),
-                          Switch(
-                            value: provider.focusLockScheduleEnabled,
-                            activeColor: const Color(0xFFEF5350),
-                            onChanged: (v) {
-                              // ignore: discarded_futures
-                              provider.setFocusLockScheduleEnabled(v);
-                              setS(() {});
-                            },
+                        ),
+                        // ── ショートカットを作る (= ユーザー要望: ページを
+                        //    開かずにここから始められるように) ──
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: TextButton.icon(
+                            style: TextButton.styleFrom(
+                              foregroundColor: const Color(0xFF9CCC65),
+                              visualDensity: VisualDensity.compact,
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 6),
+                            ),
+                            icon: const Icon(
+                                Icons.add_to_home_screen_rounded, size: 16),
+                            label: Text(provider.t('focusLock.makeShortcut'),
+                                style: const TextStyle(fontSize: 11.5)),
+                            onPressed: () =>
+                                unawaited(_makeFocusLockShortcut(provider)),
                           ),
-                        ]),
-                        if (provider.focusLockScheduleEnabled)
-                          _buildFocusLockScheduleEditor(provider, setS),
+                        ),
                       ],
                       const SizedBox(height: 12),
                       Text(
@@ -56015,6 +56407,79 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
   }
 
+  /// 3 択の札 (集中ロックの設定で使う小さなボタン)。
+  Widget _focusLockPickChip({
+    required String label,
+    required bool on,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(7),
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: on ? color.withValues(alpha: 0.18) : Colors.transparent,
+          borderRadius: BorderRadius.circular(7),
+          border: Border.all(color: on ? color : Colors.white24),
+        ),
+        child: Center(
+          child: Text(label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                  color: on ? color : Colors.white60, fontSize: 11.5)),
+        ),
+      ),
+    );
+  }
+
+  /// 「ロック中に使える物」 の今の段 (0=使わない / 1=調べ物だけ / 2=全部)。
+  ///
+  /// ★ 控えは今までどおり 5 つの真偽値。 ここはその**読み方**でしかない。
+  ///   どれとも綺麗に一致しない組み合わせ (昔の設定) は、 近い方へ寄せる。
+  int _focusLockOutsideLevel(MindMapProvider p) {
+    if (p.focusLockAllowMemoYoutube) return 2;
+    if (p.focusLockAllowMemoAi ||
+        p.focusLockAllowMemoGoogle ||
+        p.focusLockAllowContentAccess) {
+      return 1;
+    }
+    return 0;
+  }
+
+  Future<void> _setFocusLockOutsideLevel(MindMapProvider p, int lv) async {
+    final research = lv >= 1;
+    final all = lv >= 2;
+    await p.setFocusLockAllowMemoAi(research);
+    await p.setFocusLockAllowMemoGoogle(research);
+    await p.setFocusLockAllowContentAccess(research);
+    await p.setFocusLockAllowMemoYoutube(all);
+    // 動画を許す時は、 メモの言葉を含む物だけに絞ったままにする
+    // (= 「全部」 でも野放しにはしない)。
+    if (all) await p.setFocusLockYoutubeKeywordGate(true);
+  }
+
+  /// 集中ロックをそのまま始めるショートカットを作る (= ユーザー要望)。
+  Future<void> _makeFocusLockShortcut(MindMapProvider provider) async {
+    try {
+      final ok = await HomeShortcutService.pinCommandShortcut(
+        commandId: 'focusLock',
+        label: provider.t('focusLock.menuTitle'),
+      );
+      if (!mounted) return;
+      showTopToast(
+          context,
+          ok
+              ? provider.t('focusLock.shortcutDone')
+              : provider.t('focusLock.shortcutFailed'),
+          ok ? const Color(0xFF43A047) : const Color(0xFFE53935));
+    } catch (e) {
+      if (mounted) showTopToast(context, '$e', const Color(0xFFE53935));
+    }
+  }
+
   void _startFocusLock(Duration d,
       {bool manual = true, bool taskMode = false}) {
     if (_focusLockOverlay != null) return;
@@ -56163,14 +56628,12 @@ class _MindMapScreenState extends State<MindMapScreen>
       if (r != null && (best == null || r < best!)) best = r;
     }
 
-    final list = p.focusLockSchedules.where((s) => s.enabled).toList();
-    if (list.isNotEmpty) {
-      for (final s in list) {
-        consider(s.startMin, s.endMin, s.days);
-      }
-    } else {
-      // 後方互換: 旧単一スケジュール (曜日指定なし = 毎日)
-      consider(p.focusLockScheduleStartMin, p.focusLockScheduleEndMin, <int>{});
+    // ★ 枠が 1 つも無ければ**何もしない** (= 点検で判明した罠)。
+    //   以前はここで旧式の単一枠に落ちていたが、 その値を書き換える UI が
+    //   1 つも無く 22:00〜06:00 のままだったので、 「時刻で自動的に始める」
+    //   を入にして枠を 1 つも作らないと、 毎晩勝手にロックが掛かっていた。
+    for (final s in p.focusLockSchedules.where((s) => s.enabled)) {
+      consider(s.startMin, s.endMin, s.days);
     }
     return best;
   }
@@ -56733,8 +57196,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
 
     if (!overlaps(desired)) return desired;
-    const stepX = 188.0; // 1 列ぶん (幅 + 余白)
-    const stepY = 156.0; // 1 行ぶん (高さ + 余白)
+    const stepX = 188.0; // 1 列分 (幅 + 余白)
+    const stepY = 156.0; // 1 行分 (高さ + 余白)
     for (int row = 0; row < 60; row++) {
       for (int col = 0; col < 60; col++) {
         if (row == 0 && col == 0) continue; // desired は埋まっているので除く
@@ -60209,7 +60672,7 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// なっていた** (= ユーザー報告: モバイルで上分割にするとヘッダー項目が
   /// 開けない)。 Stack は後の子が当たり判定を取るうえ、 パネルの中身
   /// (WebView / PDF) が不透明なのでタップを全部吸っていた。
-  /// AppBar のぶんだけ下げて重ならないようにする。
+  /// AppBar の分だけ下げて重ならないようにする。
   double _headerBottomInset(MindMapProvider provider) {
     final showMobileHeaderTray =
         !_isDesktop && provider.currentPage.pageType != 'markdown';
@@ -62785,7 +63248,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             } else {
               final count = provider.quickAddChildrenCount;
               final newIds = parentIds.length == 1
-                  // 単一: skipUndo なしでそのまま (Undo 1 回ぶん積まれる)
+                  // 単一: skipUndo なしでそのまま (Undo 1 回分積まれる)
                   ? provider.addChildrenWithCount(parentIds.first, count)
                   // 複数: 一括メソッドで Undo を 1 回にまとめる
                   : provider.addChildrenToMultipleParents(parentIds, count);
@@ -63185,7 +63648,13 @@ class _MindMapScreenState extends State<MindMapScreen>
                 }
                 if (!open && _shortcutAssignActive) _endShortcutAssign();
               },
-              appBar: _buildAppBar(context, provider),
+              // ── Zen モード中は帯ごと出さない (= ユーザー要望: ページ名の
+              //    行や自分で並べたボタンの帯まで隠す)。 戻り道は上端中央の
+              //    札 (_buildZenRevealBar) と Esc。
+              //    ★ ページが 1 枚も無い時の台 (上の方) はそのまま帯を出す
+              //      (= そちらには戻す札が無く、 締め出されてしまうため)。
+              appBar:
+                  _zenChromeHidden ? null : _buildAppBar(context, provider),
               body: Padding(
                 // 端へ固定したボタンバーはページを覆わず、専用の余白へ収める。
                 // 自由配置へ切り替えたバーだけは従来どおりページ上へ重ねる。
@@ -64286,6 +64755,12 @@ class _MindMapScreenState extends State<MindMapScreen>
             _buildRecDimOverlay(),
             // ── 画面録画の操作パネル (= ユーザー要望) ──
             _buildScreenRecBar(provider),
+            // ── Zen モード中、 帯を戻すための小さな札 (上端の中央) ──
+            //    = ユーザー要望「Esc キーかヘッダー中央付近にカーソルが
+            //    来たら表示ボタンが現れるようにして欲しい」。
+            //    ★ 上分割のオーバーレイ (前の方の兄弟) より後ろに置く
+            //      (= 上分割を開いていても札が隠れないように)。
+            _buildZenRevealBar(provider),
             // ── ヘッドレス YouTube 再生中のフローティング停止ボタン ──
             // ユーザー要望: 「YouTubeをヘッドレスで再生するボタンを作って、
             //   押したらヘッドレス再生を止めるボタンが出てきてプレイヤーが
@@ -64940,6 +65415,145 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// ドック自体は Scaffold の外側にある overlay へ描画されるため、以前は
   /// カレンダーやキャンバスの上へ重なっていた。固定中だけ body を内側へ
   /// 押し込み、自由配置中は余白を戻すことで両方の操作感を保つ。
+  /// Zen モードの出し入れ (編集画面から、 トップレベルの入口
+  /// `setAppChromeHiddenFromAnywhere` 経由で呼ばれる)。
+  ///
+  /// ★ 呼ばれる場所が build の中や dispose の最中なので、 setState は今の
+  ///   仕事が終わってから行う。 State.dispose は finalizeTree の中
+  ///   (= 状態を触れない時間) に走るため、 ここで直に setState を呼ぶと
+  ///   「setState() called during build」 で落ちる。
+  void _setZenChromeHidden(Object owner, bool hide) {
+    scheduleMicrotask(() {
+      if (!mounted) return;
+      final changed = hide ? _zenHiders.add(owner) : _zenHiders.remove(owner);
+      if (!changed) return;
+      final next = _zenHiders.isNotEmpty;
+      if (next == _zenChromeHidden) return;
+      if (!next) {
+        _zenRevealPinTimer?.cancel();
+        _zenRevealPinTimer = null;
+      }
+      setState(() {
+        _zenChromeHidden = next;
+        if (!next) {
+          _zenRevealHover = false;
+          _zenRevealPinned = false;
+        }
+      });
+    });
+  }
+
+  /// 「上のバーを出す」 を押された時 (= 利用者が自分で戻した時)。
+  /// 隠したがっている画面が何枚あっても、 まとめて戻す。
+  void _showAppChromeFromZen() {
+    if (!_zenChromeHidden) return;
+    _zenHiders.clear();
+    _zenRevealPinTimer?.cancel();
+    _zenRevealPinTimer = null;
+    setState(() {
+      _zenChromeHidden = false;
+      _zenRevealHover = false;
+      _zenRevealPinned = false;
+    });
+  }
+
+  /// Esc で「上のバーを出す」 の札を数秒だけ出す (= ユーザー要望: Esc キーか
+  /// ヘッダー中央付近にカーソルが来たら表示ボタンが現れるように)。
+  void _pinZenReveal() {
+    _zenRevealPinTimer?.cancel();
+    if (!mounted) return;
+    setState(() => _zenRevealPinned = true);
+    _zenRevealPinTimer = Timer(const Duration(seconds: 5), () {
+      if (!mounted) return;
+      setState(() => _zenRevealPinned = false);
+    });
+  }
+
+  /// Zen モード中に画面の上端 中央へ出す、 帯を戻すための小さな札。
+  ///
+  /// 作りは分割パネル / 浮かぶ道具の「隠したヘッダー」
+  /// (_SplitPanelHiddenHeader) と同じ: カーソルが近づいている間だけ太くして
+  /// 文字を出し、 押すと戻る。 カーソルの無い端末でも押せる。
+  ///
+  /// ★ 外側の当たり判定 (260x46) は translucent にしてあるので、 下に敷いて
+  ///   ある画面 (マークダウンの空の帯など) を塞がない。 押せるのは中の
+  ///   小さな札だけ。
+  Widget _buildZenRevealBar(MindMapProvider provider) {
+    if (!_zenChromeHidden) return const SizedBox.shrink();
+    final show = _zenRevealHover || _zenRevealPinned;
+    return Positioned(
+      // 帯が無いと body が画面の一番上まで来るので、 モバイルの
+      // ステータスバーの下へ置く (デスクトップは 0)。
+      top: MediaQuery.paddingOf(context).top,
+      left: 0,
+      right: 0,
+      height: 46,
+      child: Align(
+        alignment: Alignment.topCenter,
+        child: MouseRegion(
+          opaque: false,
+          hitTestBehavior: HitTestBehavior.translucent,
+          onEnter: (_) {
+            if (!_zenRevealHover) setState(() => _zenRevealHover = true);
+          },
+          onExit: (_) {
+            if (_zenRevealHover) setState(() => _zenRevealHover = false);
+          },
+          child: SizedBox(
+            width: 260,
+            height: 46,
+            child: Align(
+              alignment: Alignment.topCenter,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () {
+                  // マークダウンのページなら、 その画面のツールバーも一緒に
+                  // 戻す (= 一度で全部戻る)。 他の編集画面は自前の細い帯で
+                  // 戻すので、 ここでは本体の帯だけを戻す。
+                  if (_markdownHeaderIsHidden?.call() == true) {
+                    _markdownHeaderToggle?.call();
+                  }
+                  _showAppChromeFromZen();
+                },
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 120),
+                  width: show ? 230 : 120,
+                  height: show ? 28 : 10,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: show
+                        ? Color.alphaBlend(
+                            provider.headerColor.withValues(alpha: 0.92),
+                            const Color(0xFF151522),
+                          )
+                        : Colors.white.withValues(alpha: 0.10),
+                    borderRadius: const BorderRadius.vertical(
+                        bottom: Radius.circular(10)),
+                  ),
+                  child: show
+                      ? Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(
+                                Icons.keyboard_double_arrow_down_rounded,
+                                size: 15,
+                                color: Colors.white70),
+                            const SizedBox(width: 6),
+                            Text(provider.t('zen.showBars'),
+                                style: const TextStyle(
+                                    color: Colors.white, fontSize: 11.5)),
+                          ],
+                        )
+                      : null,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   EdgeInsets _desktopAnchoredDockInsets(MindMapProvider provider) {
     if (!_isDesktop) return EdgeInsets.zero;
     bool hasAnchoredSide(String placement) {
@@ -64987,7 +65601,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (_visibleDesktopHeaderButtonsAt(provider, placement).isEmpty) return 0.0;
     if (provider.desktopSideDockFloatingAt(placement)) return 0.0;
     // バー本体の幅 (_buildDesktopSideHeaderDock の dockWidth) は 60 固定。
-    // 埋め込んでいない時は端との余白 (edgeMargin 10) ぶんも外側に要る。
+    // 埋め込んでいない時は端との余白 (edgeMargin 10) 分も外側に要る。
     const dockWidth = 60.0;
     return dockWidth +
         (provider.desktopSideDockEmbeddedAt(placement) ? 0.0 : 12.0);
@@ -65889,6 +66503,9 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   Widget _buildDesktopHeaderButtonsDock(MindMapProvider provider) {
     if (!_isDesktop ||
+        // Zen モード中は端に寄せた / 自由に置いたボタンバーも出さない
+        // (= ユーザー要望: 帯は全部隠す)。
+        _zenChromeHidden ||
         // Scaffold の Drawer よりこのドック用 Stack の方が後に描画されるため、
         // 開いたマップ一覧の上へボタンバーが重ならないようにする。
         _drawerOpen ||
@@ -66249,8 +66866,22 @@ class _MindMapScreenState extends State<MindMapScreen>
       } catch (_) {}
       await Future<void>.delayed(const Duration(milliseconds: 300));
       if (!mounted) return;
+      final provider = context.read<MindMapProvider>();
+      // ★ 集中ロックだけは**設定を出さずにそのまま始める**
+      //   (= ユーザー要望: ショートカットから呼んだらロックが始まって
+      //    欲しい)。 ヘッダーのボタンから押した時は今までどおり設定が出る。
+      if (commandId == 'focusLock') {
+        final taskMode = provider.focusLockMode == 'tasks';
+        if (!(taskMode && provider.focusLockTasks.isEmpty)) {
+          final secs = provider.focusLockLastDurationSeconds;
+          _startFocusLock(Duration(seconds: secs > 0 ? secs : 900),
+              taskMode: taskMode);
+          return;
+        }
+        // やることが 1 つも無い時だけは、 決めてもらうしかない。
+      }
       try {
-        _executeHeaderCommand(commandId, context.read<MindMapProvider>());
+        _executeHeaderCommand(commandId, provider);
       } catch (_) {/* 未知の ID などは黙って無視 */}
     }());
   }
@@ -67473,7 +68104,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         _clickerWinId = win.windowId;
         // ★ = ユーザー指摘「画面録画バーみたいなのが画面外にも出る形で
         //   出てきて」。 縦長の窓ではなく、 画面のどこにでも置ける薄い帯に
-        //   する (録画の操作窓と同じ構え)。 横幅は札が数枚並ぶぶん。
+        //   する (録画の操作窓と同じ構え)。 横幅は札が数枚並ぶ分。
         await win.setFrame(const Offset(160, 120) & const Size(660, 104));
         await win.setTitle('HisatorNotebook Clicker');
         await win.show();
@@ -67490,6 +68121,19 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// ★ 以前は AI アシスタントを開いた時だけ登録していたため、 一度も
   ///   開かずに MCP を呼ぶと list_app_commands が空、 create_document_file が
   ///   「作れません」 になっていた (= 動作確認で判明)。 起動時にも登録する。
+  /// 組み立ての最中から呼ぶ用 (言葉が変わった時だけ・組み上がってから)。
+  String _mcpHandlersSig = '';
+
+  void _registerMcpHandlersOnce(MindMapProvider provider) {
+    final sig = provider.appLanguage;
+    if (sig == _mcpHandlersSig) return;
+    _mcpHandlersSig = sig;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _registerMcpHandlers(provider);
+    });
+  }
+
   void _registerMcpHandlers(MindMapProvider provider) {
     provider.registerMcpCommands(
       [
@@ -68482,7 +69126,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     var w = 0.0;
     if (provider.liveActive &&
         provider.livePageId == provider.currentPage.id) {
-      // 参加者の丸 (最大 3 人ぶん + 余り) の目安。
+      // 参加者の丸 (最大 3 人分 + 余り) の目安。
       w += 118;
     }
     // 分割のボタンはパソコンだけ常設。
@@ -73351,11 +73995,14 @@ class _MindMapScreenState extends State<MindMapScreen>
         // 作った物が見えるように、 そのフォルダーを開いた状態にする。
         setState(() => _diskOpen.add(e.path));
       } else if (v == 'reveal') {
-        final dir = e.isDir
-            ? e.path
-            : e.path.substring(
-                0, e.path.lastIndexOf(Platform.pathSeparator).clamp(0, e.path.length));
-        unawaited(_revealDirectory(dir));
+        // ★ ファイルはそのファイルを**選んだ状態**で開く (= ユーザー要望:
+        //   「ファイルの場所を開く」。 入れ物を開くだけでは、 どれの事か
+        //   分からない)。
+        if (e.isDir) {
+          unawaited(_revealDirectory(e.path));
+        } else {
+          unawaited(_revealFileInOs(e.path));
+        }
       } else if (v == 'delete') {
         unawaited(_deleteDiskEntries(provider, [e.path]));
       }
@@ -75856,7 +76503,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           backgroundColor: const Color(0xFF1E1E32),
           shape:
               RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-          // 色の並びを足したぶん縦に伸びるので、 狭い画面では巻物にする。
+          // 色の並びを足した分縦に伸びるので、 狭い画面では巻物にする。
           scrollable: true,
           title: Row(children: [
             Icon(Icons.emoji_symbols_rounded, color: color, size: 20),
@@ -76154,6 +76801,16 @@ class _MindMapScreenState extends State<MindMapScreen>
             icon: Icons.inventory_2_outlined,
             iconColor: const Color(0xFFBA68C8),
             label: provider.t('export.bundle')),
+        // ── エクスプローラーでこのページのファイルの場所を開く (= ユーザー要望) ──
+        // ★ 出し先が決まっていない時も**項目は出す** (押した時に保存先を
+        //   決める口を出す)。 条件で隠すと「項目が増えていない」 と見える。
+        // ★ モバイルにはファイル管理が無いのでデスクトップだけ。
+        if (_isDesktop)
+          _menuItem<_PageAction>(
+              value: _PageAction.revealInOs,
+              icon: Icons.folder_open_rounded,
+              iconColor: const Color(0xFF4FC3F7),
+              label: provider.t('page.revealInOs')),
         // ── Web に公開 (= ユーザー要望: サーバーに公開して皆で見られるように) ──
         // ★ 動画編集ページには出さない (= ユーザー要望: 動画編集では共同
         //   編集できないように、 項目自体を出さない)。
@@ -76263,6 +76920,9 @@ class _MindMapScreenState extends State<MindMapScreen>
           break;
         case _PageAction.exportBundle:
           _exportPageBundle(ctx, provider, page);
+          break;
+        case _PageAction.revealInOs:
+          unawaited(_revealPageFile(provider, page));
           break;
         case _PageAction.publish:
           if (!MindMapProvider.isLiveSharablePageType(page.pageType)) break;
@@ -76646,7 +77306,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     final assetTemplate =
         templateId != null && _mapBackgroundTemplateAssets[templateId] != null;
     if (assetTemplate) {
-      // ★ 比率が違って切れているぶんは、 動かすと見えるようにする
+      // ★ 比率が違って切れている分は、 動かすと見えるようにする
       //   (= ユーザー要望: モバイルで入り切らない)。 倍率を上げた時の
       //   滑らせ方は今までどおり外側の包みが受け持つ。
       bg = AnimatedBuilder(
@@ -76695,7 +77355,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         default:
           fit = BoxFit.cover;
       }
-      // ★ 覆う形で切られたぶんを、 動かした所に合わせて見せる
+      // ★ 覆う形で切られた分を、 動かした所に合わせて見せる
       //   (= ユーザー要望: モバイルで入り切らない)。 敷き詰め (tile) と
       //   全体表示 (contain) では切れないので、 掛けても何も変わらない。
       bg = AnimatedBuilder(
@@ -76710,7 +77370,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           gaplessPlayback: true,
         ),
       );
-      // ── 動かしたぶんだけ背景も移す (= ユーザー要望) ──
+      // ── 動かした分だけ背景も移す (= ユーザー要望) ──
       //   「全体を表示」 (contain) を選んでいる人には掛けない。 あれは
       //   **画像を全部見せる**ための指定なので、 大きく描いて切ると選んだ
       //   意味が無くなる。
@@ -76733,7 +77393,7 @@ class _MindMapScreenState extends State<MindMapScreen>
   ///   から、 スクロールしたらゆっくりと背景も動く様にして欲しい」。
   ///   画面より大きく描く [_wrapScrollingBackground] は倍率が等倍だと
   ///   何もしない (余白が無いため) が、 **比率が違う時は等倍でも絵は
-  ///   切れている**。 その切れているぶんは寄せ先 (alignment) を動かすだけで
+  ///   切れている**。 その切れている分は寄せ先 (alignment) を動かすだけで
   ///   見て回れる。 切れていない向きには何の影響も無いので、 どの画面でも
   ///   掛けてよい。
   /// 背景の寄せ先を数えるための、 キャンバスの大きさの控え。
@@ -76875,7 +77535,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       return provider.bookshelfCanvasSize();
     }
     // 実キャンバスと同じく、折りたたみで非表示の子孫は extent から除外する。
-    // 全ノードで計算すると、遠方の非表示ノードぶんだけ scrollbar が空白域へ
+    // 全ノードで計算すると、遠方の非表示ノード分だけ scrollbar が空白域へ
     // 動けてしまい InteractiveViewer の実境界と食い違う。
     final hidden = provider.hiddenNodeIds;
     final visibleNodes = Map<String, MindMapNode>.fromEntries(
@@ -77903,7 +78563,7 @@ class _MindMapScreenState extends State<MindMapScreen>
   ///
   /// ★ 窓全体 (View.of) から数えてはいけない。 分割レイアウトは
   ///   _mapViewportKey の Stack の中 = 外側の分割パネル (PDF / Web) と並ぶ
-  ///   Expanded の中に置かれているので、 窓全体で数えるとパネルのぶんだけ
+  ///   Expanded の中に置かれているので、 窓全体で数えるとパネルの分だけ
   ///   セルが右へはみ出した矩形になり、 ギャラリーの中央寄せもセルの
   ///   あたり判定もずれる (= ユーザー報告: 分割しても中央が来ない)。
   Rect _mapSplitBodyRect() {
@@ -78600,8 +79260,13 @@ class _MindMapScreenState extends State<MindMapScreen>
       // 会話とループは画面の外 (_McpChatSession) が持っているので、
       // ペインに出し入れしても処理は途切れない。
       case 'aiAssistant':
-        _registerMcpHandlers(provider);
+        // ★ = ユーザー報告「AI やターミナルの欄が点滅する」。 ここは
+        //   **組み立ての最中**なので、 画面が組み直されるたびに
+        //   ヘッダーの全コマンドを訳し直す重い登録が走っていた。
+        //   1 回で足りる物なので、 組み上がってから 1 度だけ行う。
+        _registerMcpHandlersOnce(provider);
         return _McpChatDialog(
+          key: ValueKey('pane_tool_${slot}_$id'),
           provider: provider,
           paneMode: true,
           onClosePane: close,
@@ -78624,6 +79289,8 @@ class _MindMapScreenState extends State<MindMapScreen>
           // ★ CLI は Pro 以上 (= ヘッダーの入口 `_executeHeaderCommand` と
           //   同じ関門)。 ペインへ落とす道 (`_runPaneHeaderCommand`) は
           //   あちらを通らないので、 ここで見ないと無料のまま殻が開く。
+          // ★ 擬似端末を持てない相手では出さない (= 点検で判明)。
+          if (!AgentCli.supported) return const SizedBox.shrink();
           if (!provider.canUseCliAi) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
               if (!mounted) return;
@@ -78922,7 +79589,10 @@ class _MindMapScreenState extends State<MindMapScreen>
         final cur = provider.currentPage.id;
         return jsonEncode([
           for (final p in provider.pages)
-            if (p.pageType == 'normal' || p.pageType == 'bookshelf')
+            // ★ 鍵の掛かったページは追加先に出さない (= 点検で判明:
+            //   開けないページへ要素だけが入ってしまう)。
+            if ((p.pageType == 'normal' || p.pageType == 'bookshelf') &&
+                !provider.isPageLockedByPlan(p.id))
               {'id': p.id, 'name': p.name, 'current': p.id == cur},
         ]);
       case 'floatingMemoToNodePage':
@@ -79301,7 +79971,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     } catch (_) {}
     if (!mounted) return false;
     // 分割セルの矩形はアプリ内 (Flutter ビュー) 座標なので、 本体の窓の
-    // 左上ぶんを引いて合わせる。
+    // 左上分を引いて合わせる。
     return _tryEmbedDropOnSplitCell(frameOnScreen.center - origin, url);
   }
 
@@ -80209,7 +80879,13 @@ class _MindMapScreenState extends State<MindMapScreen>
       final id = _mapSplitCells[i];
       if (id != null) used.add(id);
     }
-    final pages = provider.pages.where(_splitEligiblePage).toList();
+    // ★ = ユーザー要望「3 ページ目以降は Pro 以上でないと開けない」。
+    //   分割の閲覧セルは currentPage を通らずに中身を出すので、
+    //   ここでも鍵の掛かったページを候補から外す (抜け道にならないように)。
+    final pages = provider.pages
+        .where(_splitEligiblePage)
+        .where((p) => !provider.isPageLockedByPlan(p.id))
+        .toList();
     final storedId = _mapSplitCells[k];
     for (final p in pages) {
       if (p.id == storedId && !used.contains(p.id)) return p;
@@ -81780,7 +82456,7 @@ class _MindMapScreenState extends State<MindMapScreen>
               RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
           child: ConstrainedBox(
             constraints: BoxConstraints(
-              // 2 列に並べるぶん広くする (= ユーザー要望: 一度に全項目)。
+              // 2 列に並べる分広くする (= ユーザー要望: 一度に全項目)。
               // 画面が狭い時ははみ出さないように縮める。
               maxWidth:
                   math.min(920.0, MediaQuery.of(bctx).size.width - 40),
@@ -82037,7 +82713,10 @@ class _MindMapScreenState extends State<MindMapScreen>
           //   一覧や Ctrl+1〜9 と同じ基準に揃える。
           for (final p in provider.pagesInFolder(
               _targetFolderForNewPage(provider)))
-            if (_splitEligiblePage(p) && !provider.isPageHidden(p.id))
+            if (_splitEligiblePage(p) &&
+                !provider.isPageHidden(p.id) &&
+                // ★ 鍵の掛かったページは選べない (= ユーザー要望)。
+                !provider.isPageLockedByPlan(p.id))
               PopupMenuItem(
                 value: p.id,
                 enabled: p.id != currentId,
@@ -82684,7 +83363,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                       //   見た目が変わってしまう)。 太さはモバイル 56 / PC 34。
                       //   行チップは編集側と同じく「rect の右端」 に右揃え、
                       //   列チップは「rect の下端」 に下揃えで置く。 左上揃えの
-                      //   ままだと最小太さぶんズレて、 アクティブ側と位置が
+                      //   ままだと最小太さ分ズレて、 アクティブ側と位置が
                       //   合わなかった (= ユーザー報告)。
                       //   編集側は行/列が 2 つ以上ある時だけ掴みを出すので、
                       //   ここも同じ条件にする。
@@ -83007,12 +83686,12 @@ class _MindMapScreenState extends State<MindMapScreen>
     final double h = box;
 
     // ── 右のカスタムバーと重ならないように横へ避ける (= ユーザー要望) ──
-    //    バー幅 + 端の余白ぶん左へ寄せる。 自由配置中のバーは位置が
+    //    バー幅 + 端の余白分左へ寄せる。 自由配置中のバーは位置が
     //    読めないので避けない。
-    //    さらにページのスクロールバー (幅 18 + 余白) ぶんも空ける
+    //    さらにページのスクロールバー (幅 18 + 余白) 分も空ける
     //    (= ユーザー要望: 全体図とサイドバーの間にスクロールバーが来るように)。
     // ★ 右端の縦スクロールバーと閉じるボタンが重なって押しにくかった
-    //   (= ユーザー報告)。 バーの通り道ぶんだけ内側へ寄せる。
+    //   (= ユーザー報告)。 バーの通り道分だけ内側へ寄せる。
     //   バーは出たり消えたりするが、 位置が動くと落ち着かないので
     //   パソコンでは常に空けておく。
     double rightOff = _isDesktop ? 22 : 8;
@@ -83268,6 +83947,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             })
             .whereType<MindMapPage>()
             .where(_splitEligiblePage)
+            .where((p) => !provider.isPageLockedByPlan(p.id))
             .toList();
         if (dropped.isEmpty) return;
         setState(() {
@@ -83657,6 +84337,26 @@ class _MindMapScreenState extends State<MindMapScreen>
           ? (details) =>
               _showCanvasContextMenu(details.globalPosition, ctrl, provider)
           : null,
+      // ★ = ユーザー要望「モバイル版のギャラリーページでブロックの外の背景を
+      //   長押ししても何も出てこないから、 パソコン版の右クリックの項目が
+      //   出るようにして欲しい」。
+      //   上の右クリックと同じ事情。 ギャラリーは boundaryMargin が広いので、
+      //   見えている背景の大半はキャンバス (棚グリッド) の外側にあり、 子の
+      //   onLongPressStart には当たらない。 ここで受け止めて、 パソコンの
+      //   右クリックと同じ [_showCanvasContextMenu] を同じ場所に出す。
+      //   キャンバス内は子の recognizer が勝つので二重には出ない。
+      //   範囲選択中は枠外から四角を引き始める経路 (外側の Listener) が
+      //   あるので、 そちらを邪魔しないよう出さない。
+      onLongPressStart: !_isDesktop && !isRangeMode
+          ? (details) {
+              // 名前を書きかけなら先に確定させる (= 背景を押した時と同じ)。
+              if (_inlineShelfEditNodeId != null) {
+                _commitShelfInlineTextEdit(clearSelection: true);
+              }
+              HapticFeedback.mediumImpact();
+              _showCanvasContextMenu(details.globalPosition, ctrl, provider);
+            }
+          : null,
       child: InteractiveViewer.builder(
         transformationController: ctrl,
         // 通常マップはキャンバス外へはスクロールできないよう margin をゼロに。
@@ -83665,7 +84365,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         //   左上に張り付かないようにする。
         boundaryMargin: provider.currentPage.pageType == 'bookshelf'
             // 右に分割パネル (AI チャット等) を出すと最終列がパネルの下に隠れて
-            //   見えなくなる。 パネル幅ぶん右マージンを増やし、 中身を左へ余分に
+            //   見えなくなる。 パネル幅分右マージンを増やし、 中身を左へ余分に
             //   スクロールして最終列をパネルの外まで送り出せるようにする
             //   (= ユーザー要望: AI チャット欄を出しても全要素を見られるように)。
             ? EdgeInsets.fromLTRB(
@@ -92583,7 +93283,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     // ★ 繋がっているかは、 窓を出す前に 1 回だけ確かめる
     //   (= ユーザー要望: 共有が終わるまでが長い)。 これまでは全部のページを
     //   書き終えた後の startLiveSession の中で初めて調べていて、 名前解決が
-    //   遅い回線だと最後に数秒ぶん黙って止まっていた。 結果は 15 秒ほど
+    //   遅い回線だと最後に数秒分黙って止まっていた。 結果は 15 秒ほど
     //   控えられるので、 後段の確認はただで済む。
     try {
       await provider.ensureOnline();
@@ -92680,7 +93380,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       await Future.wait([
         for (var i = 0; i < math.min(workers, pages.length); i++) worker(),
       ]);
-      // 控えはここで 1 回だけ書く (1 枚ごとに書くと、 枚数ぶん丸ごと
+      // 控えはここで 1 回だけ書く (1 枚ごとに書くと、 枚数分丸ごと
       //   書き直していた)。
       try {
         await provider.savePublishedPagesNow();
@@ -92690,7 +93390,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     // ★ 書き込みが終わった時点で「共有しています…」 を閉じる
     //   (= ユーザー要望: 終わるまでが長い)。 この後に残る仕事
     //   (自分の画面のセッション開始・束の番号) は、 待っている意味が
-    //   ほとんど無いのに 4〜6 往復ぶん窓を出したままにしていた。
+    //   ほとんど無いのに 4〜6 往復分窓を出したままにしていた。
     if (mounted && progressOpen) {
       Navigator.of(ctx, rootNavigator: true).pop();
       progressOpen = false;
@@ -95359,7 +96059,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       if (!context.mounted) return;
       messenger.hideCurrentSnackBar();
 
-      // 再開後はページ全体を再度 fit-to-view (新ノードが追加されたぶん拡張する)
+      // 再開後はページ全体を再度 fit-to-view (新ノードが追加された分拡張する)
       if (res.pageIndex >= 0 && res.pageIndex < provider.pages.length) {
         final pageId = provider.pages[res.pageIndex].id;
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -100934,13 +101634,13 @@ class _MindMapScreenState extends State<MindMapScreen>
     ctrl.value = m;
   }
 
-  /// ギャラリーを矢印キーで動かす 1 回ぶん (画面 px)。
+  /// ギャラリーを矢印キーで動かす 1 回分 (画面 px)。
   ///
   /// **1 回押した時**の量をホイール 1 目盛りにそろえる (= 同じ画面を 2 通りで
   /// 動かすので、 量が違うと戸惑う)。 Windows の engine は 1 目盛り =
   /// 行数 x 100 / 3 画素を送り、 WheelScrollScale がそれを今の行数へ掛け
   /// 直しているので、 今の行数から同じ式で出せば必ず一致する。 読めない時は
-  /// 既定の 3 行ぶん。
+  /// 既定の 3 行分。
   ///
   /// ★ 押しっぱなしの時は、 OS のキーリピートと本体の繰り返しタイマーの
   ///   両方が走るので、 実際にはこの倍くらいの速さで流れる。 これは普通の
@@ -106443,9 +107143,11 @@ class _MindMapScreenState extends State<MindMapScreen>
     final provider = context.read<MindMapProvider>();
     final pages = provider.pages;
     final currentIdx = provider.currentPageIndex;
+    // ★ = 点検で判明: 鍵の掛かったページを送り先に出すと、 要素が
+    //   開けない所へ消えてしまう。 一覧から外す。
     final otherIdx = [
       for (int i = 0; i < pages.length; i++)
-        if (i != currentIdx) i
+        if (i != currentIdx && !provider.isPageLockedByPlan(pages[i].id)) i
     ];
     if (otherIdx.isEmpty) {
       _appSnack(
@@ -106628,6 +107330,14 @@ class _MindMapScreenState extends State<MindMapScreen>
     // 無料プランのページ上限はここでも守る。
     if (!provider.canCreatePageType(pageType)) {
       _showPaywallDialog(provider);
+      return;
+    }
+    // ★ = 点検で判明: 作った先が鍵の掛かるページなら、 要素をそこへ
+    //   移してしまうと見えない所へ消えたように見える。 作る前に断る。
+    if (provider.wouldNewPageBeLocked) {
+      _removeOverlay();
+      _showPaywallDialog(provider,
+          bodyOverride: provider.t('paywall.pageOpenLimit'));
       return;
     }
     final originalIndex = provider.currentPageIndex;
@@ -106821,6 +107531,13 @@ class _MindMapScreenState extends State<MindMapScreen>
       return;
     }
 
+    // ★ = 点検で判明: 作った先が鍵の掛かるページなら、 要素をそこへ
+    //   移してしまうと見えない所へ消えたように見える。 作る前に断る。
+    if (provider.wouldNewPageBeLocked) {
+      _showPaywallDialog(provider,
+          bodyOverride: provider.t('paywall.pageOpenLimit'));
+      return;
+    }
     // 新規ページ作成（addPageは自動でそのページに切り替わる）
     provider.addPage(name: name);
     final newIndex = provider.pages.length - 1;
@@ -108545,7 +109262,7 @@ class _SplitPdfHorizontalScrollBarState
   ///
   /// ★ ここが今まで間違っていた。 以前は `幅 x (倍率 - 1)` としていたが、
   ///   ビューア側が実際に許す横の量は `幅 - 幅 / 倍率` = `幅 x (1 - 1/倍率)`。
-  ///   倍率のぶんだけ大きく見積もっていたので、 2 倍では棒の上半分、
+  ///   倍率の分だけ大きく見積もっていたので、 2 倍では棒の上半分、
   ///   8 倍では上 7/8 が「動かしても何も起きない死んだ範囲」 になり、
   ///   「拡大しても左右に動かせない」 と感じる原因になっていた。
   double get _maxX {
@@ -109267,7 +109984,7 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
   bool _open = false;
   static const String _kOpenKey = 'displaySettingsOpen';
 
-  /// まだ繋いでいない画面ぶんの予約
+  /// まだ繋いでいない画面分の予約
   /// (= ユーザー要望: サブモニターが接続されていない時でも、 拡大率や
   ///  壁紙を予め設定しておけるように)。
   ///
@@ -109301,7 +110018,7 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
   final Map<String, _WallAdjust> _wallAdjust = {};
   static const String _kAdjustKey = 'displayWallAdjust_v1';
 
-  /// まだ繋いでいない画面ぶんの貼り方 (鍵は上の配置図と同じ番号)。
+  /// まだ繋いでいない画面分の貼り方 (鍵は上の配置図と同じ番号)。
   /// 本当の画素数が分からないので画像は作らず、 繋がった時にその画面の
   /// 大きさで作って貼る ([_applyPendingAdjusts])。
   final Map<int, _WallAdjust> _pendingAdjust = {};
@@ -109484,7 +110201,7 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
     } catch (_) {}
   }
 
-  /// 繋いでいない画面ぶんの控えを読む。
+  /// 繋いでいない画面分の控えを読む。
   Future<void> _loadPendingAdjust() async {
     try {
       final sp = await SharedPreferences.getInstance();
@@ -109504,7 +110221,7 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
     } catch (_) {}
   }
 
-  /// 繋いでいない画面ぶんの控えを書く (空で上書きしない守り付き)。
+  /// 繋いでいない画面分の控えを書く (空で上書きしない守り付き)。
   Future<void> _savePendingAdjust() async {
     try {
       final sp = await SharedPreferences.getInstance();
@@ -109590,7 +110307,7 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
     } catch (_) {}
   }
 
-  /// 予約のうち、 今つながっている画面のぶんを当てる。 当てた分は外す。
+  /// 予約のうち、 今つながっている画面の分を当てる。 当てた分は外す。
   void _applyPending() {
     if (_pendingScale.isEmpty && _pendingWall.isEmpty) return;
     var changed = false;
@@ -109678,7 +110395,7 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
     _reload();
   }
 
-  /// [slot] を渡すと、 まだ繋いでいない画面ぶんは控えるだけにする
+  /// [slot] を渡すと、 まだ繋いでいない画面分は控えるだけにする
   /// (= ユーザー要望: 接続されていない時でも予め設定しておけるように)。
   Future<void> _pickWallpaper(WallpaperMonitor? mon, {int? slot}) async {
     try {
@@ -109780,7 +110497,7 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
         // ── 拡大率 ──
         if (_open) ...[
           label(p.t('display.scale')),
-          // ★ 繋いでいない画面ぶんの行も出す (= ユーザー要望: 予め設定して
+          // ★ 繋いでいない画面分の行も出す (= ユーザー要望: 予め設定して
           //   おけるように)。 その行で選んだ値は控えておき、 実際に繋がった
           //   時に当てる。
           for (var i = 0; i < _slotCount; i++)
@@ -110182,7 +110899,7 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
     ]);
   }
 
-  /// まだ繋いでいない画面ぶんに出す拡大率の選択肢。
+  /// まだ繋いでいない画面分に出す拡大率の選択肢。
   ///
   /// ★ = ユーザー要望「サブモニターの拡大率を 250% まで設定できるのはおかしい。
   ///   メインモニターと同じ選択肢にして」。 実際に繋がっている画面 (主モニターを
@@ -110198,7 +110915,7 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
         : primary.choices;
   }
 
-  /// まだ繋いでいない画面ぶんの拡大率の選択肢。 押すと控えるだけ。
+  /// まだ繋いでいない画面分の拡大率の選択肢。 押すと控えるだけ。
   Widget _pendingPctChip(int slot, int v) {
     final on = _pendingScale[slot] == v;
     return InkWell(
@@ -110287,7 +111004,7 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
       };
 
   /// 見本の入れ物の高さ。 画面の形 (縦横比) に合わせ、 はみ出しを見せる
-  /// ぶんの余白を足す。
+  /// 分の余白を足す。
   static double _previewBoxHeight(double w, int monW, int monH) {
     const margin = _WallpaperPreview.margin;
     final inner = w - margin * 2;
@@ -110474,7 +111191,7 @@ class _MonitorDisplaySettingsState extends State<_MonitorDisplaySettings> {
     return out.path;
   }
 
-  /// 決まった画像を貼る (まだ繋いでいない画面ぶんは控えるだけ)。
+  /// 決まった画像を貼る (まだ繋いでいない画面分は控えるだけ)。
   ///
   /// ★ ここで並べ方 (fit) を指定してはいけない。 並べ方は Windows 全体で
   ///   1 つしか無いので、 片方の画面に貼るたびに、 もう片方の画面の見え方まで
@@ -110756,7 +111473,7 @@ class _WheelTestBoxState extends State<_WheelTestBox> {
     super.dispose();
   }
 
-  /// 送られてきた量から「何行ぶん」 かを逆算する。
+  /// 送られてきた量から「何行分」 かを逆算する。
   ///
   /// ★ 変換が 2 段あるので、 両方戻す (実物を読んで確かめた):
   ///   1. Windows 側は 1 段につき 「行数 x 100 / 3」 を送る。 掛ける数は
@@ -112376,7 +113093,7 @@ class _CursorAppearanceInlineState extends State<_CursorAppearanceInline> {
         );
 
     // ★ 大きさはスライドバーで決める (= ユーザー要望)。
-    //   指を離した時だけ OS へ当てる (差し替えは 13 本ぶんの FFI なので、
+    //   指を離した時だけ OS へ当てる (差し替えは 13 本分の FFI なので、
     //   動かしている間ずっと当てると重い)。
     final isDefaultSize = p.cursorPixelSize <= 0;
     final liveSize = _sizeDrag ??
@@ -112923,7 +113640,7 @@ Future<String> _composeWallpaperFile({
           paint);
     } else {
       // ★ 枠を画面の形に合わせ直してから使う。
-      //   まだ繋いでいない画面ぶんは、 別の画面の形を借りて決めているので、
+      //   まだ繋いでいない画面分は、 別の画面の形を借りて決めているので、
       //   そのまま引き伸ばすと歪む。 中心と大きさは活かしたまま形だけ直す。
       final ar = w / h;
       final sar = full.width / full.height;
@@ -113541,7 +114258,7 @@ class _WallpaperPreview extends StatelessWidget {
   final bool loading;
   final bool big;
 
-  /// 画面枠の外側に取る余白 (= はみ出しを見せるぶん)。
+  /// 画面枠の外側に取る余白 (= はみ出しを見せる分)。
   static const double margin = 14.0;
 
   const _WallpaperPreview({
@@ -113725,7 +114442,7 @@ class _WallPreviewPainter extends CustomPainter {
         return [Rect.fromLTWH((mw - iw) / 2, (mh - ih) / 2, iw, ih)];
       case WallpaperFit.tile:
         final out = <Rect>[];
-        // 端の 1 枚ぶんは、 はみ出しとして外へも描く。
+        // 端の 1 枚分は、 はみ出しとして外へも描く。
         for (var y = 0.0; y < mh + ih && out.length < 400; y += ih) {
           for (var x = 0.0; x < mw + iw && out.length < 400; x += iw) {
             out.add(Rect.fromLTWH(x, y, iw, ih));
@@ -113986,7 +114703,7 @@ class _MonitorEdgeSettingsState extends State<_MonitorEdgeSettings> {
   }
 
   /// 実際に繋がっているモニターを升目に置く。 主モニターは (0,0)。
-  /// 主から見た向き 1 歩ぶんに置く (斜めは近い方の軸へ寄せる)。
+  /// 主から見た向き 1 歩分に置く (斜めは近い方の軸へ寄せる)。
   Map<String, int> _cells() {
     // ★ 番号は **CursorWrap.listMonitors() の並び順そのまま** を使う。
     //   ここで主モニターを 0 番に付け替えると、 実際に回り込みを動かす側
@@ -114282,7 +114999,7 @@ class _MonitorGridView extends StatelessWidget {
       if (c.$2 < minY) minY = c.$2;
       if (c.$2 > maxY) maxY = c.$2;
     }
-    // 置ける場所を出すため、 外側に 1 周ぶん余白を取る。
+    // 置ける場所を出すため、 外側に 1 周分余白を取る。
     minX -= 1;
     maxX += 1;
     minY -= 1;
@@ -115427,9 +116144,19 @@ class _ConnectionActionOverlayState extends State<_ConnectionActionOverlay>
   @override
   Widget build(BuildContext context) {
     final mq = MediaQuery.of(context);
-    final double barW = math.min(380.0, math.max(0.0, mq.size.width - 24.0));
+    // ★ = ユーザー要望「リンク設定を畳んだ時は横長ではなく、 リンクだけの
+    //   アイコンとなるように」。 畳んでいる間は幅も縮める (帯のままだと
+    //   何も無い所が画面を覆って、 下のマップが押せない)。
+    final double barW = _collapsed
+        ? 48.0
+        : math.min(380.0, math.max(0.0, mq.size.width - 24.0));
+    // ★ = ユーザー要望「リンクの色は白が選択できないのはおかしいのと、
+    //   黒白は選択率が高いから左側に寄せて欲しい」。 既定 (null) の次に
+    //   黒・白を置き、 白を新しく足した。
     const linkColors = <Color?>[
       null,
+      Color(0xFF263238),
+      Color(0xFFFFFFFF),
       Color(0xFFE53935),
       Color(0xFFFF7043),
       Color(0xFFFB8C00),
@@ -115444,7 +116171,6 @@ class _ConnectionActionOverlayState extends State<_ConnectionActionOverlay>
       Color(0xFFD81B60),
       Color(0xFF6D4C41),
       Color(0xFF546E7A),
-      Color(0xFF263238),
     ];
     final showLineColorScrollbar = <TargetPlatform>{
       TargetPlatform.windows,
@@ -115491,10 +116217,14 @@ class _ConnectionActionOverlayState extends State<_ConnectionActionOverlay>
               constraints: BoxConstraints(
                 maxHeight: math.max(64.0, mq.size.height - top - 8.0),
               ),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              // 畳んでいる間は内側の余白も詰める (14 のままだと、 48px の
+              // 中に 30px のボタンが入らずはみ出す)。
+              padding: EdgeInsets.symmetric(
+                  horizontal: _collapsed ? 6 : 14,
+                  vertical: _collapsed ? 4 : 12),
               decoration: BoxDecoration(
                 color: const Color(0xFF1A1A30),
-                borderRadius: BorderRadius.circular(20),
+                borderRadius: BorderRadius.circular(_collapsed ? 24 : 20),
                 border: Border.all(color: Colors.white.withValues(alpha: 0.15)),
                 boxShadow: [
                   BoxShadow(
@@ -116338,6 +117068,12 @@ class _ActionOverlay extends StatefulWidget {
   final VoidCallback onMore;
   final void Function(Color) onColor;
 
+  /// 背景色を「これから作る要素の既定」にする / 既に既定なら解除する
+  /// (= ユーザー要望:「(長押しで背景色を固定) とか書かれているが、 これは
+  /// モバイル版での話じゃないの? パソコン版でも背景色や文字色を固定できる
+  /// ようにして」)。 モバイルは長押し、 パソコンは右クリックから呼ばれる。
+  final void Function(Color color)? onPinBgColor;
+
   /// 文字色 (= ユーザー要望: 要素の文字色も設定できるように)。
   /// [color] が null なら自動 (背景の明るさで決める) に戻す。
   /// [remember] なら、 同じ背景色の要素に以後もこの文字色を使う。
@@ -116406,6 +117142,7 @@ class _ActionOverlay extends StatefulWidget {
     required this.defaultMemoFontSize,
     this.nodeTitleFontSize,
     this.nodeMemoFontSize,
+    this.onPinBgColor,
   });
   @override
   State<_ActionOverlay> createState() => _ActionOverlayState();
@@ -116423,6 +117160,11 @@ class _ActionOverlayState extends State<_ActionOverlay>
   ///   `MindMapProvider.nodePalette` をそのまま使う (= ユーザー要望で色を
   ///   増やした時に、 片方だけ増えて食い違うのを防ぐ)。
   static const _colors = MindMapProvider.nodePalette;
+
+  /// パソコンか (= 右クリックが使えるか)。 このクラスでは各メソッドが同じ式を
+  /// その場で書いているが、 色パレットは複数の場所で要るのでまとめた。
+  static bool get _isDesktopPlatform =>
+      !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
 
   @override
   void initState() {
@@ -116486,7 +117228,7 @@ class _ActionOverlayState extends State<_ActionOverlay>
     }
   }
 
-  /// 方向アイコンは実際に使える本数ぶんの矢印を描く
+  /// 方向アイコンは実際に使える本数分の矢印を描く
   /// (= ユーザー要望: 8 方向のアイコンが実際と合っていない)。
   Widget _anchorModeGlyph(NodeAnchorMode mode, Color color) =>
       _AnchorModeGlyph(mode: mode, color: color, size: 18);
@@ -117176,82 +117918,127 @@ class _ActionOverlayState extends State<_ActionOverlay>
                     //   分は下の行へ折り返す (= ユーザー要望: 色をもっと)。
                     // ★ 札の幅いっぱいに均等に並べる (= ユーザー要望: 色の
                     //   選択肢を横に広げる)。 行数・列数は上で決めた物。
-                    _paletteGrid(
-                        rows: paletteRows,
-                        cols: paletteCols,
-                        coin: coinSize,
-                        runSpacing: paletteRunSpacing),
+                    // ★ = ユーザー要望「要素の背景色一覧が何の色か
+                    //   分からないから、 色選択肢の左側に書いておいて」。
+                    Row(children: [
+                      _paletteLabel(Icons.format_color_fill_rounded,
+                          provider.t('overlay.colorBg')),
+                      Expanded(
+                        child: _paletteGrid(
+                            provider: provider,
+                            rows: paletteRows,
+                            cols: paletteCols,
+                            coin: coinSize,
+                            runSpacing: paletteRunSpacing),
+                      ),
+                    ]),
                     // ── 文字色 (= ユーザー要望)。 自動 / 白 / 黒 / 赤 / 青 /
                     //    緑 / 黄。 長押しで「この背景色ならいつもこの文字色」
                     //    として覚える。 ──
                     if (widget.onTextColor != null) ...[
                       const SizedBox(height: 4),
-                      Row(mainAxisSize: MainAxisSize.min, children: [
-                        Icon(Icons.text_fields_rounded,
-                            size: 12, color: Colors.white.withValues(alpha: 0.6)),
-                        const SizedBox(width: 4),
-                        Tooltip(
-                          message: provider.t('overlay.textColorAuto'),
-                          child: GestureDetector(
-                            onTap: () => widget.onTextColor!(null, false),
-                            onLongPress: () => widget.onTextColor!(null, true),
-                            child: Container(
-                              width: coinSize,
-                              height: coinSize,
-                              margin:
-                                  EdgeInsets.symmetric(horizontal: colorMargin),
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                border: Border.all(
-                                    color: widget.nodeTextColor == null
-                                        ? Colors.white
-                                        : Colors.white.withValues(alpha: 0.3),
-                                    width: widget.nodeTextColor == null ? 2 : 1),
-                              ),
-                              child: const Center(
-                                child: Text('A',
-                                    style: TextStyle(
-                                        color: Colors.white70,
-                                        fontSize: 10,
-                                        fontWeight: FontWeight.w700)),
-                              ),
-                            ),
-                          ),
-                        ),
-                        for (final tc in const [
-                          Colors.white,
-                          Color(0xFF16181D),
-                          Color(0xFFE53935),
-                          Color(0xFF1E88E5),
-                          Color(0xFF43A047),
-                          Color(0xFFFDD835),
-                        ])
-                          Tooltip(
-                            message: provider.t('overlay.textColorHold'),
-                            child: GestureDetector(
-                              onTap: () => widget.onTextColor!(tc, false),
-                              onLongPress: () => widget.onTextColor!(tc, true),
-                              child: Container(
-                                width: coinSize,
-                                height: coinSize,
-                                margin: EdgeInsets.symmetric(
-                                    horizontal: colorMargin),
-                                decoration: BoxDecoration(
-                                  color: tc,
-                                  shape: BoxShape.circle,
-                                  border: Border.all(
-                                      color: widget.nodeTextColor?.value ==
-                                              tc.value
-                                          ? Colors.white
-                                          : Colors.white.withValues(alpha: 0.3),
-                                      width: widget.nodeTextColor?.value ==
-                                              tc.value
-                                          ? 2
-                                          : 1),
+                      // ★ = ユーザー要望「文字色だけ横幅が合ってないのは
+                      //   見栄えが悪いから、 カラーバリエーションを増やして
+                      //   合わせて欲しい」。 背景色と**同じ列数**に増やし、
+                      //   同じ幅いっぱいに均等で並べる。 左に「文字」 と
+                      //   書くのも背景色と同じ。
+                      Row(children: [
+                        _paletteLabel(Icons.text_fields_rounded,
+                            provider.t('overlay.colorText')),
+                        Expanded(
+                          child: Row(children: [
+                            Expanded(
+                              child: Center(
+                                child: Tooltip(
+                                  // ★ = ユーザー要望: パソコンは長押しでは
+                                  //   なく右クリックだと書く。
+                                  message: provider.t(_isDesktopPlatform
+                                      ? 'overlay.textColorAutoPc'
+                                      : 'overlay.textColorAuto'),
+                                  child: GestureDetector(
+                                    onTap: () =>
+                                        widget.onTextColor!(null, false),
+                                    onLongPress: () =>
+                                        widget.onTextColor!(null, true),
+                                    onSecondaryTap: () =>
+                                        widget.onTextColor!(null, true),
+                                    child: Container(
+                                      width: coinSize,
+                                      height: coinSize,
+                                      decoration: BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        border: Border.all(
+                                            color: widget.nodeTextColor == null
+                                                ? Colors.white
+                                                : Colors.white
+                                                    .withValues(alpha: 0.3),
+                                            width:
+                                                widget.nodeTextColor == null
+                                                    ? 2
+                                                    : 1),
+                                      ),
+                                      child: const Center(
+                                        child: Text('A',
+                                            style: TextStyle(
+                                                color: Colors.white70,
+                                                fontSize: 10,
+                                                fontWeight: FontWeight.w700)),
+                                      ),
+                                    ),
+                                  ),
                                 ),
                               ),
                             ),
-                          ),
+                            for (var k = 0; k < paletteCols - 1; k++)
+                              Expanded(
+                                child: Center(
+                                  child: k < _kTextColors.length
+                                      ? Tooltip(
+                                          // ★ = ユーザー要望: パソコンは
+                                          //   右クリックだと書く。
+                                          message: provider.t(
+                                              _isDesktopPlatform
+                                                  ? 'overlay.textColorHoldPc'
+                                                  : 'overlay.textColorHold'),
+                                          child: GestureDetector(
+                                            onTap: () => widget.onTextColor!(
+                                                _kTextColors[k], false),
+                                            onLongPress: () =>
+                                                widget.onTextColor!(
+                                                    _kTextColors[k], true),
+                                            onSecondaryTap: () =>
+                                                widget.onTextColor!(
+                                                    _kTextColors[k], true),
+                                            child: Container(
+                                              width: coinSize,
+                                              height: coinSize,
+                                              decoration: BoxDecoration(
+                                                color: _kTextColors[k],
+                                                shape: BoxShape.circle,
+                                                border: Border.all(
+                                                    color: widget.nodeTextColor
+                                                                ?.value ==
+                                                            _kTextColors[k]
+                                                                .value
+                                                        ? Colors.white
+                                                        : Colors.white
+                                                            .withValues(
+                                                                alpha: 0.3),
+                                                    width: widget.nodeTextColor
+                                                                ?.value ==
+                                                            _kTextColors[k]
+                                                                .value
+                                                        ? 2
+                                                        : 1),
+                                              ),
+                                            ),
+                                          ),
+                                        )
+                                      : const SizedBox.shrink(),
+                                ),
+                              ),
+                          ]),
+                        ),
                       ]),
                     ],
                     const SizedBox(height: 6),
@@ -117545,9 +118332,18 @@ class _ActionOverlayState extends State<_ActionOverlay>
   /// 色パレットの 1 コイン。 間隔は格子 (_paletteGrid) の側で取るので
   /// margin は付けない。
   Widget _paletteCoin(Color c, double size,
-      {required bool on, required VoidCallback onTap}) {
-    return GestureDetector(
+      {required bool on,
+      required VoidCallback onTap,
+      VoidCallback? onPin,
+      String? tooltip}) {
+    final coin = GestureDetector(
         onTap: onTap,
+        // ★ = ユーザー要望「パソコン版でも背景色や文字色を固定できるように」。
+        //   説明文はパソコンなら「右クリックで」 と出すが、 手掛かりが
+        //   増える分には困らないので、 長押しもそのまま効かせる
+        //   (文字色の側と同じ作法)。
+        onLongPress: onPin,
+        onSecondaryTap: onPin,
         child: Container(
           width: size,
           height: size,
@@ -117567,6 +118363,8 @@ class _ActionOverlayState extends State<_ActionOverlay>
                     ]
                   : null),
         ));
+    if (tooltip == null || tooltip.isEmpty) return coin;
+    return Tooltip(message: tooltip, child: coin);
   }
 
   /// ★ 色パレットを札の幅いっぱいに均等配置する格子 (= ユーザー要望: 上下の
@@ -117575,17 +118373,60 @@ class _ActionOverlayState extends State<_ActionOverlay>
   ///   1 個が次の行へ落ちる (11 + 9 のような並び) ので、 Row + Expanded で
   ///   列数を確定させ、 最後の行の足りない分は空の Expanded で埋めて列を揃える。
   ///   rows / cols は build 側で _colors.length から決めた物を受け取る。
+  /// 色の並びの左に付ける名札 (= ユーザー要望: 何の色か分かるように)。
+  Widget _paletteLabel(IconData icon, String text) => SizedBox(
+        width: 34,
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Icon(icon, size: 12, color: Colors.white.withValues(alpha: 0.6)),
+          Text(text,
+              maxLines: 1,
+              overflow: TextOverflow.clip,
+              style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.5), fontSize: 8.5)),
+        ]),
+      );
+
+  /// 文字色の候補 (= ユーザー要望: 背景色と同じ幅になるよう数を増やした)。
+  static const List<Color> _kTextColors = <Color>[
+    Colors.white,
+    Color(0xFF16181D),
+    Color(0xFF9E9E9E),
+    Color(0xFFE53935),
+    Color(0xFFFF7043),
+    Color(0xFFFB8C00),
+    Color(0xFFFDD835),
+    Color(0xFF43A047),
+    Color(0xFF00897B),
+    Color(0xFF1E88E5),
+    Color(0xFF3949AB),
+    Color(0xFF8E24AA),
+    Color(0xFFD81B60),
+    Color(0xFF6D4C41),
+  ];
+
   Widget _paletteGrid({
+    required MindMapProvider provider,
     required int rows,
     required int cols,
     required double coin,
     required double runSpacing,
   }) {
+    // ★ = ユーザー要望「パソコン版でも背景色や文字色を固定できるように」。
+    //   長押し (パソコンは右クリック) で「これから作る要素の既定の背景色」 に
+    //   する。 既に既定の色なら、 もう一度やると解除して順番に戻す。
+    final bool canPin = widget.onPinBgColor != null;
+    final String tip = canPin
+        ? provider.t(_isDesktopPlatform
+            ? 'overlay.bgColorHoldPc'
+            : 'overlay.bgColorHold')
+        : '';
     final List<Widget> coins = [
       for (final c in _colors)
         _paletteCoin(c, coin,
             on: c.value == widget.nodeColor.value,
-            onTap: () => widget.onColor(c)),
+            onTap: () => widget.onColor(c),
+            onPin: canPin ? () => widget.onPinBgColor!(c) : null,
+            tooltip: canPin ? tip : null),
     ];
     return Column(mainAxisSize: MainAxisSize.min, children: [
       for (int r = 0; r < rows; r++) ...[
@@ -117965,7 +118806,7 @@ class _HeaderCustomButtonsBarState extends State<_HeaderCustomButtonsBar> {
     // 確保する必要がある。
     // - 通常モード: 約 180px
     // - 並び替えモード: 枠線とマージンが付いてアイコン自体が膨らむため、
-    //   右側に一層余裕が必要。200px + 枠のぶん 20px ＝ 220px 引く
+    //   右側に一層余裕が必要。200px + 枠の分 20px ＝ 220px 引く
     final screenW = MediaQuery.of(context).size.width;
     final availableW = (maxWidth ?? screenW).clamp(0.0, screenW).toDouble();
     // ★ 起動ハング対策 ★
@@ -117983,7 +118824,7 @@ class _HeaderCustomButtonsBarState extends State<_HeaderCustomButtonsBar> {
         : (availableW - rightReserve).clamp(96.0, availableW).toDouble();
     // 並び替えモード中は各アイコンに枠 (2px × 2 + margin 2px × 2 = 8px)
     // と振動アニメのための若干の余白が加わるため、1 アイコンあたりの幅を
-    // 48 → 58 に上げる。これをしないとアイコン側が膨らんだぶん右側メニュー
+    // 48 → 58 に上げる。これをしないとアイコン側が膨らんだ分右側メニュー
     // ボタンが画面外に押し出されてしまう。
     final double perBtnW = reorderMode ? 58.0 : _kHeaderCustomButtonExtent;
     final desktopGapCount =
@@ -119150,7 +119991,7 @@ class _CtxIconToggleButton extends StatelessWidget {
   }
 }
 
-/// リンクの伸ばせる方向を「実際に使える本数ぶんの矢印」 で描くグリフ
+/// リンクの伸ばせる方向を「実際に使える本数分の矢印」 で描くグリフ
 /// (= ユーザー要望: 8 方向のアイコンが実際と合っていないので、 ちゃんと
 /// 8 方向のアイコンにする)。 2 方向 / 4 方向 / 斜め 4 方向 / 8 方向を
 /// [anchorsForMode] からそのまま描くので、 表示と挙動が必ず一致する。
@@ -130935,7 +131776,7 @@ class _GanttPageViewState extends State<_GanttPageView> {
       firstEnd = active[firstCount - 1].millisecondsSinceEpoch;
       secondStart = active[firstCount].millisecondsSinceEpoch;
     } else {
-      // 期間 (単位数)。 0 = 1 単位ぶんしかないので分割不可。
+      // 期間 (単位数)。 0 = 1 単位分しかないので分割不可。
       final span = _unitIndex(_d(t.startMs), _d(t.endMs));
       if (span < 1) {
         _appSnack(
@@ -131431,7 +132272,7 @@ class _GanttPageViewState extends State<_GanttPageView> {
     void tell(String msg, Color c) => showTopToast(context, msg, c);
     final members = _members();
     // 列は、 今出ている工程の幅 (最初の予定の日 〜 最後の予定の日)。
-    // 予定が無い時は今日から 7 日ぶん。
+    // 予定が無い時は今日から 7 日分。
     DateTime? minD, maxD;
     for (final t in _tasks) {
       final a = _d(t.startMs), b = _d(t.endMs);
@@ -132863,7 +133704,7 @@ class _GanttPageViewState extends State<_GanttPageView> {
   }
 
 
-  /// 工程 1 本ぶんの行。 合体表示でも工程だけの並びでも同じ物を使う。
+  /// 工程 1 本分の行。 合体表示でも工程だけの並びでも同じ物を使う。
   Widget _ganttTaskRow(_GanttTask t, List<DateTime> cols) {
     return MouseRegion(
       onEnter: (_) {
@@ -137134,7 +137975,7 @@ const String _kMdEmbeddedMapJs = r"""
       moved += Math.abs(dx) + Math.abs(dy);
       lx = ev.clientX; ly = ev.clientY;
       if (dragNode) {
-        // 拡大率のぶんを割り戻してから動かす。
+        // 拡大率の分を割り戻してから動かす。
         dragNode.x += dx / (sc || 1);
         dragNode.y += dy / (sc || 1);
         drawSoft();
@@ -137725,7 +138566,7 @@ const String _kMdEmbeddedMapJs = r"""
       joinGroups(byKey[key]);
       return byKey[key];
     }
-    // 「A[調査]」 の 1 個ぶんを読む正規表現。
+    // 「A[調査]」 の 1 個分を読む正規表現。
     var one = '([A-Za-z0-9_\\-\\.]+)\\s*((?:\\(\\(|\\[\\[|\\[\\(|\\{\\{|' +
               '[\\(\\[\\{>])[\\s\\S]*?(?:\\)\\)|\\]\\]|\\)\\]|\\}\\}|' +
               '[\\)\\]\\}]))?';
@@ -138373,7 +139214,7 @@ const String _kMdEmbeddedMapJs = r"""
         var u = m[2].toLowerCase();
         if (u === 'w') return Math.round(v * 7);
         if (u === 'd') return Math.round(v);
-        return 1;   // 時間 / 分は 1 日ぶんとして描く
+        return 1;   // 時間 / 分は 1 日分として描く
       }
       for (var i = 0; i < lines.length; i++) {
         var L = lines[i];
@@ -138853,7 +139694,7 @@ const String _kMdEmbeddedMapJs = r"""
       slot.innerHTML =
         '<div class="mmap-box">' +
         // ★ 題は上に大きく出す (= ユーザー要望: 小さくなり過ぎ / ガントで
-        //   消えていた)。 右側はボタンのぶん空けて重ならないようにする。
+        //   消えていた)。 右側はボタンの分空けて重ならないようにする。
         (data.title
           ? '<div class="mmch-title">' + esc2(data.title) + '</div>'
           : '') +
@@ -140456,6 +141297,11 @@ String _markdownPreviewHtml(String md, bool dark,
     // (= ユーザー要望: 半々で開く時はスクロールバーを 1 つに)。
     // ON の間はプレビュー側のスクロールバーを隠す (バーは編集欄の 1 本だけ)。
     bool syncScroll = false,
+    // 連動は切っていても「今どこを読んでいるか」 の知らせだけは欲しい
+    // (= ユーザー要望: 読み込む度に先頭へ戻らないよう、 最後に読んだ所を
+    // 覚える)。 連動そのものは Dart 側 (_syncActive) で止めているので、
+    // ここでは JS を入れるかどうかだけを分ける。
+    bool scrollReport = false,
     // ```map フェンスに書かれたページの中身 (= ユーザー要望: 自分のマップを
     // 埋め込んで、 その場で開閉したり押したりできるように)。
     // 形は {フェンスに書かれた文字: {id, name, nodes, connections}}。
@@ -140545,7 +141391,9 @@ String _markdownPreviewHtml(String md, bool dark,
       : '<script>window.__mmTableLabel = '
           '${jsonEncode(tableToPageLabel)};</script>';
   final syncJs =
-      (syncScroll ? _kMdScrollSyncJs : '') + tableBtnJs + _kMdPreviewUiJs;
+      ((syncScroll || scrollReport) ? _kMdScrollSyncJs : '') +
+          tableBtnJs +
+          _kMdPreviewUiJs;
   // 埋め込みマップ。 アプリ内のプレビューなら中身が空でも仕込んでおく
   // (後から ```map を書いた時に、 読み込み直さず描けるように)。
   // ★ 常に入れる。 以前は「マップを埋め込む時だけ」 だったので、 テキスト
@@ -140724,7 +141572,7 @@ String _markdownPreviewHtml(String md, bool dark,
   /* 図のビューは中身が入り切るように広くとる (= ユーザー要望) */
   .mmap.mmch .mmap-box{height:540px;}
   /* 題は図の上の中央に大きく (= ユーザー要望: 工程表の題を上中央へ)。
-     右はボタンのぶん空けて、 その残りの真ん中に置く (= 重なり対策) */
+     右はボタンの分空けて、 その残りの真ん中に置く (= 重なり対策) */
   .mmch-title{position:absolute;left:14px;top:10px;right:236px;
        text-align:center;
        font-size:20px;font-weight:700;line-height:1.25;
@@ -143735,6 +144583,187 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
   /// こちらから動かした直後は、 返ってきた通知を無視する (往復防止)。
   int _ignoreScrollUntilMs = 0;
 
+  // ── 最後に読んでいた所から開く (= ユーザー要望: マークダウンのページを
+  //    読み込む度に先頭へ戻ると使いづらい) ──
+  //
+  // 覚えるのは px ではなく**元の文の行番号**。 編集欄とプレビューでは px が
+  // まるで違うし、 折り返しや字の大きさが変わると px はもう当たらない。
+  // 行番号なら、 既にある連動の仕掛け (_editorOffsetForLine /
+  // window.__mmScrollToLine) にそのまま渡せて、 両方を同じ所へ戻せる。
+  //
+  // 置き場は本文とは**別の prefs キー** (md_scroll_<pageId>)。 本文の束
+  // (markdown_<pageId>) に混ぜると、 ただ眺めただけで本文が変わった事に
+  // なり、 クラウド同期と共同編集へ無駄な差分が流れる。
+  //
+  // 粒度は**タブごと** (タブ id → 行)。 markdown_<pageId> はタブの束なので、
+  // ページで 1 つだけ覚えると別のタブへ移った時に見当違いの所へ飛ぶ。
+
+  /// タブ id → 最後に読んでいた行 (1 始まり)。 1 = 先頭なので控えない。
+  final Map<String, int> _mdLastLines = <String, int>{};
+
+  /// 置き場 (ページごと)。
+  String get _kMdScrollKey => 'md_scroll_${widget.pageId}';
+
+  /// 書き出しを少し待ってまとめる係。
+  Timer? _mdScrollSaveT;
+
+  /// 戻している間は「今の位置」 を覚えない (戻す前の値で上書きしない)。
+  bool _restoringMd = false;
+
+  /// この時刻までは覚えない。 タブを差し替えた直後は編集欄の**古い**位置で
+  /// 知らせが飛んでくるし、 図 (mermaid) が描き上がると人が触っていなくても
+  /// プレビューが動いて知らせが飛ぶ。 どちらも控えを壊すので弾く。
+  int _ignoreRememberUntilMs = 0;
+
+  /// 編集欄が組み上がるのを待つ係と、 待った回数。
+  Timer? _restoreScrollT;
+  int _restoreTries = 0;
+
+  /// プレビュー側で戻したい行 (差し替えの直後に効かせる。 null = 無し)。
+  int? _previewRestoreLine;
+
+  /// プレビューの押し直し (図が描き上がると位置がずれるので何回か押す)。
+  final List<Timer> _previewRestoreShots = <Timer>[];
+
+  /// 押し直しの間隔 (ms)。 跳ねが気になるなら最後の 1 回を落とせばよい。
+  static const List<int> _kMdPreviewRestoreShots = <int>[150, 700, 1600];
+
+  /// 覚えている所を読み出す。
+  void _readMdScroll(SharedPreferences sp) {
+    _mdLastLines.clear();
+    try {
+      final raw = sp.getString(_kMdScrollKey);
+      if (raw == null || raw.isEmpty) return;
+      final m = jsonDecode(raw);
+      if (m is! Map) return;
+      for (final e in m.entries) {
+        final v = e.value;
+        final line = v is num ? v.toInt() : 0;
+        if (line > 1) _mdLastLines['${e.key}'] = line;
+      }
+    } catch (_) {}
+  }
+
+  /// 今あるタブの分だけに絞った控え (消したタブの分を溜め込まない)。
+  Map<String, int> _mdScrollBlob() {
+    final ids = <String>{for (final t in _tabs) t.id};
+    return <String, int>{
+      for (final e in _mdLastLines.entries)
+        if (ids.contains(e.key) && e.value > 1) e.key: e.value
+    };
+  }
+
+  Future<void> _saveMdScroll() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setString(_kMdScrollKey, jsonEncode(_mdScrollBlob()));
+    } catch (_) {}
+  }
+
+  /// 今読んでいる行を覚える (prefs への書き出しは少し待ってまとめる)。
+  void _rememberMdLine(int line) {
+    if (_restoringMd) return;
+    if (DateTime.now().millisecondsSinceEpoch < _ignoreRememberUntilMs) return;
+    final c = _cur;
+    if (c == null || c.isWeb) return;
+    final v = line < 1 ? 1 : line;
+    if (_mdLastLines[c.id] == v) return;
+    _mdLastLines[c.id] = v;
+    _mdScrollSaveT?.cancel();
+    _mdScrollSaveT = Timer(const Duration(milliseconds: 600), () {
+      unawaited(_saveMdScroll());
+    });
+  }
+
+  /// 編集欄の今の位置を行に直して覚える。
+  ///
+  /// 幅の門が 28 なのは _ensureLineTops と揃えるため。 あちらは
+  /// `_editorWidth - 28` が 0 以下だと**測るのをやめて古い表を残す**ので、
+  /// そこで行を出すと前のタブ / 前の幅の表で見当違いの値になる。
+  void _rememberMdLineFromEditor() {
+    if (_editorWidth <= 28 || !_editorScroll.hasClients) return;
+    _rememberMdLine(_lineAtEditorOffset(_editorScroll.offset));
+  }
+
+  /// 覚えている所へ戻す用意 (読み込み直後 / タブを移った後に呼ぶ)。
+  void _beginMdRestore() {
+    // ★ 前の戻しは**必ず**畳む。 残しておくと、 覚えていないタブへ移った
+    //   時に前のタブの行へ飛ぶ。
+    _cancelPreviewRestore();
+    _restoreScrollT?.cancel();
+    _restoreScrollT = null;
+    _restoringMd = false;
+    _previewRestoreLine = null;
+    // ★ タブを差し替えると、 次の組み直しで編集欄の位置が詰められて
+    //   「動いた」 が飛んでくる。 その時 _cur はもう新しいタブなので、
+    //   古い位置で新しいタブの控えを壊してしまう。 少しの間は覚えない。
+    _ignoreRememberUntilMs = DateTime.now().millisecondsSinceEpoch + 700;
+    final c = _cur;
+    if (c == null || c.isWeb) return;
+    final line = _mdLastLines[c.id] ?? 1;
+    if (line <= 1) return;
+    // プレビューは中身を差し替えた直後にしか効かないので、 次の
+    // _pushPreviewText に託す。
+    _previewRestoreLine = line;
+    // 編集欄は組み上がるまで px を測れないので、 少し待って何回か試す。
+    _restoringMd = true;
+    _restoreTries = 0;
+    _restoreScrollT = Timer.periodic(const Duration(milliseconds: 120), (t) {
+      if (!mounted) {
+        t.cancel();
+        _restoreScrollT = null;
+        _restoringMd = false;
+        return;
+      }
+      if (_tryRestoreEditorScroll(line) || ++_restoreTries >= 25) {
+        t.cancel();
+        _restoreScrollT = null;
+        _restoringMd = false;
+      }
+    });
+  }
+
+  /// 編集欄を覚えている行へ。 まだ組み上がっていなければ false (また試す)。
+  bool _tryRestoreEditorScroll(int line) {
+    if (!_loaded) return false;
+    // プレビューだけの時は編集欄が無い = 待っても現れない。
+    if (_viewMode == 'preview') return true;
+    if (_editorWidth <= 28 || !_editorScroll.hasClients) return false;
+    // 本文が短くなって行き過ぎている時は行ける所まで (clamp = 破綻させない)。
+    final max = _editorScroll.position.maxScrollExtent;
+    final target = _editorOffsetForLine(line);
+    _ignoreScrollUntilMs = DateTime.now().millisecondsSinceEpoch + 400;
+    _editorScroll.jumpTo(target.clamp(0.0, max));
+    return true;
+  }
+
+  /// プレビューを覚えている行へ。 図 (mermaid) は後から描き上がって高さが
+  /// 変わるので、 1 回では当たらない。 少し間を置いて数回押す。
+  void _armPreviewRestore(int line) {
+    _cancelPreviewRestore();
+    // 押している間に届く「動いた」 の知らせは、 自分の押しか図の描き上がり。
+    // それで控えを壊さないよう、 最後の押しの少し後まで覚えない
+    // (既に張ってある窓より短くはしない)。
+    final until =
+        DateTime.now().millisecondsSinceEpoch + _kMdPreviewRestoreShots.last + 400;
+    if (until > _ignoreRememberUntilMs) _ignoreRememberUntilMs = until;
+    for (final ms in _kMdPreviewRestoreShots) {
+      _previewRestoreShots.add(Timer(Duration(milliseconds: ms), () {
+        if (!mounted || !_preview) return;
+        _previewExec('if(window.__mmScrollToLine)'
+            '{window.__mmScrollToLine($line);}');
+      }));
+    }
+  }
+
+  /// 押し直しをやめる (人が自分で動かした時 / 画面を閉じる時)。
+  void _cancelPreviewRestore() {
+    for (final t in _previewRestoreShots) {
+      t.cancel();
+    }
+    _previewRestoreShots.clear();
+  }
+
   // ── 編集欄の表に乗った時の札 (= ユーザー要望: ヘッダーに置かない) ──
   //
   // プレビューの表に出る札は中の JS が作るが、 本文だけで開いている時
@@ -143755,22 +144784,81 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
   /// 添付ファイルを開いているか (= 保存先がファイル)。
   bool get _fileMode => widget.filePath != null;
 
+  // ── 下の端末 (= ユーザー要望「txt ファイル等で開かれるターミナルは
+  //    vscode の様に画面下部に開かれるようにして欲しい」) ──
+  //
+  //    ★ テキストの編集画面 (_TextEditorDialogState) と**同じ物**を使う
+  //      (帯は _EditorTerminalBand 1 つだけ)。 片方だけ直る双子にしない。
+  //    ★ 走らせている物はこの画面が持つ。 帯を畳んでも止めない。
+  AgentCliSession? _bottomTerm;
+  bool _bottomTermOpen = false;
+  double _bottomTermH = _EditorTerminalBand.kDefaultH;
+
+  /// 下の帯に端末を出す / 畳む。
+  ///
+  /// ★ 場所は、 ファイルとして開いている時は**そのファイルの置き場**、
+  ///   マークダウンのページの時は本体と同じ既定 (今開いているページの
+  ///   置き場 → CLI の作業フォルダー)。
+  Future<void> _toggleBottomTerminal() async {
+    if (!AgentCli.supported) return;
+    if (_bottomTermOpen) {
+      setState(() => _bottomTermOpen = false);
+      return;
+    }
+    final s = _bottomTerm;
+    if (s != null && AgentCliRunner.active.contains(s)) {
+      setState(() => _bottomTermOpen = true);
+      return;
+    }
+    final f = (widget.filePath ?? '').trim();
+    var dir = f.isEmpty ? '' : File(f).parent.path;
+    if (dir.isEmpty || !Directory(dir).existsSync()) {
+      dir = await terminalBaseDir(widget.provider);
+    }
+    if (!mounted) return;
+    final ns = AgentCliRunner.begin(buildShellSession(widget.provider, dir));
+    setState(() {
+      _bottomTerm = ns;
+      _bottomTermOpen = true;
+    });
+  }
+
+  /// 下の帯の端末を終わらせて畳む。
+  void _endBottomTerminal() {
+    try {
+      _bottomTerm?.kill();
+    } catch (_) {}
+    setState(() {
+      _bottomTerm = null;
+      _bottomTermOpen = false;
+    });
+  }
+
   // ── 左右のパネル (= ユーザー要望: メモと AI チャット欄をこの画面にも) ──
   bool _memoOpen = false;
-  /// ★ 既定で右側に出す (= ユーザー要望: AI は右側に出てきて、 一般的な
-  ///   質問にも答えられるように)。 狭い所 (分割ペインなど) では
-  ///   initState で閉じる。
-  bool _aiChatOpen = true;
+  /// ★ 既定は閉じる (= ユーザー要望: 読み込む度に AI 欄が自動で立ち上がら
+  ///   ないように)。 開くのはヘッダーの AI ボタン (_toggleAiPanel)、
+  ///   右クリックの「AI に書いてもらう」、 メモを AI へ渡した時の 3 つだけ。
+  ///   開閉は控えないので、 開いたままにしても次は閉じた状態で始まる。
+  bool _aiChatOpen = false;
 
-  /// 右の AI 欄をブラウザ版 (ChatGPT 等の Web) で出しているか
-  /// (= ユーザー要望: ブラウザ版に切り替えられるように)。
-  bool _sideAiBrowser = false;
+  // ── 右の AI 欄の組み (= ユーザー要望「チャットと書いてもらうでタブを
+  //    分けないで、 上書いてもらう、 下チャット欄でよくない?」) ──
+  //
+  //    タブの切替えをやめ、 1 つの欄の中で 上 = 依頼フォーム / 下 = チャット
+  //    にする。 さらに「下のチャット欄だけブラウザ版に渡すとか独立で変えられる
+  //    ように」のため、 上と下で頑に違う相手を選べる。
 
-  /// ★ 右の AI 欄の中身 (= ユーザー要望: マークダウンの AI 機能は画面中央に
-  ///   項目を出さず、 側欄にまとめる)。 中央の AlertDialog にあった依頼
-  ///   フォームはここへ移し、 側欄を閉じても書きかけが残るよう State に持つ。
-  ///   'write' … AI に書いてもらう (依頼フォーム)   'chat' … 文書について質問
-  String _sideAiMode = 'write';
+  /// 上の「書いてもらう」の相手。 '' = アプリ全体の設定のまま。
+  /// 'api' / 'cli:claude' / 'cli:codex'。
+  String _sideWriteEngine = '';
+
+  /// 下のチャット欄の相手。 '' = アプリ全体の設定のまま (上の欄とは無関係)。
+  /// 'browser' / 'api' / 'cli:claude' / 'cli:codex'。
+  String _sideChatEngine = '';
+
+  /// チャット欄をブラウザ版 (ChatGPT 等の Web) で出しているか。
+  bool get _sideAiBrowser => _sideChatEngine == 'browser';
   final TextEditingController _sideAiWriteCtrl = TextEditingController();
   final FocusNode _sideAiWriteFocus = FocusNode();
 
@@ -143837,6 +144925,9 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
   Future<void> _mdSaveChain = Future<void>.value();
   final List<({String role, String text})> _sideAiChat = [];
   final TextEditingController _sideAiInput = TextEditingController();
+  /// チャット欄の焦点 (= タブをやめたので、 「チャットへ渡す」時は
+  /// 下の欄に焦点を移す)。
+  final FocusNode _sideAiInputFocus = FocusNode();
   final ScrollController _sideAiScroll = ScrollController();
   bool _sideAiBusy = false;
 
@@ -143924,10 +145015,67 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
       ),
     );
   }
+  /// ★ 右の AI 欄の中の「本文を書き出す」 と「チャット」 の高さの割合
+  ///   (= ユーザー要望: ページ書き出しの欄とチャット欄の境界を上下に
+  ///   動かせるように)。 横の境界 (_mdSplitDivider) と同じ作法で、
+  ///   0.15〜0.85 に収め、 動かし終わりに控える。
+  ///   既定の 5/9 は、 今までの 上 flex 5 : 下 flex 4 と同じ見え方。
+  static const double _kMdAiSplitDefault = 5 / 9;
+  double _mdAiSplitRatio = _kMdAiSplitDefault;
+  static const String _kMdAiSplitRatioKey = 'mdAiSplitRatio';
+
+  /// 上の欄の高さ (実測)。 境界を動かす量の基準にする。 見出しの行や
+  /// 入力欄の高さを引き算しないで済むよう、 上の欄の LayoutBuilder が
+  /// 入れた値から「伸び縮みする所の高さ」 を逆算する。
+  /// (LayoutBuilder は**割り付けの最中**に走るので、 境界が画面に出た
+  ///  その時には既に入っている = 最初から掴める。)
+  double _mdAiWriteH = 0;
+
+  int get _mdAiFlexWrite => (_mdAiSplitRatio * 1000).round().clamp(150, 850);
+  int get _mdAiFlexChat => 1000 - _mdAiFlexWrite;
+
+  /// AI 欄の中の、 掴んで上下に動かす境界。
+  Widget _mdAiSplitDivider() {
+    return MouseRegion(
+      cursor: SystemMouseCursors.resizeUpDown,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onPanUpdate: (d) {
+          // 伸び縮みする所の高さ = 上の欄の実測 ÷ 上の割合。
+          final total =
+              _mdAiWriteH > 0 ? _mdAiWriteH * 1000 / _mdAiFlexWrite : 0.0;
+          if (total <= 0) return;
+          setState(() {
+            _mdAiSplitRatio =
+                (_mdAiSplitRatio + d.delta.dy / total).clamp(0.15, 0.85);
+          });
+        },
+        onPanEnd: (_) => unawaited(SharedPreferences.getInstance()
+            .then((sp) => sp.setDouble(_kMdAiSplitRatioKey, _mdAiSplitRatio))),
+        onDoubleTap: () {
+          setState(() => _mdAiSplitRatio = _kMdAiSplitDefault);
+          unawaited(SharedPreferences.getInstance().then(
+              (sp) => sp.setDouble(_kMdAiSplitRatioKey, _kMdAiSplitDefault)));
+        },
+        child: Container(
+          height: 8,
+          width: double.infinity,
+          color: Colors.transparent,
+          alignment: Alignment.center,
+          child: Container(height: 1, color: Colors.white24),
+        ),
+      ),
+    );
+  }
+
   static const String _kMdPreviewLeftKey = 'markdownPreviewLeft';
 
   /// ヘッダー (ツールバー) を隠しているか (= ユーザー要望)。
   bool _headerHidden = false;
+
+  /// 本体へ「帯を隠して」 と伝えた時の値 (= 同じ事を毎回言わない用)。
+  /// null = まだ何も伝えていない。
+  bool? _zenTold;
 
   // ── ネットへの公開 (= ユーザー要望: プレビュー画面をサーバーに公開) ──
   /// 公開中の URL (空 = 公開していない)。
@@ -144433,15 +145581,18 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
   void _openMdAiPanel({String mode = 'write'}) {
     setState(() {
       _aiChatOpen = true;
-      _sideAiMode = mode;
-      // ブラウザ版を出していた時は API 版へ戻す (フォームはこちらにしか無い)。
-      if (mode == 'write') _sideAiBrowser = false;
+      // ★ タブは無くなった (上 = 依頼フォーム / 下 = チャットを同時に出す)。
+      //   チャットへ渡す時だけ、 ブラウザ版ならこちらの欄へ戻す。
+      if (mode != 'write' && _sideAiBrowser) _sideChatEngine = '';
     });
-    if (mode == 'write') {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _sideAiWriteFocus.requestFocus();
-      });
-    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (mode == 'write') {
+        _sideAiWriteFocus.requestFocus();
+      } else {
+        _sideAiInputFocus.requestFocus();
+      }
+    });
   }
 
   /// ★ 右クリックの「AI」 (= ユーザー要望: 「本文を AI に渡す」 と
@@ -144481,7 +145632,7 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
     _openMdAiPanel(mode: 'chat');
     setState(() {
       // ブラウザ版を出していると入力の欄が無いので、 こちらの欄へ戻す。
-      _sideAiBrowser = false;
+      if (_sideAiBrowser) _sideChatEngine = '';
       final cur = _sideAiInput.text;
       _sideAiInput.text = cur.trim().isEmpty ? sel : '$cur\n$sel';
       _sideAiInput.selection =
@@ -144576,10 +145727,10 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
   void initState() {
     super.initState();
     _mcpTickAtInit = widget.provider.mcpPageTick(widget.pageId);
-    // ★ モバイルは側欄を既定で閉じ、 ヘッダーの AI ボタンで開く
-    //   (= ユーザー要望: AI の項目は側欄にまとめ、 ボタンで開閉する。
-    //   狭い画面で本文の上に重ねて出すので、 最初から出しっぱなしにしない)。
-    if (!_isDesktopPlatform) _aiChatOpen = false;
+    // ★ 側欄 (AI 欄) は、 デスクトップも携帯も既定で閉じる
+    //   (= ユーザー要望: マークダウンの AI 欄が読み込む度に自動で
+    //   立ち上がらないように)。 宣言の初期値が閉じなので、 ここでの
+    //   手当ては要らなくなった。
     // 編集欄を動かしたらプレビューも同じ所へ (= ユーザー要望)。
     _editorScroll.addListener(_onEditorScroll);
     _load();
@@ -144645,6 +145796,9 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
       }).catchError((_) {});
     }
     _snackAutoClose?.cancel();
+    // ── 閉じる時は本体の帯を必ず戻す (= 帯の無いマップに取り残されない
+    //    ようにする。 Zen は控えず、 マークダウン側の控えから毎回作り直す)。 ──
+    setAppChromeHiddenFromAnywhere?.call(this, false);
     if (_mdHost?._markdownDropHandler == _onMarkdownDropFiles) {
       _mdHost?._markdownDropHandler = null;
     }
@@ -144662,8 +145816,30 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
       _mdHost?._markdownViewLabel = null;
       _mdHost?._markdownAiWrite = null;
     }
+    // ── 下の帯に出していた端末を終わらせる (この画面だけの物なので残さない) ──
+    try {
+      _bottomTerm?.kill();
+    } catch (_) {}
+    _bottomTerm = null;
     _mdMsgSub?.cancel();
     _scrollSyncThrottle?.cancel();
+    // ── 最後に読んでいた所を残す (= ユーザー要望: 次に開いた時はここから) ──
+    //    ★ ここでやるのは**待ち合わせの取り消しと書き出しだけ**。 位置は
+    //      _onEditorScroll / mdScroll が動く度に控えているので、 ここで
+    //      編集欄を測り直してはいけない。 測り直すと、 プレビューだけを
+    //      読んでいた人の行を編集欄の古い位置 (先頭) で上書きしてしまう。
+    //    ★ 本文と違い、 MCP (AI) が書き換えた時の守り (_mcpTickAtInit) の
+    //      **外**に置く。 位置は中身ではないので、 上書きで何かを失う事は
+    //      無い。
+    _restoreScrollT?.cancel();
+    _cancelPreviewRestore();
+    _restoringMd = false;
+    _mdScrollSaveT?.cancel();
+    final scrollBlob = jsonEncode(_mdScrollBlob());
+    // ignore: discarded_futures
+    SharedPreferences.getInstance()
+        .then((sp) => sp.setString(_kMdScrollKey, scrollBlob))
+        .catchError((_) => false);
     _edChipHideT?.cancel();
     _edTableChip.dispose();
     _editorScroll.dispose();
@@ -144672,6 +145848,7 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
     _memoAddCtrl.dispose();
     _memoAddFocus.dispose();
     _sideAiInput.dispose();
+    _sideAiInputFocus.dispose();
     _sideAiScroll.dispose();
     _sideAiWriteCtrl.dispose();
     _sideAiWriteFocus.dispose();
@@ -144693,6 +145870,8 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
       final sp = await SharedPreferences.getInstance();
       // メモ欄の中身 (パネルを開いた時のため先に読む)。
       _readMdMemos(sp);
+      // 最後に読んでいた所 (= ユーザー要望: 読み込む度に先頭へ戻らない)。
+      _readMdScroll(sp);
       // ── 添付ファイルモード: 本文はファイルから読む (= ユーザー要望) ──
       // タブも使える (= ユーザー要望: 複数タブとメモ / AI 欄のいいとこどり)。
       // タブ束は prefs (markdown_<疑似ページid>) に持ち、 ファイルには
@@ -144740,6 +145919,9 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
         _previewLeft = sp.getBool(_kMdPreviewLeftKey) ?? false;
         _mdSplitRatio =
             (sp.getDouble(_kMdSplitRatioKey) ?? 0.5).clamp(0.15, 0.85);
+        _mdAiSplitRatio =
+            (sp.getDouble(_kMdAiSplitRatioKey) ?? _kMdAiSplitDefault)
+                .clamp(0.15, 0.85);
         _headerHidden = sp.getBool(_kMdHeaderHiddenKey) ?? false;
         // 公開の控え (ファイルごとの pageId で持ち回る)。
         try {
@@ -144762,6 +145944,7 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
           }
         } catch (_) {}
         if (!mounted) return;
+        _beginMdRestore();
         setState(() => _loaded = true);
         _scheduleRender();
         return;
@@ -144801,12 +145984,21 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
       final m = sp.getString(_kMdViewModeKey) ?? '';
       if (m == 'split' || m == 'preview' || m == 'editor') _viewMode = m;
       _previewLeft = sp.getBool(_kMdPreviewLeftKey) ?? false;
+      // ★ 境界の位置もここで思い出す (= 点検で判明: ファイルから開いた時の
+      //   枝だけが読んでいて、 ページとして開くと毎回中央に戻っていた)。
+      _mdSplitRatio =
+          (sp.getDouble(_kMdSplitRatioKey) ?? 0.5).clamp(0.15, 0.85);
+      _mdAiSplitRatio =
+          (sp.getDouble(_kMdAiSplitRatioKey) ?? _kMdAiSplitDefault)
+              .clamp(0.15, 0.85);
       _headerHidden = sp.getBool(_kMdHeaderHiddenKey) ?? false;
       // ★ タブ列は常に出す (= ユーザー報告: 複数タブの機能が消えている)。
       //   昔あった「タブ列の表示 / 非表示」 ボタンで false が保存されて
       //   いると、 ボタン自体を消した今は戻す手段が無く、 タブが永久に
       //   出なくなっていた。 古い保存値は読まない。
       _tabBarVisible = true;
+      // 最後に読んでいた所から開く (= ユーザー要望)。
+      _beginMdRestore();
       // 公開中かどうかを思い出す (= ユーザー要望: ネットへの公開)。
       //   期限が過ぎていれば控えを捨てる (サーバー側では既に消えている)。
       try {
@@ -144961,7 +146153,7 @@ graph TD
   /// 字と幅で 1 回だけ組んで、 行頭の位置を拾っておく。
   void _ensureLineTops() {
     final text = _ctrl.text;
-    final width = _editorWidth - 28.0; // 左右の余白ぶん
+    final width = _editorWidth - 28.0; // 左右の余白分
     if (width <= 0) return;
     if (_lineTopsText == text && (_lineTopsWidth - width).abs() < 0.5) return;
     final painter = TextPainter(
@@ -145213,6 +146405,9 @@ graph TD
   void _onEditorScroll() {
     // 札は連動の設定に関係なく付いていく。
     if (mounted) _repositionEdChip();
+    // 最後に読んでいた所を覚える (= ユーザー要望)。 連動の設定とは無関係に
+    // 覚える (連動を切っている人も、 次に開いた時はここから始まる)。
+    if (mounted) _rememberMdLineFromEditor();
     if (!_syncActive || !mounted) return;
     if (DateTime.now().millisecondsSinceEpoch < _ignoreScrollUntilMs) return;
     if (_scrollSyncThrottle?.isActive == true) return;
@@ -145286,6 +146481,14 @@ graph TD
     final maps = buildEmbeddedMapsJson(widget.provider, _ctrl.text);
     _previewExec('if(window.__mmUpdate){window.__mmMaps=$maps;'
         'window.__mmUpdate(${jsonEncode(_ctrl.text)});}');
+    // 差し替えの直後だけ、 覚えている所へ戻す (= ユーザー要望: 読み込む度に
+    // 先頭へ戻らない)。 中身が入る前に押しても目印 (data-src-line) が無くて
+    // 効かないので、 ここに託す形にしてある。 一度使ったら消す。
+    final want = _previewRestoreLine;
+    if (want != null) {
+      _previewRestoreLine = null;
+      if (want > 1) _armPreviewRestore(want);
+    }
   }
 
   void _scheduleRender() {
@@ -145311,6 +146514,8 @@ graph TD
     final html = _markdownPreviewHtml(_ctrl.text, widget.provider.isDarkMode,
         linkBridge: true,
         syncScroll: _scrollSyncOn,
+        // 連動を切っていても、 最後に読んだ所を覚えるため位置は知らせる。
+        scrollReport: true,
         scrollStep: widget.provider.mdScrollStep,
         // 表の上に乗った時だけ出す札 (= ユーザー要望: ヘッダーから外した)。
         tableToPageLabel: widget.provider.t('md.tableToPageHover'),
@@ -145333,6 +146538,8 @@ graph TD
             mathjaxSrc: 'tex-svg.js',
             tocLabel: widget.provider.t('md.toc'),
             syncScroll: _scrollSyncOn,
+            // 連動を切っていても、 最後に読んだ所を覚えるため位置は知らせる。
+            scrollReport: true,
             scrollStep: widget.provider.mdScrollStep,
             // 表の上に乗った時だけ出す札 (= ユーザー要望: ヘッダーから外した)。
             tableToPageLabel: widget.provider.t('md.tableToPageHover'),
@@ -145826,6 +147033,9 @@ graph TD
     });
     unawaited(_saveNow());
     if (!_tabs[i].isWeb) _scheduleRender();
+    // 移った先のタブも、 最後に読んでいた所から (= ユーザー要望)。
+    // タブ束なので、 タブごとに覚えていないと見当違いの所に居る。
+    _beginMdRestore();
   }
 
   /// プレビューで押したサイトを「タブ」 として足す (= ユーザー要望:
@@ -146059,6 +147269,15 @@ graph TD
       // ── プレビュー側を動かした時の知らせ (= スクロール連動) ──
       if (type == 'mdScroll') {
         final line = (m['line'] as num?)?.toInt() ?? 1;
+        // ★ 戻している最中に届いた知らせは、 こちらの押しか図 (mermaid) の
+        //   描き上がりで動いた分。 それで押し直しを取り下げたり控えを
+        //   壊したりしない (人の操作と区別できないので窓で弾く)。
+        if (DateTime.now().millisecondsSinceEpoch >= _ignoreRememberUntilMs) {
+          // 人が自分で動かした = 位置を戻す押し直しはもう要らない。
+          _cancelPreviewRestore();
+          // 連動を切っていても、 最後に読んでいた所は覚える (= ユーザー要望)。
+          _rememberMdLine(line);
+        }
         _onPreviewScrolledToLine(line);
         return;
       }
@@ -146617,7 +147836,8 @@ $_kMdStyleRules
 ${src.text}
 --- 資料ここまで ---
 資料に無いことは書かないでください。'''}''';
-      final out = (await provider.askAi(prompt,
+      // ★ 上の欄で選んだ相手へ (= ユーザー要望: 上と下を独立で変えられるように)。
+      final out = (await _askSideAi(_sideWriteEngine, prompt,
               images: pasted.isEmpty ? null : List<AiInputImage>.of(pasted)))
           .trim();
       if (!mounted) return;
@@ -146941,7 +148161,7 @@ $_kMdStyleRules
 
 【今の文書】
 $doc''';
-      final out = (await provider.askAi(prompt)).trim();
+      final out = (await _askSideAi(_sideWriteEngine, prompt)).trim();
       if (!mounted) return;
       if (out.isEmpty) throw Exception(provider.t('md.aiEmpty'));
       var body = out;
@@ -147006,23 +148226,12 @@ $doc''';
 
   /// 「<<<PAGE: 名前>>>」 で区切られた本文を、 (名前, 中身) に分ける。
   /// 区切りが無ければ 1 つだけ返す (= 今までどおり)。
-  List<({String name, String text})> _splitMarkdownPages(String body) {
-    final re = RegExp(r'^<<<PAGE:\s*(.+?)\s*>>>\s*$', multiLine: true);
-    final hits = re.allMatches(body).toList();
-    if (hits.isEmpty) {
-      return [(name: '', text: body)];
-    }
-    final out = <({String name, String text})>[];
-    for (var i = 0; i < hits.length; i++) {
-      final m = hits[i];
-      final end = i + 1 < hits.length ? hits[i + 1].start : body.length;
-      final text = body.substring(m.end, end).trim();
-      final name = (m.group(1) ?? '').trim();
-      if (text.isEmpty) continue;
-      out.add((name: name.isEmpty ? '${i + 1}' : name, text: text));
-    }
-    return out.isEmpty ? [(name: '', text: body)] : out;
-  }
+  /// ★ 中身は provider のトップレベル [splitMarkdownIntoTabs] へ移した
+  ///   (= MCP 経路と同じ切り分けを使うため。 二重実装にしない)。
+  ///   画面側は今までどおり「区切りがある時だけ分ける」 ので、 見出しでの
+  ///   自動分けは頼まない (AI に区切りを書かせているため要らない)。
+  List<({String name, String text})> _splitMarkdownPages(String body) =>
+      splitMarkdownIntoTabs(body);
 
   /// 分けて書かれたページをタブへ割り振る (= ユーザー要望)。
   /// 1 枚目は今開いているタブに入れ、 残りは新しいタブへ。
@@ -147036,14 +148245,13 @@ $doc''';
         ..text = pages.first.text;
       _ctrl.text = pages.first.text;
       for (final p in pages.sublist(1)) {
-        var name = p.name.isEmpty ? '${_tabs.length + 1}' : p.name;
         // 同じ名前が既にあれば番号を足す (リンクの行き先が迷子にならないように、
-        //   なるべく元の名前を保つ)。
-        var k = 2;
-        while (_tabs.any((t) => t.name == name)) {
-          name = '${p.name} ($k)';
-          k++;
-        }
+        //   なるべく元の名前を保つ)。 MCP 経路と同じ関数を使う。
+        // ★ 元は名前が空の時に ' (2)' という名前になり得た (番号を足す側が
+        //   p.name を見ていたため)。 共用関数では通し番号が土台になる。
+        final name = uniqueMarkdownTabName(
+            p.name, [for (final t in _tabs) t.name],
+            fallbackIndex: _tabs.length + 1);
         _tabs.add(_MdTab(
             id: 'md${DateTime.now().microsecondsSinceEpoch}_${_tabs.length}',
             name: name,
@@ -147095,7 +148303,7 @@ $order
 
 【今の文書】
 $body''';
-    final out = (await provider.askAi(prompt)).trim();
+    final out = (await _askSideAi(_sideWriteEngine, prompt)).trim();
     if (out.isEmpty) throw Exception(provider.t('md.aiEmpty'));
     var fixed = out;
     final fence = RegExp(r'^```[a-zA-Z]*\s*\n([\s\S]*?)\n?```$');
@@ -147318,8 +148526,8 @@ $body''';
       _sideAiRevising = false;
       _sideAiReviseCtrl.clear();
       _aiChatOpen = true;
-      // 依頼フォームと同じで、 ブラウザ版の所には出せないので API 版へ戻す。
-      _sideAiBrowser = false;
+      // 依頼フォームと同じで、 ブラウザ版の所には出せないのでこちらへ戻す。
+      if (_sideAiBrowser) _sideChatEngine = '';
     });
     return wait.future;
   }
@@ -147906,7 +149114,7 @@ $body''';
     }
 
     return SizedBox(
-      // スクロールバーのぶんだけ高さを取る (= ユーザー要望: 入り切らない時は
+      // スクロールバーの分だけ高さを取る (= ユーザー要望: 入り切らない時は
       //   左右にスクロールして見られるように)。
       height: 34,
       // ── スクロールバーはカーソルを乗せた時だけ出す (= ユーザー要望) ──
@@ -148094,6 +149302,17 @@ $body''';
   @override
   Widget build(BuildContext context) {
     final provider = widget.provider;
+    // ── Zen モード: ヘッダーを隠している間は、 本体の帯 (ページ名の行 +
+    //    自分で並べたボタンの帯) まで隠す (= ユーザー要望)。 この画面は
+    //    本体の上に重ねて開く事もあって先祖を辿れないので、 本体が預けて
+    //    くれている入口を使う。
+    //    ★ _headerHidden が変わる道筋が複数ある (ボタン / 右クリックの項目 /
+    //      控えの読み込み) ので、 読む側の ここ 1 か所で食い違いを直す。
+    //      本体側は setState を後回しにするので build から呼んで構わない。 ──
+    if (_zenTold != _headerHidden) {
+      _zenTold = _headerHidden;
+      setAppChromeHiddenFromAnywhere?.call(this, _headerHidden);
+    }
     if (!_loaded) {
       return const Center(
           child: CircularProgressIndicator(color: Color(0xFFBA68C8)));
@@ -148348,15 +149567,38 @@ $body''';
           ),
           ),
         ),
+        // ── 本文と、 その下の端末の帯 (= ユーザー要望: VSCode のように
+        //    画面下部に出す)。 帯の高さは**この場の残り**で抑える。 ──
         Expanded(
+          child: LayoutBuilder(builder: (_, room) {
+          final bandH = (_bottomTermOpen && _bottomTerm != null)
+              ? _bottomTermH.clamp(_EditorTerminalBand.kMinH,
+                  math.max(_EditorTerminalBand.kMinH, room.maxHeight - 120))
+              : 0.0;
+          return Column(children: [
+          Expanded(
           // ── 左右のパネル (メモ / AI チャット) を本文の外側に置く
           //    (= ユーザー要望)。 デスクトップは横に並べる。
           //    ★ モバイルは AI 欄を本文の右に重ねて出す (= ユーザー要望:
           //    AI の項目は側欄にまとめ、 ボタンで開閉する)。 ──
           child: Stack(fit: StackFit.expand, children: [
-          Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          // ── 側欄は「この欄の広さ」 に合わせて縮める (= 点検で判明:
+          //    メモ 250px + AI 300px の決め打ちなので、 4 分割や境目を端へ
+          //    寄せた時に本文が 0px まで潰れて、 そのうえ欄から溢れる)。
+          //    本文には最低 160px を残す。 ──
+          LayoutBuilder(builder: (_, lbc) {
+          final paneW = lbc.maxWidth.isFinite ? lbc.maxWidth : 4000.0;
+          var memoW = (_isDesktopPlatform && _memoOpen) ? 250.0 : 0.0;
+          var aiW = (_isDesktopPlatform && _aiChatOpen) ? 300.0 : 0.0;
+          final budget = math.max(0.0, paneW - 160);
+          if (memoW + aiW > budget && memoW + aiW > 0) {
+            final k = budget / (memoW + aiW);
+            memoW *= k;
+            aiW *= k;
+          }
+          return Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
             if (_isDesktopPlatform && _memoOpen)
-              _buildSideMemoPanel(provider),
+              SizedBox(width: memoW, child: _buildSideMemoPanel(provider)),
             Expanded(
               // ── サイトのタブ (= ユーザー要望: プレビューのリンクを押したら
               //    タブが作られて、 そこに切り替えると全画面でサイトを見る) ──
@@ -148446,8 +149688,9 @@ $body''';
                         ])),
             ),
             if (_isDesktopPlatform && _aiChatOpen)
-              _buildSideAiPanel(provider),
-          ]),
+              SizedBox(width: aiW, child: _buildSideAiPanel(provider)),
+          ]);
+          }),
           // ★ モバイル: 本文の上に重ねる。
           //   幅は画面の 8 割まで (320px を上限)。 以前は「320px か 40px
           //   残し」 だったので、 360dp の端末では本文が 40dp しか残らず
@@ -148501,6 +149744,20 @@ $body''';
             ),
           ],
           ]),
+          ),
+          if (bandH > 0)
+            _EditorTerminalBand(
+              provider: provider,
+              session: _bottomTerm!,
+              height: bandH,
+              onHeightDelta: (dy) => setState(() => _bottomTermH =
+                  (_bottomTermH - dy).clamp(_EditorTerminalBand.kMinH,
+                      _EditorTerminalBand.kMaxH)),
+              onHide: () => setState(() => _bottomTermOpen = false),
+              onEnd: _endBottomTerminal,
+            ),
+          ]);
+          }),
         ),
       ]),
       ),
@@ -148704,9 +149961,8 @@ $body''';
     }
     setState(() {
       _aiChatOpen = true;
-      _sideAiMode = 'chat';
       // ブラウザ版を出していると入力欄が無いので、 こちらの欄へ戻す。
-      _sideAiBrowser = false;
+      if (_sideAiBrowser) _sideChatEngine = '';
       // 携帯は両方とも本文の上へ重ねて出すので、 メモ欄が AI 欄の入力欄と
       // 送信ボタンを覆ってしまう (メモ欄の方が後に積まれる)。 渡した先が
       // すぐ見えるよう、 メモ欄は閉じる (デスクトップは横に並ぶので残す)。
@@ -148830,7 +150086,8 @@ $body''';
           '次の Markdown 文書を前提に、 質問に答えてください。 文書へ入れる'
           '文章を頼まれた時は、 前置きなしで Markdown だけを返してください。\n'
           '--- 文書 ---\n$clipped\n--- 質問 ---\n$q';
-      final a = await widget.provider.askAi(prompt);
+      // ★ 下のチャット欄は、 上とは別に選んだ相手へ (= ユーザー要望)。
+      final a = await _askSideAi(_sideChatEngine, prompt);
       if (mounted) setState(() => _sideAiChat.add((role: 'ai', text: a)));
     } catch (e) {
       if (mounted) {
@@ -148853,7 +150110,9 @@ $body''';
   /// メモ一覧と同じ札) で、 上の入力欄に書いて Enter で 1 件になる。
   Widget _buildSideMemoPanel(MindMapProvider provider) {
     return Container(
-      width: _isDesktopPlatform ? 250 : double.infinity,
+      // ★ 幅は外側 (SizedBox / Positioned) が決める (= 点検で判明: ここで
+      //   決め打ちにすると、 欄が細い時に内側が満ちて溢れる)。
+      width: double.infinity,
       decoration: const BoxDecoration(
         color: Color(0xFF171722),
         border: Border(right: BorderSide(color: Colors.white12)),
@@ -148976,50 +150235,116 @@ $body''';
     );
   }
 
-  /// 側欄の「書いてもらう / チャット」 の切替チップ。
-  Widget _sideAiModeChip(
-      MindMapProvider provider, String id, IconData icon, String labelKey) {
-    final on = _sideAiMode == id;
-    return Expanded(
-      child: InkWell(
-        borderRadius: BorderRadius.circular(8),
-        onTap: () => setState(() => _sideAiMode = id),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
-          decoration: BoxDecoration(
-            color: on
-                ? const Color(0xFFBA68C8).withValues(alpha: 0.25)
-                : Colors.transparent,
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(
-                color: on ? const Color(0xFFBA68C8) : Colors.white24),
+  /// 相手を選ぶ小さな一覧 (上の「書いてもらう」 と下の「チャット」 で共用)。
+  ///
+  /// ★ = ユーザー要望「両方 codex とか claudecode で統一するのではなく、
+  ///   下のチャット欄だけブラウザ版に渡すとか独立で変えられるように」。
+  ///   選べる物は 'api' / 'cli:claude' / 'cli:codex'、 チャット欄だけ
+  ///   'browser' も選べる。 空 ('') は「アプリ全体の設定のまま」。
+  Widget _sideAiEnginePicker(
+    MindMapProvider provider, {
+    required String value,
+    required bool allowBrowser,
+    required ValueChanged<String> onPick,
+  }) {
+    String labelOf(String id) {
+      if (id == 'browser') return provider.t('md.aiBrowserLabel');
+      if (id == 'api') return provider.t('md.aiEngineApi');
+      if (id.startsWith('cli:')) {
+        for (final k in AgentCliKind.values) {
+          if (k.name == id.substring(4)) return AgentCliSpec.of(k).label;
+        }
+      }
+      // 空 = アプリ全体の設定のまま。 今その設定が指している相手を出す。
+      return provider.useCliAi
+          ? provider.cliAiKindLabel
+          : provider.t('md.aiEngineApi');
+    }
+
+    final ids = <String>[
+      '',
+      if (allowBrowser && _isDesktopPlatform) 'browser',
+      'api',
+      if (AgentCli.supported && provider.canUseCliAi) ...[
+        'cli:claude',
+        'cli:codex',
+      ],
+    ];
+    return PopupMenuButton<String>(
+      tooltip: provider.t('mcp.model'),
+      color: const Color(0xFF1E1E32),
+      onSelected: onPick,
+      itemBuilder: (_) => [
+        for (final id in ids)
+          PopupMenuItem<String>(
+            value: id,
+            height: 36,
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(
+                  id == value
+                      ? Icons.radio_button_checked_rounded
+                      : Icons.radio_button_off_rounded,
+                  size: 13,
+                  color: id == value
+                      ? const Color(0xFFBA68C8)
+                      : Colors.white38),
+              const SizedBox(width: 8),
+              Text(
+                  id.isEmpty
+                      ? provider.t('md.aiEngineApp')
+                      : labelOf(id),
+                  style: const TextStyle(color: Colors.white, fontSize: 12.5)),
+            ]),
           ),
-          child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-            Icon(icon,
-                size: 14, color: on ? Colors.white : Colors.white54),
-            const SizedBox(width: 5),
-            Flexible(
-              child: Text(provider.t(labelKey),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                      color: on ? Colors.white : Colors.white54,
-                      fontSize: 11)),
-            ),
-          ]),
+      ],
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          // ★ どれを選んでいても色は敷かない (= ユーザー指摘)。
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: Colors.white24),
         ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Flexible(
+            child: Text(labelOf(value),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white70, fontSize: 10.5)),
+          ),
+          const Icon(Icons.expand_more_rounded,
+              size: 13, color: Colors.white38),
+        ]),
       ),
     );
   }
 
-  /// 右の AI 欄。 ★ = ユーザー要望「マークダウンの AI 機能は画面中央に
-  ///   項目を出さずサイドメニューにまとめる」: 中央のダイアログにあった
-  ///   依頼フォーム ('write') と、 従来のチャット ('chat') を切り替えて出す。
+  /// 選んだ相手で 1 回聞く ([engine] が空ならアプリ全体の設定のまま)。
+  Future<String> _askSideAi(String engine, String prompt,
+      {List<AiInputImage>? images}) {
+    final provider = widget.provider;
+    // ★ 全体の設定は触らず、 この 1 回きりの相手として渡す
+    //   (= 点検で判明: 上と下を同時に走らせると、 入れ替え式だと
+    //   互いの設定を踏む)。
+    return provider.askAi(prompt,
+        images: images,
+        engineOverride: engine.isEmpty
+            ? ''
+            : (engine.startsWith('cli:') ? 'cli' : 'api'),
+        cliKindOverride:
+            engine.startsWith('cli:') ? engine.substring(4) : '');
+  }
+
+  /// 右の AI 欄。 ★ = ユーザー要望「チャットと書いてもらうでタブを分けないで、
+  ///   上書いてもらう、 下チャット欄でよくない?」: 切替チップをやめ、
+  ///   上に依頼フォーム、 下にチャットを**同時に**出す。 相手は上と下で
+  ///   別々に選べる (下だけブラウザ版に渡す、 等)。
   ///   デスクトップは本文の右に 300px で並べ、 モバイルは本文の上に重ねる
   ///   (幅は親の Positioned が決める)。
   Widget _buildSideAiPanel(MindMapProvider provider) {
     return Container(
-      width: _isDesktopPlatform ? 300 : double.infinity,
+      // ★ 幅は外側 (SizedBox / Positioned) が決める (= 点検で判明: ここで
+      //   決め打ちにすると、 欄が細い時に内側が満ちて溢れる)。
+      width: double.infinity,
       decoration: const BoxDecoration(
         color: Color(0xFF171722),
         border: Border(left: BorderSide(color: Colors.white12)),
@@ -149039,248 +150364,255 @@ $body''';
                       fontSize: 12,
                       fontWeight: FontWeight.w700)),
             ),
-            // ── API 版 / ブラウザ版の切替 (= ユーザー要望: ブラウザ版に
-            //    切り替えて一般的な質問にも答えられるように) ──
-            //    ブラウザ版 (_WinGoogleSearchView) はデスクトップ専用。
-            // ★ 札には「今ほんとうに答えている相手」 を出す (= ユーザー指摘:
-            //   「CLI は API ではない」)。 PC 内 AI を選んでいる間は 「PC内AI」、
-            //   代行サーバー経由なら 「API」、 ブラウザ版を出している間は
-            //   「ブラウザ」。 押した時の働き (ブラウザ版との行き来) は今まで
-            //   どおり。 相手はヘッダーの AI アイコンの右クリックでも変わる
-            //   ので、 その知らせでこの札だけ描き直す。
-            if (_isDesktopPlatform)
-            AnimatedBuilder(
-              animation: provider,
-              builder: (_, __) => Tooltip(
-                message: _sideAiBrowser
-                    ? (provider.useCliAi
-                        ? '${provider.t('md.aiUseCli')} (${provider.cliAiLabel})'
-                        : provider.t('md.aiUseApi'))
-                    : provider.t('md.aiUseBrowser'),
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(6),
-                  onTap: () => setState(() => _sideAiBrowser = !_sideAiBrowser),
-                  child: Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: _sideAiBrowser
-                          ? const Color(0xFFBA68C8).withValues(alpha: 0.25)
-                          : Colors.transparent,
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border.all(color: Colors.white24),
-                    ),
-                    child: Text(
-                        _sideAiBrowser
-                            ? provider.t('md.aiBrowserLabel')
-                            : provider.t(provider.useCliAi
-                                ? 'md.aiEngineCli'
-                                : 'md.aiEngineApi'),
-                        style: const TextStyle(
-                            color: Colors.white70, fontSize: 10.5)),
-                  ),
+            // ★ = 点検で判明: 印だけで当たりが 15px しか無く、 携帯では
+            //   まず押せなかった。 当たりを広げて説明も付ける。
+            Tooltip(
+              message: provider.t('btn.close'),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(16),
+                onTap: () => setState(() => _aiChatOpen = false),
+                child: const SizedBox(
+                  width: 32,
+                  height: 32,
+                  child: Icon(Icons.close_rounded,
+                      size: 15, color: Colors.white38),
                 ),
               ),
-            ),
-            const SizedBox(width: 4),
-            // ── どのブラウザ AI を出すかを選ぶ (= ユーザー要望: ブラウザ版の
-            //    AI を切り替えられるように)。 PDF ビューア / テキストの編集
-            //    画面の AI 欄と同じ既定 (provider.pdfAiPanelDefault) を
-            //    共有するので、 どこで選んでも次からその AI で開く。
-            //    ★ この画面は provider を watch していないので、 選んだ後は
-            //      自分で setState する。 下の _WinGoogleSearchView は key に
-            //      この id を入れてあるので、 作り直されて新しい URL を開く。
-            //    ★ ここにあった「ブラウザ AI を開く」 ボタンは廃止した
-            //      (= ユーザー要望: もうブラウザ AI を出しているのに、
-            //      重ねて外の窓で開く必要は無い)。 API 版へ戻るのは
-            //      左の札 (md.aiUseApi) で足りる。
-            if (_isDesktopPlatform && _sideAiBrowser)
-              PopupMenuButton<String>(
-                tooltip: provider.t('pdf.aiSelectTip'),
-                color: const Color(0xFF1E1E32),
-                onSelected: (id) {
-                  if (id.isEmpty || id == provider.pdfAiPanelDefault) return;
-                  unawaited(provider.setPdfAiPanelDefault(id));
-                  if (mounted) setState(() {});
-                },
-                itemBuilder: (_) => [
-                  for (final t in MindMapProvider.browserAiTargets)
-                    PopupMenuItem<String>(
-                      value: t['id'] ?? '',
-                      child: Text(t['label'] ?? '',
-                          style: TextStyle(
-                              color: t['id'] == provider.pdfAiPanelDefault
-                                  ? const Color(0xFFBA68C8)
-                                  : Colors.white,
-                              fontSize: 13)),
-                    ),
-                ],
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 4),
-                  child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    Text(_browserAiLabelFor(provider.pdfAiPanelDefault),
-                        style: const TextStyle(
-                            color: Colors.white70, fontSize: 10.5)),
-                    const Icon(Icons.expand_more_rounded,
-                        size: 14, color: Colors.white54),
-                  ]),
-                ),
-              ),
-            InkWell(
-              onTap: () => setState(() => _aiChatOpen = false),
-              child: const Icon(Icons.close_rounded,
-                  size: 15, color: Colors.white38),
             ),
           ]),
         ),
         const Divider(height: 1, color: Colors.white12),
-        // ★ 「書いてもらう / チャット」 の切替 (= ユーザー要望: 中央の項目を
-        //   側欄にまとめる)。 ブラウザ版の時は出さない (向こうは Web)。
-        //   できあがりを確かめてもらっている間も出さない (先に決めてもらう)。
-        if (!_sideAiBrowser && _sideAiResult == null)
+        // ★ できあがりの確かめ (= 元は中央の Dialog。 修正依頼欄も込みで
+        //   側欄へ移した)。 決まるまでは、 これだけを出しておく。
+        if (_sideAiResult != null)
+          Expanded(child: _buildSideAiResultView(provider, _sideAiResult!))
+        else ...[
+          // ── 上: AI に書いてもらう (依頼フォーム) ──────────────────
           Padding(
-            padding: const EdgeInsets.fromLTRB(8, 6, 8, 2),
+            padding: const EdgeInsets.fromLTRB(10, 5, 8, 0),
             child: Row(children: [
-              _sideAiModeChip(provider, 'write', Icons.edit_note_rounded,
-                  'md.aiModeWrite'),
-              const SizedBox(width: 6),
-              _sideAiModeChip(provider, 'chat',
-                  Icons.chat_bubble_outline_rounded, 'md.aiModeChat'),
+              const Icon(Icons.edit_note_rounded,
+                  size: 14, color: Color(0xFFBA68C8)),
+              const SizedBox(width: 5),
+              Expanded(
+                child: Text(provider.t('md.aiWriteSection'),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: Colors.white38, fontSize: 10.5)),
+              ),
+              AnimatedBuilder(
+                animation: provider,
+                builder: (_, __) => _sideAiEnginePicker(
+                  provider,
+                  value: _sideWriteEngine,
+                  allowBrowser: false,
+                  onPick: (id) => setState(() => _sideWriteEngine = id),
+                ),
+              ),
             ]),
           ),
-        // ★ ブラウザ版 (= ユーザー要望)。 テキストの編集画面と同じ
-        //   既定 AI (pdfAiPanelDefault) を、 この欄の中にそのまま出す。
-        if (_sideAiBrowser)
           Expanded(
-            child: _WinGoogleSearchView(
-              key: ValueKey('md_side_ai_${provider.pdfAiPanelDefault}'),
-              url: _browserAiUrlFor(provider.pdfAiPanelDefault),
-            ),
-          )
-        // ★ できあがりの確かめ (= 元は中央の Dialog。 修正依頼欄も込みで
-        //   側欄へ移した)。 決まるまでは、 これを出しておく。
-        else if (_sideAiResult != null)
-          Expanded(child: _buildSideAiResultView(provider, _sideAiResult!))
-        // ★ AI に書いてもらう (= 元は中央の AlertDialog にあった依頼フォーム)。
-        else if (_sideAiMode == 'write')
-          Expanded(
-            child: SingleChildScrollView(
-              child: _buildSideAiWriteForm(provider),
-            ),
-          )
-        else
-        Expanded(
-          child: _sideAiChat.isEmpty
-              ? Center(
+            flex: _mdAiFlexWrite,
+            // ★ 境界を動かす量の基準にするため、 高さを実測して覚える
+            //   (= setState は呼ばない。 覚えるだけなので作り直しは起きない)。
+            child: LayoutBuilder(builder: (_, cons) {
+              if (cons.maxHeight.isFinite) _mdAiWriteH = cons.maxHeight;
+              return SingleChildScrollView(
+                child: _buildSideAiWriteForm(provider),
+              );
+            }),
+          ),
+          // ★ = ユーザー要望: ここを掴んで上下に動かせる
+          //   (ダブルクリックで元の割合に戻る)。
+          _mdAiSplitDivider(),
+          // ── 下: チャット欄 (相手は上と別に選べる) ────────────────
+          Padding(
+            padding: const EdgeInsets.fromLTRB(10, 5, 8, 0),
+            child: Row(children: [
+              const Icon(Icons.chat_bubble_outline_rounded,
+                  size: 13, color: Color(0xFFBA68C8)),
+              const SizedBox(width: 5),
+              Expanded(
+                child: Text(provider.t('md.aiChatSection'),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: Colors.white38, fontSize: 10.5)),
+              ),
+              // ブラウザ版を出している時は、 どの AI を出すかも選べる。
+              if (_sideAiBrowser)
+                PopupMenuButton<String>(
+                  tooltip: provider.t('pdf.aiSelectTip'),
+                  color: const Color(0xFF1E1E32),
+                  onSelected: (id) {
+                    if (id.isEmpty || id == provider.pdfAiPanelDefault) return;
+                    unawaited(provider.setPdfAiPanelDefault(id));
+                    if (mounted) setState(() {});
+                  },
+                  itemBuilder: (_) => [
+                    for (final t in MindMapProvider.browserAiTargets)
+                      PopupMenuItem<String>(
+                        value: t['id'] ?? '',
+                        child: Text(t['label'] ?? '',
+                            style: TextStyle(
+                                color: t['id'] == provider.pdfAiPanelDefault
+                                    ? const Color(0xFFBA68C8)
+                                    : Colors.white,
+                                fontSize: 13)),
+                      ),
+                  ],
                   child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Text(provider.t('md.aiChatHint'),
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                            color: Colors.white30,
-                            fontSize: 11.5,
-                            height: 1.5)),
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      Text(_browserAiLabelFor(provider.pdfAiPanelDefault),
+                          style: const TextStyle(
+                              color: Colors.white70, fontSize: 10.5)),
+                      const Icon(Icons.expand_more_rounded,
+                          size: 14, color: Colors.white54),
+                    ]),
                   ),
-                )
-              : ListView.builder(
-                  controller: _sideAiScroll,
-                  padding: const EdgeInsets.all(8),
-                  itemCount: _sideAiChat.length,
-                  itemBuilder: (_, i) {
-                    final m = _sideAiChat[i];
-                    final isUser = m.role == 'user';
-                    return Align(
-                      alignment: isUser
-                          ? Alignment.centerRight
-                          : Alignment.centerLeft,
-                      child: Container(
-                        margin: const EdgeInsets.symmetric(vertical: 3),
-                        padding: const EdgeInsets.all(9),
-                        constraints: const BoxConstraints(maxWidth: 250),
-                        decoration: BoxDecoration(
-                          color: isUser
-                              ? const Color(0xFF32325A)
-                              : Colors.white.withValues(alpha: 0.06),
-                          borderRadius: BorderRadius.circular(9),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            SelectableText(m.text,
-                                style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 12,
-                                    height: 1.5)),
-                            if (!isUser && m.text.isNotEmpty)
-                              Align(
-                                alignment: Alignment.centerRight,
-                                child: TextButton.icon(
-                                  style: TextButton.styleFrom(
-                                    visualDensity: VisualDensity.compact,
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 6),
-                                    minimumSize: const Size(0, 24),
+                ),
+              AnimatedBuilder(
+                animation: provider,
+                builder: (_, __) => _sideAiEnginePicker(
+                  provider,
+                  value: _sideChatEngine,
+                  allowBrowser: true,
+                  onPick: (id) => setState(() => _sideChatEngine = id),
+                ),
+              ),
+            ]),
+          ),
+          if (_sideAiBrowser)
+            Expanded(
+              flex: _mdAiFlexChat,
+              child: _WinGoogleSearchView(
+                key: ValueKey('md_side_ai_${provider.pdfAiPanelDefault}'),
+                url: _browserAiUrlFor(provider.pdfAiPanelDefault),
+              ),
+            )
+          else ...[
+            Expanded(
+              flex: _mdAiFlexChat,
+              child: _sideAiChat.isEmpty
+                  ? Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Text(provider.t('md.aiChatHint'),
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                                color: Colors.white30,
+                                fontSize: 11.5,
+                                height: 1.5)),
+                      ),
+                    )
+                  : ListView.builder(
+                      controller: _sideAiScroll,
+                      padding: const EdgeInsets.all(8),
+                      itemCount: _sideAiChat.length,
+                      itemBuilder: (_, i) {
+                        final m = _sideAiChat[i];
+                        final isUser = m.role == 'user';
+                        return Align(
+                          alignment: isUser
+                              ? Alignment.centerRight
+                              : Alignment.centerLeft,
+                          child: Container(
+                            margin: const EdgeInsets.symmetric(vertical: 3),
+                            padding: const EdgeInsets.all(9),
+                            constraints: const BoxConstraints(maxWidth: 250),
+                            decoration: BoxDecoration(
+                              color: isUser
+                                  ? const Color(0xFF32325A)
+                                  : Colors.white.withValues(alpha: 0.06),
+                              borderRadius: BorderRadius.circular(9),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                SelectableText(m.text,
+                                    style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 12,
+                                        height: 1.5)),
+                                if (!isUser && m.text.isNotEmpty)
+                                  Align(
+                                    alignment: Alignment.centerRight,
+                                    child: TextButton.icon(
+                                      style: TextButton.styleFrom(
+                                        visualDensity: VisualDensity.compact,
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 6),
+                                        minimumSize: const Size(0, 24),
+                                      ),
+                                      onPressed: () => _insertIntoBody(m.text),
+                                      icon: const Icon(Icons.input_rounded,
+                                          size: 12, color: Color(0xFF7FD8A0)),
+                                      label: Text(
+                                          provider.t('md.insertToBody'),
+                                          style: const TextStyle(
+                                              color: Color(0xFF7FD8A0),
+                                              fontSize: 10.5)),
+                                    ),
                                   ),
-                                  onPressed: () => _insertIntoBody(m.text),
-                                  icon: const Icon(Icons.input_rounded,
-                                      size: 12, color: Color(0xFF7FD8A0)),
-                                  label: Text(
-                                      provider.t('md.insertToBody'),
-                                      style: const TextStyle(
-                                          color: Color(0xFF7FD8A0),
-                                          fontSize: 10.5)),
-                                ),
-                              ),
-                          ],
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(8),
+              child: Row(children: [
+                Expanded(
+                  child: TextField(
+                    controller: _sideAiInput,
+                    focusNode: _sideAiInputFocus,
+                    style:
+                        const TextStyle(color: Colors.white, fontSize: 12.5),
+                    decoration: InputDecoration(
+                      isDense: true,
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 9),
+                      hintText: provider.t('md.aiChatInputHint'),
+                      hintStyle: const TextStyle(
+                          color: Colors.white30, fontSize: 12),
+                      filled: true,
+                      fillColor: Colors.white.withValues(alpha: 0.05),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
+                    onSubmitted: (_) => unawaited(_sendSideAiChat()),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                _sideAiBusy
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Color(0xFFBA68C8)))
+                    : Tooltip(
+                        message: provider.t('aiFollowUp.send'),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(18),
+                          onTap: () => unawaited(_sendSideAiChat()),
+                          child: const SizedBox(
+                            width: 34,
+                            height: 34,
+                            child: Icon(Icons.send_rounded,
+                                size: 18, color: Color(0xFFBA68C8)),
+                          ),
                         ),
                       ),
-                    );
-                  },
-                ),
-        ),
-        // チャットの入力行はチャットの時だけ (書式は上のフォームに ↑ がある)。
-        // できあがりの確かめを出している間も出さない (そちらに欄がある)。
-        if (!_sideAiBrowser && _sideAiResult == null && _sideAiMode == 'chat')
-          const Divider(height: 1, color: Colors.white12),
-        if (!_sideAiBrowser && _sideAiResult == null && _sideAiMode == 'chat')
-        Padding(
-          padding: const EdgeInsets.all(8),
-          child: Row(children: [
-            Expanded(
-              child: TextField(
-                controller: _sideAiInput,
-                style: const TextStyle(color: Colors.white, fontSize: 12.5),
-                decoration: InputDecoration(
-                  isDense: true,
-                  contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 10, vertical: 9),
-                  hintText: provider.t('md.aiChatInputHint'),
-                  hintStyle:
-                      const TextStyle(color: Colors.white30, fontSize: 12),
-                  filled: true,
-                  fillColor: Colors.white.withValues(alpha: 0.05),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                    borderSide: BorderSide.none,
-                  ),
-                ),
-                onSubmitted: (_) => unawaited(_sendSideAiChat()),
-              ),
+              ]),
             ),
-            const SizedBox(width: 6),
-            _sideAiBusy
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(
-                        strokeWidth: 2, color: Color(0xFFBA68C8)))
-                : InkWell(
-                    onTap: () => unawaited(_sendSideAiChat()),
-                    child: const Icon(Icons.send_rounded,
-                        size: 18, color: Color(0xFFBA68C8)),
-                  ),
-          ]),
-        ),
+          ],
+        ],
       ]),
     );
   }
@@ -149598,13 +150930,17 @@ $body''';
     if (!mounted) return;
     setState(() {});
     // 値は HTML の中に埋め込んであるので、 作り直して入れ替える。
+    // ★ まるごと読み込み直すとプレビューが先頭へ戻るので、 今の所を控えて
+    //   戻す (= ユーザー要望: 読み込む度に先頭へ戻らない)。
+    final keepLine = _mdLastLines[_cur?.id ?? ''] ?? 0;
+    if (keepLine > 1) _previewRestoreLine = keepLine;
     _previewLoadedOnce = false;
     unawaited(_render());
   }
 
   /// 車輪を回した時の動く量を、 設定の割合に合わせる (= ユーザー要望)。
   ///
-  /// 中の Scrollable が先に既定量ぶん動かすので、 ここでは**差分だけ**を
+  /// 中の Scrollable が先に既定量分動かすので、 ここでは**差分だけ**を
   /// 足して帳尻を合わせる (同じフレームの中なので、 見た目は 1 回の移動)。
   void _applyMdScrollStep(PointerSignalEvent e) {
     if (e is! PointerScrollEvent) return;
@@ -149766,15 +151102,15 @@ $body''';
             //    置き場**、 マークダウンのページの時は null を渡して本体の
             //    既定 (= 今開いているページの置き場) に任せる。
             //    子プロセスを起こせない所 (スマホ / ストア版) では出さない。
-            if (AgentCli.supported && openTerminalFromAnywhere != null)
+            // ★ = ユーザー要望「vscode の様に画面下部に開かれるように」。
+            //   本体へ丸投げせず、 この画面の下の帯を入り切りする
+            //   (テキストの編集画面と同じ物 = _EditorTerminalBand)。
+            if (AgentCli.supported)
               _btn(Icons.terminal_rounded, provider.t('cli.terminalHere'),
-                  () {
-                final open = openTerminalFromAnywhere;
-                if (open == null) return;
-                final f = (widget.filePath ?? '').trim();
-                unawaited(
-                    open(baseDir: f.isEmpty ? null : File(f).parent.path));
-              }),
+                  () => unawaited(_toggleBottomTerminal()),
+                  color: _bottomTermOpen
+                      ? const Color(0xFFFFB347)
+                      : Colors.white70),
             // ネットに公開する (= ユーザー要望: プレビュー画面をサーバーへ)。
             //   公開中はアイコンの形 (塗り) だけで表す。 色は白で統一。
             if (provider.canPublishHtmlPage)
@@ -149797,7 +151133,7 @@ $body''';
     ];
     // ★ 中央に重ねるやり方は、 欄が狭いと右のボタン列と必ずぶつかる
     //   (= ユーザー報告: 4 分割にすると重なる)。 右の道具の列だけで
-    //   およそ 380px 要るので、 それに中央のボタンぶんを足した幅が無い時は
+    //   およそ 380px 要るので、 それに中央のボタン分を足した幅が無い時は
     //   下の「横に並べて足りなければ横スクロール」 に落とす。
     final wideEnough = (paneWidth ?? double.infinity) >= 900;
     if (!narrow && wideEnough) {
@@ -150356,7 +151692,7 @@ class _DocumentPageViewState extends State<_DocumentPageView> {
   Timer? _reflowTimer;
   int _reflowBurst = 0;
 
-  /// 空の文書でも最低この行数ぶんの空行を用意して、 どの罫線にもすぐ書けるよう
+  /// 空の文書でも最低この行数分の空行を用意して、 どの罫線にもすぐ書けるよう
   /// にする (= ユーザー要望: 自由な行に文字を書ける)。
   static const int _kDocMinLines = 30;
 
@@ -152701,7 +154037,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
   /// 選択ドラッグ中のグローバル座標 (分割ペインへのドロップ判定に使う)。
   Offset? _selDragGlobal;
 
-  /// 回転ボタンのタップ: ステップぶん回す (-180..180 に折り返し)。
+  /// 回転ボタンのタップ: ステップ分回す (-180..180 に折り返し)。
   /// [cw] true = 時計回り、 false = 反時計回り
   /// (= ユーザー要望: 1 つのボタンにまとめず別々に並べる)。
   void _rotateCanvasBy(bool cw) {
@@ -152990,6 +154326,9 @@ class _PaintPageViewState extends State<_PaintPageView> {
   /// prefs `paintHeaderHidden` に保存し、 次回も同じ状態で開く。
   static const String _kHeaderHiddenKey = 'paintHeaderHidden';
   bool _headerHidden = false;
+
+  /// 本体へ「帯を隠して」 と伝えた時の値 (マークダウンと同じ作り)。
+  bool? _zenTold;
 
   Future<void> _loadHeaderHidden() async {
     try {
@@ -155880,11 +157219,20 @@ class _PaintPageViewState extends State<_PaintPageView> {
       await _reloadFromStore();
     } else {
       final before = await _PaintStore.raw(widget.pageId);
-      final mine = _PaintStore.encode(_notes, _noteSel);
-      if (before != mine) {
-        await _persist(markLive: false);
+      // ★★ = 動作検証レポート 2026-09-24。 上の見張りだけでは穴が残っていた。
+      //   raw を読むのも待ち時間なので、 その最中に AI (MCP) が書くと
+      //   before だけが新しくなり、 「形が違う」 と判断して手元の白紙を
+      //   書き戻してしまう。 書く直前にもう一度だけ見て、 動いていたら
+      //   書かずに読み直す。
+      if (widget.provider.paintBodyTick(widget.pageId) != _seenBodyTick) {
+        await _reloadFromStore();
       } else {
-        _lastPersistedJson = mine;
+        final mine = _PaintStore.encode(_notes, _noteSel);
+        if (before != mine) {
+          await _persist(markLive: false);
+        } else {
+          _lastPersistedJson = mine;
+        }
       }
     }
     await _importDocumentIntoSheetsIfNeeded();
@@ -156274,76 +157622,20 @@ class _PaintPageViewState extends State<_PaintPageView> {
   /// [maxWidth] は紙に収まる幅。 書式 ([bold]/[italic]/[family]) を渡すと
   /// 実際に描くのと同じ幅で測るので、 太字や別の書体でもはみ出さない。
   ///
-  /// ★ 1 行ぶんずつ**測り直し**ながら進める。 段落全体を 1 回測って
+  /// ★ 1 行分ずつ**測り直し**ながら進める。 段落全体を 1 回測って
   ///   その行の切れ目を使い回すと、 意味の切れ目まで戻した後の行が
   ///   元の切れ目のままになり、 短い端切れの行が残ってしまう。
+  /// ★ 中身は `lib/utils/canvas_text_wrap.dart` に出した。 AI / MCP からの
+  ///   書き込み (`MindMapProvider.mcpAddPaintTexts`) も**同じ物**を通すため
+  ///   (= 二重に持つと「手で置いた時は折れるのに AI に頼むと崩れる」 が
+  ///   起きる)。 折る位置の規則を直す時はあちらを直す。
   static String _wrapForCanvas(String text, double maxWidth, double fontSize,
-      {bool bold = false, bool italic = false, String family = ''}) {
-    final style = TextStyle(
-      fontSize: fontSize,
-      fontWeight: bold ? FontWeight.bold : FontWeight.w500,
-      fontStyle: italic ? FontStyle.italic : FontStyle.normal,
-      fontFamily: family.isEmpty ? null : family,
-    );
-    // 毎回 段落の残り全部を測ると長文で重いので、 1 行に収まるはずの
-    // 文字数より十分大きい窓だけを測る (足りなければ広げる)。
-    const int kBaseWindow = 1024;
-    final out = StringBuffer();
-    var firstPara = true;
-    for (final para in text.split('\n')) {
-      if (!firstPara) out.write('\n');
-      firstPara = false;
-      if (para.isEmpty) continue;
-      var offset = 0;
-      var firstLine = true;
-      while (offset < para.length) {
-        // ── この位置から始まる 1 行の終わりを測る ──
-        var window = kBaseWindow;
-        int end;
-        String tail;
-        while (true) {
-          final stop = math.min(offset + window, para.length);
-          tail = para.substring(offset, stop);
-          final tp = TextPainter(
-            text: TextSpan(text: tail, style: style),
-            textDirection: TextDirection.ltr,
-          )..layout(maxWidth: maxWidth);
-          end = tp.getLineBoundary(const TextPosition(offset: 0)).end;
-          if (end <= 0) end = 1;
-          if (end > tail.length) end = tail.length;
-          // 窓を使い切った = まだ先まで 1 行に入るかもしれない → 広げる。
-          if (end >= tail.length && stop < para.length && window < 1 << 18) {
-            window *= 4;
-            continue;
-          }
-          break;
-        }
-        // ── 意味の切れ目まで戻す (= ユーザー要望) ──
-        //   行の終わり側に句読点などがあれば、 そこまでで折る。
-        //   戻し過ぎると隙間だらけになるので、 行の 6 割より後ろだけ見る。
-        if (offset + end < para.length) {
-          final floor = (end * 0.6).floor();
-          for (var i = end - 1; i > floor; i--) {
-            if (_kWrapBreakAfter.contains(tail[i])) {
-              end = i + 1;
-              break;
-            }
-          }
-        }
-        final line = tail.substring(0, end);
-        if (firstLine) {
-          out.write(line);
-        } else {
-          // 行頭に回った空白は落とす (戻した所が空白だった時に効く)。
-          out.write('\n');
-          out.write(line.trimLeft());
-        }
-        firstLine = false;
-        offset += end;
-      }
-    }
-    return out.toString();
-  }
+          {bool bold = false, bool italic = false, String family = ''}) =>
+      wrapTextForCanvas(text, maxWidth, fontSize,
+          bold: bold,
+          italic: italic,
+          family: family,
+          breakAfter: _kWrapBreakAfter);
 
   /// [p] に何も描かれていない (= 白紙) かを判定する。
   /// 用紙の色を塗り替えてよいかの判断に使う (= ユーザー要望)。
@@ -156420,6 +157712,8 @@ class _PaintPageViewState extends State<_PaintPageView> {
     widget.provider.removeListener(_onProviderChanged);
     widget.provider.registerPaintSelectHandler(null);
     _liveAddMarksTimer?.cancel();
+    // ── 閉じる時は本体の帯を必ず戻す (= 帯の無いマップに取り残されない) ──
+    setAppChromeHiddenFromAnywhere?.call(this, false);
     if (_paintHost?._paintDropHandler == _onPaintDropFiles) {
       _paintHost?._paintDropHandler = null;
     }
@@ -159164,7 +160458,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
     _persist();
   }
 
-  /// 1 ステップぶんの選択ダイアログ (= 用紙サイズの段階選択に使う共通部品)。
+  /// 1 ステップ分の選択ダイアログ (= 用紙サイズの段階選択に使う共通部品)。
   /// [options] は (戻り値, 表示ラベル) のリスト。 選択された戻り値を返す。
   Future<String?> _simpleChoice(String title, List<(String, String)> options) {
     return _showNearDialog<String>(
@@ -162671,6 +163965,13 @@ class _PaintPageViewState extends State<_PaintPageView> {
 
   @override
   Widget build(BuildContext context) {
+    // ── Zen モード: ヘッダーを隠している間は、 本体の帯 (ページ名の行 +
+    //    自分で並べたボタンの帯) まで隠す (= ユーザー要望)。 マークダウンと
+    //    同じ作り (読む側 1 か所で食い違いを直す)。 ──
+    if (_zenTold != _headerHidden) {
+      _zenTold = _headerHidden;
+      setAppChromeHiddenFromAnywhere?.call(this, _headerHidden);
+    }
     if (!_loaded) {
       return const Center(
           child: CircularProgressIndicator(color: Color(0xFFEC407A)));
@@ -162900,7 +164201,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
     );
   }
 
-  /// 1 ページぶんの編集キャンバス (= 分割表示でも共通で使う)。
+  /// 1 ページ分の編集キャンバス (= 分割表示でも共通で使う)。
   /// [pageIdx] のページを描画し、 非アクティブなページはジェスチャー開始時に
   /// 自動でアクティブ化する (= ユーザー要望: 分割の右側も同様に編集できる)。
   /// [paneKey] はキャンバス実矩形の参照キー (アクティブ側 = _paintCanvasKey、
@@ -165196,7 +166497,7 @@ class _PaintPageViewState extends State<_PaintPageView> {
     final minEditorW = math.min(maxW, math.max(160.0, 180.0 * fit));
     // 確定後の TextPainter は明示改行だけを改行として扱う。編集中だけ右端で
     // ソフトラップしないよう、外枠はキャンバス内に収めつつ、内側の入力面は
-    // 最長論理行ぶん確保して横スクロールさせる。IME/キャレット用の余白も含む。
+    // 最長論理行分確保して横スクロールさせる。IME/キャレット用の余白も含む。
     // キャレット・IME composing・スクロール余白を含めて幅を確保する。
     // 実測値ぎりぎりだと空白入力時だけ不足してソフトラップしてしまう。
     final desiredEditorW =
@@ -166529,7 +167830,7 @@ class _PaintCanvasPainter extends CustomPainter {
     }
   }
 
-  /// 1 行ぶんのアーチ描画。 戻り値はその行の高さ (次の行の y 送りに使う)。
+  /// 1 行分のアーチ描画。 戻り値はその行の高さ (次の行の y 送りに使う)。
   double _drawCurvedTextLine(Canvas canvas, String line, TextStyle style,
       Offset topLeft, double curve) {
     // 行の高さは空行でも確保する (プローブとして 1 文字測る)。
@@ -167016,7 +168317,7 @@ class _PaintCanvasPainter extends CustomPainter {
             ..style = PaintingStyle.fill);
     }
     // ── ぼかしペン (= ユーザー要望: 描いたところをぼやけさせるぼやけ機能) ──
-    // なぞった領域 (点列を太さぶん膨らませた形) をクリップし、 その中に
+    // なぞった領域 (点列を太さ分膨らませた形) をクリップし、 その中に
     // シーンをぼかしレイヤーで描き直す。 領域内だけ下の絵がぼけて見える。
     final blurStrokes = <_PaintStroke>[
       for (final s in sheet.strokes)
@@ -170179,7 +171480,7 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
             //    編集項目で要素やプレビューが隠れないよう、 重ねず並べる)。 ──
             child: Padding(
               padding: EdgeInsets.only(
-                  // パネル高 + キーボード高のぶん上へ詰める (= パネルを
+                  // パネル高 + キーボード高の分上へ詰める (= パネルを
                   // キーボードの上へ持ち上げても内容が隠れないように)。
                   bottom: (_veNarrow && _panelItemId != null)
                       ? _dockPanelHeight() +
@@ -172967,6 +174268,57 @@ const String _kBgPlaybackPatchJs = r"""
     window.__MM_VISIBILITY_PATCHED__ = true;
   } catch (e) {}
 })();
+// ── ここから下は「どの <video> が本編か」「今は広告か」 を見分ける道具と、
+//    裏に回っている間の鳴らし直し (= ユーザー報告: 動画が切り替わる時や
+//    広告が入る時に音が途切れ途切れになる) ──────────────────────
+//
+//  ★ これまでは Dart 側の 200ms のタイマーだけが play() を撃っていて、
+//    切り替えの間はそれを止めていたので、 その数秒がまるごと無音だった。
+//    ページの中にも鳴らし直しを置いて、 読み込み直後から効くようにする。
+//  ★ 広告の <video> は本編とは別物。 触りに行くと YouTube 側と取り合いに
+//    なって音が途切れるので、 広告の間は「鳴らす」 以外は何もしない。
+(function() {
+  if (window.__MM_PLAYER_PROBE__) return;
+  window.__MM_PLAYER_PROBE__ = true;
+  window.__MM_isAd = function() {
+    try {
+      var p = document.querySelector('#movie_player, .html5-video-player');
+      if (p && (p.classList.contains('ad-showing') ||
+                p.classList.contains('ad-interrupting'))) return true;
+      if (document.querySelector('.video-ads .ytp-ad-player-overlay, ' +
+          '.ytp-ad-preview-container, .ytp-ad-player-overlay-layout')) {
+        return true;
+      }
+    } catch (e) {}
+    return false;
+  };
+  window.__MM_mainVideo = function() {
+    try {
+      var v = document.querySelector('#movie_player video, video.html5-main-video');
+      if (v) return v;
+      var vs = document.querySelectorAll('video');
+      var best = null;
+      for (var i = 0; i < vs.length; i++) {
+        var c = vs[i];
+        if (c.readyState < 1) continue;
+        if (!best || (c.duration || 0) > (best.duration || 0)) best = c;
+      }
+      return best || vs[0] || null;
+    } catch (e) { return null; }
+  };
+  // Dart から立ててもらう合図。 裏に回っている間だけ true。
+  window.__MM_BG_KEEP__ = window.__MM_BG_KEEP__ || false;
+  setInterval(function() {
+    try {
+      if (!window.__MM_BG_KEEP__ || window.__MM_USER_PAUSED__) return;
+      var v = window.__MM_mainVideo();
+      if (!v || v.ended) return;
+      if (v.duration && isFinite(v.duration) &&
+          v.currentTime >= v.duration - 0.35) return;
+      if (v.paused) v.play().catch(function(){});
+    } catch (e) {}
+  }, 250);
+})();
 """;
 
 class _FullscreenVideoPage extends StatefulWidget {
@@ -174242,15 +175594,22 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
   ///   勝つかがその時々で変わっていた (= 違う動画が出る / 音だけ先に鳴る /
   ///   読み込みが途中で打ち切られる)。 先に止めて、 終了画面の
   ///   カウントダウンも消しておく。
-  Future<void> _stopPlayerForHandover() async {
+  /// [keepSound] true = 音は止めない (終了画面の後始末だけする)。
+  ///
+  /// ★ = ユーザー報告「動画が切り替わるタイミングで音声が途切れ途切れ」。
+  ///   ここで撃っていた `pause()` は、 YouTube 自身の「次の動画まで n 秒」 を
+  ///   黙らせるためのもの。 画面を見ていない時はその画面自体が出ないので、
+  ///   裏で流している間は止める必要が無い (= 止めるとその分まるまる無音)。
+  Future<void> _stopPlayerForHandover({bool keepSound = false}) async {
     final c = _c;
     if (c == null) return;
     try {
       await c.evaluateJavascript(source: '''
         (function(){
           try{
+            var KEEP = $keepSound;
             var v=document.querySelector("video");
-            if(v){ try{ v.pause(); }catch(e){} }
+            if(v && !KEEP){ try{ v.pause(); }catch(e){} }
             // 「次の動画まで n 秒」 の終了画面を消す (放っておくと勝手に飛ぶ)。
             var sels=['.ytp-autonav-endscreen',
                       'ytm-autonav-endscreen-upnext-renderer',
@@ -174269,7 +175628,19 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
     } catch (_) {}
   }
 
+  /// ページの中の鳴らし直し ([_kBgPlaybackPatchJs] の最後の輪) の入切。
+  void _setPageBgKeep(bool on) {
+    final c = _c;
+    if (c == null) return;
+    try {
+      c.evaluateJavascript(
+          source: 'try{window.__MM_BG_KEEP__=$on;}catch(e){}')
+        .catchError((_) {});
+    } catch (_) {}
+  }
+
   void _startBgPlayKeeper() {
+    _setPageBgKeep(true);
     if (_bgPlayKeeper != null) return;
     // 即座に1回呼んでから Timer 開始 (初回応答を早くする)
     _forceVideoPlay();
@@ -174284,6 +175655,8 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
   void _stopBgPlayKeeper() {
     _bgPlayKeeper?.cancel();
     _bgPlayKeeper = null;
+    // ページの中の鳴らし直しも止める (表に戻ったら利用者の操作を優先)。
+    _setPageBgKeep(false);
   }
 
   /// YouTube 検索クエリ文字列を `m.youtube.com/results?search_query=...`
@@ -174331,11 +175704,13 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
     } catch (_) {
       // iOS / 古い API バージョンでは利用不可
     }
-    // ★ 切り替えの最中は、 前の動画を鳴らし直さない (= 二重再生と読み込みの
-    //   妨げを防ぐ)。 「常に表示中」 の細工は document start の
-    //   _kBgPlaybackPatchJs が先回りして入れてあるので、 ここを飛ばしても
-    //   新しいページで効いている。
-    if (_switchingVideo || _advancing) return;
+    // ★ = ユーザー報告「動画が切り替わるタイミングで音声が途切れ途切れに
+    //   なる」。 以前はここで**丸ごと打ち切って**いたので、 切り替えの
+    //   歯止め (3〜12 秒) の間はひとつも play() が飛ばず、 その分そのまま
+    //   無音になっていた。 打ち切るのをやめ、 代わりに下の JS で
+    //   「前の動画は鳴らさない」 を見る (要素の持ち主 __MM_ELEM_VID__ と
+    //   今の URL の v= を突き合わせる)。 二重再生と読み込みの妨げは
+    //   そちらで防げる。
     // 2. Page Visibility API を偽装 + <video>.play() 強制 + YouTube 内部の
     //    プレーヤー API も叩く (HTML5 player の 'play' メソッドを直接呼ぶ)
     c.evaluateJavascript(source: r'''
@@ -174375,20 +175750,31 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
               window.__MM_VISIBILITY_PATCHED__ = true;
             } catch(e) {}
           }
-          // ── (B) <video> 要素を play() に戻す ──
+          // ── (B) 本編の <video> を play() に戻す ──
           // 終了済み (ended) の動画は play() すると先頭から再生され、
           // 「勝手にループする回がある」 原因になっていた (= ユーザー報告)。
           // 再生位置が末尾に達しているものは触らない。
-          var vs = document.querySelectorAll('video');
-          for (var i = 0; i < vs.length; i++) {
-            var v = vs[i];
-            if (v.ended) continue;
-            if (v.duration && isFinite(v.duration) &&
-                v.currentTime >= v.duration - 0.35) {
-              continue;
-            }
-            if (v.paused && !window.__MM_USER_PAUSED__) {
-              v.play().catch(function(){});
+          // ★ 全部の <video> を鳴らすのはやめた (= ユーザー報告: 広告が
+          //   入ると音が途切れ途切れになる)。 広告の間、 YouTube は本編を
+          //   止めて脇に置くのに、 こちらが 200ms ごとに起こし直すので、
+          //   2 つの音が取り合いになっていた。 本編だけを見る。
+          // ★ 切り替えの最中に前の動画を鳴らさないのもここで見る。 要素の
+          //   持ち主 (__MM_ELEM_VID__) と今の URL の v= が食い違っている間は
+          //   触らない (= 新しいプレーヤーに入れ替わった瞬間から鳴り出す)。
+          var v = window.__MM_mainVideo
+              ? window.__MM_mainVideo()
+              : document.querySelector('video');
+          if (v) {
+            var owner = window.__MM_ELEM_VID__ || '';
+            var m = (location.href || '').match(/[?&]v=([A-Za-z0-9_-]{6,})/);
+            var want = m ? m[1] : '';
+            var mismatch = (owner && want && owner !== want);
+            if (!mismatch && !v.ended &&
+                !(v.duration && isFinite(v.duration) &&
+                  v.currentTime >= v.duration - 0.35)) {
+              if (v.paused && !window.__MM_USER_PAUSED__) {
+                v.play().catch(function(){});
+              }
             }
           }
         } catch(e) {}
@@ -175345,27 +176731,46 @@ v.addEventListener('play', function() {
   }
 
   /// 再生倍率を注入（広告中・新 video 要素出現時にも追従するウォッチャー付き）
+  /// ★ = ユーザー報告「広告が入ったタイミングで音声が途切れ途切れ」。
+  ///   以前は**ページの全部の <video>** に 200ms ごとに速度を押し付けて
+  ///   いた。 YouTube は広告の間だけ速度を 1.0 に戻すので、 こちらが
+  ///   押し返す → 向こうが戻す、 を 1 秒に何度も繰り返し、 そのたびに
+  ///   音の通り道が組み直されて途切れていた。 広告の間は触らず、 相手も
+  ///   本編の 1 つだけにする。 見回りも 1 秒に落とす (実際の切り替わりは
+  ///   ratechange / loadeddata / play で拾えている)。
   Future<void> _injectPlaybackRate() async {
     await _c?.evaluateJavascript(source: '''
       (function(){
         window.__MM_RATE__ = $_playbackRate;
+        function mainV(){
+          try {
+            return window.__MM_mainVideo
+                ? window.__MM_mainVideo()
+                : document.querySelector('video');
+          } catch(e) { return null; }
+        }
+        function isAd(){
+          try { return window.__MM_isAd ? window.__MM_isAd() : false; }
+          catch(e) { return false; }
+        }
         function applyAll(){
           try {
-            var vs = document.querySelectorAll('video');
-            for (var i = 0; i < vs.length; i++) {
-              if (vs[i].playbackRate !== window.__MM_RATE__) {
-                vs[i].playbackRate = window.__MM_RATE__;
-              }
+            if (isAd()) return;
+            var v = mainV();
+            if (v && v.playbackRate !== window.__MM_RATE__) {
+              v.playbackRate = window.__MM_RATE__;
             }
           } catch(e) {}
         }
         applyAll();
         if (window.__MM_RATE_INSTALLED__) return;
         window.__MM_RATE_INSTALLED__ = true;
-        setInterval(applyAll, 200);
+        setInterval(applyAll, 1000);
         document.addEventListener('ratechange', function(e){
           try {
+            if (isAd()) return;
             if (e.target && e.target.tagName === 'VIDEO' &&
+                e.target === mainV() &&
                 e.target.playbackRate !== window.__MM_RATE__) {
               e.target.playbackRate = window.__MM_RATE__;
             }
@@ -175407,6 +176812,14 @@ v.addEventListener('play', function() {
         function sendEnded(v){
           try{
             if(!v || v.__MM_ENDED_SENT__) return;
+            // ★ = ユーザー報告「広告が入ったタイミングで音声が途切れ途切れ」。
+            //   広告の映像が終わっただけでもここが「本編が終わった」 と
+            //   伝えてしまい、 次の動画へ飛んでいた (= 音が切れる)。
+            //   広告の間と、 短すぎる映像 (= 前座の広告) は送らない。
+            try{
+              if (window.__MM_isAd && window.__MM_isAd()) return;
+            }catch(e){}
+            if (v.duration && isFinite(v.duration) && v.duration < 30) return;
             var owner = window.__MM_ELEM_VID__;
             if(!owner) return;
             v.__MM_ENDED_SENT__ = true;
@@ -176806,7 +178219,7 @@ v.addEventListener('play', function() {
           .replaceFirst('http://m.youtube.com/', 'https://www.youtube.com/');
 
       // ★ 概要欄は渡さない (= ユーザー要望: 共有の文面が長すぎる)。
-      //   以前は概要を 1200 字ぶん貼り付けていたので、 AI の入力欄が文字で
+      //   以前は概要を 1200 字分貼り付けていたので、 AI の入力欄が文字で
       //   埋まって何を頼んでいるのか分からなくなっていた。 見出しと URL が
       //   あれば AI 側で動画を引けるので、 その 2 つと「今どこを見ているか」
       //   だけを渡して、 その場で要約させる。
@@ -178158,7 +179571,7 @@ v.addEventListener('play', function() {
     // ★ = ユーザー指摘「表示する際にボタンの所だけに表示判定があると
     //   当てづらくて使いにくいから、 ヘッダー位置をタップしたら出てくる
     //   ようにして欲しい」。 56x56 の点を狙わせるのをやめ、 ヘッダーが
-    //   居た**帯ぜんたい**を受け口にする (横幅いっぱい × 1 段ぶん)。
+    //   居た**帯ぜんたい**を受け口にする (横幅いっぱい × 1 段分)。
     //   サイド配置の時は今までどおり、 その側の縦帯ぜんたい。
     return Positioned(
       top: (inSideMenu || !atBottom) ? 0 : null,
@@ -178179,7 +179592,7 @@ v.addEventListener('play', function() {
     );
   }
 
-  /// ヘッダー 1 段ぶんの高さ (= ボタン 1 個の枠の大きさ)。
+  /// ヘッダー 1 段分の高さ (= ボタン 1 個の枠の大きさ)。
   static const double _kYtHeaderRowH = 34.0;
 
   /// レール用の 40x40 ボタンを 1 段に収まる枠へ入れる。 中身 (既存の
@@ -178190,7 +179603,7 @@ v.addEventListener('play', function() {
         child: FittedBox(fit: BoxFit.contain, child: control),
       );
 
-  /// 1 段ぶんのボタン列。 横スクロールは出さず、 入り切らない時は列ごと
+  /// 1 段分のボタン列。 横スクロールは出さず、 入り切らない時は列ごと
   /// 縮めて必ず 1 行に収める (= ユーザー要望: スクロールせずに全部入る)。
   /// 360dp 幅なら素の大きさで 9 個、 11 個でも 0.86 倍に縮んで収まる。
   Widget _buildYoutubeHeaderButtonRow(List<String> ids) {
@@ -179802,7 +181215,8 @@ v.addEventListener('play', function() {
                                       //   終わると YouTube は「次の動画」 へ
                                       //   自分で移り始めるので、 こちらの
                                       //   読み込みと取り合いになっていた。
-                                      unawaited(_stopPlayerForHandover());
+                                      unawaited(_stopPlayerForHandover(
+                                          keepSound: _bgPlayKeeper != null));
                                       setState(() => _playlistIndex++);
                                       unawaited(_navigateTo(
                                           _playlist[_playlistIndex]));
@@ -181858,6 +183272,9 @@ enum _PageAction {
 
   /// ホーム画面 (Android) / デスクトップ (Windows) にこのマップのショートカットを作成
   createShortcut,
+
+  /// このページのファイルの場所を OS のファイル管理で開く (= ユーザー要望)
+  revealInOs,
 }
 
 /// drawer 上部「+」ボタンの追加メニューの選択肢
@@ -182137,7 +183554,7 @@ class _ReorderDropZoneState extends State<_ReorderDropZone> {
         if (box == null) return;
         final localY = box.globalToLocal(details.offset).dy;
         // ★ つまみを消し、 カーソルそのものが来るようになったので、
-        //   掴んだ場所ぶんの下駄 (+24) は要らない。
+        //   掴んだ場所分の下駄 (+24) は要らない。
         final ratio = localY / box.size.height;
         final above = ratio < 0.5;
         if (_insertAbove != above) {
@@ -182410,7 +183827,7 @@ Future<bool> _pageHasPlacedContent(dynamic page) async {
 /// 保存形式は 3 世代ある:
 ///   v3: {notes: [{pages: [...]}, ...]}   ← 現行 (ノート ⊃ ページ)
 ///   v2: {sheets: [...]}                  ← ノートの概念が無い (= ノート 1)
-///   v1: [...]                            ← 1 ページぶんの要素配列
+///   v1: [...]                            ← 1 ページ分の要素配列
 Future<({int notes, int pages})> _paintNotePageCountForPage(
     String pageId) async {
   if (pageId.isEmpty) return (notes: 0, pages: 0);
@@ -182672,14 +184089,29 @@ class _DrawerTile extends StatelessWidget {
         // ★ ページの行だけ maxLines が無く、 長い名前が 2 行に折り返って
         //   いた (= ユーザー報告:「ページ一覧の文字が入り切れていない」)。
         //   ディスクのファイルの行は前から 1 行なので、 そちらに揃える。
-        title: Text(page.name,
-            style: TextStyle(
-              color: isActive ? Colors.white : Colors.white60,
-              fontSize: 13,
-              fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
+        // ★ = ユーザー要望「3 ページ目以降を作成しても Pro 以上でないと
+        //   開けない」。 押してから断られると理由が分からないので、
+        //   鍵の印を名前の後ろに出しておく。
+        title: Row(children: [
+          Flexible(
+            child: Text(page.name,
+                style: TextStyle(
+                  color: isActive ? Colors.white : Colors.white60,
+                  fontSize: 13,
+                  fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis),
+          ),
+          if (provider.isPageLockedByPlan(page.id)) ...[
+            const SizedBox(width: 5),
+            Tooltip(
+              message: provider.t('paywall.pageLockedTip'),
+              child: const Icon(Icons.lock_outline_rounded,
+                  size: 13, color: Color(0xFFFFB347)),
             ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis),
+          ],
+        ]),
         // ★ コンパクト表示 (= ユーザー要望: 更新日や容量が全部に
         //   出ていると表示領域が嵩む)。 名前だけにして 1 行にする。
         subtitle: provider.drawerCompactRows
@@ -185105,7 +186537,7 @@ class _DesktopFloatingMemoState extends State<_DesktopFloatingMemo> {
     final p = widget.provider;
     final screen = MediaQuery.of(context).size;
     // ── 画面からはみ出さない大きさに収める (= ユーザー要望: モバイルで
-    //    フローティングがオーバーフローする)。 縦は下部バーぶんも空ける。 ──
+    //    フローティングがオーバーフローする)。 縦は下部バー分も空ける。 ──
     final maxW = math.max(200.0, screen.width - 16);
     final maxH = math.max(160.0, screen.height - 120);
     final w = _w > maxW ? maxW : _w;
@@ -196066,7 +197498,7 @@ class _AudioAlarm {
   static Uint8List? _cachedBeepWav;
   static Uint8List _getBeepWav() => _cachedBeepWav ??= _generateBeepWav();
 
-  /// 880Hz 矩形波を 250ms ぶん生成して PCM-16bit Mono WAV で返す。
+  /// 880Hz 矩形波を 250ms 分生成して PCM-16bit Mono WAV で返す。
   /// 矩形波を選んだ理由: サイン波より倍音が豊富で「電子音アラーム」っぽく、
   /// 同じ振幅でも聴感上ずっと大きく聞こえる。880Hz はマナー警告音などで
   /// よく使われる、人間の聴覚が敏感な周波数帯。
@@ -196285,7 +197717,7 @@ Uint8List _generateAmbientWav(Map<String, dynamic> args) {
   const double fadeSec = _kAmbientFadeSec;
   final int n = sampleRate * seconds;
   final int fade = (sampleRate * fadeSec).round();
-  // クロスフェード用に fade サンプルぶん余分に作る。
+  // クロスフェード用に fade サンプル分余分に作る。
   final int total = n + fade;
   final rnd = math.Random(seed);
   final buf = Float64List(total);
@@ -200330,6 +201762,13 @@ class _FocusLockOverlay extends StatefulWidget {
   /// ロック中に選ばれた動画を再生する係 (= ユーザー要望: ロック中でも
   /// メモに関係する動画だけは見られるように)。 本体側の再生機能を借りる。
   final void Function(String url)? onPlayVideo;
+
+  /// ページ (マップ) を持たない窓から出しているか。
+  ///
+  /// ★ = ユーザー要望「ショートカットから呼び出す際もページを開かずに」。
+  ///   その時は [onOpenContent] が空回りするので、 ページの中身を開く欄は
+  ///   出さない (押せるのに何も起きない、 を作らない)。
+  final bool pageless;
   const _FocusLockOverlay({
     required this.duration,
     this.taskMode = false,
@@ -200337,6 +201776,7 @@ class _FocusLockOverlay extends StatefulWidget {
     required this.onOpenContent,
     required this.onClose,
     this.onPlayVideo,
+    this.pageless = false,
   });
   @override
   State<_FocusLockOverlay> createState() => _FocusLockOverlayState();
@@ -202089,7 +203529,7 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
   }
 
   Widget _buildLockContentPanel() {
-    if (!widget.provider.focusLockAllowContentAccess) {
+    if (widget.pageless || !widget.provider.focusLockAllowContentAccess) {
       return const SizedBox.shrink();
     }
     final items = _lockContentItems();
@@ -202413,7 +203853,11 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
           // ── メモの内容で YouTube を探す (= ユーザー要望) ──
           //    メモに書いた言葉を含まない動画は再生させないので、
           //    調べもの以外の動画に逃げられない。
-          if (widget.provider.focusLockAllowMemoYoutube) ...[
+          // ★ ページを持たない窓では出さない。 再生を頼む先が無く、
+          //   そのまま外の YouTube アプリへ飛んでしまう = ロックの外へ
+          //   出られてしまう (= 点検で判明)。
+          if (!widget.pageless &&
+              widget.provider.focusLockAllowMemoYoutube) ...[
             const SizedBox(height: 8),
             SizedBox(
               width: double.infinity,
@@ -206549,22 +207993,28 @@ class _BackgroundAudioHandler extends BaseAudioHandler {
   ///  なので無視できる程度)
   void _startWatchdog() {
     _watchdog?.cancel();
-    _watchdog = Timer.periodic(const Duration(milliseconds: 500), (_) {
+    // ★ = ユーザー報告「広告や切り替えで音が途切れ途切れ」。 0.5 秒ごとに
+    //   playbackState を出し直していたので、 audio_service が MediaSession と
+    //   常駐の知らせを 1 秒に 2 回組み直していた。 その作り直しは、 WebView の
+    //   音の受け渡しと同じ糸 (スレッド) の上で起きる。 間隔を空け、
+    //   **変わった時だけ**知らせる。 play() は空振りしても安いので毎回撃つ。
+    _watchdog = Timer.periodic(const Duration(seconds: 4), (_) {
       if (_stoppedExplicitly) return;
       try {
         // 状態判定をせず無条件で play() を呼ぶ。
         // 既に play 中なら no-op。idle 状態なら再開を試みる。
-        // audio_service が Service を維持する判定の鍵になる、player の
-        // 内部状態を play 側に常に押し戻す。
         _player.play().catchError((_) {});
-        // playbackState は常に playing: true で発信し続ける。
-        // audio_service は playbackState を見て Service の生死を決める
-        // ため、これが false に落ちると Foreground Service が停止される。
-        playbackState.add(playbackState.value.copyWith(
-          playing: true,
-          controls: [MediaControl.pause, MediaControl.stop],
-          processingState: AudioProcessingState.ready,
-        ));
+        // audio_service は playbackState を見て Service の生死を決めるので、
+        // playing: true を保つ。 同じ値なら出し直さない。
+        final cur = playbackState.value;
+        if (!cur.playing ||
+            cur.processingState != AudioProcessingState.ready) {
+          playbackState.add(cur.copyWith(
+            playing: true,
+            controls: [MediaControl.pause, MediaControl.stop],
+            processingState: AudioProcessingState.ready,
+          ));
+        }
       } catch (_) {}
     });
   }
@@ -208615,6 +210065,7 @@ void Function()? openAssistantFromFloating;
 /// として開く。
 void Function(String url, {bool newTab})? openUrlInAppFromAnywhere;
 
+
 /// ページの一覧を出す入口 (本体の画面が起動時に差し込む)。
 ///
 /// = ユーザー要望「txt やマークダウンのページ / ファイルを開いた状態でも、
@@ -208649,6 +210100,21 @@ Future<bool> handlePageListShortcut(KeyEvent event) async {
 
 /// 設定の画面を出す入口 (同上)。
 void Function(BuildContext ctx)? openSettingsFromAnywhere;
+
+/// 本体の帯 (ページ名の行 + 自分で並べたボタンの帯) を隠す / 出す入口。
+///
+/// ★ = ユーザー要望「マークダウン等でヘッダーの非表示状態にしたら Zen
+///   モードの様にタスクバーやページ名の行まで非表示にできるように」。
+/// マークダウン / フリーノート / テキストの編集画面は自分のヘッダーしか
+/// 触れないので、 本体の帯は本体に消してもらう。 ページ一覧や設定と同じ
+/// 作法で、 _MindMapScreenState.initState が入れ、 dispose で外す。
+///
+/// [owner] 言い出した画面 (State をそのまま渡す)。 分割で 2 枚開いた時に
+///   片方を閉じただけで帯が戻らないよう、 本体は「隠したがっている画面」 を
+///   集合で持つ。
+/// [hide] true = 隠す。 編集画面を閉じる時は必ず false で戻す事
+///   (帯の無いマップに取り残されないようにする)。
+void Function(Object owner, bool hide)? setAppChromeHiddenFromAnywhere;
 
 /// テキストの編集画面 (txt / json / マークダウン …) からターミナルを開く入口。
 ///
@@ -213076,7 +214542,7 @@ try {
   /// 旧実装はデルタを 80px 溜めるごとに `previousPage / nextPage` を叩いて
   /// いたため、 「カーソルを少し動かしただけでページが飛んでしまう」 という
   /// 指摘があった (= ユーザー要望)。 continuous モードでは scrollOffset を直接
-  /// ずらせるので、 _onPdfKeyEvent の ↑/↓ と同じ 1/N ページぶん
+  /// ずらせるので、 _onPdfKeyEvent の ↑/↓ と同じ 1/N ページ分
   /// (N = pdfArrowStepDivisor) だけ jumpTo して、 ホイールも「上下キー入力と
   /// 同程度」 の細かさでスクロールするようにする。
   /// (PDF が開かれていないときや非 PDF モードでは何もしない)
@@ -213084,7 +214550,7 @@ try {
     if (event is! PointerScrollEvent) return;
     if (_pdfViewerCtrl == null || _pdfTotalPages <= 0) return;
     _wheelAccum += event.scrollDelta.dy;
-    // この量デルタが溜まるごとに「上下キー 1 回ぶん」 のステップを 1 つ送る。
+    // この量デルタが溜まるごとに「上下キー 1 回分」 のステップを 1 つ送る。
     const double notch = 80.0;
     if (_wheelAccum.abs() < notch) return;
     final notches = (_wheelAccum / notch).truncate(); // 符号付きノッチ数
@@ -226021,7 +227487,7 @@ class _SplitWindowsWebViewState extends State<_SplitWindowsWebView> {
 /// セルの中身は今までどおり文字列のまま持ち、 見た目 (見出しの塗り / 縞 /
 /// 罫線) だけをこの範囲情報として重ねる。 保存時は excel の CellStyle に
 /// 変換して書き出すので、 本家 Excel で開いても同じ見た目になる。
-/// xlsx のセル 1 つぶんの飾り (= ユーザー要望: 背景色・文字色・文字の
+/// xlsx のセル 1 つ分の飾り (= ユーザー要望: 背景色・文字色・文字の
 /// 大きさ・アンダーライン・太文字・斜体)。
 ///
 /// null / false は「指定なし」。 指定なしの所は今までどおりの見た目で描き、
@@ -226637,12 +228103,12 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
 
   static const double _cellWidth = 120.0;
 
-  /// 行の高さの基準 (1 行ぶん)。
+  /// 行の高さの基準 (1 行分)。
   static const double _cellHeightBase = 32.0;
 
   /// このシートで一番多い「セル内の行数」 (1〜3)。
   /// = ユーザー報告: 「xlsx を読み込んだ時にセルの改行が反映されていない」。
-  /// 折り返す指定のセルに改行が入っていたら、 そのぶん行を高くして中身が
+  /// 折り返す指定のセルに改行が入っていたら、 その分行を高くして中身が
   /// 全部見えるようにする。
   ///
   /// ★ かつては「行ごとにバラバラの高さにはしない」 決まりだった。 図形・
@@ -229827,7 +231293,7 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
 
   // ── xlsx の寸法の単位 ────────────────────────────────────────────
   //
-  // 列の幅は「標準の書体で数字 0 が何文字ぶん入るか」 という妙な単位。
+  // 列の幅は「標準の書体で数字 0 が何文字分入るか」 という妙な単位。
   // 既定の Calibri 11pt では 1 文字 ≒ 7px、 それに左右の余白 5px が付く。
   //   px = width * 7 + 5   /   width = (px - 5) / 7
   // 行の高さはポイント (1pt = 1/72 インチ)。 画面は 96dpi なので
@@ -230615,7 +232081,7 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
       map[k] = f;
       _markFmtDirty(r, c);
     }
-    // 打ち込んでいる中身の行数ぶんまで、 行を高くする。
+    // 打ち込んでいる中身の行数分まで、 行を高くする。
     final lines = ('\n'.allMatches(body).length + 1).clamp(1, 12);
     _growRowForWrap(r, _cellHeightBase * lines + 6);
     setState(() => _dirty = true);
@@ -231571,7 +233037,7 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
     final cols = _colCount.clamp(1, 1 << 30);
     _rows.insert(at, List.filled(cols, '', growable: true));
     // ★ 行ごとの高さの番号も一緒にずらす (= ユーザー要望で足した機能)。
-    //   ずらさないと、 行を挿した所から下の高さが 1 行ぶん食い違う。
+    //   ずらさないと、 行を挿した所から下の高さが 1 行分食い違う。
     _shiftSizeKeys(_sheetRowH[_activeSheet], at, 1);
     _invalidateGridMetrics();
     _invalidateFormulaCache();
@@ -233409,7 +234875,7 @@ $csvText
             onTap: () {
               final v = !cur.wrap;
               _applyFmtToSelection((f) => f.wrap = v);
-              // 折り返しを入れた行は、 中身の行数ぶんまで高くする。
+              // 折り返しを入れた行は、 中身の行数分まで高くする。
               // 外した時は「折り返しのために自動で伸ばした行」 だけ戻す
               // (= 点検で判明: 手で掴んで決めた高さや xlsx から読んだ高さまで
               //  捨てていた)。
@@ -234842,7 +236308,7 @@ $csvText
             }
             while (sh.dx < 0 && sh.col > 0) {
               // ★ 先に移ってから、 移った先の列の幅を足す
-              //   (順序を逆にすると 1 列ぶん幅を取り違える)。
+              //   (順序を逆にすると 1 列分幅を取り違える)。
               sh.col--;
               sh.dx += _colW(sh.col);
             }
@@ -235965,7 +237431,7 @@ $csvText
           // 左クリック: 1 列追加 (= 既存挙動)
           // 右クリック / 長押し: 「N 列追加」 ダイアログ
           // ★ 固定の帯 (maxCols 指定) では出さない。 出すと行の幅が
-          //   _freezeBandW を 1 セルぶん超えてはみ出す (= 点検で判明)。
+          //   _freezeBandW を 1 セル分超えてはみ出す (= 点検で判明)。
           if (maxCols == null)
           GestureDetector(
             onSecondaryTap: () => _showBulkInsertDialog(isRow: false),
@@ -236690,7 +238156,7 @@ class _SsDataCell extends StatelessWidget {
                 // ★ 折り返す指定のセルは 1 行で切らない (= ユーザー報告:
                 //   xlsx のセルの改行が反映されていない)。 改行の文字は前から
                 //   読めていたのに、 ここで 1 行に潰して … にしていた。
-                //   高さは行の高さぶんしか無いので、 入り切らない分は今まで
+                //   高さは行の高さ分しか無いので、 入り切らない分は今まで
                 //   どおり … で切る (= 表が崩れないように)。
                 maxLines: (fmt?.wrap ?? false) ? null : 1,
                 softWrap: fmt?.wrap ?? false,
@@ -246328,7 +247794,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog>
     }
     // ── 自由配置の文字 (= ユーザー要望: 型に囚われない資料を作りたい) ──
     //    layout:"free" では題名も箇条書きも自動では置かない。 ここで
-    //    書かれたぶんだけを、 言われた場所へ置く。
+    //    書かれた分だけを、 言われた場所へ置く。
     final freeTexts = sp['texts'];
     if (freeTexts is List) {
       for (final t in freeTexts) {
@@ -254840,7 +256306,7 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
   //   作りで、 なぞり選択の行あたり判定 (_lineAtGlobal) も、 Markdown の
   //   プレビューとの行合わせも、 その前提で割り算している。 ところが閲覧側の
   //   Text だけが既定で折り返していたため、
-  //     ・長い行は 2 行ぶんの高さになる → クリックして編集に移ると
+  //     ・長い行は 2 行分の高さになる → クリックして編集に移ると
   //       TextField は 1 行なので高さが戻り、 下の行が跳ねる
   //     ・行の高さが揃わないので、 なぞった位置と選ばれる行がずれる
   //   の 2 つが起きていた。 **折り返さない**ことで元の前提に戻し、 長い行は
@@ -254864,7 +256330,7 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
     return _monoCharWCache = (w <= 0 ? _fontSize * 0.6 : w);
   }
 
-  /// 見た目の桁数 (全角は 2 桁ぶん)。 横へどこまで送れるかを決めるのに使う。
+  /// 見た目の桁数 (全角は 2 桁分)。 横へどこまで送れるかを決めるのに使う。
   static int _displayCols(String s) {
     var n = 0;
     for (final r in s.runes) {
@@ -255043,6 +256509,57 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
 
   /// 閲覧行のタップ位置 (クリックした場所にカーソルを置くため)。
   Offset? _lineTapPos;
+
+  // ─── 下の端末 (= ユーザー要望「txt ファイル等で開かれるターミナルは
+  //     vscode の様に画面下部に開かれるようにして欲しい」) ───
+  //
+  //     ★ 走らせている物はこの画面が持つ。 帯を畳んでも止めないので、
+  //       もう一度押せば同じ端末に戻れる (止まるのは ごみ箱 を押した時と、
+  //       この画面を閉じた時だけ)。
+  //     ★ 本体の「開き方」 の設定 (openTerminal) はここには関係しない。
+  //       あちら (ヘッダー / カスタムボタン / ショートカット) は今までどおり
+  //       全画面 / 浮遊窓 / 分割から選べる。
+  AgentCliSession? _bottomTerm;
+  bool _bottomTermOpen = false;
+  double _bottomTermH = _EditorTerminalBand.kDefaultH;
+
+  /// 下の帯に端末を出す / 畳む。
+  Future<void> _toggleBottomTerminal() async {
+    if (!AgentCli.supported) return;
+    if (_bottomTermOpen) {
+      setState(() => _bottomTermOpen = false);
+      return;
+    }
+    // 生きている殻があればそれを覗き直す (押すたびに殻を増やさない)。
+    final s = _bottomTerm;
+    if (s != null && AgentCliRunner.active.contains(s)) {
+      setState(() => _bottomTermOpen = true);
+      return;
+    }
+    final provider = context.read<MindMapProvider>();
+    final f = _currentFilePath.trim();
+    var dir = f.isEmpty ? '' : File(f).parent.path;
+    if (dir.isEmpty || !Directory(dir).existsSync()) {
+      dir = await terminalBaseDir(provider);
+    }
+    if (!mounted) return;
+    final ns = AgentCliRunner.begin(buildShellSession(provider, dir));
+    setState(() {
+      _bottomTerm = ns;
+      _bottomTermOpen = true;
+    });
+  }
+
+  /// 下の帯の端末を終わらせて畳む。
+  void _endBottomTerminal() {
+    try {
+      _bottomTerm?.kill();
+    } catch (_) {}
+    setState(() {
+      _bottomTerm = null;
+      _bottomTermOpen = false;
+    });
+  }
 
   // ─── 左右パネル (= ユーザー要望: PDF ビューアと同じメモ欄 / AI 欄) ───
   bool _memoPanelOpen = false;
@@ -256262,8 +257779,16 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
     _unregisterPaneCloseGuard(widget.paneGuardKey, this);
     final b = _mcpBinding;
     if (b != null) _providerRef?.mcpUnbindTextFile(b);
+    // ── 閉じる時は本体の帯を必ず戻す (= 帯の無い画面に取り残されない) ──
+    setAppChromeHiddenFromAnywhere?.call(this, false);
     // なぞり選択の自動スクロールを必ず止める。
     _stopDragScroll();
+    // ── 下の帯に出していた端末を終わらせる (= この画面だけの物なので、
+    //    閉じたら残さない。 畳んだだけでは止めない) ──
+    try {
+      _bottomTerm?.kill();
+    } catch (_) {}
+    _bottomTerm = null;
     _editCtrl.dispose();
     _editFocus.dispose();
     _keyFocus.dispose();
@@ -256857,7 +258382,7 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
   ///
   /// = ユーザー要望「カーソルが画面外に出た時の追跡が遅く鈍いので、 敏感に
   ///   素早く反応するように」。 入力欄まかせの追従はアニメーション付きで
-  ///   一拍遅れるため、 時間 0 で引き戻し、 さらに 1 行半ぶんの余白を足して
+  ///   一拍遅れるため、 時間 0 で引き戻し、 さらに 1 行半分の余白を足して
   ///   画面の縁に貼り付かないようにする。
   void _ensureLineVisible(int idx, {bool downward = true}) {
     if (!_scroll.hasClients) return;
@@ -256867,7 +258392,7 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
     final ctx = _curLineKey.currentContext;
     if (ctx != null) {
       // 実物の位置から求めるのが正確 (行の高さは _lineHeight で揃っているが、
-      // 余白や枠のぶんがあるので実測に任せる)。
+      // 余白や枠の分があるので実測に任せる)。
       final before = pos.pixels;
       // ★ 横の送りは動かさない (= 折り返しをやめて横スクロールを足したので、
       //   ensureVisible が横まで動かしてしまう。 行は一番長い行の幅を持つ
@@ -256916,7 +258441,7 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
   ///   控えを積むと、 2 秒スクロールしただけで取り消しの履歴 (100 件) が
   ///   全部それで埋まり、 Ctrl+Z が効かなくなる。
   /// [fromStaleIndex] を true にすると、 [idx] を**画面を組んだ時の行番号**と
-  /// 見なして、 その後の確定で増えた行のぶんだけ付け直す。 行をクリックした
+  /// 見なして、 その後の確定で増えた行の分だけ付け直す。 行をクリックした
   /// 時だけ渡す (= 押した番号は組んだ時の物なので、 入力欄の onTapOutside が
   /// 先に走って行が割り付けられると 1 つ上の行が開く。 _commitSplitAt の覚書)。
   void _beginEditLine(int idx,
@@ -257014,7 +258539,7 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
           _lines.replaceRange(idx, idx + 1, parts);
           _commitSplitAt = idx;
           _commitSplitAdded = parts.length - 1;
-          // 行がずれたぶん、 まとめ選択の位置も付け直す。
+          // 行がずれた分、 まとめ選択の位置も付け直す。
           final a = _selAnchorLine;
           if (a != null && a > idx) _selAnchorLine = a + _commitSplitAdded;
           final f = _selFocusLine;
@@ -257915,7 +259440,20 @@ $currentText
             // ── ヘッダーのボタン列は隠せる (= ユーザー要望: ヘッダー自体は
             //    残し、 ボタンだけ隠す。 カーソルを乗せると表示ボタンが出る)。
             _buildHeader(dark, fg),
+            // ── 本文と、 その下の端末の帯 (= ユーザー要望: VSCode のように
+            //    画面下部に出す)。 帯の高さは**この場の残り**で抑える
+            //    (窓の高さで決め打ちにすると、 分割パネルの様な狭い所で
+            //    本文が 0px まで潰れて溢れる)。 ──
             Expanded(
+              child: LayoutBuilder(builder: (_, room) {
+                final bandH = (_bottomTermOpen && _bottomTerm != null)
+                    ? _bottomTermH.clamp(
+                        _EditorTerminalBand.kMinH,
+                        math.max(_EditorTerminalBand.kMinH,
+                            room.maxHeight - 120))
+                    : 0.0;
+                return Column(children: [
+                  Expanded(
               child: LayoutBuilder(builder: (_, cons) {
                 // ── 欄を閉じても本文はその場所まで広がらない
                 //    (= ユーザー要望: 左右に目いっぱい広がると反って
@@ -257979,6 +259517,20 @@ $currentText
                   ],
                 );
               }),
+                  ),
+                  if (bandH > 0)
+                    _EditorTerminalBand(
+                      provider: context.read<MindMapProvider>(),
+                      session: _bottomTerm!,
+                      height: bandH,
+                      onHeightDelta: (dy) => setState(() => _bottomTermH =
+                          (_bottomTermH - dy).clamp(_EditorTerminalBand.kMinH,
+                              _EditorTerminalBand.kMaxH)),
+                      onHide: () => setState(() => _bottomTermOpen = false),
+                      onEnd: _endBottomTerminal,
+                    ),
+                ]);
+              }),
             ),
             _buildStatusBar(dark, fg),
           ],
@@ -257992,7 +259544,21 @@ $currentText
   /// (= ユーザー要望: カーソルを持ってきたら表示ボタンが出る)。
   bool _headerBtnHover = false;
 
+  /// 本体へ「帯を隠して」 と伝えた時の値 (マークダウンと同じ作り)。
+  bool? _zenTold;
+
   Widget _buildHeader(bool dark, Color fg) {
+    // ── Zen モード: ヘッダーを隠している間は、 本体の帯 (ページ名の行 +
+    //    自分で並べたボタンの帯) まで隠す (= ユーザー要望)。 分割ペインや
+    //    マップ分割のセルに埋め込んで開いている時は本体の帯が見えているので、
+    //    そこが消える。 全画面で開いている時は元々見えていないので見た目は
+    //    変わらない (閉じる時に必ず戻す)。
+    //    ★ _headerVisible を書く所が 4 か所あるので、 読む側 (= build から
+    //      必ず通る ここ) 1 か所に寄せる。 ──
+    if (_zenTold != !_headerVisible) {
+      _zenTold = !_headerVisible;
+      setAppChromeHiddenFromAnywhere?.call(this, !_headerVisible);
+    }
     // ── ヘッダーを隠している時はファイル名ごと全て隠し、 細いバーだけ残す
     //    (= ユーザー要望: ヘッダーを隠すを押したらファイル名の所まで
     //    隠れるように)。 ホバー / タップで元に戻す。 ──
@@ -258381,18 +259947,20 @@ $currentText
           //    重ねて開くので本体の State に手が届かず、 本体が預けた入口
           //    (openTerminalFromAnywhere) を呼ぶ。
           //    子プロセスを起こせない所 (スマホ / ストア版) では出さない。
-          if (AgentCli.supported && openTerminalFromAnywhere != null)
+          // ★ = ユーザー要望「txt ファイル等で開かれるターミナルは vscode の
+          //   様に画面下部に開かれるようにして欲しい」。 本体へ丸投げ
+          //   (openTerminalFromAnywhere → AI アシスタントのタブ) するのを
+          //   やめ、 **この画面の下の帯**を入り切りする。 丸投げだと本体の
+          //   「開き方」 に従うので、 分割を選んでいると本体のキャンバスの
+          //   下半分に出て、 この画面の裏に隠れていた。
+          if (AgentCli.supported)
             IconButton(
               tooltip: context.read<MindMapProvider>().t('cli.terminalHere'),
-              icon: const Icon(Icons.terminal_rounded,
-                  color: Color(0xFF9CCC65)),
-              onPressed: () {
-                final open = openTerminalFromAnywhere;
-                if (open == null) return;
-                final f = _currentFilePath.trim();
-                unawaited(
-                    open(baseDir: f.isEmpty ? null : File(f).parent.path));
-              },
+              icon: Icon(Icons.terminal_rounded,
+                  color: _bottomTermOpen
+                      ? const Color(0xFFFFB347)
+                      : const Color(0xFF9CCC65)),
+              onPressed: () => unawaited(_toggleBottomTerminal()),
             ),
           // ── 共同編集 (= ユーザー要望: Max 限定でファイルを共同編集) ──
           _buildFileLiveMenu(
@@ -259504,8 +261072,9 @@ $currentText
           ),
           // ★ PC 内 AI の中のモデルもここで選べるように (= ユーザー要望)。
           if (provider.useCliAi)
-            for (final c in AgentCli.modelChoices(
-                AgentCli.lastPickKind ?? AgentCliKind.claude))
+            // ★ いま使う相手の候補を出す (= ユーザー報告: 相手が違うのに
+            //   別の CLI のモデル名が並んでいた)。
+            for (final c in AgentCli.modelChoices(provider.cliAiKindEnum))
               PopupMenuItem<String>(
                 value: 'climodel:${c.id}',
                 child: Padding(
@@ -260250,7 +261819,7 @@ $currentText
                     return KeyEventResult.handled;
                   }
                   // ★ = ユーザー要望「Ctrl+A でテキストエリアの全選択」。
-                  //   1 行ぶんではなく本文ぜんぶを選ぶ。
+                  //   1 行分ではなく本文ぜんぶを選ぶ。
                   if (isCtrl && event.logicalKey == LogicalKeyboardKey.keyA) {
                     _selectAllLines();
                     return KeyEventResult.handled;
@@ -260364,7 +261933,7 @@ $currentText
               //   中だけ折り返り、 クリックした所と違う文字へカーソルが
               //   飛んでいた。
               //   代わりに **minWidth は渡す**。 中央揃え / 右揃えの時は
-              //   この幅の中で文字が寄るので、 渡さないと寄せたぶんだけ
+              //   この幅の中で文字が寄るので、 渡さないと寄せた分だけ
               //   クリック位置と文字位置がずれ、 とんでもない所へカーソルが
               //   飛んで表示まで動いていた (= ユーザー報告)。
             )..layout(minWidth: textW);
@@ -264023,7 +265592,7 @@ class _OfficeFileTemplate {
         : slides;
     final n = list.length;
 
-    // スライドの枚数ぶん、 目録・関連付け・本体を作る。
+    // スライドの枚数分、 目録・関連付け・本体を作る。
     final slideOverrides = StringBuffer();
     final sldIds = StringBuffer();
     final presRels = StringBuffer();
@@ -278500,7 +280069,7 @@ class _AiModelReasoningRowState extends State<_AiModelReasoningRow> {
           const SizedBox(width: 6),
           Text(
             '${label(provider.relayModel)}'
-            ' ・ ${provider.t('mcp.reasoning.${provider.relayReasoning}')}',
+            ' ・ ${provider.relayReasoning}',
             style: TextStyle(fontSize: 12, color: fg),
           ),
           const SizedBox(width: 4),
@@ -278846,7 +280415,7 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
   ///
   /// ★ = ユーザー要望「左右分割しても横幅が一定の大きさにならないと両方
   ///   出てこないなら、 その最低限の大きさまで自動で拡大されるように」。
-  ///   全画面にするのは止めた代わりに、 **足りないぶんだけ**広げる。
+  ///   全画面にするのは止めた代わりに、 **足りない分だけ**広げる。
   ///   画面からはみ出さないよう、 右端で止めて位置も戻す。
   void ensureWidthAtLeast(double want) {
     if (!mounted || _w >= want) return;
@@ -279057,7 +280626,7 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
         // 角の四角を残して、 その内側だけを上の縁にする。
         left: topCorners ? corner : 28,
         // ★ ふつうの帯は右側にボタン (全画面 / ピン / 閉じる) が並ぶので
-        //   大きく空ける。 つまみを出さない窓は角のぶんだけでよい。
+        //   大きく空ける。 つまみを出さない窓は角の分だけでよい。
         right: topCorners ? corner : 150,
         height: _topGrab,
         cursor: SystemMouseCursors.resizeUpDown,
@@ -279216,7 +280785,7 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
   ///
   /// ★ 中身は作り直さない。 場所と大きさを変えるだけなので、 走らせている
   ///   CLI の端末も、 そこまでのログも、 打ちかけの文字も、 左右に結合した
-  ///   タブもそのまま残る (幅が変わるぶん、 CLI は画面を折り返し直す)。
+  ///   タブもそのまま残る (幅が変わる分、 CLI は画面を折り返し直す)。
   /// ★ 広げた大きさは覚えない (`_scheduleSaveGeometry` を呼ばない)。 覚えると
   ///   次に開いた時も画面いっぱいで立ち上がってしまう — 畳んだ時と同じ扱い。
   void setMaximized(bool v) {
@@ -279680,7 +281249,7 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
               //   上の帯そのものを出さない (= ユーザー報告: 画面の上部に
               //   謎の余白がある)。 その窓の見出しの帯が既に
               //   `dragWindowBy` で窓を動かすので、 ここに敷く物は無く、
-              //   高さぶんの空白だけが残っていた。
+              //   高さ分の空白だけが残っていた。
               if (widget.slimChrome)
                 const SizedBox.shrink()
               else if (_hideHeader)
@@ -280531,7 +282100,7 @@ class _McpChatSession extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 1 回ぶんのやり取りを回す。 画面が閉じても走り続ける。
+  /// 1 回分のやり取りを回す。 画面が閉じても走り続ける。
   Future<void> run({
     required String shown,
     required String raw,
@@ -280540,10 +282109,8 @@ class _McpChatSession extends ChangeNotifier {
     if (_busy || _provider == null) return;
     _busy = true;
     _cancel = false;
-    // ページ削除の歯止めは「ひと続きの作業」 単位で掛ける。 新しい指示が
-    // 来た = 利用者が改めて頼んだという事なので、 ここで外す
-    // (消し過ぎを止めた後、 利用者が「はい消して」 と答えた時に続けられる)。
-    provider.mcpResetDeleteBrake();
+    // ★ = ユーザー要望「90 秒で 2 ページまでという制限はやめて上限を撤廃」。
+    //   以前はここでページ削除の歯止めを外していたが、 歯止め自体を撤廃した。
     var stopped = false;
     step = 0;
     _emptyNudges = 0;
@@ -280878,8 +282445,10 @@ class _McpChatSession extends ChangeNotifier {
         'pageId や nodeId は list_pages / read_page が返した物だけを使い、 '
         'それらしい id を自分で組み立てないでください。\n'
         '★ 消す・入れ替える範囲は頼まれた分だけにしてください。 '
-        '1 枚と言われたら 1 枚です。 delete_page が失敗しても別の id で '
-        '試し直したり、 一覧を順に消していったりしないでください。\n'
+        '1 枚と言われたら 1 枚です。 逆に、 何枚でも消して構いません。 '
+        '枚数の上限はないので、 複数枚・まとめて・全部と頼まれたら、 '
+        '途中で確認を挟まずその場で全部消してください。 '
+        'ただし delete_page が失敗した時に別の id で試し直すのは駄目です。\n'
         // ── 確認の要る / 要らないの線引き (= 過剰な確認も、 勝手な削除も
         //    どちらも困る) ──
         '★ 対象が 1 つに決まる頼まれ方 (「『メモ2』消して」 等) なら、 '
@@ -281140,6 +282709,8 @@ class _McpChatSession extends ChangeNotifier {
         return provider.t('mcp.actSelectTab');
       case 'rename_paint_item':
         return provider.t('mcp.actRenameTab');
+      case 'delete_paint_item':
+        return provider.t('mcp.actDeleteTab');
       case 'append_document_text':
         return provider.t('mcp.actDocText');
       case 'write_markdown':
@@ -281290,8 +282861,18 @@ class _McpChatDialogState extends State<_McpChatDialog>
   /// 書き込み口へ焦点を戻す。
   /// 他所で文字を打っている最中なら横取りしない (= CLI の端末や、
   /// 要素の名前を直している時に奪わないため)。
+  /// この時刻までは、 書き込み口へ焦点を返さない。
+  ///
+  /// ★ = ユーザー報告「AI と shell を画面分割した時に shell 側がアクティブに
+  ///   切り替わらない」。 欄ぜんたいを包む [Listener] が「どこを押しても
+  ///   書き込み口へ焦点を戻す」 ので、 右の端末を押しても次の描画で会話の
+  ///   欄へ引き戻されていた。 端末の枠を押した時だけ、 少しの間その働きを
+  ///   止める。
+  DateTime _noRefocusUntil = DateTime.fromMillisecondsSinceEpoch(0);
+
   void _refocusPrompt() {
     if (!mounted || !_promptVisible) return;
+    if (DateTime.now().isBefore(_noRefocusUntil)) return;
     if (_promptFocus.hasPrimaryFocus) return;
     final ctx = FocusManager.instance.primaryFocus?.context;
     if (ctx != null && ctx.widget is EditableText) return;
@@ -281410,7 +282991,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
   ///   中央に寄せた上で左揃えにして欲しい」。 **文字を中央揃えにはしない**。
   ///   段ごと真ん中へ寄せて、 中の文字は今までどおり左から並べる。
   /// ★ 1100 にした理由: 端末は Consolas 12px (1 文字およそ 6.6px) なので
-  ///   およそ 165 桁ぶん。 CLI の画面作りが前提にしている 80〜120 桁より
+  ///   およそ 165 桁分。 CLI の画面作りが前提にしている 80〜120 桁より
   ///   広いので、 枠が切れたり畳まれたりしない。 左右分割の下限 (360px/枚)
   ///   も、 普段のダイアログ (560px) も大きく上回るので、 全画面にした
   ///   甲斐は残る。
@@ -281441,7 +283022,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
   /// 全画面と元の大きさを行き来する。
   ///
   /// ★ 走っている CLI は止めない。 入れ物の大きさを変えるだけなので、
-  ///   端末もログもそのまま残る (幅が変わるぶん、 CLI は画面を折り返し
+  ///   端末もログもそのまま残る (幅が変わる分、 CLI は画面を折り返し
   ///   直す)。
   void _toggleFullscreen() {
     final win = context.findAncestorStateOfType<_FloatingPanelWindowState>();
@@ -281557,7 +283138,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
   //  ★ 走らせている物を**止めは**しない。 ただし幅は別で、 ペインを細く
   //    すると擬似端末の桁数がその場で変わる (agent_cli_session.dart の
   //    `terminal.onResize` → `pty.resize`)。 CLI は画面を折り返し直すので、
-  //    1 枚ぶんの幅には下限を設けてある (下の minPane)。
+  //    1 枚分の幅には下限を設けてある (下の minPane)。
   //  ★ **static にしてはいけない**。 `_McpChatDialogState` は 1 つではなく、
   //    アシスタントは「浮遊窓 / ダイアログ」 と「アプリ自身の左右分割セル」
   //    (`paneMode: true`) の両方で同時に開ける。 static にすると、 片方で
@@ -281636,7 +283217,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
     return sp;
   }
 
-  /// タブ 1 枚ぶんの端末 (左右どちらの側でも同じ作りにする)。
+  /// タブ 1 枚分の端末 (左右どちらの側でも同じ作りにする)。
   Widget _buildCliTerminal(MindMapProvider provider, AgentCliSession s) =>
       AgentTerminal(
         session: s,
@@ -281708,6 +283289,8 @@ class _McpChatDialogState extends State<_McpChatDialog>
       // 札の並びを画面の左右に合わせる (= ユーザー要望)。
       final left = _lastCliSession;
       if (left != null) _orderTabsForSplit(left, s);
+      // ★ 念のため、 並び順と左右が食い違っていたらそろえる。
+      _normaliseSplitOrder(provider);
     });
     // 並べた直後は、 後から出した側に打てるようにする。
     _focusCliPane(s);
@@ -281821,6 +283404,32 @@ class _McpChatDialogState extends State<_McpChatDialog>
   ///   返してしまうと、 会話から端末へ戻る道がタブから無くなる
   ///   (= ユーザー報告: AI アシスタントの画面からタブ切り替えで CLI に
   ///   切り替えられない)。 端末を出していない時は必ず出し直す。
+  /// 並べている 2 枚を、 **札の並び順**と同じ左右にそろえる。
+  ///
+  /// ★ = ユーザー要望「画面分割した状態で右のタブを開くと左に操作パネルが
+  ///   来るのは混乱する。 最初の段階で左側にある札は左側に、 右側にある札は
+  ///   右側に置いて、 順番を入れ替えた時以外は変わらないように」。
+  ///   これまでは「打ち込んでいた側」 を差し替えていたので、 右の札を
+  ///   押したのに左へ入る事があった。 差し替えた後にここで整える。
+  void _normaliseSplitOrder(MindMapProvider provider) {
+    final left = _lastCliSession;
+    final right = _splitCliSession;
+    if (left == null || right == null) return;
+    final order = _orderedTabs(provider);
+    final li = order.indexWhere((e) => identical(e, left));
+    final ri = order.indexWhere((e) => identical(e, right));
+    if (li < 0 || ri < 0 || li <= ri) return;
+    // 逆さになっているので入れ替える (中身の作り直しはしない)。
+    final leftTerm = _inlineTerminal;
+    final rightTerm = _splitTerminal;
+    _lastCliSession = right;
+    _splitCliSession = left;
+    _inlineTerminal = rightTerm;
+    _splitTerminal = leftTerm;
+    // 打ち込み先の印も一緒に移す (見ている側が変わらないように)。
+    _splitFocusPane = _splitFocusPane == 0 ? 1 : 0;
+  }
+
   void _onCliTabTap(MindMapProvider provider, AgentCliSession s) {
     if (_inlineTerminal != null && identical(s, _lastCliSession)) {
       _focusCliPane(s);
@@ -281874,12 +283483,16 @@ class _McpChatDialogState extends State<_McpChatDialog>
         setState(() {
           _splitCliSession = s;
           _splitTerminal = _buildCliTerminal(provider, s);
+          // 札の並びと左右をそろえる (= ユーザー要望)。
+          _normaliseSplitOrder(provider);
         });
         _focusCliPane(s);
         return;
       }
       // 左を差し替える (右はそのまま)。
       _showRunningCliTerminal(provider, s);
+      // 札の並びと左右をそろえる (= ユーザー要望)。
+      if (mounted) setState(() => _normaliseSplitOrder(provider));
       _focusCliPane(s);
       return;
     }
@@ -281908,7 +283521,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
       //   部品が幅から桁数を出して [Terminal] を直し、 それが擬似端末へ
       //   そのまま渡る (agent_cli_session.dart の `pty.resize`)。 CLI は
       //   画面まるごとを細く折り返し直すので、 **広げても元には戻らない**。
-      //   なので 1 枚ぶんの幅は画素で下限を決める (割合で決めると、 狭い
+      //   なので 1 枚分の幅は画素で下限を決める (割合で決めると、 狭い
       //   欄では 10 桁ほどまで潰れて、 遡れる出力まで壊れる)。
       const minPane = 360.0;
       final split =
@@ -281922,7 +283535,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
             children: [Expanded(child: left)]);
       }
       // ★ = ユーザー要望「3 画面や 4 画面にできるように」。 3 枚目からは
-      //   入る幅のぶんだけ並べる (足りない枚数は並べない = 狭い所で全部が
+      //   入る幅の分だけ並べる (足りない枚数は並べない = 狭い所で全部が
       //   潰れるのを防ぐ)。 取り分は等分にする (掴んで変えられるのは
       //   2 枚の時だけ。 3 枚以上で比を持ち回ると、 どの境目を掴んだのかが
       //   決められない)。
@@ -281930,7 +283543,8 @@ class _McpChatDialogState extends State<_McpChatDialog>
       for (final e in _extraCliSessions) {
         final n = 2 + extras.length + 1;
         if (w < minPane * n + 8 * (n - 1)) break;
-        extras.add(_extraCliTerminals[e] ?? _buildCliTerminal(provider, e));
+        extras.add(_extraCliTerminals.putIfAbsent(
+                              e, () => _buildCliTerminal(provider, e)));
       }
       if (extras.isNotEmpty) {
         final panes = <Widget>[left, _splitTerminal!, ...extras];
@@ -281963,7 +283577,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
   ///
   /// ★ = ユーザー要望「横幅が一定の大きさにならないと両方出てこないなら、
   ///   その最低限の大きさまで自動で拡大されるように」。 全画面にはしない
-  ///   (それは別のご要望で止めた)。 足りないぶんだけ広げる。
+  ///   (それは別のご要望で止めた)。 足りない分だけ広げる。
   /// ★ 浮かせた窓は窓自身を広げる。 普段のダイアログは幅の上限が決まって
   ///   いて広げる口が無いので、 その時だけ全画面にする (= 並ばないよりは
   ///   よい)。 分割ペインの中は入れ物が大きさを持つので触らない。
@@ -281974,7 +283588,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
   ///   **会話と並べる時の数** (330+300) で決め打ちしていたのが原因。
   ///   端末どうしは 1 枚 360 必要 ( :282571 の minPane) なので、 642 まで
   ///   広げても 728 に届かず、 広げたのに並ばないという形になっていた。
-  /// [paneCount] を渡すと、 その枚数ぶん (端末の下限 360 × 枚数) を確かめる
+  /// [paneCount] を渡すと、 その枚数分 (端末の下限 360 × 枚数) を確かめる
   /// (= ユーザー要望: 3 画面 / 4 画面)。
   void _ensureSplitWidth({bool cliPair = false, int paneCount = 0}) {
     if (widget.paneMode) return;
@@ -282034,8 +283648,16 @@ class _McpChatDialogState extends State<_McpChatDialog>
           final panes = _splitPaneSessions();
           final pick = index < panes.length ? panes[index] : null;
           if (pick != null) {
+            // ★ = ユーザー報告「shell 側がアクティブに切り替わらない」。
+            //   会話の書き込み口が焦点を抱えたままだと、 端末は打ち込みを
+            //   受け取れない。 手放させたうえで、 欄ぜんたいの受け口が
+            //   焦点を返しに来るのも少しの間止める。
+            _noRefocusUntil =
+                DateTime.now().add(const Duration(milliseconds: 900));
+            if (_promptFocus.hasFocus) _promptFocus.unfocus();
             _focusCliPane(pick);
           } else {
+            _noRefocusUntil = DateTime.fromMillisecondsSinceEpoch(0);
             // 左が会話の時は、 端末をすべて手放して会話に打てるようにする。
             _releaseCliPanes();
           }
@@ -282203,7 +283825,10 @@ class _McpChatDialogState extends State<_McpChatDialog>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _refocusPrompt();
-      _scrollToEnd();
+      // ★ 木の形が変わると巻物が作り直され、 位置が先頭へ戻る。 「もう下に
+      //   居るか」 の判定は当てにならないので、 ここは必ず下まで送る
+      //   (= 点検で判明: 並べる / 畳むと会話の先頭へ飛んでいた)。
+      _scrollToEnd(force: true);
     });
   }
 
@@ -282231,9 +283856,13 @@ class _McpChatDialogState extends State<_McpChatDialog>
           final moved = _tabOrder.removeAt(from);
           _tabOrder.insert(to.clamp(0, _tabOrder.length), moved);
         });
+        // ★ = ユーザー要望「画面分割した状態でタブを動かしたら、 タブの並びが
+        //   より左側にあるものが左の画面に出るように」。 並べ替えたら枠の
+        //   割り当ても札の順にそろえる。
+        _syncPanesToTabOrder(context.read<MindMapProvider>());
       },
       // ★ 実機で試したら**狭すぎて当たらなかった** (4px では、 狙っても
-      //   隣の札に落ちて結合になる)。 掴んでいない時でも指 1 本ぶんは
+      //   隣の札に落ちて結合になる)。 掴んでいない時でも指 1 本分は
       //   空けておく。
       builder: (_, cand, __) => Container(
         width: cand.isNotEmpty
@@ -282263,6 +283892,66 @@ class _McpChatDialogState extends State<_McpChatDialog>
     if (li < 0 || ri < 0 || li < ri) return;
     _cliTabs.removeAt(li);
     _cliTabs.insert(_cliTabs.indexOf(right), left);
+  }
+
+  /// 札の並びの何番目か (並びに居ない物は末尾扱い)。
+  int _tabRank(AgentCliSession s) {
+    final i = _tabOrder.indexWhere((e) => identical(e, s));
+    return i < 0 ? 1 << 20 : i;
+  }
+
+  /// 並べている枠の中身を、 札の並び (_tabOrder) と同じ順にそろえる。
+  ///
+  /// ★ = ユーザー要望「画面分割した状態でタブを動かしたら、 タブの並びが
+  ///   より左側にあるものが左の画面に出るように」。 端末どうしを並べている
+  ///   時は、 左の枠 (主の枠) と右の枠を入れ替える。 会話と並べている時は
+  ///   会話が必ず左なので、 3 枚目以降の並びだけそろえる。
+  /// ★ 走っている擬似端末には触らない (出す枠を差し替えるだけ)。
+  void _syncPanesToTabOrder(MindMapProvider provider) {
+    // 3 枚目以降は、 どちらの並べ方でも札の順にそろえる。
+    if (_extraCliSessions.length > 1) {
+      _extraCliSessions.sort((a, b) => _tabRank(a).compareTo(_tabRank(b)));
+    }
+    final main = _lastCliSession;
+    final mate = _activeSplitSession;
+    if (_inlineTerminal == null || main == null || mate == null) {
+      if (mounted) setState(() {});
+      return;
+    }
+    final shown = <AgentCliSession>[main, mate, ..._extraCliSessions];
+    shown.sort((a, b) => _tabRank(a).compareTo(_tabRank(b)));
+    if (identical(shown[0], main) && identical(shown[1], mate)) {
+      if (mounted) setState(() {});
+      return;
+    }
+    // どの枠に打ち込んでいたかを覚えておいて、 入れ替えた後も同じ端末へ返す。
+    final panes = _splitPaneSessions();
+    final focused = (_splitFocusPane >= 0 && _splitFocusPane < panes.length)
+        ? panes[_splitFocusPane]
+        : null;
+    final rest = shown.skip(2).toList();
+    _extraCliSessions
+      ..clear()
+      ..addAll(rest);
+    _extraCliTerminals.clear();
+    for (final e in rest) {
+      _extraCliTerminals[e] = _buildCliTerminal(provider, e);
+    }
+    _splitCliSession = shown[1];
+    _splitTerminal = _buildCliTerminal(provider, shown[1]);
+    if (!identical(shown[0], main)) {
+      // 主の枠が入れ替わる時だけ組み直す (_showInlineTerminal が
+      // _lastCliSession も差し替える)。
+      _showRunningCliTerminal(provider, shown[0]);
+    } else if (mounted) {
+      setState(() {});
+    }
+    if (focused != null) {
+      final after = _splitPaneSessions();
+      final at = after.indexWhere((e) => identical(e, focused));
+      if (at >= 0) _splitFocusPane = at;
+      _focusCliPane(focused);
+    }
   }
 
   /// 会話の隣に CLI [s] を置く (= 左が会話、 右が端末)。
@@ -282318,7 +284007,10 @@ class _McpChatDialogState extends State<_McpChatDialog>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _refocusPrompt();
-      _scrollToEnd();
+      // ★ 木の形が変わると巻物が作り直され、 位置が先頭へ戻る。 「もう下に
+      //   居るか」 の判定は当てにならないので、 ここは必ず下まで送る
+      //   (= 点検で判明: 並べる / 畳むと会話の先頭へ飛んでいた)。
+      _scrollToEnd(force: true);
     });
   }
 
@@ -282343,7 +284035,10 @@ class _McpChatDialogState extends State<_McpChatDialog>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _refocusPrompt();
-      _scrollToEnd();
+      // ★ 木の形が変わると巻物が作り直され、 位置が先頭へ戻る。 「もう下に
+      //   居るか」 の判定は当てにならないので、 ここは必ず下まで送る
+      //   (= 点検で判明: 並べる / 畳むと会話の先頭へ飛んでいた)。
+      _scrollToEnd(force: true);
     });
   }
 
@@ -282380,7 +284075,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
     // ★ = ユーザー要望「分割画面にすると自動的に全画面になるのは辞めて
     //   欲しい」+「横幅が一定の大きさにならないと両方出てこないなら、
     //   その最低限の大きさまで自動で拡大されるように」。 全画面にはせず、
-    //   **足りないぶんだけ**広げる。
+    //   **足りない分だけ**広げる。
     _ensureSplitWidth();
     _splitChatWith(provider, mate);
   }
@@ -282404,18 +284099,579 @@ class _McpChatDialogState extends State<_McpChatDialog>
     });
   }
 
+  // ── 見出しの帯を 1 本に (= ユーザー要望「共通ヘッダーがないと変だから
+  //    ヘッダーを共有にして欲しい」) ────────────────────────────────
+  //
+  //    以前は見出しもタブの帯も**会話の列の中**にあったので、 左右に
+  //    並べると左半分にしか出ていなかった。 組み立てをここへ取り出して、
+  //    並べている時は Row の**上**へ 1 本だけ置く (下の
+  //    [_buildChatSideBySide] が渡す `sharedHeader`)。
+  Widget _buildChatHeaderBar(MindMapProvider provider) {
+    // ★ = 点検で判明: 右の枠に張り付いた会話 ([boundSessionId]) でも、 この
+    //   帯をまるごと組んでいた。 枠は 300px まで細くできるのに、 ボタンを
+    //   詰めるかどうかを決める [_narrowHeader] は**画面ぜんたい**の幅を
+    //   見ているので、 広い画面では大きいボタンが並んだままになって収まらず
+    //   溢れる (黄黒の縞が出て、 右端の「閉じる」 が枠の外へ出て押せない)。
+    //   見出しは左右にまたがって 1 本だけ置く決まりなので、 ここは出さずに
+    //   **閉じる口だけ**残す (タブの帯 [_buildChatTabStripBar] も同じ理由で
+    //   張り付いた欄では出していない)。
+    if (widget.boundSessionId != null) {
+      return Container(
+        height: 30,
+        padding: const EdgeInsets.only(right: 4),
+        alignment: Alignment.centerRight,
+        child: Tooltip(
+          message: provider.t('btn.close'),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(16),
+            onTap: () => widget.onClosePane?.call(),
+            child: const SizedBox(
+              width: 30,
+              height: 30,
+              child: Icon(Icons.close_rounded,
+                  size: 16, color: Colors.white54),
+            ),
+          ),
+        ),
+      );
+    }
+    return _dragHeader(
+            Padding(
+            padding: EdgeInsets.fromLTRB(_narrowHeader(context) ? 10 : 14, 10,
+                _narrowHeader(context) ? 2 : 6, 4),
+            // ★ = ユーザー指摘「タブを切り替えた時に項目の高さが違うせいで
+            //   ぐわんぐわんなるのが気持ち悪い」。 帯の高さは**一番背の高い
+            //   ボタン**で決まるのに、 出るボタンがタブによって変わる
+            //   (会話の時だけ出る物がある = `_inlineTerminal == null`)。
+            //   そのため切り替えるたびに帯が伸び縮みしていた。 高さを決め打ち
+            //   にして、 何が出ていても動かないようにする。 数は
+            //   IconButton の既定の最小寸 (広い時 48 / 狭い時 32) に合わせて
+            //   あるので、 見た目は今までと変わらない。
+            child: SizedBox(
+            height: _narrowHeader(context) ? 32 : 48,
+            child: Row(children: [
+              // 印の上でも掴んで動かせるように、 当たりは後ろの板へ通す。
+              const IgnorePointer(
+                child: Icon(Icons.auto_awesome_rounded,
+                    size: 18, color: Color(0xFF80CBC4)),
+              ),
+              SizedBox(width: _narrowHeader(context) ? 5 : 8),
+              // ★ 見出しの何も無い所を掴んでも窓を動かせる
+              //   (= ユーザー報告: 上の細い帯だけだと掴みにくい)。
+              //   浮遡窓の中に居る時だけ効く。
+              Expanded(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onPanUpdate: (d) => context
+                      .findAncestorStateOfType<_FloatingPanelWindowState>()
+                      ?.dragWindowBy(d.delta),
+                  onPanEnd: (_) => context
+                      .findAncestorStateOfType<_FloatingPanelWindowState>()
+                      ?.dragWindowEnd(),
+                  // ★ 1 行に収める (= ユーザー報告: スマホで見出しが
+                  //   縦書きになる)。 横幅が足りないと 1 文字ずつ折り返して
+                  //   縦に積まれてしまうので、 折り返しを止めて「…」 にする。
+                  // ★ CLI を 1 枚だけ出している時は、 その名前を見出しに
+                  //   する (= 見出しが二段になるのをやめて 1 本に)。
+                  // ★ = ユーザー指摘「複数タブ開いている時は CodexCLI とか
+                  //   上に表示しないで。 AI(API) のタブだって開いているのだし」。
+                  //   札が 2 枚以上ある時、 見出しに 1 本の名前を出すと
+                  //   「今はこれだけ」 と読めてしまう。 どれが出ているかは
+                  //   帯の札が示しているので、 その時は欄の名前に戻す。
+                  child: Builder(builder: (_) {
+                    // ★ = ユーザー指摘「そもそもヘッダーに AI(API) って書く
+                    //   必要がないし、 PC内AI を選択してもヘッダーに AI(API)
+                    //   と書かれているのはおかしい」。 見出しは**今この枠に
+                    //   出している物**を言う。 札の帯が名前を示している時は
+                    //   何も書かない (二度言わない)。
+                    final tabs = _openChatTabIds.length + _cliTabs.length;
+                    final showCliName = tabs <= 1 &&
+                        _inlineTerminal != null &&
+                        _inlineTerminalTitle.isNotEmpty;
+                    final title = showCliName
+                        ? _inlineTerminalTitle
+                        : (_inlineTerminal != null && !_inlineIsTerminal)
+                            // CLI の一覧を出している時はその名前。
+                            ? provider.t('cli.title')
+                            : (tabs > 1 ? '' : provider.t('mcp.chatTitle'));
+                    return Text(
+                        title,
+                        maxLines: 1,
+                        softWrap: false,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            color: showCliName
+                                ? const Color(0xFF9CCC65)
+                                : Colors.white,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700));
+                  }),
+                ),
+              ),
+              // (ブラウザ版 AI を開くボタンは削除 = ユーザー要望:
+              //  AI アシスタントからはブラウザ版 AI を開けないように)
+              // ── 浮かせるボタンは廃止 (= ユーザー要望: AI アシスタントは
+              //    アプリの中でしか使わないのでフローティングは要らない)。
+              //    外に出す窓の仕組みは残してあるが、 ここからは開かない。 ──
+              // ── 全画面 / 元の大きさ (= ユーザー要望: AI アシスタントの
+              //    画面を全画面で開けるように) ──
+              //    ★ 走っている CLI は止めない。 浮かせた窓なら窓の大きさ
+              //      だけを、 ダイアログなら余白と上限だけを変えるので、
+              //      描く物の並びは変わらず端末は作り直されない
+              //      (幅が変わる分、 CLI は画面を折り返し直す)。
+              //    ★ 分割ペインの中では出さない。 大きさはペインが持って
+              //      いるので、 ここから広げる先が無い。
+              if (!widget.paneMode)
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  constraints: _hdrBtnConstraints(context),
+                  padding: _narrowHeader(context)
+                      ? EdgeInsets.zero
+                      : const EdgeInsets.all(8),
+                  tooltip: provider.t(_isPanelMaximized
+                      ? 'mcp.exitFullscreen'
+                      : 'mcp.fullscreen'),
+                  icon: Icon(
+                      _isPanelMaximized
+                          ? Icons.fullscreen_exit_rounded
+                          : Icons.fullscreen_rounded,
+                      color: _isPanelMaximized
+                          ? const Color(0xFF80CBC4)
+                          : Colors.white38,
+                      size: 19),
+                  onPressed: _toggleFullscreen,
+                ),
+              // ── 折り畳む (= ユーザー要望: パネルを畳んでおけるように) ──
+              //    浮かせている窓の中でだけ出す。 分割ペインや全画面では
+              //    畳んでも空いた所が残るだけなので出さない。
+              //    ★ 置き場所は帯の**先頭** (= ユーザー要望: 閉じるボタンの
+              //    隣だと間違えて押してしまうので、 説明ボタンの左へ)。
+              if (context.findAncestorStateOfType<_FloatingPanelWindowState>() !=
+                  null)
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  constraints: _hdrBtnConstraints(context),
+                  padding: _narrowHeader(context)
+                      ? EdgeInsets.zero
+                      : const EdgeInsets.all(8),
+                  tooltip: provider.t('mcp.collapse'),
+                  icon: const Icon(Icons.unfold_less_rounded,
+                      color: Colors.white38, size: 19),
+                  onPressed: () => _setCollapsed(true),
+                ),
+              // 説明をもう一度見る (= ユーザー要望: ヘッダーに ⓘ で置く)。
+              // ★ CLI の画面では、 会話まわりのボタンは出さない (= ユーザー
+              //   要望: CLI 画面で「新しい会話」 が AI アシスタントの物に
+              //   なっているのは違和感がある。 切り替えボタンだけでよい)。
+              if (_inlineTerminal == null)
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                constraints: _hdrBtnConstraints(context),
+                padding: _narrowHeader(context)
+                    ? EdgeInsets.zero
+                    : const EdgeInsets.all(8),
+                tooltip: provider.t('mcp.showInfo'),
+                icon: Icon(
+                    Icons.info_outline_rounded,
+                    color: _showMcpInfo ||
+                            _showCapabilityPanel ||
+                            !provider.mcpInfoDismissed
+                        ? const Color(0xFF80CBC4)
+                        : Colors.white38,
+                    size: 18),
+                // 説明の欄を開いている時は、 押したら会話へ戻る。
+                // ★ 開く時は**一発で中身まで**出す (= ユーザー要望: 説明欄の
+                //   項目は最初から開かれた状態に)。 以前は ⓘ で短い帯を出して、
+                //   その中の「できること (詳しく)」 をもう一度押させていた。
+                onPressed: () {
+                  if (_showCapabilityPanel) {
+                    _backToChatView();
+                    return;
+                  }
+                  // ★ 端末を出したままだと説明が後ろに隠れて、 押しても
+                  //   何も起きないように見えた。 先に会話の画面へ戻す。
+                  if (_inlineTerminal != null) _backToChatView();
+                  setState(() => _showCapabilityPanel = true);
+                },
+              ),
+              // ── 新規タブ (= ユーザー要望: 今ログインしているアカウントで
+              //    別の会話セッションを作って切り替えられるように) ──
+              //    ★ CLI をもう 1 つ**本当に起こす**。 CLI 自身の `/resume`
+              //      は同じプロセスの中で会話を差し替えるだけなので、
+              //      2 つを並べて行き来することはできない。
+              //    ★ ログインは CLI が自分で持っているので、 もう 1 つ
+              //      起こすだけで同じアカウントのままになる。
+              //    ★ 押すと**何を開くかの一覧**が出る (= ユーザー要望:
+              //      claudecode / codex / AI アシスタントなど別の種類も)。
+              if (_inlineTerminal != null && _inlineIsTerminal)
+                Builder(
+                  builder: (bctx) => IconButton(
+                    visualDensity: VisualDensity.compact,
+                    constraints: _hdrBtnConstraints(context),
+                    padding: _narrowHeader(context)
+                        ? EdgeInsets.zero
+                        : const EdgeInsets.all(8),
+                    tooltip: provider.t('cli.newTabPick'),
+                    icon: const Icon(Icons.add_box_outlined,
+                        color: Colors.white54, size: 19),
+                    onPressed: () => unawaited(_newCliTab(provider, bctx)),
+                  ),
+                ),
+
+              // ── 会話 (AI (API)) と CLI を左右に並べる
+              //    (★ = ユーザー要望「AI(API)と codexCLI を画面分割で開ける
+              //    ようにして欲しい」) ──
+              //    ★ 会話を出している時だけ出す。 端末を出している時は、
+              //      すぐ下の「左右に分割」 (端末どうし) が同じ場所に出る。
+              //    ★ タブを長押しして「AI (API)」 の札に落としても同じ事が
+              //      できる (帯の落とし先)。
+              //    ★ 右の CLI は**自分の下の帯** (モデル / 推論 / 停止 /
+              //      終了) を持っているので、 その帯はその CLI に効く。
+              //      上のこの帯と書き込み口は左の会話に効く。
+              // ★ = 点検で判明: 張り付いた右の欄 (boundSessionId) は更に
+              //   分割しない ([_buildChatSideBySide] が素通りさせる) ので、
+              //   押しても何も並ばない。 出さないのが正。
+              if (widget.boundSessionId == null &&
+                  _inlineTerminal == null &&
+                  AgentCli.supported)
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  constraints: _hdrBtnConstraints(context),
+                  padding: _narrowHeader(context)
+                      ? EdgeInsets.zero
+                      : const EdgeInsets.all(8),
+                  tooltip: _activeSideSession != null
+                      ? provider.t('cli.chatUnsplit')
+                      : provider.t('cli.chatSplitTip'),
+                  icon: Icon(
+                      _activeSideSession != null
+                          ? Icons.close_fullscreen_rounded
+                          : Icons.vertical_split_rounded,
+                      color: _activeSideSession != null
+                          ? const Color(0xFF9CCC65)
+                          : Colors.white54,
+                      size: 19),
+                  onPressed: () => _toggleChatSplit(provider),
+                ),
+              // ── 左右に分割 (= ユーザー要望: タブを結合させて左右分割で
+              //    出せるように) ──
+              //    ★ 走らせている物は止めない。 ただし幅が変わるので、
+              //      CLI の画面は並べた幅で折り返し直される (元には戻らない)。
+              //    ★ どちらの端末も**自分の下の帯** (モデル / 推論 / 履歴 /
+              //      使用量 / キュー / 停止 / 終了) を持っているので、 その帯は
+              //      その側の CLI に効く。 この上の帯と「新規タブ」 は
+              //      左側 (= いま選んでいるタブ) に効く。
+              if (_inlineTerminal != null && _inlineIsTerminal)
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  constraints: _hdrBtnConstraints(context),
+                  padding: _narrowHeader(context)
+                      ? EdgeInsets.zero
+                      : const EdgeInsets.all(8),
+                  tooltip: _activeSplitSession != null
+                      ? provider.t('cli.unsplit')
+                      : provider.t('cli.splitTip'),
+                  icon: Icon(
+                      _activeSplitSession != null
+                          ? Icons.close_fullscreen_rounded
+                          : Icons.vertical_split_rounded,
+                      color: _activeSplitSession != null
+                          ? const Color(0xFF9CCC65)
+                          : Colors.white54,
+                      size: 19),
+                  onPressed: () => _toggleCliSplit(provider),
+                ),              // ── CLI の一覧へ戻る (= ユーザー要望: 端末を開いた後、
+              //    「終了」 を押さないと選び直せなくて使いづらい) ──
+              //    走っている CLI は止めない。 一覧の先頭に「動かしたままの
+              //    CLI」 が並ぶので、 そこから覗き直せる。
+              if (_inlineTerminal != null && _inlineIsTerminal)
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  constraints: _hdrBtnConstraints(context),
+                  padding: _narrowHeader(context)
+                      ? EdgeInsets.zero
+                      : const EdgeInsets.all(8),
+                  tooltip: provider.t('cli.backToList'),
+                  icon: const Icon(Icons.format_list_bulleted_rounded,
+                      color: Colors.white54, size: 19),
+                  onPressed: () => _showInlineTerminal(
+                      _buildAgentCliList(provider), provider.t('cli.title'),
+                      isTerminal: false),
+                ),
+              // ── パソコンの AI コマンド (= ユーザー要望: どうやって
+              //    Claude Code や Codex を呼び出すのか分からない、
+              //    ログインボタンを付けて欲しい) ──
+              //    説明欄の奥に埋めず、 帯に直に出す。
+              if (AgentCli.supported)
+                Builder(
+                  builder: (bctx) => IconButton(
+                    visualDensity: VisualDensity.compact,
+                    constraints: _hdrBtnConstraints(context),
+                    padding: _narrowHeader(context)
+                        ? EdgeInsets.zero
+                        : const EdgeInsets.all(8),
+                    // ★ 見出しを 1 本にまとめたので、 会話へ戻る口はここ
+                    //   (= ユーザー要望: 「会話へ戻る」 の項目は消す)。
+                    //   端末を出している間は、 押すと会話へ戻る。
+                    tooltip: _inlineTerminal != null
+                        ? provider.t('cli.backToChat')
+                        : provider.t('cli.title'),
+                    icon: Icon(
+                        _inlineTerminal != null
+                            ? Icons.chat_bubble_outline_rounded
+                            : Icons.terminal_rounded,
+                        // ★ 周りのアイコンに色をそろえる (= ユーザー要望:
+                        //   PC内AI だけ色が違って目立つ)。 この帯の他の
+                        //   アイコンは白 54% / 38% なので、 同じ 54% に。
+                        color: Colors.white54,
+                        size: 19),
+                    onPressed: () => _inlineTerminal != null
+                        ? _backToChatView()
+                        : _openCliView(provider, bctx),
+                  ),
+                ),
+              // 前提条件 (= ユーザー要望: Markdown のように自分で書いて置ける)。
+              // ★ Builder で押したボタン自身の context を作る (= ユーザー要望:
+              //   画面中央ではなくボタンの近くに出す)。 帯を掴む板は帯の
+              //   **後ろ**に敷いてあるので、 Builder を挟んでも押下は奪われない。
+              if (_inlineTerminal == null)
+              Builder(builder: (bctx) => IconButton(
+                visualDensity: VisualDensity.compact,
+                constraints: _hdrBtnConstraints(context),
+                padding: _narrowHeader(context)
+                    ? EdgeInsets.zero
+                    : const EdgeInsets.all(8),
+                tooltip: provider.t('mcp.preamble'),
+                icon: Icon(Icons.rule_rounded,
+                    color: provider.mcpPreamble.trim().isEmpty
+                        ? Colors.white54
+                        : const Color(0xFF80CBC4),
+                    size: 19),
+                onPressed: () => _editPreamble(bctx),
+              )),
+              // 設定 (= ユーザー要望: 順番待ち / 割り込みはここで決める。
+              //   処理中の帯には出さない)。
+              if (_inlineTerminal == null)
+              PopupMenuButton<String>(
+                constraints: const BoxConstraints(minWidth: 200),
+                padding: EdgeInsets.zero,
+                tooltip: provider.t('mcp.assistantSettings'),
+                color: const Color(0xFF23233A),
+                icon: const Icon(Icons.tune_rounded,
+                    color: Colors.white54, size: 19),
+                onSelected: (v) async {
+                  if (v == 'queue') provider.setMcpSteerNext(false);
+                  if (v == 'steer') provider.setMcpSteerNext(true);
+                  // ★ = ユーザー要望「AI(API) にも編集権限を渡すフォルダーを
+                  //   設定できるように」。
+                  if (v == 'editdir') {
+                    final d = await FilePicker.platform.getDirectoryPath(
+                        dialogTitle: provider.t('mcp.editDir'));
+                    if (d == null || d.isEmpty) return;
+                    await provider.setAiEditDir(d);
+                    if (mounted) setState(() {});
+                  }
+                  if (v == 'editdirClear') {
+                    await provider.setAiEditDir('');
+                    if (mounted) setState(() {});
+                  }
+                },
+                itemBuilder: (_) => [
+                  PopupMenuItem<String>(
+                    enabled: false,
+                    height: 30,
+                    child: Text(provider.t('mcp.whenBusy'),
+                        style: const TextStyle(
+                            color: Colors.white38, fontSize: 11)),
+                  ),
+                  for (final e in const [
+                    ['queue', 'mcp.modeQueue'],
+                    ['steer', 'mcp.modeSteer'],
+                  ])
+                    PopupMenuItem<String>(
+                      value: e[0],
+                      height: 36,
+                      child: Row(children: [
+                        Icon(
+                            (e[0] == 'steer') == provider.mcpSteerNext
+                                ? Icons.radio_button_checked_rounded
+                                : Icons.radio_button_off_rounded,
+                            size: 15,
+                            color: (e[0] == 'steer') == provider.mcpSteerNext
+                                ? const Color(0xFF4FC3F7)
+                                : Colors.white38),
+                        const SizedBox(width: 8),
+                        Text(provider.t(e[1]),
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 12.5)),
+                      ]),
+                    ),
+                  const PopupMenuDivider(),
+                  PopupMenuItem<String>(
+                    enabled: false,
+                    height: 30,
+                    child: Text(provider.t('mcp.editDir'),
+                        style: const TextStyle(
+                            color: Colors.white38, fontSize: 11)),
+                  ),
+                  PopupMenuItem<String>(
+                    value: 'editdir',
+                    height: 36,
+                    child: Row(children: [
+                      const Icon(Icons.folder_open_rounded,
+                          size: 15, color: Color(0xFF4FC3F7)),
+                      const SizedBox(width: 8),
+                      // ★ = ユーザー指摘「AI(API) では編集権限を渡す
+                      //   フォルダーの場所が書いていなくない?」。 末尾の
+                      //   名前しか出していなかったので、 どこを指している
+                      //   のか分からなかった。 道筋も下に添える。
+                      Flexible(
+                        child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                  provider.aiEditDir.trim().isEmpty
+                                      ? provider.t('cli.tabDirPick')
+                                      : _dirLabel(provider.aiEditDir),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                      color: Colors.white, fontSize: 12.5)),
+                              if (provider.aiEditDir.trim().isNotEmpty)
+                                Text(provider.aiEditDir.trim(),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                        color: Colors.white38,
+                                        fontSize: 10,
+                                        height: 1.3)),
+                            ]),
+                      ),
+                    ]),
+                  ),
+                  if (provider.aiEditDir.trim().isNotEmpty)
+                    PopupMenuItem<String>(
+                      value: 'editdirClear',
+                      height: 32,
+                      child: Row(children: [
+                        const Icon(Icons.close_rounded,
+                            size: 14, color: Colors.white38),
+                        const SizedBox(width: 8),
+                        Text(provider.t('mcp.editDirClear'),
+                            style: const TextStyle(
+                                color: Colors.white60, fontSize: 11.5)),
+                      ]),
+                    ),
+                ],
+              ),
+              // 会話の一覧 (= ユーザー要望: セッションを分けて保存)。
+              // ★ こちらも押したボタンの近くへ (= ユーザー要望)。
+              if (_inlineTerminal == null)
+              Builder(builder: (bctx) => IconButton(
+                visualDensity: VisualDensity.compact,
+                constraints: _hdrBtnConstraints(context),
+                padding: _narrowHeader(context)
+                    ? EdgeInsets.zero
+                    : const EdgeInsets.all(8),
+                tooltip: provider.t('mcp.sessions'),
+                icon: const Icon(Icons.forum_outlined,
+                    color: Colors.white54, size: 19),
+                // ★ 端末や説明を出したままだと、 会話を選んでも見えている物が
+                //   変わらなかった (= ユーザー要望: 会話一覧などを押したら
+                //   AI アシスタントの画面に戻る)。
+                onPressed: () {
+                  _backToChatView();
+                  unawaited(_showSessionPicker(bctx));
+                },
+              )),
+              // 新しい会話を始める。
+              // ★ = ユーザー要望「新しい会話から CLI のセッションも呼べる
+              //   ようにして欲しい」。 直に会話を作るのをやめ、
+              //   [_newCliTab] の一覧 (新しい会話 / 会話へ戻る / 各 CLI /
+              //   ターミナル) を出す。 先頭が「新しい会話」 なので、 今まで
+              //   どおりの使い方なら 1 押し増えるだけ。
+              if (_inlineTerminal == null)
+              Builder(
+                builder: (bctx) => IconButton(
+                  visualDensity: VisualDensity.compact,
+                  constraints: _hdrBtnConstraints(context),
+                  padding: _narrowHeader(context)
+                      ? EdgeInsets.zero
+                      : const EdgeInsets.all(8),
+                  tooltip: provider.t('mcp.newSession'),
+                  icon: const Icon(Icons.add_comment_outlined,
+                      color: Colors.white54, size: 19),
+                  onPressed: () => unawaited(_newCliTab(provider, bctx)),
+                ),
+              ),
+              // 今の会話の中身を消す。
+              if (_inlineTerminal == null)
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                constraints: _hdrBtnConstraints(context),
+                padding: _narrowHeader(context)
+                    ? EdgeInsets.zero
+                    : const EdgeInsets.all(8),
+                tooltip: provider.t('mcp.clearHistory'),
+                icon: const Icon(Icons.delete_sweep_rounded,
+                    color: Colors.white38, size: 19),
+                onPressed: () async {
+                  _backToChatView();
+                  await provider.clearMcpChatHistory();
+                  if (!mounted) return;
+                  setState(_msgs.clear);
+                },
+              ),
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                constraints: _hdrBtnConstraints(context),
+                padding: _narrowHeader(context)
+                    ? EdgeInsets.zero
+                    : const EdgeInsets.all(8),
+                tooltip: provider.t('btn.close'),
+                icon:
+                    const Icon(Icons.close_rounded, color: Colors.white70),
+                // ペインの中では Navigator を閉じてはいけない
+                //   (アプリ本体が pop されてしまう)。
+                onPressed: () => widget.paneMode
+                    ? widget.onClosePane?.call()
+                    : Navigator.of(context).pop(),
+              ),
+            ]),
+            ),
+          ));
+  }
+
+  /// タブの帯 (出さない時は場所を取らない)。
+  Widget _buildChatTabStripBar(MindMapProvider provider) {
+    if (widget.boundSessionId != null ||
+        _inlineTerminal != null ||
+        _showCapabilityPanel ||
+        (_cliTabs.isEmpty && _openChatTabIds.length <= 1)) {
+      return const SizedBox.shrink();
+    }
+    // ★ 全画面の時は下の会話・入力欄と左端をそろえる
+    //   (= ユーザー要望「…全画面の時は中央に寄せた上で左揃えに」)。
+    return Padding(
+      padding: EdgeInsets.symmetric(horizontal: _readingSidePad),
+      child: _buildCliTabStrip(provider),
+    );
+  }
+
   /// 会話の列 [chat] の右に CLI を足す。 並べていない時は**そのまま返す**
   /// (= 今までの形を 1 つも変えない)。
-  Widget _buildChatSideBySide(MindMapProvider provider, Widget chat) {
+  Widget _buildChatSideBySide(
+      MindMapProvider provider, Widget Function(bool sharedHeader) chatOf) {
     // ★ 張り付いた欄 (= 右側そのもの) は更に分割しない (入れ子を作らない)。
-    if (widget.boundSessionId != null) return chat;
+    if (widget.boundSessionId != null) return chatOf(false);
     final s = _activeSideSession;
     final chatId = _activeSideChatId(provider);
     if (s == null && chatId == null) {
       _sideCliSession = null;
       _sideTerminal = null;
       _sideChatSessionId = null;
-      return chat;
+      return chatOf(false);
     }
     // 右に置く物。 会話が指定されていればそちら、 無ければ端末。
     late final Widget rightPane;
@@ -282431,7 +284687,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
     }
     return LayoutBuilder(builder: (_, cons) {
       final w = cons.maxWidth;
-      // ★ 1 枚ぶんの幅の下限は端末どうしの左右と同じ理由 (細くすると走って
+      // ★ 1 枚分の幅の下限は端末どうしの左右と同じ理由 (細くすると走って
       //   いる CLI の桁数がその場で変わり、 広げても元には戻らない =
       //   agent_cli_session.dart の `pty.resize`)。 足りない時は会話だけを
       //   出す (覚えている相手は残すので、 広げればまた並ぶ)。
@@ -282452,14 +284708,24 @@ class _McpChatDialogState extends State<_McpChatDialog>
       //   細くしたまま会話と並べると、 何も掴まなくてもこの幅になる。
       //   だから描く時に必ずここで挟み直す。
       const minChat = 330.0;
-      if (w < minChat + minPane + 8) return chat;
+      if (w < minChat + minPane + 8) return chatOf(false);
+      final chat = chatOf(true);
+      // ★ 見出しとタブの帯は、 左右にまたがって 1 本だけ置く
+      //   (= ユーザー要望: 共通ヘッダー)。
+      Widget shell(Widget row) =>
+          Column(mainAxisSize: MainAxisSize.min, children: [
+            _buildChatHeaderBar(provider),
+            _buildChatTabStripBar(provider),
+            Expanded(child: row),
+          ]);
       // ★ = ユーザー要望「3 画面や 4 画面にできるように」。 会話の右に
-      //   並べる端末を、 入る幅のぶんだけ足す。
+      //   並べる端末を、 入る幅の分だけ足す。
       final extras = <Widget>[];
       for (final e in _extraCliSessions) {
         final n = extras.length + 1;
         if (w < minChat + minPane * (n + 1) + 8 * (n + 1)) break;
-        extras.add(_extraCliTerminals[e] ?? _buildCliTerminal(provider, e));
+        extras.add(_extraCliTerminals.putIfAbsent(
+                              e, () => _buildCliTerminal(provider, e)));
       }
       if (extras.isNotEmpty) {
         final panes = <Widget>[chat, rightPane, ...extras];
@@ -282470,8 +284736,8 @@ class _McpChatDialogState extends State<_McpChatDialog>
           if (i > 0) row.add(_buildCliSplitDivider());
           row.add(Expanded(child: _buildCliSplitPane(i, panes[i], true)));
         }
-        return Row(
-            crossAxisAlignment: CrossAxisAlignment.stretch, children: row);
+        return shell(Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch, children: row));
       }
       final usable = w - 8;
       // 取り分は端末どうしの左右と同じ物を使い回すが、 下限は左右で別
@@ -282482,12 +284748,13 @@ class _McpChatDialogState extends State<_McpChatDialog>
       final lf = (r * 1000).round();
       // ★ 高さは伸ばし切る (会話の列は mainAxisSize.min なので、 緩い高さ
       //   を渡すと中の [Expanded] が行き場を失う)。
-      return Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      return shell(
+          Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         Expanded(flex: lf, child: _buildCliSplitPane(0, chat, true)),
         _buildCliSplitHandle(w),
         Expanded(
             flex: 1000 - lf, child: _buildCliSplitPane(1, rightPane, true)),
-      ]);
+      ]));
     });
   }
 
@@ -282548,7 +284815,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
       //   寄せる (別々に寄せると、 帯と端末の左端が食い違って見える)。
       //   中の文字は端末がそのまま左から並べるので、 左揃えのまま。
       // ★ 左右に並べている時は寄せない。 2 枚とも画面を使い切るので片寄って
-      //   見えないし、 寄せると 1 枚ぶんが痩せて**走っている CLI の桁数が
+      //   見えないし、 寄せると 1 枚分が痩せて**走っている CLI の桁数が
       //   その場で変わる** (agent_cli_session.dart の pty.resize)。 CLI は
       //   画面を細く折り返し直し、 広げても元には戻らない。
       // ★ 余白は**常に**渡す (寄せない時は 0)。 有る無しで包みを足し引き
@@ -282618,7 +284885,12 @@ class _McpChatDialogState extends State<_McpChatDialog>
     });
     // 会話へ戻ったら書き込み口へ焦点を返す (端末に持っていかれたままに
     // しない = ユーザー報告: 戻ると打てなくなる)。
-    WidgetsBinding.instance.addPostFrameCallback((_) => _refocusPrompt());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _refocusPrompt();
+      // 端末から戻った時も、 会話の先頭ではなく続きから見せる。
+      _scrollToEnd(force: true);
+    });
   }
 
   /// 一覧から CLI のセッションを終わらせる (= ユーザー要望)。
@@ -282691,10 +284963,44 @@ class _McpChatDialogState extends State<_McpChatDialog>
 
   /// 走らせたままの CLI の端末を出し直す (= 止めない)。
   /// = ユーザー要望: 一覧へ戻るボタンで戻った後、 元の端末へ帰れるように。
+  /// 同じフォルダーをもう開いていないか見る。
+  ///
+  /// ★ = ユーザー要望「ターミナルから同じフォルダーを開こうとした場合、
+  ///   既に開かれていますと表示されコマンド実行は行われないように」。
+  ///   同じ道具 ([cliKey]) で同じ場所を開いているタブがあれば、 そちらへ
+  ///   移って true を返す (呼ぶ側はそのまま戻る = 擬似端末を起こさない)。
+  ///   比べるのは今居る場所 ([AgentCliSession.shownDirectory]) 。
+  bool _focusOpenedCliTab(
+      MindMapProvider provider, String dir, String cliKey) {
+    String norm(String v) => v
+        .trim()
+        .replaceAll('/', Platform.pathSeparator)
+        .replaceAll(RegExp(r'[\/]+$'), '')
+        .toLowerCase();
+    final want = norm(dir);
+    if (want.isEmpty) return false;
+    for (final t in _cliTabs) {
+      if (!t.running) continue;
+      if (t.cliKey != cliKey) continue;
+      if (norm(t.shownDirectory) != want) continue;
+      _showRunningCliTerminal(provider, t);
+      if (mounted) {
+        showTopToast(context, provider.t('cli.dirAlreadyOpen'),
+            const Color(0xFFFFB347));
+      }
+      return true;
+    }
+    return false;
+  }
+
   void _showRunningCliTerminal(
       MindMapProvider provider, AgentCliSession session) {
     _lastCliSession = session;
     _registerCliTab(session);
+    // ★ ここからも見張りを付け直す。 この欄は閉じ開きで作り直されるのに、
+    //   走っている札 ([_cliTabs] / [AgentCliRunner.active]) はその間も生き
+    //   続ける = 前の欄が付けた見張りは効かなくなっている。
+    _armCliUpdateWatch(provider, session);
     _showInlineTerminal(
       AgentTerminal(
         session: session,
@@ -283025,7 +285331,9 @@ class _McpChatDialogState extends State<_McpChatDialog>
     await _openAgentCliTerminal(provider, found,
         titleOverride: _nextCliTabTitle(base),
         dirOverride: tabDir,
-        accountOverride: accountWanted);
+        accountOverride: accountWanted,
+        // ★ = ユーザー要望: 「新規タブ」 は同じ垢でも必ず新しい会話を始める。
+        forceNewSession: true);
   }
 
   /// 同じ物をもう 1 枚開く時の見出し (2 枚目から番号を振る)。
@@ -283359,11 +285667,17 @@ class _McpChatDialogState extends State<_McpChatDialog>
       _focusCliPane(next);
       return;
     }
-    // ★ 走っている物が 1 枚も残らない時は、 今までどおり「どの CLI を
-    //   使うか」 の一覧へ戻す (= 終わった端末を見せ続けない)。 会話へ
-    //   飛ばさないのは、 端末の「終了」 ボタンの案内が
-    //   agent_terminal.dart:1615 で「CLI を閉じて一覧へ戻る」 と約束して
-    //   いるから。 走らせている物はここでも止めない。
+    // ★ = ユーザー要望「AI(API) のタブが残っているのに codexCLI 等のタブを
+    //   閉じると選択画面に戻ってしまうのは変。 最後の 1 タブが消えたら
+    //   選択画面に遷移するように」。 端末が 1 枚も残らなくても、 会話の札が
+    //   残っていればそちらへ戻る (選択画面は「札が 1 枚も無い」 時だけ)。
+    if (_openChatIds(provider).isNotEmpty) {
+      _backToChatView();
+      return;
+    }
+    // 走っている物も会話の札も 1 枚も残らない時だけ、 「どの CLI を使うか」
+    // の一覧へ戻す (= 終わった端末を見せ続けない)。 走らせている物はここでも
+    // 止めない。
     _showInlineTerminal(_buildAgentCliList(provider), provider.t('cli.title'),
         isTerminal: false);
   }
@@ -283724,7 +286038,10 @@ class _McpChatDialogState extends State<_McpChatDialog>
       await _openAgentCliTerminal(provider, f,
           titleOverride: _nextCliTabTitle(base),
           dirOverride: s.shownDirectory,
-          accountOverride: accountId);
+          accountOverride: accountId,
+          // ★ 切り替え先を必ず起こす。 元のタブが仕事中で閉じずに残る時、
+          //   今までは「既に開かれています」 に当たって無音で失敗していた。
+          forceNewSession: true);
       return;
     }
   }
@@ -283820,9 +286137,17 @@ class _McpChatDialogState extends State<_McpChatDialog>
     return List<String>.unmodifiable(_openChatTabIds);
   }
 
-  /// 会話 1 本ぶんの札。
+  /// 会話 1 本分の札。
   Widget _buildChatTabChip(MindMapProvider provider, String id) {
-    final on = _inlineTerminal == null && provider.mcpCurrentSessionId == id;
+    // ★ = ユーザー報告「shell 側がアクティブに切り替わらない」。 端末と
+    //   並べている間は、 会話の札も [_splitFocusPane] を見る (見ないと
+    //   右の端末を選んでも会話の札が点いたままで、 切り替わったように
+    //   見えない)。 端末の札は既に同じ見方をしている。
+    final splitting =
+        _activeSideSession != null || _activeSideChatId(provider) != null;
+    final on = _inlineTerminal == null &&
+        provider.mcpCurrentSessionId == id &&
+        (!splitting || _splitFocusPane == 0);
     final title = provider.mcpSessionTitle(id);
     // ★ = ユーザー要望「AI(API) のタブ自体も動かせるようにして、 削除できる
     //   ようにして」。 × は**他に行き先がある時**だけ出す (最後の 1 枚を
@@ -283834,6 +286159,9 @@ class _McpChatDialogState extends State<_McpChatDialog>
       onAcceptWithDetails: (d) => _splitChatWith(provider, d.data),
       builder: (_, cand, __) => LongPressDraggable<String>(
         data: id,
+        // ★ = ユーザー要望「タブをドラッグで入れ替えられるように」。
+        //   端末の札と同じ長さにそろえる。
+        delay: const Duration(milliseconds: 220),
         dragAnchorStrategy: pointerDragAnchorStrategy,
         onDragStarted: () {
           if (mounted) setState(() => _draggingChatTab = true);
@@ -283866,6 +286194,9 @@ class _McpChatDialogState extends State<_McpChatDialog>
               : on
                   ? const Color(0xFF6C63FF).withValues(alpha: 0.22)
                   : Colors.white.withValues(alpha: 0.04),
+          // ★ = ユーザー要望「AI(API) が開いているフォルダーが表示されて
+          //   いないから表示されるように」。 端末の札と同じ形で、 この欄が
+          //   使うフォルダー ([_chatWorkDir]) を札の中へ入れる。
           borderRadius: BorderRadius.circular(6),
           child: InkWell(
             borderRadius: BorderRadius.circular(6),
@@ -283900,6 +286231,27 @@ class _McpChatDialogState extends State<_McpChatDialog>
                           fontWeight:
                               on ? FontWeight.w700 : FontWeight.w400)),
                 ),
+                // ★ = ユーザー要望「AI(API) が開いているフォルダーが
+                //   表示されていないから表示されるように」。 端末の札と同じ形で、
+                //   この欄が使うフォルダーを札の中へ入れる。
+                if (_dirLabel(_chatWorkDir(provider)).isNotEmpty) ...[
+                  const SizedBox(width: 5),
+                  const Icon(Icons.folder_outlined,
+                      size: 10, color: Colors.white38),
+                  const SizedBox(width: 2),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 90),
+                    child: Tooltip(
+                      message: _chatWorkDir(provider),
+                      child: Text(_dirLabel(_chatWorkDir(provider)),
+                          maxLines: 1,
+                          softWrap: false,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              color: Colors.white38, fontSize: 10)),
+                    ),
+                  ),
+                ],
                 // ★ 1 本しか無い時は × を出さない (閉じると会話の画面へ
                 //   戻る道が無くなるため)。
                 if (many)
@@ -283921,6 +286273,23 @@ class _McpChatDialogState extends State<_McpChatDialog>
       ),
       ),
     );
+  }
+
+  /// この欄 (会話) が使っているフォルダー。
+  ///
+  /// ★ = ユーザー要望: AI(API) の札にも出す。 一覧の下で決めた場所
+  ///   ([_cliWorkDir])、 決めていなければ開いているページの連動先。
+  ///   どちらも無い時は空 (= 札に何も出さない)。
+  String _chatWorkDir(MindMapProvider provider) {
+    // 控えをまだ読んでいなければ読む (読み終わったら一度だけ描き直す)。
+    if (!_cliRecentDirsLoaded) {
+      unawaited(_ensureCliDirsLoaded().then((_) {
+        if (mounted) setState(() {});
+      }));
+    }
+    final w = _cliWorkDir.trim();
+    if (w.isNotEmpty) return w;
+    return terminalBaseDirOrNull(provider) ?? '';
   }
 
   /// 会話の札を帯から外す (会話そのものは消さない = 一覧から開き直せる)。
@@ -284092,7 +286461,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
           //   新しい会話セッションのタブが開かれるようにして」。 以前は
           //   「AI (API)」 の札が 1 枚だけで、 新しい会話を始めても札は
           //   増えず、 画面の中身が黙って入れ替わるだけだった (= 何も
-          //   起きていないように見える)。 開いている会話のぶんだけ札を出す。
+          //   起きていないように見える)。 開いている会話の分だけ札を出す。
           // ★ 会話の札は**横に流せる**入れ物に入れる。 直に並べると、 会話を
           //   何本か開いた時に帯からはみ出して黄黒の縞 (overflow) が出る
           //   (= 札の数は利用者が増やせるので、 上限が無い)。
@@ -284165,6 +286534,10 @@ class _McpChatDialogState extends State<_McpChatDialog>
                       borderRadius: BorderRadius.circular(6),
                       child: LongPressDraggable<AgentCliSession>(
                         data: s,
+                        // ★ = ユーザー要望「タブをドラッグで入れ替えられるように」。
+                        //   既定の長押し (500ms) は長すぎて、 押しただけで終わる事が
+                        //   多かった。 帯を横へ流す操作とは見分けられる範囲で短くする。
+                        delay: const Duration(milliseconds: 220),
                         dragAnchorStrategy: pointerDragAnchorStrategy,
                         // ★ 掴んでいる間だけ、 札の間の受け口を広げる
                         //   (= 実機で試したら 10px では狙っても隣の札に
@@ -285057,7 +287430,9 @@ class _McpChatDialogState extends State<_McpChatDialog>
     // 新しい置き場で開く = その中で CLI にログインしてもらう。
     final fresh = await AgentCli.find(found.spec.kind);
     if (!mounted) return;
-    await _openAgentCliTerminal(provider, fresh);
+    // ★ 足したばかりの垢でログインさせたいので、 同じフォルダーに既存タブが
+    //   あっても必ず新しく起こす (= 今までは無音で前のタブに戻っていた)。
+    await _openAgentCliTerminal(provider, fresh, forceNewSession: true);
   }
 
   /// 一覧から外す (フォルダーは消さない = 合言葉には触らない)。
@@ -285107,6 +287482,57 @@ class _McpChatDialogState extends State<_McpChatDialog>
   }
 
   /// CLI の一覧 (欄の中に出す中身)。
+  /// パソコン版か (単独窓とショートカットはパソコンだけの話)。
+  static bool get _isDesktop =>
+      !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
+
+  /// CLI の画面をアプリの外 (別プロセスの窓) で開く (= ユーザー要望)。
+  ///
+  /// ★ サブ窓ではなく**別プロセス**。 擬似端末の一覧はプロセスごとの持ち物
+  ///   なので、 サブ窓にすると本体と見え方が食い違う ([main.dart] の
+  ///   `_bootAgentCliWindow` の但し書きと同じ理由)。 走らせている CLI は
+  ///   本体の側に残るので、 外の窓では新しく開き直す形になる。
+  Future<void> _openCliExternalWindow(MindMapProvider provider) async {
+    if (!_isDesktop) return;
+    try {
+      await Process.start(
+        Platform.resolvedExecutable,
+        const ['--agent-cli'],
+        mode: ProcessStartMode.detached,
+      );
+      if (mounted) {
+        showTopToast(context, provider.t('cli.popOutDone'),
+            const Color(0xFF43A047));
+      }
+    } catch (e) {
+      if (mounted) showTopToast(context, '$e', const Color(0xFFE53935));
+    }
+  }
+
+  /// CLI の画面を直に開くショートカットをデスクトップに作る (= ユーザー要望)。
+  ///
+  /// ★ 起動引数の**先頭**が `--agent-cli` になるように渡す ([main] は
+  ///   `args.first` で振り分けるため)。 これで本体 (マップの画面) は
+  ///   立ち上がらない。
+  Future<void> _makeCliShortcut(MindMapProvider provider) async {
+    if (!_isDesktop) return;
+    try {
+      final ok = await HomeShortcutService.pinArgsShortcut(
+        arguments: '--agent-cli',
+        label: provider.t('cli.title'),
+      );
+      if (!mounted) return;
+      showTopToast(
+          context,
+          ok
+              ? provider.t('cli.shortcutDone')
+              : provider.t('cli.shortcutFailed'),
+          ok ? const Color(0xFF43A047) : const Color(0xFFE53935));
+    } catch (e) {
+      if (mounted) showTopToast(context, '$e', const Color(0xFFE53935));
+    }
+  }
+
   Widget _buildAgentCliList(MindMapProvider provider) {
     // ★ Pro 以上の特権 (= ユーザー要望)。 入れて画面を開いた時点で、
     //   契約が要る旨と、 CLI 側にも有料の契約が要る旨を出す。
@@ -285214,6 +287640,52 @@ class _McpChatDialogState extends State<_McpChatDialog>
             Text(provider.t('cli.note'),
                 style: const TextStyle(
                     color: Colors.white54, fontSize: 11, height: 1.55)),
+            // ── アプリの外に出す / ショートカットを作る (= ユーザー要望) ──
+            //    ★ 既に単独窓の中で見ている時は「外に出す」 は出さない。
+            if (_isDesktop && !MindMapProvider.externalToolWindow) ...[
+              const SizedBox(height: 10),
+              Row(children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFF80CBC4),
+                      side: const BorderSide(color: Color(0xFF37605C)),
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.symmetric(vertical: 9),
+                    ),
+                    icon: const Icon(Icons.open_in_new_rounded, size: 16),
+                    label: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text(provider.t('cli.popOut'),
+                          style: const TextStyle(fontSize: 11.5)),
+                    ),
+                    onPressed: () => unawaited(_openCliExternalWindow(provider)),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFF9CCC65),
+                      side: const BorderSide(color: Color(0xFF4C6B33)),
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.symmetric(vertical: 9),
+                    ),
+                    icon: const Icon(Icons.add_to_home_screen_rounded, size: 16),
+                    label: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text(provider.t('cli.makeShortcut'),
+                          style: const TextStyle(fontSize: 11.5)),
+                    ),
+                    onPressed: () => unawaited(_makeCliShortcut(provider)),
+                  ),
+                ),
+              ]),
+              const SizedBox(height: 4),
+              Text(provider.t('cli.popOutHint'),
+                  style: const TextStyle(
+                      color: Colors.white38, fontSize: 10.5, height: 1.5)),
+            ],
             const SizedBox(height: 10),
             for (final f in list)
               Container(
@@ -285360,7 +287832,10 @@ class _McpChatDialogState extends State<_McpChatDialog>
                               style: const TextStyle(fontSize: 11)),
                           onPressed: () => unawaited(_openAgentCliTerminal(
                               provider, f,
-                              deviceLogin: true)),
+                              deviceLogin: true,
+                              // ★ ログイン用の端末は、 既存タブがあっても
+                              //   必ず新しく起こす。
+                              forceNewSession: true)),
                         ),
                       ),
                     ],
@@ -285395,38 +287870,103 @@ class _McpChatDialogState extends State<_McpChatDialog>
                                 color: Colors.white38, fontSize: 10.5)),
                         const SizedBox(width: 8),
                         for (final c in AgentCli.modelChoices(f.spec.kind))
-                          Padding(
-                            padding: const EdgeInsets.only(right: 6),
-                            child: InkWell(
-                              borderRadius: BorderRadius.circular(6),
-                              onTap: () async {
-                                await provider.setCliAiModelChoice(c.id);
-                                if (mounted) setState(() {});
-                              },
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 8, vertical: 3),
-                                decoration: BoxDecoration(
-                                  color: provider.cliAiModelChoice == c.id
-                                      ? const Color(0xFF9CCC65)
-                                          .withValues(alpha: 0.18)
-                                      : Colors.transparent,
-                                  borderRadius: BorderRadius.circular(6),
-                                  border: Border.all(
-                                      color: provider.cliAiModelChoice == c.id
-                                          ? const Color(0xFF9CCC65)
-                                          : Colors.white24),
-                                ),
-                                child: Text(c.label,
-                                    style: TextStyle(
-                                        color: provider.cliAiModelChoice == c.id
+                          Builder(builder: (_) {
+                            // ★ 選択は**この CLI の物**として覚える
+                            //   (= ユーザー報告: luna を選んでも sol)。
+                            final on =
+                                provider.cliModelFor(f.spec.kind.name) == c.id;
+                            return Padding(
+                              padding: const EdgeInsets.only(right: 6),
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(6),
+                                onTap: () async {
+                                  await provider.setCliAiModelChoice(c.id,
+                                      forKind: f.spec.kind.name);
+                                  if (mounted) setState(() {});
+                                },
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 8, vertical: 3),
+                                  decoration: BoxDecoration(
+                                    color: on
+                                        ? const Color(0xFF9CCC65)
+                                            .withValues(alpha: 0.18)
+                                        : Colors.transparent,
+                                    borderRadius: BorderRadius.circular(6),
+                                    border: Border.all(
+                                        color: on
                                             ? const Color(0xFF9CCC65)
-                                            : Colors.white60,
-                                        fontSize: 10.5)),
+                                            : Colors.white24),
+                                  ),
+                                  child: Text(c.label,
+                                      style: TextStyle(
+                                          color: on
+                                              ? const Color(0xFF9CCC65)
+                                              : Colors.white60,
+                                          fontSize: 10.5)),
+                                ),
                               ),
-                            ),
-                          ),
+                            );
+                          }),
                       ]),
+                      // ── 推論 (= ユーザー要望: 開く段階で設定できるように /
+                      //    「じっくり」 等と誤魔化さず、 その CLI が受け取る
+                      //    生の値を並べる) ──
+                      //    ★ 相手ごとに覚え、 端末で開く時にも 1 回聞く
+                      //      問い合わせにもそのまま渡る。 指定する口が無い
+                      //      相手 (Gemini CLI) では欄ごと出さない。
+                      if (AgentCli.reasoningChoices(f.spec.kind)
+                          .isNotEmpty) ...[
+                        const SizedBox(height: 6),
+                        Row(children: [
+                          const Icon(Icons.psychology_alt_rounded,
+                              size: 13, color: Colors.white38),
+                          const SizedBox(width: 6),
+                          Text(provider.t('cli.reasoning'),
+                              style: const TextStyle(
+                                  color: Colors.white38, fontSize: 10.5)),
+                          const SizedBox(width: 8),
+                          for (final lv
+                              in AgentCli.reasoningChoices(f.spec.kind))
+                            Builder(builder: (_) {
+                              final on =
+                                  provider.cliReasoningFor(f.spec.kind.name) ==
+                                      lv;
+                              return Padding(
+                                padding: const EdgeInsets.only(right: 6),
+                                child: InkWell(
+                                  borderRadius: BorderRadius.circular(6),
+                                  onTap: () async {
+                                    await provider.setCliReasoning(lv,
+                                        forKind: f.spec.kind.name);
+                                    if (mounted) setState(() {});
+                                  },
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 8, vertical: 3),
+                                    decoration: BoxDecoration(
+                                      color: on
+                                          ? const Color(0xFF9CCC65)
+                                              .withValues(alpha: 0.18)
+                                          : Colors.transparent,
+                                      borderRadius: BorderRadius.circular(6),
+                                      border: Border.all(
+                                          color: on
+                                              ? const Color(0xFF9CCC65)
+                                              : Colors.white24),
+                                    ),
+                                    child: Text(lv,
+                                        style: TextStyle(
+                                            color: on
+                                                ? const Color(0xFF9CCC65)
+                                                : Colors.white60,
+                                            fontSize: 10.5)),
+                                  ),
+                                ),
+                              );
+                            }),
+                        ]),
+                      ],
                     ],
                   ],
                 ),
@@ -285824,16 +288364,22 @@ class _McpChatDialogState extends State<_McpChatDialog>
     //   中身を読んで本体 (`node.exe` + `npm-cli.js`) を割り出す
     //   (= ユーザー報告: インストールが完了しない)。 割り出せない時だけ
     //   cmd 経由に落とす。
-    final launch = AgentCli.resolveLauncher(npm);
+    // ★ 割り出しは 2 段 (薄皮の中身 → npm の置き方)。 = ユーザー報告:
+    //   ターミナルを開こうとするとセキュリティソフトにブロックされて
+    //   アプリが落ちる。 `cmd.exe /c` へ落ちる回数を減らす。
+    final launch = AgentCli.shellFreeLaunch(npm);
     var exe = launch?.exe ?? npm;
     final head = <String>[...(launch?.args ?? const <String>[])];
     final lower = exe.toLowerCase();
     if (launch == null &&
         (lower.endsWith('.cmd') || lower.endsWith('.bat'))) {
-      final root = Platform.environment['SystemRoot'] ?? r'C:\Windows';
       head.insert(0, AgentCli.ptySafePath(exe));
+      // ★ `/d` を足して AutoRun を通さない (CLI 端末側と同じ理由)。
       head.insert(0, '/c');
-      exe = '$root\\System32\\cmd.exe';
+      head.insert(0, '/d');
+      // ★ 道筋は [AgentCli.shellExeFor] に任せる (ComSpec → System32 →
+      //   PATH の順)。 ここで組み立てていた既定値より確か。
+      exe = AgentCli.shellExeFor('cmd') ?? AgentCli.systemShell();
     }
     // ★ 入れる時に走らせる物を減らす (= ユーザー報告: Node.js の動作が
     //   セキュリティソフトに「悪意のある動作」 として止められ、 入れ終わら
@@ -285843,26 +288389,33 @@ class _McpChatDialogState extends State<_McpChatDialog>
     //     作りなので、 そこだけは省かない。 codex と Gemini CLI は
     //     後片付けを持たず、 実体は出来合いの物が入るだけなので省いてよい。
     final skipScripts = found.spec.kind != AgentCliKind.claude;
-    _runAgentCliSession(
-      provider,
-      AgentCliSession(
-        title: '${found.spec.label} — ${provider.t('cli.install')}',
-        exePath: exe,
-        arguments: [
-          ...head,
-          'install',
-          '-g',
-          if (skipScripts) '--ignore-scripts',
-          // 余計な通信を減らす (咎められる材料を減らす + 速い)。
-          '--no-audit',
-          '--no-fund',
-          pkg,
-        ],
-        workingDirectory: workDir,
-        hint: provider.t('cli.installHint'),
-        isInstall: true,
-      ),
+    final installSession = AgentCliSession(
+      title: '${found.spec.label} — ${provider.t('cli.install')}',
+      exePath: exe,
+      arguments: [
+        ...head,
+        'install',
+        '-g',
+        if (skipScripts) '--ignore-scripts',
+        // 余計な通信を減らす (咎められる材料を減らす + 速い)。
+        '--no-audit',
+        '--no-fund',
+        pkg,
+      ],
+      workingDirectory: workDir,
+      hint: provider.t('cli.installHint'),
+      isInstall: true,
     );
+    final kind = found.spec.kind;
+    _runAgentCliSession(provider, installSession);
+    // ★ 入れ終わったら、 探し直してそのまま開く (= ユーザー要望: 終わったら
+    //   画面が更新されて新セッションが開かれるように)。 導入の端末は札 (タブ)
+    //   にしていない = cliKey を持たないので、 どの CLI だったかはここで
+    //   押さえて渡す。
+    unawaited(installSession.finished.then((code) {
+      if (!mounted || code != 0 || installSession.stoppedByUser) return;
+      unawaited(_reopenCliAfterUpdate(provider, installSession, kind: kind));
+    }));
   }
 
   /// CLI が返事をする言葉を選ぶ (= ユーザー要望: 言語設定を変えられるように)。
@@ -285953,6 +288506,11 @@ class _McpChatDialogState extends State<_McpChatDialog>
     AgentCliRunner.begin(session);
     _lastCliSession = session;
     _registerCliTab(session);
+    // ★ 更新が済んだら、 その場で新しいセッションを開く (= ユーザー要望:
+    //   「codexCLI 等のアップデートが終わったら自動的に画面が更新されて
+    //   新セッションが開かれるように」)。 更新した CLI は走り続ける事が
+    //   あるので、 終了だけを待っていては気付けない。
+    _armCliUpdateWatch(provider, session);
     _showInlineTerminal(
       AgentTerminal(
         session: session,
@@ -286036,6 +288594,17 @@ class _McpChatDialogState extends State<_McpChatDialog>
             _buildAgentCliList(provider), provider.t('cli.title'),
             isTerminal: false);
       }
+      // ★ 更新した後に CLI 自身が終わった時 (= 画面の写真の
+      //   「[終了しました (コード 0)]」 がこれ)。 走ったまま知らせる版は
+      //   [_armCliUpdateWatch] の方で先に開き直している。 掛け金
+      //   [AgentCliSession.updateRestartHandled] が立っていれば
+      //   [updateRestartWanted] は false になるので、 二度は開かない。
+      //   ★ 「止める」 を押した時は上の [stoppedByUser] で return 済み。
+      //     終了コードが 0 以外の時は開き直さない (失敗を繰り返さない)。
+      if (code == 0 && !session.isInstall && session.updateRestartWanted) {
+        session.updateRestartHandled = true;
+        unawaited(_reopenCliAfterUpdate(provider, session));
+      }
       // ★ 入れ終わらなかった時は、 理由の心当たりを出す (= ユーザー報告:
       //   セキュリティソフトに Node.js の動作を止められ、 インストールが
       //   完了しない)。 端末に赤い行が流れるだけでは何をすればよいか
@@ -286044,6 +288613,144 @@ class _McpChatDialogState extends State<_McpChatDialog>
         unawaited(_showInstallBlockedDialog(provider));
       }
     }));
+  }
+
+  /// 更新の見張りを付けた札 (= 二重に付けないため)。
+  ///
+  /// ★ [_cliTabs] と同じく static。 この欄 (`_McpChatDialogState`) は閉じたり
+  ///   開き直したりする度に作り直されるが、 走っている札はその間も生き続ける。
+  static final Set<AgentCliSession> _cliUpdateWatched = <AgentCliSession>{};
+
+  /// 「更新が済んだ」 と言い出したら、 その場で新しいセッションを開く。
+  ///
+  /// ★ = ユーザー要望「codexCLI 等のアップデートが終わったら自動的に画面が
+  ///   更新されて新セッションが開かれるようにして欲しい」。 更新した CLI は
+  ///   「Please restart Codex.」 と書いてそのまま走り続ける事があるので、
+  ///   終了だけを待つ形では気付けなかった (= 手で開き直す必要があった)。
+  void _armCliUpdateWatch(MindMapProvider provider, AgentCliSession s) {
+    // 導入 (npm) の端末は自分で終わるので、 終了処理の方で面倒を見る。
+    if (s.isInstall) return;
+    if (!_cliUpdateWatched.add(s)) return;
+    void onNotify() {
+      // この欄が閉じられていたら見張りを外す (= 次に開いた欄が付け直せる
+      //   ように。 [_cliUpdateWatched] は static なので、 外さないと二度と
+      //   付けられない)。
+      if (!mounted) {
+        s.removeListener(onNotify);
+        _cliUpdateWatched.remove(s);
+        return;
+      }
+      if (!s.updateRestartWanted) return;
+      // ★ 先に掛け金を立てる (終了の知らせでもう一度呼ばれるため)。
+      s.updateRestartHandled = true;
+      unawaited(_reopenCliAfterUpdate(provider, s));
+    }
+
+    s.addListener(onNotify);
+    unawaited(s.finished.whenComplete(() {
+      s.removeListener(onNotify);
+      _cliUpdateWatched.remove(s);
+    }));
+  }
+
+  /// 更新 (または導入) が済んだ後に、 CLI を探し直して新しいセッションを開く。
+  ///
+  /// ★ 版が変わっているので、 探索の控え ([AgentCli.forget]) を捨ててから
+  ///   探し直す。 一覧は組み立てた時の結果を抱えているため、 出し直さないと
+  ///   古いままになる。
+  /// ★ 相手の決め方は 3 段: [kind] (導入の端末から渡す) → その札が入れ直した
+  ///   包 ([AgentCliSession.updatePackage]。 シェルで `npm i -g @openai/codex`
+  ///   を打った時はこれしか手掛かりが無い) → その札の CLI ([cliKey])。
+  /// ★ 走ったままの札は**畳まない**。 [_dropCliTab] は並びから外すだけで
+  ///   擬似端末を止めないので、 見えない居残りになる。
+  Future<void> _reopenCliAfterUpdate(
+      MindMapProvider provider, AgentCliSession done,
+      {AgentCliKind? kind}) async {
+    final pkg = done.updatePackage.trim().toLowerCase();
+    final key = kind?.name ?? done.cliKey;
+    if (key.isEmpty && pkg.isEmpty) return;
+    AgentCliFound? found;
+    for (var i = 0; i < 2; i++) {
+      if (i > 0) {
+        // 入れ替えた直後は、 前の探索が控えを書き終える所と行き違って
+        // 「見つかりません」 になる事がある。 1 度だけ間を置いて見直す。
+        await Future<void>.delayed(const Duration(milliseconds: 700));
+        if (!mounted) return;
+      }
+      AgentCli.forget();
+      final list = await AgentCli.findAll();
+      if (!mounted) return;
+      for (final f in list) {
+        if (!f.installed) continue;
+        final samePkg =
+            pkg.isNotEmpty && f.spec.npmPackage.toLowerCase() == pkg;
+        if (samePkg || (key.isNotEmpty && f.spec.kind.name == key)) {
+          found = f;
+          // 包の一致が最優先 (シェルで入れ直した相手)。
+          if (samePkg) break;
+        }
+      }
+      if (found != null) break;
+    }
+    final hit = found;
+    if (hit == null) {
+      // 見つからない時は、 終わった端末を見せ続けないよう一覧へ戻す。
+      // まだ走っている札は、 そのまま見せておく (画面を奪わない)。
+      if (!done.running) {
+        _showInlineTerminal(
+            _buildAgentCliList(provider), provider.t('cli.title'),
+            isTerminal: false);
+      }
+      return;
+    }
+    // 同じ CLI の続きか (= 見出し・フォルダー・垢を引き継ぐか)。 導入 (npm)
+    // の端末とシェルの札は会話ではないので、 一覧から開いた時と同じ既定で開く。
+    final sameCli =
+        kind == null && !done.isInstall && done.cliKey == hit.spec.kind.name;
+    // 同じフォルダーで開き直す。
+    //   ★ ただし既定のフォルダーと同じ時は**渡さない**。 渡すと「自分で
+    //     選んだフォルダー」 扱いになり、 覚書 (AGENTS.md) や .mcp.json を
+    //     置き直さない道 ([_openAgentCliTerminal] の userDir の判定) に
+    //     入ってしまう。
+    var dirArg = '';
+    if (sameCli) {
+      await _ensureCliDirsLoaded();
+      if (!mounted) return;
+      final cur = done.shownDirectory.trim();
+      var def = _cliWorkDir.trim();
+      if (def.isEmpty) {
+        try {
+          def = (await terminalBaseDir(provider)).trim();
+        } catch (_) {}
+        if (!mounted) return;
+      }
+      if (cur.isNotEmpty && cur.toLowerCase() != def.toLowerCase()) {
+        dirArg = cur;
+      }
+    }
+    final before = _lastCliSession;
+    await _openAgentCliTerminal(provider, hit,
+        // 走ったままの札が残る時は、 帯で見分けが付くよう名前を分ける
+        // ([_nextCliTabTitle] は重複が無ければ空を返す = 既定の名前)。
+        titleOverride: sameCli
+            ? (done.running ? _nextCliTabTitle(done.title) : done.title)
+            : '',
+        dirOverride: dirArg,
+        accountOverride: sameCli ? done.accountId : null,
+        // 同じ場所・同じ垢なので、 「既に開かれています」 に当たらないよう
+        // 必ず新しく起こす (= 新しいセッション)。
+        forceNewSession: true);
+    if (!mounted) return;
+    // 起こせなかった時 (道筋が無い・プランに掛かった等) は何も知らせない。
+    if (identical(_lastCliSession, before)) return;
+    // ★ 終わっている札だけ畳む (終わった端末を並べたままにしない)。 走って
+    //   いる物には手を出さない (外すだけでは止まらないので居残りになる)。
+    if (!done.running && _cliTabs.contains(done)) {
+      _dropCliTab(provider, done);
+      if (!mounted) return;
+    }
+    showTopToast(
+        context, provider.t('cli.updateReopened'), const Color(0xFF43B97F));
   }
 
   /// 入れ終わらなかった時の案内。
@@ -286089,6 +288796,9 @@ class _McpChatDialogState extends State<_McpChatDialog>
   Future<void> _openPlainTerminal(MindMapProvider provider) async {
     final dir = await terminalBaseDir(provider);
     if (!mounted) return;
+    // ★ 既に同じフォルダーの殻が開いていれば、 そちらを覚き直すだけ
+    //   (= ユーザー要望: 同じフォルダーを開こうとした時は起こさない)。
+    if (_focusOpenedCliTab(provider, dir, '')) return;
     _runAgentCliSession(provider, buildShellSession(provider, dir));
   }
 
@@ -286122,7 +288832,14 @@ class _McpChatDialogState extends State<_McpChatDialog>
       // ★ = ユーザー要望「タブ毎にログインするアカウントを分けて、 別々の
       //   垢で codex を 2 タブ開けるように」。 null なら今までどおり
       //   「今選んでいる垢」。
-      String? accountOverride}) async {
+      String? accountOverride,
+      // ★ = ユーザー要望「新規タブから同じアカウントを選ぶと『タブは既に
+      //   開かれています』 と出てしまうから、 同じアカウントで別セッションの
+      //   会話を開始できるように」。
+      //   true なら「既に開いている物を探して前に出す」 を飛ばし、 必ず新しい
+      //   端末 (= 新しい会話) を起こす。 一覧の「開く」 など、 開き直しが
+      //   目的の入口では今までどおり false のまま。
+      bool forceNewSession = false}) async {
     // ★ CLI の機能は Pro 以上 (= ユーザー要望)。 どの入口からでも
     //   通さないよう、 実行する側でも止める。
     if (!provider.canUseCliAi) return;
@@ -286154,6 +288871,17 @@ class _McpChatDialogState extends State<_McpChatDialog>
       if (mounted) {
         showTopToast(context, '$e', const Color(0xFFE53935));
       }
+      return;
+    }
+    // ★ = ユーザー要望「同じフォルダーを開こうとした場合、 既に開かれて
+    //   いますと表示されコマンド実行は行われないように」。
+    //   ここより先 (MCP の下ごしらえや擬似端末の起動) へは進まない。
+    // ★ ただし「新しい会話を始めたい」 時は素通りさせる (= ユーザー要望:
+    //   同じアカウントのまま別セッションを開けるように)。 端末の中身は
+    //   セッションごとに別物なので、 同じフォルダー・同じ垢で何枚開いても
+    //   互いに干渉しない。
+    if (!forceNewSession &&
+        _focusOpenedCliTab(provider, workDir, found.spec.kind.name)) {
       return;
     }
     // ★ CLI からこのアプリを操作できるようにする (= ユーザー報告:
@@ -286221,6 +288949,10 @@ class _McpChatDialogState extends State<_McpChatDialog>
     //     砂箱を開け、 アプリの道具 (MCP) の在り処も渡す
     //     (= ユーザー報告: codex から txt ファイル等を生成できない)。
     var launchExe = exe;
+    // ★ 画面で選んだモデルと推論を、 起こす側 ([AgentCli.extraLaunchArgs])
+    //   から見える所へ確実に入れておく (= ユーザー報告: luna を選んでも
+    //   sol の xhigh で始まる)。
+    provider.syncCliChoices();
     final launchArgs = <String>[
       ...found.launchPrefixArgs,
       if (deviceLogin)
@@ -286231,11 +288963,21 @@ class _McpChatDialogState extends State<_McpChatDialog>
     // 薄皮 (.cmd) の中身を割り出せなかった時だけ、 シェル経由で起こす。
     //   バッチは `CreateProcessW` では起こせないので、 これが無いと
     //   「端末を開けませんでした」 で終わってしまう。
+    //   ★ ここへ落ちる事はほぼ無い ([AgentCli.shellFreeLaunch] が
+    //     薄皮の中身 → npm の置き方 の 2 段で本体を割り出す)。
     if (found.needsShell) {
       launchArgs.insert(0, AgentCli.ptySafePath(launchExe));
+      // ★ `/d` を足す (= ユーザー報告: セキュリティソフトにブロックされて
+      //   アプリが落ちる)。 素の `/c` だと cmd はレジストリの AutoRun
+      //   (`HKCU\Software\Microsoft\Command Processor\AutoRun`) を先に
+      //   走らせる。 「画面のあるアプリが起こしたシェルが、 さらに別の物を
+      //   走らせた」 形になり、 振る舞い検知に真っ先に見られる。
       launchArgs.insert(0, '/c');
-      final root = Platform.environment['SystemRoot'] ?? r'C:\Windows';
-      launchExe = '$root\\System32\\cmd.exe';
+      launchArgs.insert(0, '/d');
+      // ★ 道筋は [AgentCli.shellExeFor] に任せる (ComSpec → System32 →
+      //   PATH の順)。 ここで組み立てていた既定値は環境変数が欠けた時に
+      //   壊れた道筋になる。
+      launchExe = AgentCli.shellExeFor('cmd') ?? AgentCli.systemShell();
     }
     // ★ Gemini は API キーを環境変数で渡す (= ユーザー報告: ログインが
     //   セキュリティソフトに止められる)。 キーが無ければ何も渡らないので、
@@ -286578,7 +289320,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
 
   MindMapProvider get provider => widget.provider;
 
-  /// セッションが動いたら描き直す (閉じている間に進んだぶんも見える)。
+  /// セッションが動いたら描き直す (閉じている間に進んだ分も見える)。
   void _onSessionChanged() {
     if (!mounted) return;
     setState(() {});
@@ -286699,11 +289441,24 @@ class _McpChatDialogState extends State<_McpChatDialog>
     }
   }
 
-  void _scrollToEnd() {
+  /// 一番下まで送る。
+  ///
+  /// ★ = ユーザー報告「欄が点滅する」。 これまでは知らせが来るたびに
+  ///   無条件で下端へ飛ばしていたので、 遡って読んでいる最中でも
+  ///   引きずり下ろされ、 画面が跳ねていた。 **元から下の方を見ていた
+  ///   時だけ**追いかける。
+  /// [force] = 利用者が自分で送った時など、 遡って読んでいても下まで送る。
+  void _scrollToEnd({bool force = false}) {
+    if (!force &&
+        _scroll.hasClients &&
+        _scroll.position.maxScrollExtent - _scroll.position.pixels > 64) {
+      return;
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scroll.hasClients) {
-        _scroll.jumpTo(_scroll.position.maxScrollExtent);
-      }
+      if (!_scroll.hasClients) return;
+      final pos = _scroll.position;
+      if ((pos.maxScrollExtent - pos.pixels).abs() < 1) return;
+      pos.jumpTo(pos.maxScrollExtent);
     });
   }
 
@@ -287275,7 +290030,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
         ]);
       _attachments.clear();
     });
-    _scrollToEnd();
+    _scrollToEnd(force: true);
   }
 
   /// ファイルを選んで中身を取り出し、 次の質問に添える。
@@ -287354,7 +290109,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
     _session.bind(provider);
     _session.initialTask = widget.initialTask;
     _session.submit(shown: text, raw: text, steer: _steerNext);
-    _scrollToEnd();
+    _scrollToEnd(force: true);
   }
 
   /// クリップボードの画像を添付に足す (= ユーザー要望: Ctrl+V で貼れるように)。
@@ -287438,7 +290193,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
       if (text == null || text.trim().isEmpty) {
         setState(() => _msgs
             .add(_McpChatMsg('ai', provider.t('mcp.attachFailed'), raw: '')));
-        _scrollToEnd();
+        _scrollToEnd(force: true);
         return;
       }
       setState(() => _attachments.add((name: name, text: text)));
@@ -287772,7 +290527,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
       images: photos.isEmpty ? null : photos,
       steer: _steerNext,
     );
-    _scrollToEnd();
+    _scrollToEnd(force: true);
   }
 
   @override
@@ -287853,514 +290608,16 @@ class _McpChatDialogState extends State<_McpChatDialog>
         //   全画面・閉じる) も左半分に入る。 右半分に帯は出ない。
         child: _buildChatSideBySide(
           provider,
-          Column(mainAxisSize: MainAxisSize.min, children: [
+          (sharedHeader) =>
+              Column(mainAxisSize: MainAxisSize.min, children: [
           // ── ヘッダー ──
           //   ★ 帯まるごとを掴んで窓を動かせるようにする
           //     (= ユーザー報告: フローティング欄をドラッグしようとしても
           //     反応が悪い)。 見出しの文字の所だけだと、 幅が狭い時に
           //     ほとんど掴む場所が残らなかった。 掴む板は帯の**後ろ**に
           //     敷いてあるので、 ボタンの上ではボタンだけが受け取る。
-          _dragHeader(
-            Padding(
-            padding: EdgeInsets.fromLTRB(_narrowHeader(context) ? 10 : 14, 10,
-                _narrowHeader(context) ? 2 : 6, 4),
-            // ★ = ユーザー指摘「タブを切り替えた時に項目の高さが違うせいで
-            //   ぐわんぐわんなるのが気持ち悪い」。 帯の高さは**一番背の高い
-            //   ボタン**で決まるのに、 出るボタンがタブによって変わる
-            //   (会話の時だけ出る物がある = `_inlineTerminal == null`)。
-            //   そのため切り替えるたびに帯が伸び縮みしていた。 高さを決め打ち
-            //   にして、 何が出ていても動かないようにする。 数は
-            //   IconButton の既定の最小寸 (広い時 48 / 狭い時 32) に合わせて
-            //   あるので、 見た目は今までと変わらない。
-            child: SizedBox(
-            height: _narrowHeader(context) ? 32 : 48,
-            child: Row(children: [
-              // 印の上でも掴んで動かせるように、 当たりは後ろの板へ通す。
-              const IgnorePointer(
-                child: Icon(Icons.auto_awesome_rounded,
-                    size: 18, color: Color(0xFF80CBC4)),
-              ),
-              SizedBox(width: _narrowHeader(context) ? 5 : 8),
-              // ★ 見出しの何も無い所を掴んでも窓を動かせる
-              //   (= ユーザー報告: 上の細い帯だけだと掴みにくい)。
-              //   浮遡窓の中に居る時だけ効く。
-              Expanded(
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onPanUpdate: (d) => context
-                      .findAncestorStateOfType<_FloatingPanelWindowState>()
-                      ?.dragWindowBy(d.delta),
-                  onPanEnd: (_) => context
-                      .findAncestorStateOfType<_FloatingPanelWindowState>()
-                      ?.dragWindowEnd(),
-                  // ★ 1 行に収める (= ユーザー報告: スマホで見出しが
-                  //   縦書きになる)。 横幅が足りないと 1 文字ずつ折り返して
-                  //   縦に積まれてしまうので、 折り返しを止めて「…」 にする。
-                  // ★ CLI を 1 枚だけ出している時は、 その名前を見出しに
-                  //   する (= 見出しが二段になるのをやめて 1 本に)。
-                  // ★ = ユーザー指摘「複数タブ開いている時は CodexCLI とか
-                  //   上に表示しないで。 AI(API) のタブだって開いているのだし」。
-                  //   札が 2 枚以上ある時、 見出しに 1 本の名前を出すと
-                  //   「今はこれだけ」 と読めてしまう。 どれが出ているかは
-                  //   帯の札が示しているので、 その時は欄の名前に戻す。
-                  child: Builder(builder: (_) {
-                    // ★ = ユーザー指摘「そもそもヘッダーに AI(API) って書く
-                    //   必要がないし、 PC内AI を選択してもヘッダーに AI(API)
-                    //   と書かれているのはおかしい」。 見出しは**今この枠に
-                    //   出している物**を言う。 札の帯が名前を示している時は
-                    //   何も書かない (二度言わない)。
-                    final tabs = _openChatTabIds.length + _cliTabs.length;
-                    final showCliName = tabs <= 1 &&
-                        _inlineTerminal != null &&
-                        _inlineTerminalTitle.isNotEmpty;
-                    final title = showCliName
-                        ? _inlineTerminalTitle
-                        : (_inlineTerminal != null && !_inlineIsTerminal)
-                            // CLI の一覧を出している時はその名前。
-                            ? provider.t('cli.title')
-                            : (tabs > 1 ? '' : provider.t('mcp.chatTitle'));
-                    return Text(
-                        title,
-                        maxLines: 1,
-                        softWrap: false,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                            color: showCliName
-                                ? const Color(0xFF9CCC65)
-                                : Colors.white,
-                            fontSize: 14,
-                            fontWeight: FontWeight.w700));
-                  }),
-                ),
-              ),
-              // (ブラウザ版 AI を開くボタンは削除 = ユーザー要望:
-              //  AI アシスタントからはブラウザ版 AI を開けないように)
-              // ── 浮かせるボタンは廃止 (= ユーザー要望: AI アシスタントは
-              //    アプリの中でしか使わないのでフローティングは要らない)。
-              //    外に出す窓の仕組みは残してあるが、 ここからは開かない。 ──
-              // ── 全画面 / 元の大きさ (= ユーザー要望: AI アシスタントの
-              //    画面を全画面で開けるように) ──
-              //    ★ 走っている CLI は止めない。 浮かせた窓なら窓の大きさ
-              //      だけを、 ダイアログなら余白と上限だけを変えるので、
-              //      描く物の並びは変わらず端末は作り直されない
-              //      (幅が変わるぶん、 CLI は画面を折り返し直す)。
-              //    ★ 分割ペインの中では出さない。 大きさはペインが持って
-              //      いるので、 ここから広げる先が無い。
-              if (!widget.paneMode)
-                IconButton(
-                  visualDensity: VisualDensity.compact,
-                  constraints: _hdrBtnConstraints(context),
-                  padding: _narrowHeader(context)
-                      ? EdgeInsets.zero
-                      : const EdgeInsets.all(8),
-                  tooltip: provider.t(_isPanelMaximized
-                      ? 'mcp.exitFullscreen'
-                      : 'mcp.fullscreen'),
-                  icon: Icon(
-                      _isPanelMaximized
-                          ? Icons.fullscreen_exit_rounded
-                          : Icons.fullscreen_rounded,
-                      color: _isPanelMaximized
-                          ? const Color(0xFF80CBC4)
-                          : Colors.white38,
-                      size: 19),
-                  onPressed: _toggleFullscreen,
-                ),
-              // ── 折り畳む (= ユーザー要望: パネルを畳んでおけるように) ──
-              //    浮かせている窓の中でだけ出す。 分割ペインや全画面では
-              //    畳んでも空いた所が残るだけなので出さない。
-              //    ★ 置き場所は帯の**先頭** (= ユーザー要望: 閉じるボタンの
-              //    隣だと間違えて押してしまうので、 説明ボタンの左へ)。
-              if (context.findAncestorStateOfType<_FloatingPanelWindowState>() !=
-                  null)
-                IconButton(
-                  visualDensity: VisualDensity.compact,
-                  constraints: _hdrBtnConstraints(context),
-                  padding: _narrowHeader(context)
-                      ? EdgeInsets.zero
-                      : const EdgeInsets.all(8),
-                  tooltip: provider.t('mcp.collapse'),
-                  icon: const Icon(Icons.unfold_less_rounded,
-                      color: Colors.white38, size: 19),
-                  onPressed: () => _setCollapsed(true),
-                ),
-              // 説明をもう一度見る (= ユーザー要望: ヘッダーに ⓘ で置く)。
-              // ★ CLI の画面では、 会話まわりのボタンは出さない (= ユーザー
-              //   要望: CLI 画面で「新しい会話」 が AI アシスタントの物に
-              //   なっているのは違和感がある。 切り替えボタンだけでよい)。
-              if (_inlineTerminal == null)
-              IconButton(
-                visualDensity: VisualDensity.compact,
-                constraints: _hdrBtnConstraints(context),
-                padding: _narrowHeader(context)
-                    ? EdgeInsets.zero
-                    : const EdgeInsets.all(8),
-                tooltip: provider.t('mcp.showInfo'),
-                icon: Icon(
-                    Icons.info_outline_rounded,
-                    color: _showMcpInfo ||
-                            _showCapabilityPanel ||
-                            !provider.mcpInfoDismissed
-                        ? const Color(0xFF80CBC4)
-                        : Colors.white38,
-                    size: 18),
-                // 説明の欄を開いている時は、 押したら会話へ戻る。
-                // ★ 開く時は**一発で中身まで**出す (= ユーザー要望: 説明欄の
-                //   項目は最初から開かれた状態に)。 以前は ⓘ で短い帯を出して、
-                //   その中の「できること (詳しく)」 をもう一度押させていた。
-                onPressed: () {
-                  if (_showCapabilityPanel) {
-                    _backToChatView();
-                    return;
-                  }
-                  // ★ 端末を出したままだと説明が後ろに隠れて、 押しても
-                  //   何も起きないように見えた。 先に会話の画面へ戻す。
-                  if (_inlineTerminal != null) _backToChatView();
-                  setState(() => _showCapabilityPanel = true);
-                },
-              ),
-              // ── 新規タブ (= ユーザー要望: 今ログインしているアカウントで
-              //    別の会話セッションを作って切り替えられるように) ──
-              //    ★ CLI をもう 1 つ**本当に起こす**。 CLI 自身の `/resume`
-              //      は同じプロセスの中で会話を差し替えるだけなので、
-              //      2 つを並べて行き来することはできない。
-              //    ★ ログインは CLI が自分で持っているので、 もう 1 つ
-              //      起こすだけで同じアカウントのままになる。
-              //    ★ 押すと**何を開くかの一覧**が出る (= ユーザー要望:
-              //      claudecode / codex / AI アシスタントなど別の種類も)。
-              if (_inlineTerminal != null && _inlineIsTerminal)
-                Builder(
-                  builder: (bctx) => IconButton(
-                    visualDensity: VisualDensity.compact,
-                    constraints: _hdrBtnConstraints(context),
-                    padding: _narrowHeader(context)
-                        ? EdgeInsets.zero
-                        : const EdgeInsets.all(8),
-                    tooltip: provider.t('cli.newTabPick'),
-                    icon: const Icon(Icons.add_box_outlined,
-                        color: Colors.white54, size: 19),
-                    onPressed: () => unawaited(_newCliTab(provider, bctx)),
-                  ),
-                ),
+          if (!sharedHeader) _buildChatHeaderBar(provider),
 
-              // ── 会話 (AI (API)) と CLI を左右に並べる
-              //    (★ = ユーザー要望「AI(API)と codexCLI を画面分割で開ける
-              //    ようにして欲しい」) ──
-              //    ★ 会話を出している時だけ出す。 端末を出している時は、
-              //      すぐ下の「左右に分割」 (端末どうし) が同じ場所に出る。
-              //    ★ タブを長押しして「AI (API)」 の札に落としても同じ事が
-              //      できる (帯の落とし先)。
-              //    ★ 右の CLI は**自分の下の帯** (モデル / 推論 / 停止 /
-              //      終了) を持っているので、 その帯はその CLI に効く。
-              //      上のこの帯と書き込み口は左の会話に効く。
-              if (_inlineTerminal == null && AgentCli.supported)
-                IconButton(
-                  visualDensity: VisualDensity.compact,
-                  constraints: _hdrBtnConstraints(context),
-                  padding: _narrowHeader(context)
-                      ? EdgeInsets.zero
-                      : const EdgeInsets.all(8),
-                  tooltip: _activeSideSession != null
-                      ? provider.t('cli.chatUnsplit')
-                      : provider.t('cli.chatSplitTip'),
-                  icon: Icon(
-                      _activeSideSession != null
-                          ? Icons.close_fullscreen_rounded
-                          : Icons.vertical_split_rounded,
-                      color: _activeSideSession != null
-                          ? const Color(0xFF9CCC65)
-                          : Colors.white54,
-                      size: 19),
-                  onPressed: () => _toggleChatSplit(provider),
-                ),
-              // ── 左右に分割 (= ユーザー要望: タブを結合させて左右分割で
-              //    出せるように) ──
-              //    ★ 走らせている物は止めない。 ただし幅が変わるので、
-              //      CLI の画面は並べた幅で折り返し直される (元には戻らない)。
-              //    ★ どちらの端末も**自分の下の帯** (モデル / 推論 / 履歴 /
-              //      使用量 / キュー / 停止 / 終了) を持っているので、 その帯は
-              //      その側の CLI に効く。 この上の帯と「新規タブ」 は
-              //      左側 (= いま選んでいるタブ) に効く。
-              if (_inlineTerminal != null && _inlineIsTerminal)
-                IconButton(
-                  visualDensity: VisualDensity.compact,
-                  constraints: _hdrBtnConstraints(context),
-                  padding: _narrowHeader(context)
-                      ? EdgeInsets.zero
-                      : const EdgeInsets.all(8),
-                  tooltip: _activeSplitSession != null
-                      ? provider.t('cli.unsplit')
-                      : provider.t('cli.splitTip'),
-                  icon: Icon(
-                      _activeSplitSession != null
-                          ? Icons.close_fullscreen_rounded
-                          : Icons.vertical_split_rounded,
-                      color: _activeSplitSession != null
-                          ? const Color(0xFF9CCC65)
-                          : Colors.white54,
-                      size: 19),
-                  onPressed: () => _toggleCliSplit(provider),
-                ),              // ── CLI の一覧へ戻る (= ユーザー要望: 端末を開いた後、
-              //    「終了」 を押さないと選び直せなくて使いづらい) ──
-              //    走っている CLI は止めない。 一覧の先頭に「動かしたままの
-              //    CLI」 が並ぶので、 そこから覗き直せる。
-              if (_inlineTerminal != null && _inlineIsTerminal)
-                IconButton(
-                  visualDensity: VisualDensity.compact,
-                  constraints: _hdrBtnConstraints(context),
-                  padding: _narrowHeader(context)
-                      ? EdgeInsets.zero
-                      : const EdgeInsets.all(8),
-                  tooltip: provider.t('cli.backToList'),
-                  icon: const Icon(Icons.format_list_bulleted_rounded,
-                      color: Colors.white54, size: 19),
-                  onPressed: () => _showInlineTerminal(
-                      _buildAgentCliList(provider), provider.t('cli.title'),
-                      isTerminal: false),
-                ),
-              // ── パソコンの AI コマンド (= ユーザー要望: どうやって
-              //    Claude Code や Codex を呼び出すのか分からない、
-              //    ログインボタンを付けて欲しい) ──
-              //    説明欄の奥に埋めず、 帯に直に出す。
-              if (AgentCli.supported)
-                Builder(
-                  builder: (bctx) => IconButton(
-                    visualDensity: VisualDensity.compact,
-                    constraints: _hdrBtnConstraints(context),
-                    padding: _narrowHeader(context)
-                        ? EdgeInsets.zero
-                        : const EdgeInsets.all(8),
-                    // ★ 見出しを 1 本にまとめたので、 会話へ戻る口はここ
-                    //   (= ユーザー要望: 「会話へ戻る」 の項目は消す)。
-                    //   端末を出している間は、 押すと会話へ戻る。
-                    tooltip: _inlineTerminal != null
-                        ? provider.t('cli.backToChat')
-                        : provider.t('cli.title'),
-                    icon: Icon(
-                        _inlineTerminal != null
-                            ? Icons.chat_bubble_outline_rounded
-                            : Icons.terminal_rounded,
-                        // ★ 周りのアイコンに色をそろえる (= ユーザー要望:
-                        //   PC内AI だけ色が違って目立つ)。 この帯の他の
-                        //   アイコンは白 54% / 38% なので、 同じ 54% に。
-                        color: Colors.white54,
-                        size: 19),
-                    onPressed: () => _inlineTerminal != null
-                        ? _backToChatView()
-                        : _openCliView(provider, bctx),
-                  ),
-                ),
-              // 前提条件 (= ユーザー要望: Markdown のように自分で書いて置ける)。
-              // ★ Builder で押したボタン自身の context を作る (= ユーザー要望:
-              //   画面中央ではなくボタンの近くに出す)。 帯を掴む板は帯の
-              //   **後ろ**に敷いてあるので、 Builder を挟んでも押下は奪われない。
-              if (_inlineTerminal == null)
-              Builder(builder: (bctx) => IconButton(
-                visualDensity: VisualDensity.compact,
-                constraints: _hdrBtnConstraints(context),
-                padding: _narrowHeader(context)
-                    ? EdgeInsets.zero
-                    : const EdgeInsets.all(8),
-                tooltip: provider.t('mcp.preamble'),
-                icon: Icon(Icons.rule_rounded,
-                    color: provider.mcpPreamble.trim().isEmpty
-                        ? Colors.white54
-                        : const Color(0xFF80CBC4),
-                    size: 19),
-                onPressed: () => _editPreamble(bctx),
-              )),
-              // 設定 (= ユーザー要望: 順番待ち / 割り込みはここで決める。
-              //   処理中の帯には出さない)。
-              if (_inlineTerminal == null)
-              PopupMenuButton<String>(
-                constraints: const BoxConstraints(minWidth: 200),
-                padding: EdgeInsets.zero,
-                tooltip: provider.t('mcp.assistantSettings'),
-                color: const Color(0xFF23233A),
-                icon: const Icon(Icons.tune_rounded,
-                    color: Colors.white54, size: 19),
-                onSelected: (v) async {
-                  if (v == 'queue') provider.setMcpSteerNext(false);
-                  if (v == 'steer') provider.setMcpSteerNext(true);
-                  // ★ = ユーザー要望「AI(API) にも編集権限を渡すフォルダーを
-                  //   設定できるように」。
-                  if (v == 'editdir') {
-                    final d = await FilePicker.platform.getDirectoryPath(
-                        dialogTitle: provider.t('mcp.editDir'));
-                    if (d == null || d.isEmpty) return;
-                    await provider.setAiEditDir(d);
-                    if (mounted) setState(() {});
-                  }
-                  if (v == 'editdirClear') {
-                    await provider.setAiEditDir('');
-                    if (mounted) setState(() {});
-                  }
-                },
-                itemBuilder: (_) => [
-                  PopupMenuItem<String>(
-                    enabled: false,
-                    height: 30,
-                    child: Text(provider.t('mcp.whenBusy'),
-                        style: const TextStyle(
-                            color: Colors.white38, fontSize: 11)),
-                  ),
-                  for (final e in const [
-                    ['queue', 'mcp.modeQueue'],
-                    ['steer', 'mcp.modeSteer'],
-                  ])
-                    PopupMenuItem<String>(
-                      value: e[0],
-                      height: 36,
-                      child: Row(children: [
-                        Icon(
-                            (e[0] == 'steer') == provider.mcpSteerNext
-                                ? Icons.radio_button_checked_rounded
-                                : Icons.radio_button_off_rounded,
-                            size: 15,
-                            color: (e[0] == 'steer') == provider.mcpSteerNext
-                                ? const Color(0xFF4FC3F7)
-                                : Colors.white38),
-                        const SizedBox(width: 8),
-                        Text(provider.t(e[1]),
-                            style: const TextStyle(
-                                color: Colors.white, fontSize: 12.5)),
-                      ]),
-                    ),
-                  const PopupMenuDivider(),
-                  PopupMenuItem<String>(
-                    enabled: false,
-                    height: 30,
-                    child: Text(provider.t('mcp.editDir'),
-                        style: const TextStyle(
-                            color: Colors.white38, fontSize: 11)),
-                  ),
-                  PopupMenuItem<String>(
-                    value: 'editdir',
-                    height: 36,
-                    child: Row(children: [
-                      const Icon(Icons.folder_open_rounded,
-                          size: 15, color: Color(0xFF4FC3F7)),
-                      const SizedBox(width: 8),
-                      // ★ = ユーザー指摘「AI(API) では編集権限を渡す
-                      //   フォルダーの場所が書いていなくない?」。 末尾の
-                      //   名前しか出していなかったので、 どこを指している
-                      //   のか分からなかった。 道筋も下に添える。
-                      Flexible(
-                        child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Text(
-                                  provider.aiEditDir.trim().isEmpty
-                                      ? provider.t('cli.tabDirPick')
-                                      : _dirLabel(provider.aiEditDir),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                      color: Colors.white, fontSize: 12.5)),
-                              if (provider.aiEditDir.trim().isNotEmpty)
-                                Text(provider.aiEditDir.trim(),
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                        color: Colors.white38,
-                                        fontSize: 10,
-                                        height: 1.3)),
-                            ]),
-                      ),
-                    ]),
-                  ),
-                  if (provider.aiEditDir.trim().isNotEmpty)
-                    PopupMenuItem<String>(
-                      value: 'editdirClear',
-                      height: 32,
-                      child: Row(children: [
-                        const Icon(Icons.close_rounded,
-                            size: 14, color: Colors.white38),
-                        const SizedBox(width: 8),
-                        Text(provider.t('mcp.editDirClear'),
-                            style: const TextStyle(
-                                color: Colors.white60, fontSize: 11.5)),
-                      ]),
-                    ),
-                ],
-              ),
-              // 会話の一覧 (= ユーザー要望: セッションを分けて保存)。
-              // ★ こちらも押したボタンの近くへ (= ユーザー要望)。
-              if (_inlineTerminal == null)
-              Builder(builder: (bctx) => IconButton(
-                visualDensity: VisualDensity.compact,
-                constraints: _hdrBtnConstraints(context),
-                padding: _narrowHeader(context)
-                    ? EdgeInsets.zero
-                    : const EdgeInsets.all(8),
-                tooltip: provider.t('mcp.sessions'),
-                icon: const Icon(Icons.forum_outlined,
-                    color: Colors.white54, size: 19),
-                // ★ 端末や説明を出したままだと、 会話を選んでも見えている物が
-                //   変わらなかった (= ユーザー要望: 会話一覧などを押したら
-                //   AI アシスタントの画面に戻る)。
-                onPressed: () {
-                  _backToChatView();
-                  unawaited(_showSessionPicker(bctx));
-                },
-              )),
-              // 新しい会話を始める。
-              // ★ = ユーザー要望「新しい会話から CLI のセッションも呼べる
-              //   ようにして欲しい」。 直に会話を作るのをやめ、
-              //   [_newCliTab] の一覧 (新しい会話 / 会話へ戻る / 各 CLI /
-              //   ターミナル) を出す。 先頭が「新しい会話」 なので、 今まで
-              //   どおりの使い方なら 1 押し増えるだけ。
-              if (_inlineTerminal == null)
-              Builder(
-                builder: (bctx) => IconButton(
-                  visualDensity: VisualDensity.compact,
-                  constraints: _hdrBtnConstraints(context),
-                  padding: _narrowHeader(context)
-                      ? EdgeInsets.zero
-                      : const EdgeInsets.all(8),
-                  tooltip: provider.t('mcp.newSession'),
-                  icon: const Icon(Icons.add_comment_outlined,
-                      color: Colors.white54, size: 19),
-                  onPressed: () => unawaited(_newCliTab(provider, bctx)),
-                ),
-              ),
-              // 今の会話の中身を消す。
-              if (_inlineTerminal == null)
-              IconButton(
-                visualDensity: VisualDensity.compact,
-                constraints: _hdrBtnConstraints(context),
-                padding: _narrowHeader(context)
-                    ? EdgeInsets.zero
-                    : const EdgeInsets.all(8),
-                tooltip: provider.t('mcp.clearHistory'),
-                icon: const Icon(Icons.delete_sweep_rounded,
-                    color: Colors.white38, size: 19),
-                onPressed: () async {
-                  _backToChatView();
-                  await provider.clearMcpChatHistory();
-                  if (!mounted) return;
-                  setState(_msgs.clear);
-                },
-              ),
-              IconButton(
-                visualDensity: VisualDensity.compact,
-                constraints: _hdrBtnConstraints(context),
-                padding: _narrowHeader(context)
-                    ? EdgeInsets.zero
-                    : const EdgeInsets.all(8),
-                tooltip: provider.t('btn.close'),
-                icon:
-                    const Icon(Icons.close_rounded, color: Colors.white70),
-                // ペインの中では Navigator を閉じてはいけない
-                //   (アプリ本体が pop されてしまう)。
-                onPressed: () => widget.paneMode
-                    ? widget.onClosePane?.call()
-                    : Navigator.of(context).pop(),
-              ),
-            ]),
-            ),
-          )),
           const Divider(height: 1, color: Colors.white12),
           // ── MCP の説明 (= ユーザー要望: 初回だけ出し、 閉じたらヘッダーの
           //    ⓘ から見られるようにする) ──
@@ -288451,22 +290708,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
               ),
             ]),
           ),
-          // ── 会話の時もタブの帯を出す (= ユーザー要望: AI アシスタントも
-          //    「+」 の選択肢の 1 つとして行き来できるように) ──
-          //    ★ 端末を 1 枚も持っていない人の画面は今までどおり (帯を足すと
-          //      使わない人の狭い欄が 30px 削られるだけになる)。
-          // ★ 会話の札が 2 枚以上ある時も帯を出す (= 会話をタブにしたので、
-          //   端末を 1 枚も持っていなくても行き来が要る)。
-          if (widget.boundSessionId == null &&
-              _inlineTerminal == null &&
-              !_showCapabilityPanel &&
-              (_cliTabs.isNotEmpty || _openChatTabIds.length > 1))
-            // ★ 全画面の時は下の会話・入力欄と左端をそろえる
-            //   (= ユーザー要望「…全画面の時は中央に寄せた上で左揃えに」)。
-            Padding(
-              padding: EdgeInsets.symmetric(horizontal: _readingSidePad),
-              child: _buildCliTabStrip(provider),
-            ),
+          if (!sharedHeader) _buildChatTabStripBar(provider),
           // ── 説明の欄 / メッセージ一覧 ──
           //    説明は会話に混ぜず、 専用の欄で出す (= ユーザー要望)。
           Expanded(
@@ -289866,4 +292108,344 @@ AgentCliSession buildShellSession(MindMapProvider provider, String dir,
   );
 }
 
+// ── 編集画面の下に出す端末の帯 (VSCode の統合ターミナルと同じ置き方) ──
+//
+// ★ = ユーザー要望「txt ファイル等で開かれるターミナルは vscode の様に
+//   画面下部に開かれるようにして欲しい」。
+//
+// ★ **双子を作らない**。 テキストの編集画面 (_TextEditorDialogState) と
+//   マークダウンの画面 (_MarkdownPageViewState) の両方がこの 1 つを使う。
+//   以前は両方が本体の `openTerminalFromAnywhere` を呼んでいて、 本体の
+//   「開き方」 の設定 (全画面 / 浮遊窓 / 上下左右分割) に振られていた。
+//   編集画面は本体の**上に重ねた別の画面**なので、 分割を選んでいると
+//   本体のキャンバスの下半分に出て編集画面の裏に隠れ、 押しても何も
+//   起きないように見えていた。
+//
+// ★ 走らせている物 (AgentCliSession) は**呼んだ側の State が持つ**。 この
+//   帯は覗くだけなので、 畳んで開き直しても端末は生き続ける
+//   (agent_terminal.dart / agent_cli_session.dart の dispose は端末を
+//   止めない = AgentCliRunner.active に残ったまま)。
+// ★ 同じ端末を 2 枚の TerminalView で描くと桁数を取り合って壊れるので、
+//   この帯の殻は CLI のタブ (_cliTabs) には入れない (= 他所に写らない)。
+//
+// ★ 打鍵は**ここで止めない**。 [AgentTerminal] は自前の Focus で
+//   Ctrl+英字 / 矢印 / Enter / Esc / Delete / Tab / F1〜F12 を handled にして
+//   いるので、 編集画面の割り当てへは漏れない (漏れるのは「ただの文字」
+//   と Ctrl+数字だけで、 どちらの編集画面もそれには何もしない)。
+//   逆にここで `skipRemainingHandlers` を返すと、 端末の中にある入力欄
+//   (順番待ち欄 / 依頼欄) で矢印や Ctrl+A / Ctrl+V が効かなくなる
+//   (文字の編集の割り当てを持っているのはもっと上の
+//   DefaultTextEditingShortcuts だから)。
+class _EditorTerminalBand extends StatelessWidget {
+  const _EditorTerminalBand({
+    required this.provider,
+    required this.session,
+    required this.height,
+    required this.onHeightDelta,
+    required this.onHide,
+    required this.onEnd,
+  });
 
+  final MindMapProvider provider;
+
+  /// 走らせている殻。 止めるのは [onEnd] を押した時だけ。
+  final AgentCliSession session;
+
+  /// 帯の高さ。 **呼んだ側がその場の残りで抑えてから**渡す。
+  final double height;
+
+  /// 上の縁を上下に引いた分 (下へ引く = 縮む)。
+  final void Function(double dy) onHeightDelta;
+
+  /// 畳む (端末は止めない)。
+  final VoidCallback onHide;
+
+  /// 終わらせて畳む。
+  final VoidCallback onEnd;
+
+  static const double kMinH = 120.0;
+  static const double kMaxH = 720.0;
+  static const double kDefaultH = 260.0;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: height,
+      child: Column(children: [
+        // ── 高さを変える線 (上の縁を掴んで上下に引く)。 掴み方は左右の
+        //    パネル (_panelResizeHandle) と揃える。 ──
+        MouseRegion(
+          cursor: SystemMouseCursors.resizeRow,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onVerticalDragUpdate: (d) => onHeightDelta(d.delta.dy),
+            child: Container(
+              height: 6,
+              width: double.infinity,
+              color: const Color(0xFF14141F),
+              alignment: Alignment.center,
+              child: Container(height: 2, color: Colors.white12),
+            ),
+          ),
+        ),
+        // ── 見出し (殻の名前と今いるフォルダー + 終わる / 畳む) ──
+        Container(
+          height: 26,
+          color: const Color(0xFF1A1A2E),
+          padding: const EdgeInsets.only(left: 10, right: 2),
+          child: Row(children: [
+            const Icon(Icons.terminal_rounded,
+                size: 14, color: Color(0xFF9CCC65)),
+            const SizedBox(width: 6),
+            Expanded(
+              // `cd` で移った先も出す (殻が教えてくれた時だけ変わる)。
+              child: ListenableBuilder(
+                listenable: session,
+                builder: (_, __) => Text(
+                    '${session.title}   ${session.shownDirectory}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style:
+                        const TextStyle(color: Colors.white54, fontSize: 11)),
+              ),
+            ),
+            IconButton(
+              tooltip: provider.t('cli.endSession'),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+              icon: const Icon(Icons.delete_outline_rounded,
+                  size: 15, color: Colors.white38),
+              onPressed: onEnd,
+            ),
+            IconButton(
+              tooltip: provider.t('btn.close'),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+              icon: const Icon(Icons.keyboard_double_arrow_down_rounded,
+                  size: 16, color: Colors.white54),
+              onPressed: onHide,
+            ),
+          ]),
+        ),
+        // ── 端末そのもの ──
+        Expanded(
+          child: AgentTerminal(session: session, showHeader: false),
+        ),
+      ]),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  アプリの外に出す窓の中身
+//
+//  ★ = ユーザー要望「codexCLI などの画面をアプリの外に出せるようにして、
+//    ショートカットから呼び出すとページを立ち上げずに呼べるように」。
+//    どちらも `main.dart` から直に組み立てる (= マップの画面を作らない)。
+//    この 2 つだけは**公開**にしてある (同じファイルの他は全部私有)。
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// CLI (Claude Code / Codex CLI) の画面だけを出す入れ物。
+///
+/// 中身は本体と同じ `_McpChatDialog` を「ペインの中身」 の形で使い、
+/// 開いた直後に CLI の一覧から始まるようにしてある。
+class AgentCliWindowHost extends StatefulWidget {
+  /// 窓を閉じる係 (単独窓ならプロセスごと終わらせる)。
+  final VoidCallback? onRequestClose;
+  const AgentCliWindowHost({super.key, this.onRequestClose});
+
+  @override
+  State<AgentCliWindowHost> createState() => _AgentCliWindowHostState();
+}
+
+class _AgentCliWindowHostState extends State<AgentCliWindowHost> {
+  /// 控え (prefs) を読み終わったか。
+  ///
+  /// ★ = 実機で判明。 立ち上げた直後に組むと、 表示の言語がまだ読めておらず
+  ///   見出しだけ英語で出る (本文は後から描き直されるので日本語になり、
+  ///   ちぐはぐになる)。 読み終わってから 1 回だけ組む。
+  bool _ready = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // 開いた直後は CLI の一覧から (会話ではなく)。
+    _McpChatDialogState.openCliListOnStart = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(_wait()));
+  }
+
+  Future<void> _wait() async {
+    try {
+      await context
+          .read<MindMapProvider>()
+          .initialLoadDone
+          .timeout(const Duration(seconds: 5));
+    } catch (_) {}
+    if (mounted) setState(() => _ready = true);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_ready) {
+      return const Center(
+        child: SizedBox(
+          width: 20,
+          height: 20,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      );
+    }
+    final provider = context.watch<MindMapProvider>();
+    return _McpChatDialog(
+      provider: provider,
+      // 窓いっぱいに広げる (Dialog で包まない)。
+      paneMode: true,
+      onClosePane: widget.onRequestClose,
+    );
+  }
+}
+
+/// 集中ロックだけを出す入れ物 (Android のショートカット用)。
+///
+/// ★ マップの画面は**組み立てない**。 解除した後で初めていつもの画面へ移る。
+///   ロックに入れない時 (プランの線引きに掛かった時など) も、 黙っていつもの
+///   画面へ移す (ショートカットが無反応に見えるのを防ぐ)。
+class FocusLockBootScreen extends StatefulWidget {
+  const FocusLockBootScreen({super.key});
+
+  @override
+  State<FocusLockBootScreen> createState() => _FocusLockBootScreenState();
+}
+
+class _FocusLockBootScreenState extends State<FocusLockBootScreen>
+    with WidgetsBindingObserver {
+  /// ロックが終わった (= いつもの画面へ移る)。
+  bool _done = false;
+  bool _started = false;
+  OverlayEntry? _entry;
+
+  /// 画面固定 (Android) を頼む口。 本体の `_osLockStart` と同じチャネル。
+  static const MethodChannel _osLock = MethodChannel('app/lock');
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(_start()));
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _entry?.remove();
+    _entry = null;
+    super.dispose();
+  }
+
+  /// ★ = 点検で判明。 本体の集中ロックは戻ってくるたびに画面固定を掛け直し、
+  ///   ロック画面を前面へ出し直している。 ここでも同じことをしないと、
+  ///   ホームボタンで抜けたまま戻って来られてしまう。
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) return;
+    final e = _entry;
+    if (e == null || _done) return;
+    unawaited(_osLockStart());
+    try {
+      e.remove();
+      if (mounted) Overlay.of(context, rootOverlay: true).insert(e);
+    } catch (_) {}
+  }
+
+  Future<void> _osLockStart() async {
+    if (kIsWeb || !Platform.isAndroid) return;
+    try {
+      await _osLock.invokeMethod('startLock');
+    } catch (_) {}
+  }
+
+  Future<void> _osLockStop() async {
+    if (kIsWeb || !Platform.isAndroid) return;
+    try {
+      await _osLock.invokeMethod('stopLock');
+    } catch (_) {}
+  }
+
+  void _finish() {
+    unawaited(_osLockStop());
+    _entry?.remove();
+    _entry = null;
+    if (!mounted) return;
+    setState(() => _done = true);
+  }
+
+  Future<void> _start() async {
+    if (_started || !mounted) return;
+    _started = true;
+    final provider = context.read<MindMapProvider>();
+    // ★ 待つのは [settingsLoadDone] (= 点検で判明)。 [initialLoadDone] は
+    //   言語など軽い物だけを読んだ時点で先に済んでしまい、 集中ロックの
+    //   設定 (やること制か / 分数 / 使った回数) はまだ既定のままだった。
+    //   その結果「やること制なのに 0 件」 と見なされ、 ショートカットが
+    //   何も起きずにマップを開くだけになっていた。
+    //   プランの控え (`_loadProState`) は同じ時に始まる短い読み込みなので、
+    //   こちらが終わっていればまず揃っている (念のため少しだけ待つ)。
+    try {
+      await provider.settingsLoadDone.timeout(const Duration(seconds: 6));
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+    } catch (_) {}
+    if (!mounted) return;
+    // ★ プランの線引きは本体と同じ道を通す (= 手で始めた扱い)。
+    //   素通りさせると有料の差が無くなる。
+    if (!provider.canUseFocusLock) {
+      _finish();
+      return;
+    }
+    final taskMode = provider.focusLockMode == 'tasks';
+    if (taskMode && provider.focusLockTasks.isEmpty) {
+      // やること制なのに 1 つも無い = ロックできない。 いつもの画面へ。
+      _finish();
+      return;
+    }
+    if (!provider.isProUnlocked) provider.recordFocusLockUse();
+    if (taskMode) unawaited(provider.resetFocusLockTaskCompletion());
+    // 画面固定 (= 他のアプリへ飛べなくする)。 これが無いと「ロック」 に
+    //   ならない (= 点検で判明: 起こす道だけ抜けていた)。
+    unawaited(_osLockStart());
+    final secs = provider.focusLockLastDurationSeconds;
+    final entry = OverlayEntry(
+      builder: (_) => _FocusLockOverlay(
+        duration: Duration(seconds: secs > 0 ? secs : 900),
+        taskMode: taskMode,
+        provider: provider,
+        // ページが無いので、 中身を開く口は空回り + 欄そのものを出さない。
+        pageless: true,
+        onOpenContent: (node, {presentationContext}) async {},
+        // ★ 何もしない係を**必ず**渡す (= 点検で判明)。 渡さないと
+        //   ロック画面の動画が外の YouTube アプリで開き、 ロックの外へ
+        //   出られてしまう。 欄そのものも `pageless` で出していない。
+        onPlayVideo: (_) {},
+        onClose: _finish,
+      ),
+    );
+    _entry = entry;
+    if (!mounted) return;
+    Overlay.of(context, rootOverlay: true).insert(entry);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_done) return const MindMapScreen();
+    // ロック画面は上の Overlay に乗るので、 ここは下敷きだけ。
+    return const Scaffold(
+      backgroundColor: Color(0xFF12121C),
+      body: Center(
+        child: SizedBox(
+          width: 22,
+          height: 22,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      ),
+    );
+  }
+}

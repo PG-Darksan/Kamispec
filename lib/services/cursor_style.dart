@@ -98,7 +98,7 @@ class CursorStyleControl {
         final mono = info.ref.hbmColor == 0;
         final hbm = mono ? info.ref.hbmMask : info.ref.hbmColor;
         if (w32.GetObject(hbm, sizeOf<w32.BITMAP>(), bmp) == 0) return null;
-        // 幅で測る (白黒のカーソルはマスクが縦に 2 枚ぶん入るため、
+        // 幅で測る (白黒のカーソルはマスクが縦に 2 枚分入るため、
         // 高さでは測れない)。
         return bmp.ref.bmWidth;
       } finally {
@@ -472,7 +472,7 @@ class CursorStyleControl {
     final outG = (outlineArgb >> 8) & 0xFF;
     final outR = (outlineArgb >> 16) & 0xFF;
 
-    // 中 / 外の十字に入っているか (腕は縁取りのぶん内側で止める)。
+    // 中 / 外の十字に入っているか (腕は縁取りの分内側で止める)。
     bool inCross(int x, int y, int hw, int margin) {
       final dx = (x - c).abs();
       final dy = (y - c).abs();

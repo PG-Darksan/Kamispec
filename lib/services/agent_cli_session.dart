@@ -163,6 +163,9 @@ class AgentCliSession extends ChangeNotifier {
   /// 一度でも出力があったか (= 本当に動き出したか)。
   bool _sawOutput = false;
 
+  /// 起動の紙をもう剥がしたか (= 毎文字ごとにファイルを触らないため)。
+  bool _clearedLaunchMark = false;
+
   /// 出力の流れが終わったか (擬似端末が口を閉じた時に立つ)。
   Completer<void>? _outputDone;
 
@@ -230,6 +233,22 @@ class AgentCliSession extends ChangeNotifier {
   Timer? _busyTimer;
   bool _busyShown = false;
 
+  // ── 画面に出す方の「考え中」 (= ユーザー報告: AI やターミナルの欄が
+  //    点滅する) ──
+  //
+  //    [busy] は「最後の出力から [_kIdle] 以内か」 という時刻の物差しなので、
+  //    ちょうどその境目あたりで待ち表示を書き換える CLI (くるくる印を
+  //    2 秒おきに描くような相手) では、 400 ms ごとに true / false を
+  //    行き来する。 「停止」 の札が出たり消えたりして、 下の帯ごと組み
+  //    直されるのが**点滅の正体**。
+  //    判断そのもの ([busy]) は順番待ちの要なので触らず、 **画面に出す方
+  //    だけ**「点くのは即・消えるのは遅らせて」 にする。
+  static const Duration _kBusyOff = Duration(milliseconds: 1400);
+  bool _busyShownUi = false;
+
+  /// 画面に出す「考え中」 (ちらつき止め入り)。
+  bool get busyForUi => _busyShownUi;
+
   void _startBusyTimer() {
     _busyTimer ??= Timer.periodic(const Duration(milliseconds: 400), (_) {
       // ★ 起動の終わり = 出力が一度途切れた時。 ここで捕まえる。
@@ -238,11 +257,16 @@ class AgentCliSession extends ChangeNotifier {
           DateTime.now().difference(_lastOutputAt) >= _kIdle) {
         _readyAfterStart = true;
         _busyShown = false;
+        _busyShownUi = false;
         notifyListeners();
         return;
       }
       final now = busy;
-      if (now == _busyShown) return;
+      // 消える側だけ遅らせる (上の但し書き)。
+      final show = now ||
+          (_busyShownUi &&
+              DateTime.now().difference(_lastOutputAt) < _kIdle + _kBusyOff);
+      if (now == _busyShown && show == _busyShownUi) return;
       // ★ 考え終わった = 渡した 1 件は無事に済んだ (控えを外す)。
       // ★ 考え終わった = 渡した 1 件は無事に済んだ (控えを外す)。
       //   ただし承認待ちなどの短い間は「終わった」 と見ない。
@@ -250,8 +274,27 @@ class AgentCliSession extends ChangeNotifier {
         _inFlight = null;
       }
       _busyShown = now;
+      _busyShownUi = show;
       notifyListeners();
     });
+  }
+
+  // ── キュー / ステア (= ユーザー要望「キュー/ステアのボタンを押しても
+  //    何も起こらない」+「プロバイダー側にその機能が無いのであれば
+  //    アプリ側で実装するように」) ─────────────────────
+  //
+  //    以前は codex へ Tab を送るだけだったが、 codex の版によっては Tab で
+  //    切り替わらない (押しても何も起きない)。 Claude Code に至っては
+  //    そもそもその式が無い。 なので **アプリ側で持つ**。
+  //      ステア (既定) … 打って Enter = その場で CLI へ割り込む (今までどおり)
+  //      キュー     … 打って Enter = 順番待ちへ溜めて、 考え終わってから渡す
+  //    溜める仕掛け ([_queued] / [_pumpQueue]) は既にあるので、 それに乗せるだけ。
+  bool _queueMode = false;
+  bool get queueMode => _queueMode;
+  set queueMode(bool v) {
+    if (_queueMode == v) return;
+    _queueMode = v;
+    notifyListeners();
   }
 
   final List<String> _queued = [];
@@ -424,6 +467,115 @@ class AgentCliSession extends ChangeNotifier {
     // 同じ文言にもう一度当たらないよう、 見た分は捨てる。
     _outTail.clear();
     _enterLimitWait(at);
+  }
+
+  // ── 更新が済んだら開き直す (= ユーザー要望: 「codexCLI 等のアップデートが
+  //    終わったら自動的に画面が更新されて新セッションが開かれるように」) ──
+  //
+  // ★ CLI は自分を入れ替えても**終わらない**事がある。 「Update ran
+  //   successfully! Please restart Codex.」 のように画面の文字で知らせて、
+  //   そのまま走り続ける (だから 「restart して」 と言う)。 終了だけを待って
+  //   いては気付けず、 教えてくれる口も他に無いので、 上限の見張りと同じ
+  //   やり方で出力を見て、 見えた時点で画面へ知らせる ([notifyListeners] →
+  //   画面が新しいセッションを開く)。 自分で終わる版は終了処理の方で拾う。
+  //
+  // ★ 拾うのは**言い切っている物だけ**。 「新しい版があります」 のような
+  //   お知らせや、 CLI がファイルを直した時の 「updated successfully」 で
+  //   開き直すと、 仕事の途中で札が増えてしまう。 版の数字か 「restart」 を
+  //   伴う物だけを数える。
+  //
+  // ★ 出力は色と枠と折り返しだらけで、 文言が途中で割れて届く。 空白が
+  //   1 つでも 2 つでも当たるように `\s+` で書く。
+  static final List<RegExp> _kUpdateDoneHits = [
+    // codex の更新がそのまま出す一行。
+    RegExp(r'update\s+ran\s+successfully'),
+    RegExp(r'please\s+restart\s+(?:codex|claude|gemini)\b'),
+    RegExp(r'restart\s+(?:codex|claude|gemini)[a-z,\s]{0,18}to\s+'
+        r'(?:use|apply|finish|complete|pick\s+up)\b'),
+    // 版が続く物だけ (ファイルを直した知らせと区別する)。
+    RegExp(r'successfully\s+updated\s+(?:from\s+\S{1,24}\s+)?to\s+'
+        r'(?:version\s+)?v?\d'),
+    RegExp(r'updated\s+to\s+(?:version\s+)?v?\d\S{0,14}\s+successfully'),
+  ];
+
+  /// npm で入れ直した時の締め (「added 1 package in 2s」)。
+  ///
+  /// ★ CLI に頼んで走らせた `npm install` でも同じ行が出るので、 **CLI の
+  ///   包の名前と `-g` が同じ画面にある時だけ**数える。
+  static final RegExp _kNpmDoneTail = RegExp(
+      r'(?:added|changed|updated|removed)\s+\d+\s+packages?\s+in\s+\d');
+  static final RegExp _kCliPackage =
+      RegExp(r'@openai/codex|@anthropic-ai/claude-code|@google/gemini-cli');
+
+  /// 更新が済んだと分かった時刻。
+  DateTime? _updateDoneAt;
+
+  /// 入れ直した包の名前 ('@openai/codex' など。 空ならこの札の CLI 自身)。
+  ///
+  /// ★ シェルの札で `npm i -g @openai/codex` を打った時、 その札自身は CLI
+  ///   ではない ([cliKey] が空) ので、 どれを開き直すかはこれで決まる。
+  String updatePackage = '';
+
+  /// 画面が既に開き直したか (二度開かないための掛け金。 画面側が立てる)。
+  bool updateRestartHandled = false;
+
+  /// 更新の見張り用の直近出力。
+  ///
+  /// ★ 上限の見張り ([_outTail]) とは別に持つ。 あちらは待ちに入ると溜める
+  ///   のをやめるし、 当たった時に中身を捨ててしまう。
+  final StringBuffer _updTail = StringBuffer();
+
+  /// 見てから開き直すまでの猶予 (会話の中でたまたま同じ言い回しが出た後、
+  /// ずっと経ってからの終了で開き直してしまわないため)。
+  static const Duration _kUpdateRestartWindow = Duration(minutes: 5);
+
+  /// 「更新が済んだので開き直したい」 状態か。
+  bool get updateRestartWanted {
+    final t = _updateDoneAt;
+    if (t == null || updateRestartHandled || stoppedByUser) return false;
+    return DateTime.now().difference(t) < _kUpdateRestartWindow;
+  }
+
+  /// 端末へ書いた出力を見て、 更新が済んだと言っていないか調べる。
+  void _scanForUpdate(String chunk) {
+    if (!_running || isInstall || _updateDoneAt != null) return;
+    final flat = _flatten(chunk).toLowerCase();
+    if (flat.trim().isEmpty) return;
+    _updTail.write(flat);
+    if (_updTail.length > _kTailMax) {
+      final s = _updTail.toString();
+      _updTail
+        ..clear()
+        ..write(s.substring(s.length - _kTailMax));
+    }
+    final tail = _updTail.toString();
+    // ★ 当て込みは手掛かりの語がある時だけ (端末は絶えず画面を描き直すので、
+    //   1 回ごとの重さがそのまま効く)。
+    if (!tail.contains('success') &&
+        !tail.contains('restart') &&
+        !tail.contains('package')) {
+      return;
+    }
+    var hit = false;
+    for (final r in _kUpdateDoneHits) {
+      if (r.hasMatch(tail)) {
+        hit = true;
+        break;
+      }
+    }
+    if (!hit && _kNpmDoneTail.hasMatch(tail) && tail.contains('-g')) {
+      final m = _kCliPackage.firstMatch(tail);
+      if (m != null) {
+        hit = true;
+        updatePackage = m.group(0) ?? '';
+      }
+    }
+    if (!hit) return;
+    _updateDoneAt = DateTime.now();
+    _updTail.clear();
+    // ★ 走ったままでも知らせる (= 終了を待たない)。 画面がこれを見て新しい
+    //   セッションを開く。
+    notifyListeners();
   }
 
   /// 文言から再開時刻を読み取る。 読めなければ null。
@@ -639,6 +791,11 @@ class AgentCliSession extends ChangeNotifier {
     _sawOutput = false;
     _outputDone = null;
     _exitedAt = null;
+    // 手で「もう一度」 を押した時に、 前の更新の見立てを持ち越さない。
+    _updateDoneAt = null;
+    updateRestartHandled = false;
+    updatePackage = '';
+    _updTail.clear();
     if (_finished.isCompleted) _finished = Completer<int>();
     if (!AgentCliRunner.active.contains(this)) AgentCliRunner.active.add(this);
     final f = _finished.future;
@@ -687,6 +844,12 @@ class AgentCliSession extends ChangeNotifier {
           }
         }
       }
+      // ★ 起こす直前に紙を置く (= ユーザー報告: ターミナルを開こうとすると
+      //   セキュリティソフトにブロックされてアプリが落ちてしまう)。
+      //   撃たれるのはアプリのプロセス自身で、 ここから下の catch には
+      //   何も届かない。 紙が残ったまま次に立ち上がったら、 その殻は
+      //   既定から外す ([AgentCli.loadBlockedShell])。
+      AgentCli.markLaunchAttempt(exePath);
       final pty = Pty.start(
         // ★ 空白を含む道筋 (`C:\Program Files\…`) は、 引用符を付けずに
         //   つなぐ flutter_pty ではそのまま渡せない。 短い名前に直す。
@@ -725,11 +888,22 @@ class AgentCliSession extends ChangeNotifier {
         // 順番待ちの判断に使う「最後に何か出た時刻」。
         _lastOutputAt = DateTime.now();
         // ★ 一度でも喋れば「本当に動き出した」 (= 起動の失敗ではない)。
-        if (chunk.isNotEmpty) _sawOutput = true;
+        if (chunk.isNotEmpty) {
+          _sawOutput = true;
+          // ★ 本当に喋った = 撃たれていない。 起動の紙を剥がす
+          //   (剥がさないと、 次の立ち上がりでこの殻を格下げしてしまう)。
+          if (!_clearedLaunchMark) {
+            _clearedLaunchMark = true;
+            AgentCli.clearLaunchAttempt();
+          }
+        }
         terminal.write(chunk);
         // ★ プランの上限に当たっていないか見る (当たっていたら順番待ちを
         //   止めて、 解けるのを待つ = ユーザー要望)。
         _scanForLimit(chunk);
+        // ★ 更新が済んで「開き直して」 と言っていないかも見る
+        //   (= ユーザー要望: 更新が終わったら新しいセッションを開く)。
+        _scanForUpdate(chunk);
       }, onError: (Object e) {
         terminal.write('\r\n[エラー] $e\r\n');
       }, onDone: () {
@@ -810,6 +984,14 @@ class AgentCliSession extends ChangeNotifier {
 
   void _onExit(int code) {
     if (exitCode != null) return;
+    // ★ ここまで Dart が動いている = アプリは撃たれていない (プロセスごと
+    //   消されたのなら、 この行は走らない)。 何も喋らずに終わった相手や、
+    //   起こす所で例外になった時も、 起動の紙はここで剥がす
+    //   (= 剥がし忘れで殻を格下げしないため)。
+    if (!_clearedLaunchMark) {
+      _clearedLaunchMark = true;
+      AgentCli.clearLaunchAttempt();
+    }
     // ★ 起こした直後に、 何も喋らないまま死んだ物は「起こせなかった」 と
     //   見なす (= セキュリティソフトに子だけ撃たれた時など。 例外は
     //   飛んでこないので、 時間と出力の有無でしか見分けられない)。

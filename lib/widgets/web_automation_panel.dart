@@ -15,6 +15,7 @@ import 'dart:math' as math;
 import 'dart:typed_data' show Uint8List;
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter/services.dart'
@@ -37,8 +38,11 @@ import '../services/agent_cli.dart';
 import '../services/cdp_browser.dart';
 import '../services/desktop_input.dart';
 import '../services/secret_store.dart';
+import '../services/ffmpeg_path.dart';
 import '../services/page_extract_js.dart';
 import '../services/page_scroll_js.dart';
+// 実行を録画する (= ユーザー要望: E2E テストの動画)。
+import '../services/screen_recorder.dart';
 import '../services/screen_capture.dart' as scap;
 import '../utils/build_flags.dart';
 import 'shot_manager_dialog.dart';
@@ -75,7 +79,7 @@ enum WebAutoKind {
   command,
 
   /// ページの上から下までを 1 枚の縦長画像にする (= ユーザー要望)。
-  /// WebView には全面を撮る口が無いので、 1 画面ぶんずつ撮って縦に繋げる。
+  /// WebView には全面を撮る口が無いので、 1 画面分ずつ撮って縦に繋げる。
   fullShot,
 
   /// フォルダーの中のファイルをページの「ファイル選択」 に渡す
@@ -228,7 +232,7 @@ String accountFromRequest(String request, List<String> knownNames) {
 /// = ユーザー報告「止まらずに同じフローをひたすら作り続ける」。
 ///   画面が変わっていないのに次の一手も前と同じなら、 何度やっても
 ///   結果は同じなので、 そこで打ち切る。 手数の上限 (12 回) だけだと、
-///   同じ手順が 12 回ぶん積み上がってしまう。
+///   同じ手順が 12 回分積み上がってしまう。
 class AgentProgressGuard {
   String? _prevPlan;
   String? _prevSnap;
@@ -257,7 +261,7 @@ class AgentProgressGuard {
   static String planSignature(List<WebAutoStep> steps) =>
       steps.map(_stepSignature).join(';');
 
-  /// 手順 1 つぶんの見分け用の文字。
+  /// 手順 1 つ分の見分け用の文字。
   ///
   /// ★ 「開く」 系 (open / openExternal / openBrowser) は、 同じ URL なら
   ///   同じ手として扱う。 途中でつなぎ方が変わると、 AI が出す物が
@@ -381,6 +385,16 @@ class WebAutoStep {
   /// 時だけ使う。
   final List<WebAutoStep> children;
 
+  /// ここで止まる印 (= ユーザー要望「ブレイクポイントを指定して、 ユーザーと
+  /// 一緒に立ち止まりながらフローを作成できるように」)。
+  ///
+  /// ★ この手を**やる前**に止まる。 止まっている間も画面はそのまま触れるし、
+  ///   手順の足し引きもできる (止まった後は、 同じ手を id ではなく
+  ///   「その物」 で探し直して続ける)。
+  /// ★ 控えには印が付いている時だけ書く (= 付いていないフローの保存内容を
+  ///   変えない。 古い版で開いても知らない鍵として無視される)。
+  bool breakpoint;
+
   WebAutoStep({
     required this.kind,
     this.x = 0,
@@ -396,6 +410,7 @@ class WebAutoStep {
     this.text = '',
     this.selector = '',
     this.submit = false,
+    this.breakpoint = false,
     List<WebAutoStep>? children,
   }) : children = children ?? <WebAutoStep>[];
 
@@ -414,6 +429,7 @@ class WebAutoStep {
         'text': text,
         'selector': selector,
         'submit': submit,
+        if (breakpoint) 'bp': true,
         if (kind == WebAutoKind.loop)
           'children': children.map((e) => e.toJson()).toList(),
       };
@@ -516,6 +532,7 @@ class WebAutoStep {
         text: (j['text'] as String?) ?? '',
         selector: (j['selector'] as String?) ?? '',
         submit: (j['submit'] as bool?) ?? false,
+        breakpoint: (j['bp'] as bool?) ?? false,
         children: ((j['children'] as List?) ?? const [])
             .map((e) => WebAutoStep.fromJson(Map<String, dynamic>.from(e)))
             .toList(),
@@ -524,6 +541,11 @@ class WebAutoStep {
 
 /// 自動操作パネル。 ホスト (検索ダイアログ) から WebView 操作関数を受け取る。
 class WebAutomationPanel extends StatefulWidget {
+  /// ページが出来るたびに流す JS を預ける口 (= ユーザー要望: ページを
+  /// 移った先のエラーも拾えるように)。 null なら今までどおり、 今のページ
+  /// だけに入れる。
+  final Future<void> Function(String js)? installPageScript;
+
   /// WebView に JS を流す。
   final Future<void> Function(String js) exec;
 
@@ -595,6 +617,7 @@ class WebAutomationPanel extends StatefulWidget {
   final String storageKey;
   const WebAutomationPanel({
     super.key,
+    this.installPageScript,
     required this.exec,
     required this.capture,
     required this.pickPoint,
@@ -778,6 +801,9 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
 
   @override
   void dispose() {
+    // ★ 止まったまま閉じられても、 待ちを残さない。
+    _cancel = true;
+    _releaseGate();
     HardwareKeyboard.instance.removeHandler(_handleStopKey);
     automationRequestFromAssistant.removeListener(_onAssistantAutomation);
     // 外のブラウザとのつながり (WebSocket) を残さない。
@@ -1195,7 +1221,11 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
     final out = <AgentCliKind>[];
     for (final f in AgentCli.cachedAll()) {
       if (!f.installed) continue;
-      final exe = (f.exePath ?? '').toLowerCase();
+      // ★ 見るのは**実際に起こす物** ([runExe])。 = 端末側 (pickForPrompt)
+      //   と揃える。 [AgentCli.shellFreeLaunch] が node.exe + JS を割り出せて
+      //   いれば .ps1 でも起こせるので、 ここで弾くと「端末では動くのに
+      //   自動操作の一覧から消える」 という食い違いになる。
+      final exe = (f.runExe ?? '').toLowerCase();
       if (exe.endsWith('.ps1')) continue;
       if (!out.contains(f.spec.kind)) out.add(f.spec.kind);
     }
@@ -1222,7 +1252,8 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
         // ★ PC に入れた AI を選べるようにする (= ユーザー要望: 自動化の
         //   AI も CLI に切り替えられるように)。
         if (id.startsWith('climodel:')) {
-          await provider.setCliAiModelChoice(id.substring(9));
+          await provider.setCliAiModelChoice(id.substring(9),
+              forKind: _activeCliKind(provider).name);
           if (mounted) setState(() {});
           return;
         }
@@ -1321,13 +1352,13 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
                     Icon(
                         provider.useCliAi &&
                                 _activeCliKind(provider) == k &&
-                                provider.cliAiModelChoice == c.id
+                                provider.cliModelFor(k.name) == c.id
                             ? Icons.radio_button_checked_rounded
                             : Icons.radio_button_off_rounded,
                         size: 12,
                         color: provider.useCliAi &&
                                 _activeCliKind(provider) == k &&
-                                provider.cliAiModelChoice == c.id
+                                provider.cliModelFor(k.name) == c.id
                             ? const Color(0xFF9CCC65)
                             : Colors.white38),
                     const SizedBox(width: 8),
@@ -1452,6 +1483,22 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
           s = jsonDecode(s) as String;
         } catch (_) {}
       }
+      // ★ = ユーザー報告「URL にアクセスして、 と頼んでもどこにも行かない」。
+      //   自動操作のページはブラウザが about:blank で始まる。 そこでも
+      //   この見取り図は**中身のある JSON**として返るので、 呼ぶ側の
+      //   「まだページを開いていません。 最初の 1 手は必ず open に」 という
+      //   念押しが出ず、 AI は「もう開いている」 と思って open を出さずに
+      //   画面を読む手順ばかり並べていた。 白紙は「何も無い」 と答える。
+      try {
+        final m = RegExp(r'"url"\s*:\s*"([^"]*)"').firstMatch(s);
+        final u = (m?.group(1) ?? '').trim();
+        if (u.isEmpty ||
+            u == 'about:blank' ||
+            u.startsWith('data:') ||
+            u.startsWith('about:')) {
+          return '';
+        }
+      } catch (_) {}
       return s.length > 4000 ? s.substring(0, 4000) : s;
     } catch (_) {
       return '';
@@ -1580,10 +1627,17 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
   loop(children: scroll(down, durationMs:0) → wait(400) → shot) を使い、
   count は 【今の画面】 の pageH ÷ viewH を切り上げた数 + 1 にする
   (分からなければ 10)。
-- **scroll の durationMs は「送る量(px)」。 0 = 1 画面ぶん** (少しだけ重ねて
+- **scroll の durationMs は「送る量(px)」。 0 = 1 画面分** (少しだけ重ねて
   送る)。 スクショと組み合わせる時は必ず 0 にすること。 px を決め打ちすると
   同じ所ばかり写る。
 - open は「そのページを開く」。 text に URL、 durationMs に読み込み待ち (ms)。
+- ★ 「〜にアクセスして」「〜を開いて」 と頼まれたら、 **最初の 1 手は必ず
+  {"kind":"open","text":"https://…"}**。 いきなり click や shot から始めない。
+  URL がはっきり書かれていない時は
+  {"kind":"open","text":"https://www.google.com/search?q=<調べたい言葉>"} で
+  検索してから、 click で目的のリンクを押す。
+- ★ 「開いてスクショ」 と頼まれたら open → wait → shot の順に並べる
+  (ページ全体が要る時は shot の代わりに fullShot)。
 - scrollDir は down / up / right / left (scrollTo では bottom / top)。
 - steps は 30 個以内。''';
 
@@ -2320,6 +2374,10 @@ $snap'''}
       if (raw == null || raw.isEmpty) return;
       final m = jsonDecode(raw);
       if (m is! Map) return;
+      final rec = m['rec'];
+      if (rec is bool) _recordRun = rec;
+      final bpOn = m['bp'];
+      if (bpOn is bool) _bpEnabled = bpOn;
       final headless = m['headless'];
       final keep = m['keep'];
       // 欄の開き具合も覚えておく (= ユーザー要望: たためるように)。
@@ -2354,6 +2412,9 @@ $snap'''}
             'cmdOpen': _cmdOpen,
             'chipsOpen': _chipsOpen,
             'schedOpen': _schedOpen,
+            // ★ = ユーザー要望: 実行の録画と、 印で止まるかどうか。
+            'rec': _recordRun,
+            'bp': _bpEnabled,
             if (_stepsH != null) 'stepsH': _stepsH,
           }));
     } catch (_) {}
@@ -2446,11 +2507,13 @@ $snap'''}
     //   スクショに混ざっていた)。
     await widget.onRunStarted?.call();
     if (showBrowser) widget.onRunningChanged?.call(true, _requestStop);
+    // ★ = ユーザー要望: E2E テストの動画。 AI に任せた実行も録画する。
+    await _startRunRecording();
     final done = <String>[];
     try {
       // ★ 「同じ画面で、 同じ手順」 を出し続けていないかを見張る
       //   (= ユーザー報告: 止まらずに同じフローをひたすら作り続ける)。
-      //   手数の上限だけだと、 12 回ぶんの同じ手順が積み上がってしまう。
+      //   手数の上限だけだと、 12 回分の同じ手順が積み上がってしまう。
       final guard = AgentProgressGuard();
       // 直前の回に実行した手順 (同じ物を積み増さないため)。
       String? lastRanSig;
@@ -2601,7 +2664,7 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
         // ★ 画面が変わっていないのに、 次の一手も同じ = 進んでいない。
         //   ここで止めないと、 同じ手順が何度も積まれ続ける
         //   (= ユーザー報告: 止まらずに同じフローを作り続ける)。
-        //   積む前に抜けるので、 フローには 1 回ぶんだけ残る。
+        //   積む前に抜けるので、 フローには 1 回分だけ残る。
         if (!guard.advance(steps, snap)) {
           _agentFail(provider, 'agent.errStuck', '');
           break;
@@ -2648,7 +2711,7 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
         await _runSteps(steps, provider.t('agent.label'));
         await _save();
         // ★ 手順の中で止まった時は、 次の回へ進まない (= これが無いと、
-        //   ブラウザを開けなかった後も 12 回ぶん AI に聞き続けていた)。
+        //   ブラウザを開けなかった後も 12 回分 AI に聞き続けていた)。
         if (_cancel || _cdpGone) {
           if (_cdpGone) _agentFail(provider, 'agent.errBrowserGone', '');
           break;
@@ -2659,6 +2722,7 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
         setState(() => _status = '$e'.replaceFirst('Exception: ', ''));
       }
     } finally {
+      await _stopRunRecording();
       // ★ 外のブラウザを使ったなら、 終わったらつながりを手放す。
       //   つないだままだと、 次にアプリの中のページを操作するふつうの
       //   フローを流しても目の前のページは動かず、 放置した外のブラウザ
@@ -2766,7 +2830,7 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
   /// (= ユーザー要望: 間隔は乱数秒を入れられるように)。
   Duration _intervalOf(WebAutoStep s) {
     final lo = s.intervalMs;
-    // ばらつき: 0 なら固定。 1 以上ならこの幅ぶんだけランダムに上乗せする
+    // ばらつき: 0 なら固定。 1 以上ならこの幅分だけランダムに上乗せする
     // (= 実際の待ち時間は 間隔 〜 間隔+ばらつき)。
     final spread = s.intervalMaxMs;
     if (spread > 0) {
@@ -2891,6 +2955,126 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
     }
   }
 
+  // ── ここで止まる (= ユーザー要望「ブレイクポイントを指定して、 ユーザーと
+  //    一緒に立ち止まりながらフローを作成できるように」) ──────────────
+  //
+  //    印の付いた手を**やる前**に止まる。 止まっている間も画面は触れるし、
+  //    手順の足し引きもできる (走っているのは待っているだけなので)。
+  //    続ける / 1 手ずつ / やめる の 3 つで先へ進む。
+
+  /// 今止まっている所の受け口 (null = 止まっていない)。
+  Completer<void>? _pauseGate;
+
+  /// 今どの手の手前で止まっているか (札に印を出すため)。
+  WebAutoStep? _pausedAt;
+
+  /// 止まっている所の見出し (「3-1」 など)。
+  String _pausedLabel = '';
+
+  /// 1 手だけ進めて、 また止まるか。
+  bool _stepOnce = false;
+
+  /// 印で止まるかどうか (印を消さずに一気に流したい時に切る)。
+  bool _bpEnabled = true;
+
+  /// ひと手ぶんだけ試している最中か (▶ ボタン)。 印では止めない。
+  bool _testRun = false;
+
+  // ── 実行を録画する (= ユーザー要望「E2E テストを実施した際の動画を撮影
+  //    できるように」) ────────────────────────────────────────────
+  //
+  //    ★ 手順の 1 つ (kind) ではなく**実行まるごとの入切**にしてある。
+  //      録画は 1 本しか走らせられない作り (ScreenRecorder は 1 つきり) なので、
+  //      手順の途中で始めると、 フローが途中で止まった時に録りっぱなしに
+  //      なってしまう。 実行の try/finally で挟むのが確実。
+  //    ★ Windows だけ (ffmpeg を使うため)。 ffmpeg が無い時は、 その旨を
+  //      記録に残して録画せずに進む (実行そのものは止めない)。
+  bool _recordRun = false;
+
+  /// この実行で録画を始められたか (finally で止める判断に使う)。
+  bool _recStarted = false;
+
+  bool get _canRecordRun => !kIsWeb && Platform.isWindows;
+
+  Future<void> _startRunRecording() async {
+    _recStarted = false;
+    if (!_recordRun || !_canRecordRun) return;
+    if (ScreenRecorder.instance.recording) {
+      // 既に誰かが録っている (ヘッダーの録画ボタンなど) 時は触らない。
+      _log('録画', '既に録画中なので、 この実行では始めませんでした');
+      return;
+    }
+    try {
+      final ff = await findFfmpegExe();
+      if (ff == null || ff.isEmpty) {
+        _log('録画', 'ffmpeg が見つからないので録画しませんでした');
+        return;
+      }
+      await ScreenRecorder.instance.start(ff);
+      _recStarted = true;
+      _log('録画', '録画を始めました');
+    } catch (e) {
+      _log('録画', '始められませんでした: $e');
+    }
+  }
+
+  Future<void> _stopRunRecording() async {
+    if (!_recStarted) return;
+    _recStarted = false;
+    try {
+      final path = await ScreenRecorder.instance.stop();
+      if (path.isNotEmpty) {
+        _madeFiles.add(File(path));
+        if (mounted) {
+          _noteData(context.read<MindMapProvider>(), '録画', path);
+        }
+      }
+    } catch (e) {
+      // 短すぎる実行は ffmpeg が中身を書き切る前に終わる。 記録に残すだけ。
+      _log('録画', '止める時に問題が出ました: $e');
+    }
+  }
+
+  void _releaseGate() {
+    final g = _pauseGate;
+    _pauseGate = null;
+    _pausedAt = null;
+    _pausedLabel = '';
+    if (g != null && !g.isCompleted) g.complete();
+  }
+
+  void _bpContinue() {
+    _stepOnce = false;
+    setState(_releaseGate);
+  }
+
+  void _bpStep() {
+    _stepOnce = true;
+    setState(_releaseGate);
+  }
+
+  void _bpAbort() {
+    _cancel = true;
+    _agentStop = true;
+    setState(_releaseGate);
+  }
+
+  /// 印の手前で止まる。 戻り値 false = もう続けない (やめる が押された)。
+  Future<bool> _pauseAt(WebAutoStep s, String label) async {
+    if (_cancel) return false;
+    final g = Completer<void>();
+    if (!mounted) return false;
+    setState(() {
+      _pauseGate = g;
+      _pausedAt = s;
+      _pausedLabel = label;
+      _status = context.read<MindMapProvider>().t('auto.bpHit');
+    });
+    _log('停止', '$label の手前で止まりました');
+    await g.future;
+    return !_cancel;
+  }
+
   Future<void> _runSteps(List<WebAutoStep> steps, String path) async {
     for (var i = 0; i < steps.length; i++) {
       if (_cancel) return;
@@ -2907,8 +3091,19 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
       // 一番下に着いた: この繰り返しの残り (待機やスクショ) は飛ばす
       // (= ユーザー報告: 同じ場所のスクショが何枚も並ぶ)。
       if (_loopBreak) return;
-      final s = steps[i];
+      var s = steps[i];
       final label = path.isEmpty ? '${i + 1}' : '$path-${i + 1}';
+      // ★ 印の手前で止まる (= ユーザー要望)。 止まっている間に手順を足したり
+      //   消したりできるので、 再開する時は**その手そのもの**を探し直す
+      //   (番号で持つと、 増減した分だけずれて違う手をやってしまう)。
+      if (!_testRun && _bpEnabled && (s.breakpoint || _stepOnce)) {
+        final ok = await _pauseAt(s, label);
+        if (!ok || _cancel) return;
+        final at = steps.indexOf(s);
+        if (at < 0) continue; // 止まっている間に消された = 飛ばす
+        i = at;
+        s = steps[i];
+      }
       if (mounted) {
         setState(() => _status = '$_lapLabel · $label');
       }
@@ -2987,7 +3182,7 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
           }
           break;
         case WebAutoKind.scroll:
-          // 送る量 (px)。 **0 以下 = 「1 画面ぶん」**。
+          // 送る量 (px)。 **0 以下 = 「1 画面分」**。
           //   = ユーザー報告「上から下まで撮ったら、 送り幅と撮る間隔が
           //     合わずに同じ所ばかり写る」。 決め打ちの px だと 1 画面より
           //     ずっと短く、 大半が重なっていた。 実行時に window.innerHeight
@@ -3022,7 +3217,7 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
             final raw = await _eval(scrollJs);
             // ★ 答えが返らないのは「送る口が無い」 時だけとは限らない
             //   (ページ移動中の例外など)。 口がある時に撃ち直すと、
-            //   2 画面ぶん進んでしまい 1 画面撮り漏れる。
+            //   2 画面分進んでしまい 1 画面撮り漏れる。
             if (raw == null && !_hasJsChannel) {
               await _exec(scrollJs);
             } else if (raw != null) {
@@ -4696,6 +4891,8 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
       setState(() => _status = provider.t('auto.alreadyRunning'));
       return;
     }
+    // ★ 1 手だけ試す時は印で止めない (今その手をやってみたいのだから)。
+    _testRun = true;
     setState(() {
       _running = true;
       _cancel = false;
@@ -4712,6 +4909,7 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
     try {
       await _runSteps([step], '');
     } finally {
+      _testRun = false;
       if (mounted) {
         setState(() {
           _running = false;
@@ -4729,7 +4927,12 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
   /// 外 (フローティング窓のヘッダー) からも止められるようにした停止処理。
   void _requestStop() {
     if (!mounted) return;
-    setState(() => _cancel = true);
+    // ★ 止まっている最中だったら、 その待ちも解く (= 解かないと、
+    //   「停止」 を押しても待ち続けて永遠に終わらない)。
+    setState(() {
+      _cancel = true;
+      _releaseGate();
+    });
   }
 
   /// AI に任せている途中の動きを止める。
@@ -4855,6 +5058,7 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
       _madeFiles.clear();
     });
     widget.onRunningChanged?.call(true, _requestStop);
+    await _startRunRecording();
     try {
       for (var lap = 0; lap < _loop; lap++) {
         if (_cancel) break;
@@ -4863,6 +5067,7 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
         await _runSteps(_steps, '');
       }
     } finally {
+      await _stopRunRecording();
       // 外のブラウザを使ったフローなら、 終わったらつながりを切る。
       await _releaseCdp();
       if (mounted) {
@@ -6102,6 +6307,87 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
   ///   繰り返し自体が無いので、 足す口がどこにも無くなる。
   ///   畳み具合に関わらず押せる口を用意する。
   ///   中身はボタン一覧と同じ種類・同じ既定 (_addStep) を使い回す。
+  /// 「手順の種類」 の棚を開いているか。
+  ///
+  /// ★ = ユーザー要望「手順を追加を押したら選択肢が出てくるのではなく、
+  ///   左下の領域に選択肢を置いて置いて欲しい」。 窓を出すのをやめて、
+  ///   手順の一覧の下 (= 空いている所) に並べる。
+  /// 手順の選択肢の札を広げているか (= ユーザー要望で「常時出す」 に変えた
+  /// ので既定は開いた状態。 控えには残さない = 開くたびに必ず出る)。
+  bool _addTrayOpen = true;
+
+  /// 選択肢の札に許す高さ (build で窓の大きさから決める)。
+  double _trayChipsH = 200;
+
+  /// 手順の種類の棚。 押すとその種類の手順が末尾に足される。
+  /// 手順の選択肢 (= ユーザー要望「手順を追加ボタンを押さないと選択肢が
+  /// 出てこないのはおかしいから、 常時下に選択肢を出して欲しい」)。
+  ///
+  /// ★ 押して出す形をやめ、 一覧のすぐ下に**出しっぱなし**にした。
+  ///   狭い窓では札が 10 行近く並ぶので、 高さだけ [maxChipsH] で頭打ちに
+  ///   して、 中で巻けるようにする (手順の一覧を押し潰さないため)。
+  Widget _buildAddStepTray(MindMapProvider provider,
+      {double maxChipsH = 200}) {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(8, 0, 8, 6),
+      padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.03),
+        borderRadius: BorderRadius.circular(8),
+        border:
+            Border.all(color: const Color(0xFF80CBC4).withValues(alpha: 0.4)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          const Icon(Icons.add_rounded, size: 13, color: Color(0xFF80CBC4)),
+          const SizedBox(width: 5),
+          Expanded(
+            child: Text(provider.t('auto.addStepHint'),
+                style: const TextStyle(
+                    color: Colors.white38, fontSize: 10, height: 1.35)),
+          ),
+          // ★ 閉じる (= 木から消す) のはやめ、 札の所だけ畳む印にした
+          //   (= ユーザー要望: 選択肢は常に出ていて欲しい)。 見出しの 1 行は
+          //   いつでも残るので、 畳んでもすぐ開き直せる。
+          IconButton(
+            tooltip: provider.t('btn.close'),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
+            icon: Icon(
+                _addTrayOpen
+                    ? Icons.expand_more_rounded
+                    : Icons.expand_less_rounded,
+                size: 16,
+                color: Colors.white38),
+            onPressed: () => setState(() => _addTrayOpen = !_addTrayOpen),
+          ),
+        ]),
+        if (_addTrayOpen) ...[
+          const SizedBox(height: 6),
+          ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: maxChipsH),
+            child: SingleChildScrollView(
+              child: Wrap(spacing: 6, runSpacing: 6, children: [
+                for (final k in _addMenuKinds)
+                  ActionChip(
+                    avatar: Icon(_kindIcon(k), size: 14, color: Colors.white70),
+                    label: Text(_kindLabel(provider, k),
+                        style: const TextStyle(
+                            color: Colors.white, fontSize: 10.5)),
+                    backgroundColor: const Color(0xFF2A2A44),
+                    side: BorderSide.none,
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => _addStep(_steps, k),
+                  ),
+              ]),
+            ),
+          ),
+        ],
+      ]),
+    );
+  }
+
+  // ignore: unused_element
   Future<void> _showAddStepMenu(
       MindMapProvider provider, List<WebAutoStep> into) async {
     // 押した所の近くに出す (= この画面の決まり)。
@@ -6252,6 +6538,27 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
               ),
             ),
             const Spacer(),
+            // ── ここで止まる印 (= ユーザー要望: ブレイクポイント) ──
+            //    この手を**やる前**に止まる。 止まっている間に画面を見たり、
+            //    手順を直したりしてから続けられる。
+            IconButton(
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+              tooltip: provider.t(s.breakpoint ? 'auto.bpOff' : 'auto.bpOn'),
+              icon: Icon(
+                  s.breakpoint
+                      ? Icons.circle
+                      : Icons.radio_button_unchecked_rounded,
+                  size: 13,
+                  color: s.breakpoint
+                      ? const Color(0xFFE57373)
+                      : Colors.white24),
+              onPressed: () {
+                setState(() => s.breakpoint = !s.breakpoint);
+                unawaited(_save());
+              },
+            ),
             // ── 畳む / 開く (= ユーザー要望: 手順が多くなってきたので) ──
             IconButton(
               visualDensity: VisualDensity.compact,
@@ -7196,11 +7503,19 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
       //   高さを渡す。 広い時 (全画面) は今までどおり。
       child: LayoutBuilder(builder: (lctx, cons) {
         final tight = cons.maxHeight.isFinite && cons.maxHeight < 760;
-        // ★ 上の欄をたたんだぶんだけ、 手順の一覧を広くする
+        // ★ 上の欄をたたんだ分だけ、 手順の一覧を広くする
         //   (= ユーザー要望: 肝心のフローの表示領域が小さくて操作しづらい)。
+        // ★ 選択肢の札は常に出ている (= ユーザー要望) ので、 その分を常に 1 つと
+        //   数える (以前は畳んでいた _chipsOpen を数えていた)。
         final openCount = (_aiFormOpen ? 1 : 0) +
             (_cmdOpen && _isDesktopHost && !kStoreBuild ? 1 : 0) +
-            (_chipsOpen ? 1 : 0);
+            1;
+        // 札の高さの頭打ち (狭い窓で手順の一覧を押し潰さない)。
+        _trayChipsH = (cons.maxHeight.isFinite
+                ? cons.maxHeight * 0.24
+                : 200.0)
+            .clamp(96.0, 220.0)
+            .toDouble();
         final autoHeight = (cons.maxHeight * (0.62 - 0.09 * openCount))
             .clamp(180.0, 560.0)
             .toDouble();
@@ -7214,8 +7529,10 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
         //   時刻で実行) が画面の外へ押し出され、 掴み直せなくなっていた。
         //   下に必ず 240px 残して、 帯と下の行が見えたままになるようにする
         //   (保存済みの大きすぎる値も、 この上限で丸められる)。
+        //   ★ 常に出るようにした選択肢の札の分も残す (= 残さないと、
+        //   掛け分の帯と下の行がまた画面の外へ押し出される)。
         final maxSteps = cons.maxHeight.isFinite
-            ? math.max(160.0, cons.maxHeight - 240.0)
+            ? math.max(160.0, cons.maxHeight - 240.0 - _trayChipsH)
             : 560.0;
         final stepsHeight = _stepsH == null
             ? autoHeight
@@ -7250,8 +7567,9 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
                       icon: const Icon(Icons.add_rounded, size: 16),
                       label: Text(provider.t('auto.addStep'),
                           style: const TextStyle(fontSize: 11.5)),
+                      // ★ = ユーザー要望「窓ではなく左下の領域に」。
                       onPressed: () =>
-                          unawaited(_showAddStepMenu(provider, _steps)),
+                          setState(() => _addTrayOpen = true),
                     ),
                   ),
                 ]),
@@ -7369,12 +7687,19 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
                       padding: const EdgeInsets.symmetric(horizontal: 10),
                       minimumSize: const Size(0, 28),
                     ),
-                    icon: const Icon(Icons.add_rounded, size: 15),
+                    icon: Icon(
+                        _addTrayOpen
+                            ? Icons.expand_more_rounded
+                            : Icons.add_rounded,
+                        size: 15),
                     label: Text(provider.t('auto.addStep'),
                         style: const TextStyle(
                             fontSize: 11, fontWeight: FontWeight.w700)),
+                    // ★ = ユーザー要望「常時下に選択肢を出して欲しい」。
+                    //   選択肢は下に出しっぱなしになったので、 ここは
+                    //   その札の所を畳む / 広げるだけの印。
                     onPressed: () =>
-                        unawaited(_showAddStepMenu(provider, _steps)),
+                        setState(() => _addTrayOpen = !_addTrayOpen),
                   ),
                 ),
               if (_recording) ...[
@@ -7554,27 +7879,73 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
             ]),
           ),
           ),
-          // ── 説明の行が、 そのままボタン一覧の見出し (= ユーザー要望:
-          //    「手順を並べて実行します」 の所をたためるように) ──
+          // ── 説明の行 ──
+          //    ★ = ユーザー要望「常時下に選択肢を出して欲しい」。 ここにも
+          //      同じ選択肢を畳んで置いていたが、 一覧の下に出しっぱなしに
+          //      したので二重になる。 こちらは説明の 1 行だけにした
+          //      (畳む印だった `_chipsOpen` も使わない)。
           Padding(
             padding: const EdgeInsets.fromLTRB(10, 2, 8, 2),
-            child: _sectionHead(
-              provider,
-              provider.t('auto.hint'),
-              open: _chipsOpen,
-              color: Colors.white38,
-              fontSize: 10.5,
-              onTap: () {
-                setState(() => _chipsOpen = !_chipsOpen);
-                unawaited(_saveAgentOpts());
-              },
-            ),
+            child: Text(provider.t('auto.hint'),
+                style: const TextStyle(
+                    color: Colors.white38, fontSize: 10.5, height: 1.35)),
           ),
-          // ステップ追加ボタン
-          if (_chipsOpen)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              child: _addChips(provider, _steps),
+          // ── 印の手前で止まっている間の帯 (= ユーザー要望:
+          //    ブレイクポイントで一緒に立ち止まりながら作る) ──
+          //    塞がない帯にする (モーダルにするとページを見られない)。
+          if (_pauseGate != null)
+            Container(
+              margin: const EdgeInsets.fromLTRB(8, 4, 8, 4),
+              padding: const EdgeInsets.fromLTRB(10, 6, 6, 6),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFB74D).withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                    color: const Color(0xFFFFB74D).withValues(alpha: 0.5)),
+              ),
+              child: Row(children: [
+                const Icon(Icons.pause_circle_filled_rounded,
+                    size: 16, color: Color(0xFFFFB74D)),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                      provider
+                          .t('auto.bpPaused')
+                          .replaceFirst('{n}', _pausedLabel),
+                      style: const TextStyle(
+                          color: Colors.white70, fontSize: 11, height: 1.35)),
+                ),
+                TextButton(
+                  style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      minimumSize: const Size(0, 28),
+                      foregroundColor: const Color(0xFF7CD992)),
+                  onPressed: _bpContinue,
+                  child: Text(provider.t('auto.bpContinue'),
+                      style: const TextStyle(fontSize: 11.5)),
+                ),
+                TextButton(
+                  style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      minimumSize: const Size(0, 28),
+                      foregroundColor: const Color(0xFF4FC3F7)),
+                  onPressed: _bpStep,
+                  child: Text(provider.t('auto.bpStep'),
+                      style: const TextStyle(fontSize: 11.5)),
+                ),
+                TextButton(
+                  style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      minimumSize: const Size(0, 28),
+                      foregroundColor: const Color(0xFFE57373)),
+                  onPressed: _bpAbort,
+                  child: Text(provider.t('auto.bpAbort'),
+                      style: const TextStyle(fontSize: 11.5)),
+                ),
+              ]),
             ),
           // ── まとめて消すバー (= ユーザー要望: Ctrl / Shift で複数選択) ──
           if (_stepSel.isNotEmpty)
@@ -7637,6 +8008,10 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
             SizedBox(height: stepsHeight, child: steps)
           else
             Expanded(child: steps),
+          // ★ = ユーザー要望「手順を追加を押したら選択肢が出てくるのでは
+          //   なく、 左下の領域に選択肢を置いて置いて欲しい」。
+          // ★ 札の高さは窓の 1/4 まで (= 狭い窓で手順の一覧を押し潰さない)。
+          _buildAddStepTray(provider, maxChipsH: _trayChipsH),
           // ── 境界をドラッグして、 手順一覧の高さを変える
           //    (= ユーザー要望)。 二度押しで自動の高さに戻る。 ──
           //    ★ 巻物の中でも掴めるよう、 Listener で直に受け取る
@@ -7917,6 +8292,39 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
                         unawaited(_saveAgentOpts());
                       },
                       ),
+                    // ★ = ユーザー要望「E2E テストを実施した際の動画を撮影
+                    //   できるように」。 実行まるごとを録画する (Windows のみ)。
+                    if (_canRecordRun)
+                      _twoWay(
+                        provider.t('auto.optRec'),
+                        left: provider.t('auto.optRecOn'),
+                        right: provider.t('auto.optRecOff'),
+                        leftPicked: _recordRun,
+                        onLeft: () {
+                          setState(() => _recordRun = true);
+                          unawaited(_saveAgentOpts());
+                        },
+                        onRight: () {
+                          setState(() => _recordRun = false);
+                          unawaited(_saveAgentOpts());
+                        },
+                      ),
+                    // ★ = ユーザー要望「ブレイクポイントを指定して、 一緒に
+                    //   立ち止まりながら」。 印を消さずに一気に流したい時は切る。
+                    _twoWay(
+                      provider.t('auto.optBp'),
+                      left: provider.t('auto.optBpOn'),
+                      right: provider.t('auto.optBpOff'),
+                      leftPicked: _bpEnabled,
+                      onLeft: () {
+                        setState(() => _bpEnabled = true);
+                        unawaited(_saveAgentOpts());
+                      },
+                      onRight: () {
+                        setState(() => _bpEnabled = false);
+                        unawaited(_saveAgentOpts());
+                      },
+                    ),
                     ])),
                     const SizedBox(width: 8),
                     // ── 投げるボタンは 1 つだけ (= ユーザー要望: 見方と

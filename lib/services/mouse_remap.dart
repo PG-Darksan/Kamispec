@@ -56,7 +56,7 @@ class MouseButtonId {
   static const List<int> all = [middle, back, forward, tiltLeft, tiltRight];
 }
 
-/// ボタン 1 つぶんの割り当て。
+/// ボタン 1 つ分の割り当て。
 class MouseKeyBinding {
   /// [MouseButtonId] のどれか。
   final int button;

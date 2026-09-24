@@ -453,7 +453,7 @@ class ConnectionPainter extends CustomPainter {
         cp2 = p2 + _controlOffset(conn.toAnchor, strength);
       }
 
-      // 折れ線/ベジェ共通の線パス生成 (始端/終端は矢印ぶん短縮できる)。
+      // 折れ線/ベジェ共通の線パス生成 (始端/終端は矢印分短縮できる)。
       Path buildLine(Offset start, Offset end) {
         final path = Path()..moveTo(start.dx, start.dy);
         if (poly != null) {

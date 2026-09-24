@@ -590,7 +590,7 @@ class NodeConnection {
     required this.toId,
     required this.toAnchor,
     // ★ = ユーザー要望「デフォルトのリンク線が細すぎる」。
-    this.strokeWidth = 3.5,
+    this.strokeWidth = 4.0,
     this.showArrow = true,
     this.arrowHeadScale = 0.5,
     this.bidirectional = false,
@@ -723,7 +723,7 @@ class NodeConnection {
       fromAnchor: AnchorDirection.values[json['fromAnchor'] as int],
       toId: json['toId'] as String,
       toAnchor: AnchorDirection.values[json['toAnchor'] as int],
-      strokeWidth: (json['strokeWidth'] as num?)?.toDouble() ?? 3.5,
+      strokeWidth: (json['strokeWidth'] as num?)?.toDouble() ?? 4.0,
       showArrow: json['showArrow'] as bool? ?? true,
       arrowHeadScale: (json['arrowHeadScale'] as num?)?.toDouble() ?? 1.0,
       bidirectional: json['bidirectional'] as bool? ?? false,
@@ -1093,7 +1093,7 @@ class MindMapNode {
   /// ★ = ユーザー報告「新規ページを作ると要素が一か所に固まる」。
   ///   [visualHeight] は個別指定が無い時に 12pt / 15pt を決め打ちしていたが、
   ///   実際に描かれるのは **アプリの既定** (設定でメモ字を 22 にしている人も
-  ///   いる)。 その差のぶん高さを小さく見積もり、 自動配置がことごとく
+  ///   いる)。 その差の分高さを小さく見積もり、 自動配置がことごとく
   ///   重なっていた。 ここへ本当の既定を入れて、 見積もりと描画を合わせる。
   static double defaultTitleFontSizeHint = 15.0;
   static double defaultMemoFontSizeHint = 12.0;
@@ -1101,7 +1101,7 @@ class MindMapNode {
   /// 日本語が入っているかを見る型。
   ///
   /// ★ = ユーザー報告「画面分割した時などに固まる」 の対策。 ここは
-  ///   **1 コマごとに全ノードぶん**通るのに、 毎回 `RegExp(...)` を作り
+  ///   **1 コマごとに全ノード分**通るのに、 毎回 `RegExp(...)` を作り
   ///   直していた (= 正規表現の組み立てが ノード数 x コマ数)。 1 つだけ
   ///   作って使い回す。
   static final RegExp _kJpChars = RegExp(r'[\u3000-\u9FFF\uF900-\uFAFF]');

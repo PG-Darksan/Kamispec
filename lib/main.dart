@@ -560,7 +560,7 @@ class _FloatingMemoOverlayState extends State<FloatingMemoOverlay> {
     try {
       // ★ resizeOverlay に渡すのは「dp」。 プラグインが内部で dpToPx() して
       //   から WindowManager に渡すため、 こちらで画素に直して渡すと
-      //   端末倍率のぶんだけ巨大化する (= ユーザー報告: POCO F6 Pro (倍率
+      //   端末倍率の分だけ巨大化する (= ユーザー報告: POCO F6 Pro (倍率
       //   約 3.5) で画面全体を覆う)。 以前は px を渡していたのが原因。
       final view = WidgetsBinding.instance.platformDispatcher.views.first;
       final dpr = view.devicePixelRatio <= 0 ? 1.0 : view.devicePixelRatio;
@@ -3677,6 +3677,20 @@ void main(List<String> args) async {
     runApp(const _AutomationWindowApp());
     return;
   }
+  // ── CLI (Claude Code / Codex CLI) の画面だけを単独で立ち上げる ──
+  //
+  //    = ユーザー要望「この codexCLI などの画面をアプリの外に出せるように
+  //    して、 ショートカットから呼び出すとページを立ち上げずに codexCLI 等を
+  //    呼べるように」。
+  //    ★ サブ窓 (desktop_multi_window) ではなく**別プロセス**にしてある。
+  //      擬似端末の一覧 (`AgentCliRunner.active`) も `AgentTerminalState.live`
+  //      も isolate ごとの持ち物なので、 サブ窓にすると本体と見え方が食い違う。
+  //      それにショートカットからの起動はどのみち新しいプロセスになる。
+  //      クリック手順の窓 (`--floating-auto`) と同じ作りにそろえてある。
+  if (!kIsWeb && args.isNotEmpty && args.first == '--agent-cli') {
+    await _bootAgentCliWindow(args);
+    return;
+  }
   // ── メモだけを単独で立ち上げる (= ユーザー要望: フローティングメモの
   //    ショートカットから、 裏で本体アプリまで開いてしまうのをやめる) ──
   //    本体とは別プロセスなので、 マップの画面は一切立ち上がらない。
@@ -3826,6 +3840,13 @@ void main(List<String> args) async {
       if (url != null && url.isNotEmpty) {
         await FloatL10n.load();
         runApp(_FloatingWebWindowApp(url: url));
+        return;
+      }
+      // CLI (Claude Code / Codex CLI) の画面も単体で開ける
+      //   (= ユーザー要望: ショートカットから呼ぶとページを立ち上げずに
+      //    codexCLI 等が出るように)。
+      if (shortcutCmd == 'cliWindow' || shortcutCmd == 'openTerminal') {
+        await _bootAgentCliWindow(args);
         return;
       }
       // 電卓 / タイマーも単体で開ける (窓 1 つで完結するため)。
@@ -4019,6 +4040,26 @@ void main(List<String> args) async {
   } else {
     CursorWrap.allowed = true;
   }
+  // ── ショートカットから集中ロックを直に始める (Android) ──
+  //
+  //    = ユーザー要望「集中ロックをショートカットから呼び出す際も
+  //    ページを開かずに呼び出せるように」。 Android のホーム画面
+  //    ショートカットは必ず本体の Activity を起こすので、 プロセスを
+  //    分けることはできない。 代わりに**マップの画面を組み立てずに**
+  //    ロック画面から始める (解除したらいつもの画面へ移る)。
+  //    ★ 覗くだけで extra が消えるので、 使ったことを控えに残す
+  //      ([HomeShortcutService.consumeInitialCommandId])。 残さないと
+  //      画面側の受け口が同じ命令をもう一度走らせる。
+  if (!kIsWeb && Platform.isAndroid) {
+    try {
+      final cmd = await HomeShortcutService.initialCommandId()
+          .timeout(const Duration(milliseconds: 900));
+      if (cmd == 'focusLock') {
+        HomeShortcutService.consumeInitialCommandId();
+        MyApp.bootFocusLock = true;
+      }
+    } catch (_) {}
+  }
   runApp(const MyApp());
 }
 
@@ -4111,6 +4152,10 @@ DatePickerThemeData _darkDatePickerTheme(Color accent) {
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
+
+  /// 集中ロックのショートカットから起こされたか (= マップの画面を作らずに
+  /// ロック画面から始める)。 `main()` が立てる。
+  static bool bootFocusLock = false;
 
   @override
   Widget build(BuildContext context) {
@@ -4226,7 +4271,9 @@ class MyApp extends StatelessWidget {
               // ── スクロールバー (= ユーザー要望: 常時表示はやめる) ──
               scrollbarTheme: _autoHideScrollbarTheme(),
             ),
-            home: const MindMapScreen(),
+            home: MyApp.bootFocusLock
+                ? const FocusLockBootScreen()
+                : const MindMapScreen(),
           );
         },
       ),
@@ -4834,7 +4881,7 @@ class _MemoWindowAppState extends State<_MemoWindowApp> with WindowListener {
       contentH = 360.0;
     } else {
       final inputRow = 46.0 + (_inputLineCount() - 1) * 19.0;
-      // 一括操作の帯 (項目があるときだけ出る) ぶんも見込む。
+      // 一括操作の帯 (項目があるときだけ出る) 分も見込む。
       final itemsH = _items.isEmpty
           ? 0.0
           : math.min(_items.length * 46.0 + 42.0, 430.0);
@@ -7189,6 +7236,111 @@ final GlobalKey<NavigatorState> _navKeyFloating = GlobalKey<NavigatorState>();
 
 /// 自動操作のフロー画面だけを出す「外の窓」 (= ユーザー要望)。
 /// 別プロセスなので WebView の後始末も本体に一切影響しない。
+/// CLI の画面だけの窓を起こす (`--agent-cli` と CLI のショートカットの共通処理)。
+///
+/// ★ ページ (マップ) は一切組み立てない。 `MindMapProvider` は作るが、
+///   本体専用の常駐 (MCP の待ち受け・見張り・thumbnail 作り) は
+///   [MindMapProvider.externalToolWindow] / [MindMapProvider.fastStartWindow]
+///   で止めてある。
+Future<void> _bootAgentCliWindow(List<String> args) async {
+  final pinned = args.contains('--floating-pin');
+  double? fx, fy, fw, fh;
+  for (final a in args) {
+    if (a.startsWith('--floating-x=')) {
+      fx = double.tryParse(a.substring('--floating-x='.length));
+    } else if (a.startsWith('--floating-y=')) {
+      fy = double.tryParse(a.substring('--floating-y='.length));
+    } else if (a.startsWith('--floating-w=')) {
+      fw = double.tryParse(a.substring('--floating-w='.length));
+    } else if (a.startsWith('--floating-h=')) {
+      fh = double.tryParse(a.substring('--floating-h='.length));
+    }
+  }
+  MindMapProvider.externalToolWindow = true;
+  MindMapProvider.fastStartWindow = true;
+  final px = fx, py = fy;
+  try {
+    await windowManager.ensureInitialized();
+    final opts = WindowOptions(
+      size: Size(fw ?? 980, fh ?? 760),
+      center: px == null || py == null,
+      // runApp より前なので t() が使えない。 'cli.title' を変えたらここも。
+      title: 'Claude Code / Codex CLI',
+    );
+    unawaited(windowManager.waitUntilReadyToShow(opts, () async {
+      if (px != null && py != null) {
+        try {
+          await windowManager.setPosition(Offset(px, py));
+        } catch (_) {}
+      }
+      if (pinned) {
+        try {
+          await windowManager.setAlwaysOnTop(true);
+        } catch (_) {}
+      }
+      await windowManager.show();
+      await windowManager.focus();
+    }));
+  } catch (_) {}
+  runApp(const _AgentCliWindowApp());
+}
+
+/// CLI の画面だけを出す単独窓 (クリック手順の窓と同じ作り)。
+class _AgentCliWindowApp extends StatefulWidget {
+  const _AgentCliWindowApp();
+
+  @override
+  State<_AgentCliWindowApp> createState() => _AgentCliWindowAppState();
+}
+
+class _AgentCliWindowAppState extends State<_AgentCliWindowApp>
+    with WindowListener {
+  @override
+  void initState() {
+    super.initState();
+    windowManager.addListener(this);
+  }
+
+  @override
+  void dispose() {
+    windowManager.removeListener(this);
+    super.dispose();
+  }
+
+  /// 走っている CLI ごとこのプロセスを畳む。 端末はこのプロセスの子なので、
+  /// 窓を閉じたら一緒に終わるのが筋 (本体の CLI には影響しない)。
+  static Never _forceKillSelf() {
+    try {
+      Process.killPid(pid);
+    } catch (_) {}
+    exit(0);
+  }
+
+  @override
+  void onWindowClose() {
+    _forceKillSelf();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ChangeNotifierProvider(
+      create: (_) => MindMapProvider(),
+      child: MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: ThemeData(
+          useMaterial3: true,
+          brightness: Brightness.dark,
+          scaffoldBackgroundColor: const Color(0xFF12121C),
+        ),
+        home: Scaffold(
+          backgroundColor: const Color(0xFF12121C),
+          body: AgentCliWindowHost(onRequestClose: _forceKillSelf),
+        ),
+      ),
+    );
+  }
+}
+
 class _AutomationWindowApp extends StatefulWidget {
   const _AutomationWindowApp();
 

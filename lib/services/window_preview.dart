@@ -43,7 +43,7 @@ import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as img;
 import 'package:win32/win32.dart' as w32;
 
-/// 窓 1 つぶんの見た目。
+/// 窓 1 つ分の見た目。
 class WindowShot {
   /// 窓の中身を縮めた絵 (PNG)。 撮れなければ null。
   final Uint8List? thumbPng;
@@ -172,7 +172,7 @@ Uint8List? _shootWindow(int screenDc, int hwnd, int tw, int th) {
     final ww = rc.ref.right - rc.ref.left;
     final wh = rc.ref.bottom - rc.ref.top;
     if (ww <= 16 || wh <= 16 || ww > 16384 || wh > 16384) return null;
-    // ★ GetWindowRect は影のぶん外へ広い。 見えている枠 (DWM) で切り抜く。
+    // ★ GetWindowRect は影の分外へ広い。 見えている枠 (DWM) で切り抜く。
     //   PrintWindow が描くのは GetWindowRect の原点からなので、 差を
     //   そのまま切り抜きの位置に使える。
     var cx = 0, cy = 0, cw = ww, ch = wh;

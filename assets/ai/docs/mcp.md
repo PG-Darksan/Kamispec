@@ -175,14 +175,15 @@ flowchart TD
 | ツール | 説明 |
 |---|---|
 | `add_gallery_item` | ギャラリー (bookshelf) にタイル追加。`texts` で一括投入 (1 件ずつ呼ばせない) |
-| `add_paint_text` | フリーノート (paint) に文字を書く。`texts` で一括。x/y 省略で上から縦に積む |
+| `add_paint_text` | フリーノート (paint) に文字を書く。`texts` で一括 (段落 = 1 要素)。x/y 省略で**用紙幅に折り返し + 既にある物の下から**積む。紙が尽きたら次のタブへ続き、使った紙が戻り値 `sheets` に入る<br/>★ 下書き用のタブを作らず、本文をまとめて 1 回で渡す (自分で x/y を計算しない) |
 | `list_paint_tabs` | フリーノートの構成 (バインダーとタブ) を返す。番号はここで確かめる |
 | `add_paint_tabs` | タブ (紙) を足す。`names` でまとめて。`binder` 省略で今のバインダー |
 | `add_paint_binders` | バインダーを足す (中に空のタブが 1 枚) |
 | `select_paint_tab` | 見ているバインダー / タブを切り替える (= 書き込み先が変わる) |
 | `rename_paint_item` | バインダー / タブの名前を変える |
+| `delete_paint_item` | タブ (紙) 1 枚、または `binder` だけ渡してバインダーごと消す。最後の 1 枚 / 最後のバインダーは消せない<br/>★ 取り消せない。消すのは**利用者に頼まれた物**か、自分が作業用に作ったタブだけ |
 | `append_document_text` | ノート (paint / document) の末尾に段落を追記。`texts` で一括<br/>★ `markdown` ページには使えない (`write_markdown` を使う) |
-| `write_markdown` | マークダウン (markdown) ページの本文を書く。`text` に**まるごと 1 回**で渡す (見出し・表・```mermaid も描ける)<br/>既定は総入れ替え。`append: true` で末尾に足す。書き終えるとそのページが開いた状態になる |
+| `write_markdown` | マークダウン (markdown) ページの本文を書く。`text` に**まるごと 1 回**で渡す (見出し・表・```mermaid も描ける)<br/>既定は総入れ替え。`append: true` で末尾に足す。書き終えるとそのページが開いた状態になる<br/>★ マークダウンのページは**タブ**を複数持てる。長い資料は各部分の先頭に `<<<PAGE: タブ名>>>` の行を置くとタブごとに分かれる (1 つ目は今のタブ、残りは後ろへ追加)。1 枚目を目次にして `[タブ名](tab:タブ名)` でリンクする。区切りが無くても長い文書は見出しで自動分割。`split: "single"` で 1 枚に固定、`split: "tabs"` で短い文書も分割、`append` 時は分割しない。返事の `tabs` が書いたタブ数 |
 | `add_video_editor_item` | 動画エディターのタイムラインに 1 項目。`kind` = text / video / image。`startMs` 省略でそのレイヤーの末尾、`durationMs` 既定 4000、`layer` 0 が最背面 |
 
 ### ファイル作成

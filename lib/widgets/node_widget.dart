@@ -922,13 +922,13 @@ class _NodeWidgetState extends State<NodeWidget> {
     //   改行(\n)ごとにセグメント分割し、 日本語/英語で 1 行の文字数を変える。
     //   旧実装は「全長 ÷ 16文字」 で改行を無視していたため、 描画(自然折返し)が
     //   visualHeight より高くなり、 レイアウト計算とズレて重なっていた。
-    // clampHeight (= ギャラリーのテキストタイル) の時は本文ぶんの高さを
+    // clampHeight (= ギャラリーのテキストタイル) の時は本文分の高さを
     //   加算しない。 totalH が node.height に固定され、 下のメモ Text は
     //   maxLines + ellipsis で height 内に省略表示する (= ユーザー要望:
     //   テキストを後から変えてもタイルの大きさが変わらない)。
     double memoExtraH = 0;
     if (hasMemo && !node.clampHeight) {
-      // 使い回し (= 1 コマごとに全ノードぶん通るため)。
+      // 使い回し (= 1 コマごとに全ノード分通るため)。
       final hasJpMemo = _kJpMemoChars.hasMatch(node.memoText!);
       final avgMemoCharW = hasJpMemo ? memoFontSize * 1.0 : memoFontSize * 0.58;
       final memoCharsPerLine =

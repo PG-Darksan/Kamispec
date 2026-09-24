@@ -851,7 +851,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   /// ページを跨いで選べるようにするため、 **枠の 2 点を画面の座標で持ち、
   /// ページごとにその 2 点をそのページの紙の座標へ直して**判定する
   /// (= ユーザー要望)。 図形の点を全部画面の座標へ直すより、 ページあたり
-  /// 2 回の変換で済むぶん軽い。
+  /// 2 回の変換で済む分軽い。
   ///
   /// [geoms] は今のページの並び。 呼ぶ側が既に持っているので受け取る
   /// (この中で数え直すと、 指を動かすたびに要素の木を歩く事になる)。
@@ -1025,7 +1025,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     return (a + Offset(ab.dx * t, ab.dy * t) - p).distance;
   }
 
-  /// 図形を囲む枠 (ページ座標 pt)。 画面の見た目 (= 8px ぶん広げた枠) と
+  /// 図形を囲む枠 (ページ座標 pt)。 画面の見た目 (= 8px 分広げた枠) と
   /// 合わせるため、 [padPx] を掛けた分だけ広げる。
   static Rect _strokeBox(PdfDrawStroke st, {double pad = 0}) {
     var r = Rect.fromPoints(st.points.first, st.points.first);
@@ -2162,7 +2162,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
               final nx = (pt.dx - c.dx) / rx;
               final ny = (pt.dy - c.dy) / ry;
               final d = math.sqrt(nx * nx + ny * ny);
-              // 半径 1 の円に直してから、 消しゴムの太さぶんの幅を見る。
+              // 半径 1 の円に直してから、 消しゴムの太さ分の幅を見る。
               final tol = r / math.max(math.min(rx, ry), 0.01);
               hit = (d - 1).abs() <= tol;
               break;
@@ -2249,7 +2249,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
 
   // ── ウィンドウ枠の固定 (= ユーザー要望) ──
   //
-  //  固定は 1 ページぶんだけ持つ (別のページへ行くと意味を成さないので、
+  //  固定は 1 ページ分だけ持つ (別のページへ行くと意味を成さないので、
   //  そのページを離れている間は出さない)。
   int _freezePage = 0;
 
@@ -2458,7 +2458,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
   ///
   /// 大きさは、 今そのページが画面で何 px に出ているか ([_PageGeom]) から
   /// 毎回引き直すので、 拡大しても下の本物と揃う。 ページを離れている間は
-  /// 何も出さない (固定は 1 ページぶんなので、 他のページでは意味が無い)。
+  /// 何も出さない (固定は 1 ページ分なので、 他のページでは意味が無い)。
   Widget? _buildFreezeBands() {
     final img = _freezeShot;
     if (img == null || !_hasFreeze || _freezeShotPage != _freezePage) {
@@ -2555,7 +2555,7 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     final out = <Offset>[];
     switch (st.tool) {
       case PdfDrawTool.rect:
-        // 枠を 4 辺ぶんなぞる。
+        // 枠を 4 辺分なぞる。
         addLine(out, box.topLeft, box.topRight);
         addLine(out, box.topRight, box.bottomRight);
         addLine(out, box.bottomRight, box.bottomLeft);
@@ -2907,12 +2907,12 @@ class _PdfDrawLayerState extends State<PdfDrawLayer> {
     );
   }
 
-  /// チェック (✓) 1 個ぶんの線  /// チェック (✓) 1 個ぶんの線 (= ユーザー要望: 簡単に出せるように)。
+  /// チェック (✓) 1 個分の線  /// チェック (✓) 1 個分の線 (= ユーザー要望: 簡単に出せるように)。
   /// 太さに合わせて大きさも変える。
   PdfDrawStroke _checkStroke(int pageNumber, Offset at) =>
       _markStrokes(pageNumber, at).first;
 
-  /// 置く印 1 個ぶんの線。
+  /// 置く印 1 個分の線。
   ///
   /// ★ = ユーザー要望「✓ の所を ○ や × 等に切り替えることも可能に」。
   /// どの形も「点をつないだ線」 として作るので、 描画 / PDF への焼き込み /
@@ -4366,7 +4366,7 @@ class _PdfFreezePainter extends CustomPainter {
     required this.overlayBoxGetter,
   });
 
-  /// そのページ 1 枚ぶんの絵。
+  /// そのページ 1 枚分の絵。
   final ui.Image image;
 
   /// 固定しているページ (1 始まり)。

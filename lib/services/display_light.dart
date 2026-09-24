@@ -56,7 +56,7 @@ enum BrightnessRoute {
   gamma,
 }
 
-/// 1 台ぶんの画面。
+/// 1 台分の画面。
 class LightMonitor {
   /// GDI の名前 (`\\.\DISPLAY1` など)。 ガンマを当てる時の宛先。
   final String gdiName;
@@ -935,7 +935,7 @@ class DisplayLight {
     }
   }
 
-  /// 1 台ぶん元へ戻す。
+  /// 1 台分元へ戻す。
   static void restoreGamma(String gdiName) {
     final orig = _originals.remove(gdiName);
     final sig = _originSig.remove(gdiName);

@@ -120,6 +120,12 @@ class Pty {
     calloc.free(options);
 
     if (_handle == nullptr) {
+      // ★ HisatorNotebook のパッチ: 起こせなかった時に受け口を閉じる。
+      //   元は開いたまま投げていたので、 「もう一度」 を押すたびに
+      //   ReceivePort が 2 本ずつ居残っていた (= セキュリティソフトに
+      //   撃たれて開けない時ほど溜まる)。
+      _stdoutPort.close();
+      _exitPort.close();
       throw StateError('Failed to create PTY: ${_getPtyError()}');
     }
 
@@ -167,10 +173,16 @@ class Pty {
   Future<int> get exitCode => _exitCodeCompleter.future;
 
   /// The process id of the process running in the pseudo-terminal.
-  int get pid => _bindings.pty_getpid(_handle);
+  ///
+  /// ★ HisatorNotebook のパッチ: 起こせなかった `Pty` は `_handle` が
+  ///   `nullptr` のまま残る。 そのままネイティブへ渡すとアクセス違反で
+  ///   **アプリが落ちる**ので、 手前で返す (= ユーザー報告: ターミナルを
+  ///   開こうとするとアプリが落ちる)。
+  int get pid => _handle == nullptr ? -1 : _bindings.pty_getpid(_handle);
 
   /// Write data to the pseudo-terminal.
   void write(Uint8List data) {
+    if (_handle == nullptr) return;
     final buf = malloc<Int8>(data.length);
     buf.asTypedList(data.length).setAll(0, data);
     _bindings.pty_write(_handle, buf.cast(), data.length);
@@ -179,6 +191,7 @@ class Pty {
 
   /// Resize the pseudo-terminal.
   void resize(int rows, int cols) {
+    if (_handle == nullptr) return;
     _bindings.pty_resize(_handle, rows, cols);
   }
 
@@ -188,6 +201,10 @@ class Pty {
   /// Linux and OS X. The default signal is [ProcessSignal.sigterm]
   /// which will normally terminate the process.
   bool kill([ProcessSignal signal = ProcessSignal.sigterm]) {
+    // ★ HisatorNotebook のパッチ: 起こせなかった物は殺す相手が居ない。
+    //   `pid` が -1 のまま `Process.killPid` を呼ぶと、 相手の居ない
+    //   合図になる。
+    if (_handle == nullptr) return false;
     return Process.killPid(pid, signal);
   }
 
@@ -195,6 +212,7 @@ class Pty {
   /// This is needed when ackRead is set to true as the pty will wait for this signal to happen
   /// before any additional data is sent.
   void ackRead() {
+    if (_handle == nullptr) return;
     _bindings.pty_ack_read(_handle);
   }
 

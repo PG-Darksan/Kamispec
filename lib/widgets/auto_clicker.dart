@@ -327,118 +327,20 @@ class _AutoClickerViewState extends State<AutoClickerView> {
           ]),
         ),
         Expanded(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
-            child: !autoClickerSupported
-                ? Padding(
-                    padding: const EdgeInsets.only(top: 40),
-                    child: Text(p.t('autoClicker.windowsOnly'),
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                            color: Colors.white70, fontSize: 13)),
-                  )
-                : Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // ★ = ユーザー要望「タップすると画面上にパレットが
-                      //   出てきて、 スワイプや指定したボタン位置を
-                      //   クリックするなどの動作を割り当てられるように」。
-                      //   よく使う動作を札にして並べる所を一番上に置く。
-                      AutoClickPalette(t: p.t),
-                      const SizedBox(height: 14),
-                      const Divider(height: 1, color: Colors.white12),
-                      const SizedBox(height: 10),
-                      // ── ここから下は「1 か所を押し続ける」 昔からの設定。
-                      //    普段はパレットで足りるので畳んでおく。
-                      InkWell(
-                        borderRadius: BorderRadius.circular(6),
-                        onTap: () =>
-                            setState(() => _repeatFormOpen = !_repeatFormOpen),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 4),
-                          child: Row(children: [
-                            Icon(
-                                _repeatFormOpen
-                                    ? Icons.expand_less_rounded
-                                    : Icons.expand_more_rounded,
-                                size: 18,
-                                color: Colors.white54),
-                            const SizedBox(width: 6),
-                            Text(p.t('autoClicker.repeatSection'),
-                                style: const TextStyle(
-                                    color: Colors.white70,
-                                    fontSize: 12.5,
-                                    fontWeight: FontWeight.w700)),
-                          ]),
-                        ),
-                      ),
-                      if (!_repeatFormOpen) const SizedBox(height: 4),
-                      if (_repeatFormOpen) ...[
-                      const SizedBox(height: 8),
-                      // ★ = ユーザー指摘「今カーソルがある場所とか使わない
-                      //   だろ、 覚えた場所も分かりにくいから無くして、
-                      //   座標指定する形にする」。 押す先の決め方を選ばせる
-                      //   のをやめ、 **座標を書く**一本にした。
-                      _sectionTitle(p.t('autoClicker.pointTitle')),
-                      _pointRow(p),
-                      const SizedBox(height: 16),
-                      _sectionTitle(p.t('autoClicker.howTitle')),
-                      _buttonRow(p),
-                      const SizedBox(height: 8),
-                      _numberRow(
-                        label: p.t('autoClicker.interval'),
-                        controller: _intervalCtrl,
-                        suffix: 'ms',
-                        min: 10,
-                        max: 600000,
-                        onChanged: (v) => _intervalMs = v,
-                      ),
-                      _numberRow(
-                        label: p.t('autoClicker.repeat'),
-                        controller: _repeatCtrl,
-                        suffix: p.t('autoClicker.timesUnit'),
-                        min: 0,
-                        max: 1000000,
-                        hint: p.t('autoClicker.repeatZero'),
-                        onChanged: (v) => _repeat = v,
-                      ),
-                      _numberRow(
-                        label: p.t('autoClicker.startDelay'),
-                        controller: _delayCtrl,
-                        suffix: p.t('autoClicker.secUnit'),
-                        min: 0,
-                        max: 60,
-                        onChanged: (v) => _startDelaySec = v,
-                      ),
-                      const SizedBox(height: 16),
-                      _runRow(p),
-                      if (_status.isNotEmpty) ...[
-                        const SizedBox(height: 10),
-                        Text(_status,
-                            style: const TextStyle(
-                                color: Color(0xFF9CCC65),
-                                fontSize: 12,
-                                height: 1.5)),
-                      ],
-                      if (_running) ...[
-                        const SizedBox(height: 6),
-                        Text(
-                            p
-                                .t('autoClicker.counter')
-                                .replaceFirst('{n}', '$_done'),
-                            style: const TextStyle(
-                                color: Colors.white70, fontSize: 12)),
-                      ],
-                      const SizedBox(height: 14),
-                      Text(p.t('autoClicker.note'),
-                          style: const TextStyle(
-                              color: Colors.white38,
-                              fontSize: 11,
-                              height: 1.6)),
-                      ],
-                    ],
-                  ),
-          ),
+          child: !autoClickerSupported
+              ? Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Text(p.t('autoClicker.windowsOnly'),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                          color: Colors.white70, fontSize: 13)),
+                )
+              // ★ = ユーザー要望「オートクリッカーがイメージと違う。
+              //   もっと縦長か横長のパレットが出てきて、 そこからクリックや
+              //   スワイプなどの操作ボタンを選ぶ形に」。 座標や間隔を埋める
+              //   設定の欄はやめ、 **動作が並ぶ帯**だけにした。 間隔などの
+              //   細かい指定は、 流した後の札を長押しすれば今までどおり直せる。
+              : AutoClickPalette(t: p.t),
         ),
       ]),
     );
