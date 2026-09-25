@@ -14903,6 +14903,50 @@ class MindMapProvider extends ChangeNotifier {
       'pt': '{n} item(ns) movido(s) para "{name}"',
       'ru': 'Перенесено элементов: {n} → «{name}»',
     },
+    'hdr.splitTransferLinked': {
+      'ja': '繋がっている要素ごと渡す',
+      'en': 'Carry connected items too',
+      'zh': '连同相连的要素一起传递',
+      'ko': '연결된 요소까지 함께 전달',
+      'es': 'Llevar también los elementos conectados',
+      'fr': 'Emporter aussi les éléments connectés',
+      'de': 'Verbundene Elemente mitnehmen',
+      'pt': 'Levar também os itens conectados',
+      'ru': 'Переносить и связанные элементы',
+    },
+    'split.linkedOn': {
+      'ja': '→ 繋がっている要素ごと渡す',
+      'en': '→ Carry connected items too',
+      'zh': '→ 连同相连的要素一起传递',
+      'ko': '→ 연결된 요소까지 함께 전달',
+      'es': '→ Llevar también los conectados',
+      'fr': '→ Emporter aussi les éléments connectés',
+      'de': '→ Verbundene Elemente mitnehmen',
+      'pt': '→ Levar também os conectados',
+      'ru': '→ Переносить и связанные',
+    },
+    'split.linkedOff': {
+      'ja': '→ 選んだ要素だけ渡す',
+      'en': '→ Carry only what is selected',
+      'zh': '→ 只传递所选要素',
+      'ko': '→ 선택한 요소만 전달',
+      'es': '→ Llevar solo lo seleccionado',
+      'fr': '→ Emporter seulement la sélection',
+      'de': '→ Nur die Auswahl mitnehmen',
+      'pt': '→ Levar apenas o selecionado',
+      'ru': '→ Переносить только выбранное',
+    },
+    'split.transferBrake': {
+      'ja': '繋がっている要素が {n} 個を超えるので、 選んだ分だけ渡しました',
+      'en': 'The connected branch exceeds {n} items, so only the selection was moved',
+      'zh': '相连的要素超过 {n} 个，因此仅传递了所选部分',
+      'ko': '연결된 요소가 {n}개를 넘으므로 선택한 것만 옮겼습니다',
+      'es': 'La rama conectada supera {n} elementos, así que solo se movió la selección',
+      'fr': 'La branche connectée dépasse {n} éléments : seule la sélection a été déplacée',
+      'de': 'Der verbundene Zweig überschreitet {n} Elemente, daher wurde nur die Auswahl verschoben',
+      'pt': 'O ramo conectado excede {n} itens, então apenas a seleção foi movida',
+      'ru': 'В связанной ветке больше {n} элементов, поэтому перенесена только выборка',
+    },
     'hdr.switchDesktop': {
       'ja': 'デスクトップ切り替え',
       'en': 'Switch desktop',
@@ -54028,6 +54072,53 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Parar de dividir e voltar para uma só',
       'ru': 'Отменить разделение и вернуться к одной',
     },
+    // ── タブの出し方 (= ユーザー要望「タブと今表示されている画面の結び付きが
+    //    分かりにくい。 そのタブ単体で開くモードと分割ビューモードに分けて、
+    //    分割ビューでは左端に置かれたタブ 4 つまでが同時に開かれるように」) ──
+    'cli.viewGrid': {
+      'ja': '分割ビュー (左端の 4 タブ)',
+      'en': 'Split view (leftmost 4 tabs)',
+      'zh': '分屏视图（最左侧 4 个标签）',
+      'ko': '분할 보기 (왼쪽 4 개 탭)',
+      'es': 'Vista dividida (las 4 pestañas de la izquierda)',
+      'fr': 'Vue partagée (les 4 onglets de gauche)',
+      'de': 'Geteilte Ansicht (die 4 linken Tabs)',
+      'pt': 'Vista dividida (as 4 abas da esquerda)',
+      'ru': 'Разделённый вид (4 левые вкладки)',
+    },
+    'cli.viewSingle': {
+      'ja': '単体表示 (このタブだけ)',
+      'en': 'Single view (this tab only)',
+      'zh': '单独显示（仅此标签）',
+      'ko': '단독 표시 (이 탭만)',
+      'es': 'Vista única (solo esta pestaña)',
+      'fr': 'Vue unique (cet onglet seul)',
+      'de': 'Einzelansicht (nur dieser Tab)',
+      'pt': 'Vista única (apenas esta aba)',
+      'ru': 'Одиночный вид (только эта вкладка)',
+    },
+    'cli.viewGridTip': {
+      'ja': '分割ビューにする (左端の 4 タブを同時に出す)',
+      'en': 'Switch to split view (show the leftmost 4 tabs at once)',
+      'zh': '切换为分屏视图（同时显示最左侧 4 个标签）',
+      'ko': '분할 보기로 바꾸기 (왼쪽 4 개 탭을 동시에 표시)',
+      'es': 'Cambiar a vista dividida (mostrar 4 pestañas a la vez)',
+      'fr': 'Passer en vue partagée (afficher les 4 onglets de gauche)',
+      'de': 'Zur geteilten Ansicht wechseln (die 4 linken Tabs zugleich)',
+      'pt': 'Mudar para vista dividida (mostrar 4 abas ao mesmo tempo)',
+      'ru': 'Переключиться на разделённый вид (4 левые вкладки сразу)',
+    },
+    'cli.viewSingleTip': {
+      'ja': '単体表示にする (このタブだけを出す)',
+      'en': 'Switch to single view (show only this tab)',
+      'zh': '切换为单独显示（仅显示此标签）',
+      'ko': '단독 표시로 바꾸기 (이 탭만 표시)',
+      'es': 'Cambiar a vista única (mostrar solo esta pestaña)',
+      'fr': 'Passer en vue unique (afficher cet onglet seul)',
+      'de': 'Zur Einzelansicht wechseln (nur diesen Tab zeigen)',
+      'pt': 'Mudar para vista única (mostrar apenas esta aba)',
+      'ru': 'Переключиться на одиночный вид (только эта вкладка)',
+    },
     // ── 会話 (AI (API)) と CLI を左右に並べる
     //    (★ = ユーザー要望「AI(API)と codexCLI を画面分割で開けるように
     //    して欲しい」) ──
@@ -69984,15 +70075,15 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Obolochka dlya terminala',
     },
     'cli.shellOpen': {
-      'ja': 'このシェルをタブで開く',
-      'en': 'Open this shell in a tab',
-      'zh': '在标签页中打开此 Shell',
-      'ko': '이 셸을 탭으로 열기',
-      'es': 'Abrir este shell en una pestana',
-      'fr': 'Ouvrir ce shell dans un onglet',
-      'de': 'Diese Shell in einem Tab oeffnen',
-      'pt': 'Abrir este shell em uma aba',
-      'ru': 'Otkryt etu obolochku vo vkladke',
+      'ja': 'このシェルを画面の下に開く',
+      'en': 'Open this shell at the bottom',
+      'zh': '在画面下方打开此 Shell',
+      'ko': '이 셸을 화면 아래에 열기',
+      'es': 'Abrir este shell en la parte inferior',
+      'fr': 'Ouvrir ce shell en bas de l ecran',
+      'de': 'Diese Shell unten oeffnen',
+      'pt': 'Abrir este shell na parte inferior',
+      'ru': 'Otkryt etu obolochku vnizu ekrana',
     },
     'cli.shellAuto': {
       'ja': 'おまかせ',
@@ -118018,6 +118109,53 @@ $example
     }
     return result;
   }
+
+  /// [page] の [ids] に、 **接続で繋がっている要素** を足した集合。
+  ///
+  /// ★ = ユーザー要望「他の要素と接続されている要素は、 繋がっている要素ごと
+  ///   転送できるように」。
+  ///
+  ///   辿るのは **子の向き (from→to) だけ**。 両向き (= 連結成分) に辿ると、
+  ///   葉を 1 つ掴んだだけで 親 → 根 → 全部の枝 と繋がってしまい、 「1 つ
+  ///   運ぶつもりがページごと向こうへ行く」 事故になる。 子の向きだけなら
+  ///   必ず「掴んだ物から下に伸びる枝」 に収まる ([getDescendantsOnPage] と
+  ///   同じ向き)。 これが歯止めその 1。
+  ///
+  ///   [maxDepth] を渡すとその段数で打ち切る (null = 無制限)。
+  ///   [limit] を渡すと、 集合がその数を超えた時点で **null** を返す
+  ///   (= 呼ぶ側が「多すぎるので広げない」 と決められるように)。 これが
+  ///   歯止めその 2。 途中まで広げた半端な集合は返さない — 枝の途中で切ると
+  ///   [moveNodesToPage] が片端だけの接続を捨てるので、 線が無言で消える。
+  Set<String>? connectedBranchOnPage(MindMapPage page, Set<String> ids,
+      {int? maxDepth, int? limit}) {
+    final result = <String>{};
+    for (final id in ids) {
+      if (page.nodes.containsKey(id)) result.add(id);
+    }
+    if (result.isEmpty) return result;
+    var frontier = <String>{...result};
+    var depth = 0;
+    while (frontier.isNotEmpty && (maxDepth == null || depth < maxDepth)) {
+      final next = <String>{};
+      for (final c in page.connections) {
+        if (!frontier.contains(c.fromId)) continue;
+        if (result.contains(c.toId)) continue;
+        if (!page.nodes.containsKey(c.toId)) continue;
+        next.add(c.toId);
+      }
+      if (next.isEmpty) break;
+      result.addAll(next);
+      if (limit != null && result.length > limit) return null;
+      frontier = next;
+      depth++;
+    }
+    return result;
+  }
+
+  /// 現在ページ版の [connectedBranchOnPage]。
+  Set<String>? connectedBranch(Set<String> ids, {int? maxDepth, int? limit}) =>
+      connectedBranchOnPage(currentPage, ids,
+          maxDepth: maxDepth, limit: limit);
 
   /// [page] に残っている要素のうち、 収納の印で [gone] を指している物の id。
   Set<String> _containmentRefsInto(MindMapPage page, Set<String> gone) {

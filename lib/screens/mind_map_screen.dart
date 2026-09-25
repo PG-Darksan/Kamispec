@@ -3334,6 +3334,17 @@ class _MindMapScreenState extends State<MindMapScreen>
   Offset? _rangeDragAnchor;
   Offset _rangeDragDelta = Offset.zero;
 
+  /// 範囲選択のまとめ移動で、 **どれを掴んだか**。
+  ///
+  /// ★ = ユーザー要望「複数選択した要素も境界を越えて渡せるように」。
+  ///   まとめ移動は `_moveModeNodeId` を使わない別の道なので、 渡し先で
+  ///   「指の下に置く基準」 になる要素が分からなかった。 掴んだ id を
+  ///   控えておき、 転送の時に基準として渡す。
+  ///
+  ///   図形だけを掴んだ時は null のまま (図形は渡す相手が無いので、
+  ///   転送は成立せず従来どおり同じページの中で動く)。
+  String? _rangeDragHeldId;
+
   // 兄弟スナップガイド（ドラッグ中に子ノードと平行になった場合）
   String? _siblingGuideParentId;
   Offset? _siblingGuidePos;
@@ -6419,6 +6430,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     // 境界を飛び越えて渡すモード (= ユーザー要望)。
     // ignore: discarded_futures
     _loadSplitTransferMode();
+    // 「繋がっている要素ごと渡す」 か (= ユーザー要望 (b))。
+    // ignore: discarded_futures
+    _loadSplitTransferLinked();
     // ── 「プログラムから開く」 で渡されたファイルを処理する (= ユーザー要望)。
     //    最初のフレームが出てから聞く (起動直後だとダイアログを出せない)。
     if (pendingOpenFilePaths.isNotEmpty) {
@@ -10360,6 +10374,35 @@ class _MindMapScreenState extends State<MindMapScreen>
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool(_kSplitTransferKey, v);
+    } catch (_) {}
+  }
+
+  /// 「繋がっている要素ごと渡す」 か (= ユーザー要望 (b))。 既定は **切**。
+  ///
+  /// ★ これが暴発の歯止めその 3、 そして一番効く歯止め。 既定で入れると、
+  ///   今まで 1 つだけ渡せていた操作が突然「枝ごと」 になり、 1 個運ぶ
+  ///   つもりで向こうのページが膨れる。 明示的に入れた時だけ働かせる。
+  bool _splitTransferLinked = false;
+  static const String _kSplitTransferLinkedKey = 'splitTransferLinked';
+
+  /// 「繋がっている要素ごと」 で一度に運ぶ上限。 これを超える枝は広げず、
+  /// 選んだ分だけ渡して理由を知らせる (= 掴んだ 1 つのつもりでページごと
+  /// 向こうへ行くのを防ぐ)。
+  static const int _kSplitTransferBranchLimit = 60;
+
+  Future<void> _loadSplitTransferLinked() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final v = prefs.getBool(_kSplitTransferLinkedKey) ?? false;
+      if (v && mounted) setState(() => _splitTransferLinked = true);
+    } catch (_) {}
+  }
+
+  Future<void> _setSplitTransferLinked(bool v) async {
+    setState(() => _splitTransferLinked = v);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_kSplitTransferLinkedKey, v);
     } catch (_) {}
   }
 
@@ -30223,6 +30266,24 @@ class _MindMapScreenState extends State<MindMapScreen>
                 _splitTransferMode ? 'split.transferOn' : 'split.transferOff'));
           },
         ),
+      // ── 繋がっている要素ごと渡すか (転送モードが入っている時だけ) ──
+      // ★ = ユーザー要望「他の要素と接続されている要素は、 繋がっている
+      //   要素ごと転送できるように」。 既定は切。 入れると、 掴んだ物から
+      //   **下に伸びる枝** を一緒に運ぶ (上には広がらないので、 葉を 1 つ
+      //   掴んでページごと持って行く事故にならない)。
+      if (_mapSplitOpen && _splitTransferMode)
+        _CtxMenuToggle(
+          icon: Icons.account_tree_rounded,
+          label: provider.t('hdr.splitTransferLinked'),
+          color: const Color(0xFF7CD992),
+          checked: _splitTransferLinked,
+          onTap: () {
+            _removeOverlay();
+            unawaited(_setSplitTransferLinked(!_splitTransferLinked));
+            _showLockToast(provider.t(
+                _splitTransferLinked ? 'split.linkedOn' : 'split.linkedOff'));
+          },
+        ),
       if (!isGalleryPage)
       _CtxMenuItem(
         menuId: 'cutMode',
@@ -35993,6 +36054,21 @@ class _MindMapScreenState extends State<MindMapScreen>
                 _splitTransferMode ? 'split.transferOn' : 'split.transferOff'));
           },
         ),
+      // ── 繋がっている要素ごと渡すか (双子: キャンバスの右クリックと同じ物)。
+      //    要素を掴んで渡す直前にここから入切できるように置く。
+      if (_mapSplitOpen && _splitTransferMode)
+        _CtxMenuToggle(
+          icon: Icons.account_tree_rounded,
+          label: provider.t('hdr.splitTransferLinked'),
+          color: const Color(0xFF7CD992),
+          checked: _splitTransferLinked,
+          onTap: () {
+            _removeOverlay();
+            unawaited(_setSplitTransferLinked(!_splitTransferLinked));
+            _showLockToast(provider.t(
+                _splitTransferLinked ? 'split.linkedOn' : 'split.linkedOff'));
+          },
+        ),
     ];
 
     // 推定高さ
@@ -38377,9 +38453,48 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
   }
 
-  bool _handleSplitTransferDrop(int slot, {Offset? dropGlobal}) {
+  /// 範囲選択でまとめて掴んでいた要素を、 隣のペインへ渡す。 渡せたら true。
+  ///
+  /// ★ = ユーザー要望「要素を複数選択して送れない」。 まとめ移動は
+  ///   `_moveModeNodeId` を立てない別の道 (`_rangeDragging`) を通るため、
+  ///   単体ドラッグ側の入口 (`_onLongPressNodeEnd`) には来ない。 同じ
+  ///   `_handleSplitTransferDrop` へここから合流させる。
+  ///
+  ///   呼び口は 2 つ (キャンバスを包む Listener の onPointerUp と、
+  ///   NodeWidget の onLongPressEnd)。 Flutter は生の Listener を
+  ///   ジェスチャ認識器より先に走らせるので、 先に済んだ方が
+  ///   `_rangeDragging` を下ろし、 もう一方はここで false になって
+  ///   二重に渡らない。
+  bool _tryRangeSplitTransfer() {
+    if (!_rangeDragging) return false;
+    if (!_splitTransferMode || !_mapSplitOpen) return false;
+    final at = _nodeDragGlobal;
+    if (at == null) return false;
+    final slot = _splitCellAt(at);
+    if (slot < 0) return false;
+    if (!_handleSplitTransferDrop(slot,
+        dropGlobal: at, heldId: _rangeDragHeldId)) {
+      return false;
+    }
+    _nodeDragGlobal = null;
+    setState(() {
+      _rangeDragging = false;
+      _rangeDragAnchor = null;
+      _rangeDragDelta = Offset.zero;
+      _rangeDragHeldId = null;
+      _currentSnap = null;
+      _splitTransferTarget = -1;
+    });
+    return true;
+  }
+
+  bool _handleSplitTransferDrop(int slot,
+      {Offset? dropGlobal, String? heldId}) {
     final provider = context.read<MindMapProvider>();
-    final nodeId = _moveModeNodeId;
+    // ★ = ユーザー要望「要素を複数選択して送れるように」。 範囲選択の
+    //   まとめ移動は `_moveModeNodeId` を使わないので、 掴んだ id を
+    //   [heldId] で受け取れるようにする (単体ドラッグは今までどおり)。
+    final nodeId = heldId ?? _moveModeNodeId;
     if (nodeId == null) return false;
     final targetPageId = _mapSplitCells[slot] ?? '';
     if (targetPageId.isEmpty) return false;
@@ -38388,6 +38503,27 @@ class _MindMapScreenState extends State<MindMapScreen>
     // 選んでいる物があればまとめて、 無ければ掴んでいる 1 つ。
     final ids = <String>{nodeId, ..._groupDragIds};
     if (_rangeSelectedIds.contains(nodeId)) ids.addAll(_rangeSelectedIds);
+    // 選んだ数 (= 「余計に付いて来た分」 を数えるための基準)。
+    final int selectedCount = ids.length;
+    // ★ = ユーザー要望「接続されている要素は繋がっている要素ごと転送」。
+    //   暴発の歯止めは 4 段:
+    //     ① 既定は切 (`_splitTransferLinked`)。
+    //     ② 子の向き (from→to) だけ辿る (provider 側)。 葉を掴んでも
+    //        親側へは広がらないので、 ページ全部を巻き込む道が無い。
+    //     ③ 上限 (_kSplitTransferBranchLimit) を超えたら広げない。
+    //     ④ 選んだ数より多く運んだ時は SnackBar に 「戻る」 を出す。
+    bool brakeHit = false;
+    if (_splitTransferLinked) {
+      final branch =
+          provider.connectedBranch(ids, limit: _kSplitTransferBranchLimit);
+      if (branch == null) {
+        // 数え切れないほど繋がっている = ページごと運ぶ事故になる。
+        // 選んだ分だけ渡して、 理由を知らせる。
+        brakeHit = true;
+      } else {
+        ids.addAll(branch);
+      }
+    }
     final targetPage = provider.pages[targetIdx];
     final name = targetPage.name;
     final bool targetIsShelf = targetPage.pageType == 'bookshelf';
@@ -38450,12 +38586,28 @@ class _MindMapScreenState extends State<MindMapScreen>
       _appSnack(
         context,
         SnackBar(
-          duration: const Duration(seconds: 2),
+          // 「戻る」 を押せるだけの間は出しておく (_appSnack が 4 秒で丸める)。
+          duration: const Duration(seconds: 4),
           backgroundColor: const Color(0xFF2A2A3E),
-          content: Text(provider
-              .t('split.transferred')
-              .replaceAll('{n}', '${ids.length}')
-              .replaceAll('{name}', name)),
+          content: Text(brakeHit
+              ? provider
+                  .t('split.transferBrake')
+                  .replaceAll('{n}', '$_kSplitTransferBranchLimit')
+              : provider
+                  .t('split.transferred')
+                  .replaceAll('{n}', '${moveIds.length}')
+                  .replaceAll('{name}', name)),
+          // ★ 歯止めその 4。 「繋がっている要素ごと」 や隠れた子で、 選んだ
+          //   数より多く運んだ時だけ 「戻る」 を添える。 転送は 2 ページ分の
+          //   控え (undoLastCrossPageMove) を 1 発枠で持っているので、 これ
+          //   1 回で丸ごと戻る。 暴発しても取り返せる保険。
+          action: moveIds.length > selectedCount
+              ? SnackBarAction(
+                  label: provider.t('hdr.undo'),
+                  textColor: const Color(0xFF7CD992),
+                  onPressed: provider.undo,
+                )
+              : null,
         ),
       );
     }
@@ -63863,6 +64015,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     final canvasPos =
                                         _globalToCanvas(e.position, ctrl);
                                     bool hitSelected = false;
+                                    // ★ = ユーザー要望「複数選択した要素も境界を
+                                    //   越えて渡せるように」。 渡し先で指の下に
+                                    //   置く基準になるので、 どれを掴んだかを
+                                    //   控える (図形だけなら null のまま)。
+                                    String? hitNodeId;
                                     for (final id in _rangeSelectedIds) {
                                       final n = provider.nodes[id];
                                       if (n == null) continue;
@@ -63873,6 +64030,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                                           n.visualHeight);
                                       if (r.contains(canvasPos)) {
                                         hitSelected = true;
+                                        hitNodeId = id;
                                         break;
                                       }
                                     }
@@ -63902,6 +64060,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                                         _rangeDragging = true;
                                         _rangeDragAnchor = canvasPos;
                                         _rangeDragDelta = Offset.zero;
+                                        // ★ 渡し先で指の下に置く基準
+                                        //   (= ユーザー要望 (a))。
+                                        _rangeDragHeldId = hitNodeId;
                                       });
                                       _lastDragGlobalPos = e.position;
                                       _edgeScrollCtrl = ctrl;
@@ -64016,6 +64177,19 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   // 範囲ドラッグ中: Listenerでノード移動を直接処理
                                   if (_rangeDragging &&
                                       _rangeDragAnchor != null) {
+                                    // ★ = ユーザー要望「複数選択した要素も境界を
+                                    //   越えて渡せるように」。 まとめ移動でも
+                                    //   今どのペインの上に居るかを見て、 渡し先の
+                                    //   枠を光らせる (単体ドラッグの
+                                    //   _onLongPressNodeMove と同じ書き方)。
+                                    if (_splitTransferMode && _mapSplitOpen) {
+                                      _nodeDragGlobal = e.position;
+                                      final k = _splitCellAt(e.position);
+                                      if (k != _splitTransferTarget) {
+                                        setState(
+                                            () => _splitTransferTarget = k);
+                                      }
+                                    }
                                     final canvasPos =
                                         _globalToCanvas(e.position, ctrl);
                                     final newDelta =
@@ -64023,8 +64197,19 @@ class _MindMapScreenState extends State<MindMapScreen>
                                     // 選択ノード群のいずれかが範囲外ノードのアンカーに近づいたら
                                     // 接続候補としてハイライト。 既存の _currentSnap 表示
                                     // (= ターゲットアンカー上のオレンジハイライト) を流用する。
-                                    final snap = _detectAnchorSnapForRange(
-                                        _rangeSelectedIds, newDelta, provider);
+                                    //
+                                    // ★ 隣のペインの上に居る間は「渡す」 側なので、
+                                    //   繋ぐ相手は探さない。 探したままだと、 向こうの
+                                    //   ペインで手を離した時に下の onPointerUp が
+                                    //   snap != null の枝へ入り、 渡す前に元のページで
+                                    //   勝手に接続してしまう (単体ドラッグ側も同じ理由で
+                                    //   跨いでいる間は _currentSnap を捨てている)。
+                                    final snap = _splitTransferTarget >= 0
+                                        ? null
+                                        : _detectAnchorSnapForRange(
+                                            _rangeSelectedIds,
+                                            newDelta,
+                                            provider);
                                     setState(() {
                                       _rangeDragDelta = newDelta;
                                       _currentSnap = snap;
@@ -64124,6 +64309,23 @@ class _MindMapScreenState extends State<MindMapScreen>
                                   // 範囲ドラッグ終了
                                   if (_rangeDragging) {
                                     _stopEdgeScroll();
+                                    // ★ = ユーザー要望「複数選択した要素も境界を
+                                    //   越えて渡せるように」。 隣のペインの上で
+                                    //   離したなら、 そのページへまとめて移して
+                                    //   ここで終わる。 渡せなかった時 (自分の
+                                    //   ペイン / 渡せないセル) は下へ落ちて
+                                    //   従来どおり同じページの中で確定する。
+                                    //
+                                    //   ここが本体。 この Listener はジェスチャ
+                                    //   認識器より先に走るので、 NodeWidget 側の
+                                    //   onLongPressEnd に足しても間に合わない
+                                    //   (先にこちらが同じページ内で確定させて
+                                    //   しまう)。
+                                    if (_tryRangeSplitTransfer()) return;
+                                    _nodeDragGlobal = null;
+                                    if (_splitTransferTarget >= 0) {
+                                      setState(() => _splitTransferTarget = -1);
+                                    }
                                     final snap = _currentSnap;
                                     if (snap != null) {
                                       // 範囲ドラッグ中に他のノードのアンカーへスナップしていた:
@@ -85052,6 +85254,24 @@ class _MindMapScreenState extends State<MindMapScreen>
                                         ? () {
                                             // グループドラッグ確定
                                             _stopEdgeScroll();
+                                            // ★ ここはキャンバスを包む Listener の
+                                            //   onPointerUp の**後追い**。 Flutter は
+                                            //   生の Listener をジェスチャ認識器より
+                                            //   先に走らせるので、 普段は上流が既に
+                                            //   確定させている。 その後でもう一度
+                                            //   moveNodes を呼ぶと、 中の _pushUndo が
+                                            //   「転送を戻す 1 発枠」
+                                            //   (_lastCrossPageMoveUndo) を捨ててしまい、
+                                            //   渡した直後の Ctrl+Z と知らせの 「戻る」 が
+                                            //   空振りする。 上流が済んでいたら黙る。
+                                            if (!_rangeDragging) {
+                                              _rangeDragHeldId = null;
+                                              return;
+                                            }
+                                            // 万一こちらだけが動いた時 (上流が
+                                            //   裁断モード等で降りていた時) も、
+                                            //   隣のペインへ渡せるようにしておく。
+                                            if (_tryRangeSplitTransfer()) return;
                                             provider.moveNodes(
                                                 Set.of(_rangeSelectedIds),
                                                 _rangeDragDelta);
@@ -85059,6 +85279,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                                               _rangeDragging = false;
                                               _rangeDragAnchor = null;
                                               _rangeDragDelta = Offset.zero;
+                                              _rangeDragHeldId = null;
                                             });
                                             _restoreMultiNodeActionOverlayAfterRangeDrag(
                                                 provider, ctrl);
@@ -281534,6 +281755,15 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
   ///   次に開いた時に畳まれた細い窓で立ち上がってしまう。
   double? _collapsedFromW;
 
+  /// 折り畳む前の**場所** (= 戻す時に使う)。 [setCollapsed] に `anchorCenter`
+  /// を渡して畳んだ時だけ入る。 畳んだ丸をボタンの所へ移すので、 広げる時に
+  /// 元の場所へ戻せるように覚えておく。
+  Offset? _collapsedFromPos;
+
+  /// 畳んだ時に据えた場所。 その後ユーザーが丸を掴んで動かしたかの見分けに
+  /// 使う (動かしていたら、 広げる時に元の場所へは戻さない)。
+  Offset? _collapsedAtPos;
+
   /// 畳む / 戻す。
   ///
   /// ★ [barWidth] を渡すと**横も縮める** (= ユーザー要望: 畳んだら横長の
@@ -281542,9 +281772,17 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
   /// (= ユーザー報告: 折り畳んだ時のアイコンが歪)。 見出しの帯の高さ
   /// (`_headerH` / `_topGrab`) は作りによって変わるので、 呼び出し側が
   /// 高さを決め打ちすると縦長の角丸になってしまう。
+  /// ★ [anchorCenter] を渡すと、 畳んだ姿をその**真ん中**へ据える
+  /// (= ユーザー要望: 折り畳んだ時のアイコンを折り畳みボタンと同じ位置に)。
+  /// 渡さなければ今までどおり左上の角を据え置きにする。
   void setCollapsed(bool v,
-      {double barHeight = 46, double barWidth = 0, bool circular = false}) {
+      {double barHeight = 46,
+      double barWidth = 0,
+      bool circular = false,
+      Offset? anchorCenter}) {
     if (v == isCollapsed) return;
+    // 据える場所を画面の中に収めるために使う寸法。
+    final screen = mounted ? MediaQuery.sizeOf(context) : Size.zero;
     setState(() {
       if (v) {
         _collapsedFrom = _h;
@@ -281555,12 +281793,38 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
         _h = circular && barWidth > 0
             ? barWidth
             : _headerH + _topGrab + barHeight;
+        // ★ 畳んだ姿を「折り畳みボタンが有った所」 へ据える (= ユーザー
+        //   要望: 畳んだアイコンがボタンから離れた位置に出て押しづらい)。
+        //   左上の角を据え置きにしていたので、 帯の右寄りに有ったボタン
+        //   から窓の幅のぶん左へ飛んでいた。 大きさを縮めた**後**に
+        //   置き直す (= 縮んだ 60x60 の真ん中をボタンに合わせる)。
+        if (anchorCenter != null) {
+          _collapsedFromPos = _pos;
+          var x = anchorCenter.dx - _w / 2;
+          var y = anchorCenter.dy - _h / 2;
+          if (screen.width > 0 && screen.height > 0) {
+            x = x.clamp(0.0, math.max(0.0, screen.width - _w));
+            y = y.clamp(0.0, math.max(0.0, screen.height - _h));
+          }
+          _pos = Offset(x, y);
+          _collapsedAtPos = _pos;
+        }
       } else {
         _h = _collapsedFrom ?? widget.initialHeight;
         _collapsedFrom = null;
         if (_collapsedFromW != null) {
           _w = _collapsedFromW!;
           _collapsedFromW = null;
+        }
+        // ★ 畳んだ丸をそのまま広げる時は、 畳む前の場所へ戻す。 ただし丸を
+        //   掴んで動かしていた時は**その場で**広げる (動かした事を無かった
+        //   ことにしない)。
+        if (_collapsedFromPos != null) {
+          final moved = _collapsedAtPos == null ||
+              (_pos - _collapsedAtPos!).distance > 1.0;
+          if (!moved) _pos = _collapsedFromPos!;
+          _collapsedFromPos = null;
+          _collapsedAtPos = null;
         }
       }
     });
@@ -281952,7 +282216,12 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
     final minTop = -_h * 0.75;
     setState(() => _pos = Offset((_pos.dx + delta.dx).clamp(minLeft, maxLeft),
         (_pos.dy + delta.dy).clamp(minTop, maxTop)));
-    _scheduleSaveGeometry();
+    // ★ 畳んでいる間は覚えない (= 覚えると 60x60 が「次に開く大きさ」 に
+    //   なり、 次回は会話画面が 60x60 に押し込まれた窓で立ち上がる)。
+    //   `setCollapsed` が「畳んだ大きさは覚えない」 と決めているのに、
+    //   畳んだ丸を掴んで動かす道からだけ漏れていた。 畳んだ丸は押した所に
+    //   出る (= カーソルの真下) ので、 続けて掴んでしまいやすい。
+    if (!isCollapsed) _scheduleSaveGeometry();
   }
 
   /// 掴んでいた手を離した時 (画面の外なら外の窓になる)。
@@ -283768,6 +284037,15 @@ class _McpChatDialogState extends State<_McpChatDialog>
   /// 折り畳めるように)。 会話は残したまま、 見出しの帯だけにする。
   bool _collapsed = false;
 
+  /// 折り畳みボタンそのものの居場所を測るための鍵。
+  ///
+  /// ★ = ユーザー要望「折り畳んだ時のアイコンが折り畳みボタンから離れた
+  ///   位置に出るので押しづらい。 同じ位置に出して欲しい」。 畳むと窓は
+  ///   60x60 まで縮むが、 窓は左上の角を据え置きにするので、 帯の右寄りに
+  ///   有るこのボタンから窓の幅のぶん左へ飛んでいた。 押した瞬間にこの
+  ///   ボタンの真ん中を測って、 その場所へ丸を据える ([_setCollapsed])。
+  final GlobalKey _collapseBtnKey = GlobalKey();
+
   /// 画面いっぱいに広げているか (= ユーザー要望: AI アシスタントの画面を
   /// 全画面で開けるように)。
   ///
@@ -283839,11 +284117,26 @@ class _McpChatDialogState extends State<_McpChatDialog>
   /// (縮めないと、 帯の下に何も無い大きな箱が残る)。
   void _setCollapsed(bool v) {
     if (_collapsed == v) return;
+    // ★ 畳む**前に**「折り畳みボタンが今どこに居るか」 を測る (= ユーザー
+    //   要望: 畳んだアイコンが折り畳みボタンから離れた所に出て押しづらい)。
+    //   窓は畳むと 60x60 へ縮むが左上の角は動かさない作りなので、 帯の右寄り
+    //   に有るボタンから窓の幅のぶん (520px の窓なら 400px 以上) 左へ飛んで
+    //   いた。 測った真ん中を窓へ渡して、 そこへ丸を据えてもらう。
+    // ★ 窓は根っこの Overlay に入っているので、 localToGlobal の座標は
+    //   そのまま窓の置き場所 (`_pos`) の座標になる。
+    Offset? anchor;
+    if (v) {
+      final box =
+          _collapseBtnKey.currentContext?.findRenderObject() as RenderBox?;
+      if (box != null && box.hasSize) {
+        anchor = box.localToGlobal(box.size.center(Offset.zero));
+      }
+    }
     setState(() => _collapsed = v);
     final win = context.findAncestorStateOfType<_FloatingPanelWindowState>();
     // 畳んだら小さな丸いボタンにする (= ユーザー要望)。 高さは窓側が
     //   幅に合わせるので、 ここでは決めない (決め打ちすると縦長になる)。
-    win?.setCollapsed(v, barWidth: 60, circular: true);
+    win?.setCollapsed(v, barWidth: 60, circular: true, anchorCenter: anchor);
     // ★ 折り畳んでいる間の説明は、 窓の**外側**に出す (= ユーザー報告:
     //   ヘルパーテキストが正しく表示されない)。 窓の中は自前の Overlay と
     //   MediaQuery を持っていて、 その広さ (60px) に押し込められるため、
@@ -283963,6 +284256,161 @@ class _McpChatDialogState extends State<_McpChatDialog>
   /// 並べられる上限 (主 + 2 枚目 + ここ 2 つ = 4 画面)。
   static const int _kMaxExtraPanes = 2;
 
+  // ── タブの出し方 (= ユーザー要望「タブと今表示されている画面の結び付きが
+  //    分かりにくい。 そのタブ単体で開くモードと分割ビューモードに分けて、
+  //    分割ビューでは左端に置かれたタブ 4 つまでが同時に開かれるように」) ──
+  //
+  //  ★ false = 単体モード (今までどおり 1 枚だけ)。
+  //    true  = 分割ビュー (**札の並びの左から 4 枚まで**を同時に出す)。
+  //  ★ 分割ビューの割り当ては**札の並びだけ**で決まる。 手で組む道
+  //    ([_splitCliSession] / [_extraCliSessions]) は一切見ない。 これが
+  //    「どのタブがどの画面か分からない」 の直しの本体で、 札を並べ替えれば
+  //    画面もその順に動く (枠には札の名前も出す = [_buildCliGridCell])。
+  //  ★ static なのは**覚えるため**だけ。 欄は閉じ開きで作り直されるのに
+  //    札 ([_cliTabs]) は生き続けるので、 開き直すたびに単体へ戻ると
+  //    「覚えていない」 と見える。 描くのは 1 つの欄だけ ([_cliGridOwner])。
+  static bool _cliGridMode = false;
+  static const String _kCliGridModeKey = 'cli_grid_mode_v1';
+  static bool _cliGridModeLoaded = false;
+
+  /// 分割ビューを**実際に描く**欄 (1 つだけ)。
+  ///
+  /// ★ [_splitCliSession] に「static にしてはいけない」 と書いてあるのと
+  ///   同じ理由。 この欄は「浮遊窓 / ダイアログ」 と「アプリ自身の分割セル」
+  ///   で同時に 2 つ生きる。 両方が同じ 4 枚を描くと、 1 個の [Terminal] に
+  ///   [TerminalView] が 2 枚ぶら下がり、 xterm の描画側
+  ///   (xterm-4.0.0/lib/src/ui/render.dart:347 `_terminal.resize(...)`) が
+  ///   互いの幅に直し合って、 走っている CLI の画面が絶えず折り返し直される。
+  ///   そこで**覚えるのは static、 描くのは 1 つの欄だけ**に分ける。
+  static _McpChatDialogState? _cliGridOwner;
+
+  /// この欄が分割ビューを描く側か。
+  bool get _cliGridOn {
+    if (!_cliGridMode) return false;
+    // 張り付いた欄 (= 並べた右側) は自分の会話だけを出す。
+    if (widget.boundSessionId != null) return false;
+    final o = _cliGridOwner;
+    if (o == null || !o.mounted || o.widget.boundSessionId != null) {
+      _cliGridOwner = this;
+      return true;
+    }
+    return identical(o, this);
+  }
+
+  /// 分割ビューを今まさに描いているか (= 手で組む道を伏せる判断にも使う)。
+  ///
+  /// ★ 主の枠が会話の時 ([_inlineTerminal] == null) と CLI の一覧の時
+  ///   ([_inlineIsTerminal] == false) は、 端末の置き場そのものが無いので
+  ///   分割ビューは効かない (枠の番号だけ返すと焦点の印が明後日を向く)。
+  bool get _cliGridActive =>
+      _inlineTerminal != null && _inlineIsTerminal && _cliGridOn;
+
+  /// 分割ビューで同時に出す上限 (= 左端から 4 枚)。
+  static const int _kGridMaxPanes = 4;
+
+  /// 分割ビューの 1 枚分の下限。 割合ではなく画素で決める (細くすると走って
+  /// いる CLI の桁数がその場で変わり、 広げても元には戻らない =
+  /// agent_cli_session.dart の `pty.resize`)。 上下に積むと行数も減るので、
+  /// 高さの目安も持つ。
+  static const double _kGridMinPaneW = 360.0;
+  static const double _kGridMinPaneH = 180.0;
+
+  /// 分割ビューで組んだ端末の控え (札ごとに 1 つ = **1 セッション 1 ビュー**)。
+  final Map<AgentCliSession, Widget> _gridCliTerminals =
+      <AgentCliSession, Widget>{};
+
+  /// 分割ビューで**実際に**出せた枚数 (入る幅 / 高さで減る)。 札を押した時に
+  /// 「まだ出ていない札」 を見分けるのに使う。
+  int _gridShownCount = 0;
+
+  /// 覚えている出し方を読み出す ([initState] から 1 度だけ)。
+  Future<void> _loadCliGridMode() async {
+    if (_cliGridModeLoaded) return;
+    _cliGridModeLoaded = true;
+    try {
+      final p = await SharedPreferences.getInstance();
+      final v = p.getBool(_kCliGridModeKey) ?? false;
+      if (v == _cliGridMode) return;
+      _cliGridMode = v;
+      if (mounted) setState(() {});
+    } catch (_) {}
+  }
+
+  Future<void> _persistCliGridMode(bool on) async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setBool(_kCliGridModeKey, on);
+    } catch (_) {}
+  }
+
+  /// 分割ビューに出す札 (= 帯の並びの左から [_kGridMaxPanes] 枚まで)。
+  ///
+  /// ★ 同じ [AgentCliSession] を 2 枚の [AgentTerminal] に出すと走っている
+  ///   CLI の画面が壊れる ([_cliGridOwner] の説明を見る)。 [_cliTabs] は同じ
+  ///   物を二度持たないので、 **ここから作る限り 1 セッション = 1 ビュー**。
+  /// ★ 立てた直後の札はまだ並び ([_tabOrder]) に載っていない。 載せずに
+  ///   数えると順位が全部同じ値 ([_tabRank] の 1<<20) になり、 [List.sort]
+  ///   は安定でないので枠の割り当てが描くたびに入れ替わる (= 端末が別の枠へ
+  ///   飛ぶ)。 先に載せて順位を一意にする ([_orderedTabs] も描く途中で同じ
+  ///   事をしているので、 作法は揃っている)。
+  List<AgentCliSession> _gridSessions() {
+    for (final t in _cliTabs) {
+      if (!_tabOrder.any((e) => identical(e, t))) _tabOrder.add(t);
+    }
+    final list = _cliTabs.toList()
+      ..sort((a, b) => _tabRank(a).compareTo(_tabRank(b)));
+    if (list.length <= _kGridMaxPanes) return list;
+    return list.sublist(0, _kGridMaxPanes);
+  }
+
+  /// 出し方を切り替える (帯の右のボタン / 右クリックの一覧)。
+  void _setCliGridMode(MindMapProvider provider, bool on) {
+    if (_cliGridMode == on) return;
+    _cliGridMode = on;
+    unawaited(_persistCliGridMode(on));
+    if (on) {
+      _cliGridOwner = this;
+    } else if (identical(_cliGridOwner, this)) {
+      _cliGridOwner = null;
+    }
+    if (!on) {
+      // ★ 単体モードへ戻す時は、 手で組んだ左右分割もここで畳む (= 「その
+      //   タブ単体で開くモード」 なのに 2 枚残っていたら意味がない)。
+      //   会話どうしの並び ([_sideChatSessionId]) は CLI の出し方とは別の話
+      //   なので触らない。 端末が主の枠の時は [_sideCliSession] は必ず null
+      //   ([_showInlineTerminal] が畳む) ので、 [_unsplitCli] だけで足りる。
+      _unsplitCli();
+      if (mounted) setState(() => _splitFocusPane = 0);
+      final s = _lastCliSession;
+      if (s != null && _inlineTerminal != null && _inlineIsTerminal) {
+        _focusCliPane(s);
+      }
+      return;
+    }
+    // 分割ビューへ。 手で組んだ相手は見ないので、 抱えた物は手放しておく
+    // (終わった画面を持ち続けない)。
+    setState(() {
+      _splitCliSession = null;
+      _splitTerminal = null;
+      _clearExtraPanes();
+      _splitFocusPane = 0;
+    });
+    final grid = _gridSessions();
+    if (grid.isEmpty) return;
+    // 主の枠が並びの中に居ない時 (会話や CLI の一覧を出していた時も) は、
+    // 先頭の札を主の枠に出す (= 覚えている [_inlineTerminal] が、 どの枠にも
+    // 入らないまま捨て置きにならないように)。
+    final main = _lastCliSession;
+    if (_inlineTerminal == null ||
+        !_inlineIsTerminal ||
+        main == null ||
+        !grid.any((e) => identical(e, main))) {
+      _showRunningCliTerminal(provider, grid.first);
+    }
+    if (grid.length >= 2) _ensureSplitWidth(paneCount: 2);
+    _focusCliPane(grid.first);
+  }
+
   /// 今いくつの画面を並べているか。
   int _splitPaneCount() {
     var n = 1;
@@ -283977,6 +284425,13 @@ class _McpChatDialogState extends State<_McpChatDialog>
 
   /// 画面の並び順に見た、 それぞれの枠の中身 (null = 会話の列)。
   List<AgentCliSession?> _splitPaneSessions() {
+    // ★ 分割ビューの時は、 枠の中身は**札の並びそのもの** (手で組んだ
+    //   [_splitCliSession] / [_extraCliSessions] は見ない)。 焦点の印
+    //   ([_splitFocusPane])・Ctrl+W の当て先・枠の押下判定はすべてここを
+    //   見ているので、 1 か所分けるだけで全部が分割ビューに追従する。
+    if (_cliGridActive) {
+      return List<AgentCliSession?>.of(_gridSessions());
+    }
     final out = <AgentCliSession?>[];
     final side = _activeSideSession;
     if (_inlineTerminal != null && side == null) {
@@ -284015,6 +284470,253 @@ class _McpChatDialogState extends State<_McpChatDialog>
     if (identical(sp, _lastCliSession)) return null;
     if (!_cliTabs.contains(sp)) return null;
     return sp;
+  }
+
+  // ── CLI の画面の「下」 に出す素のシェルの帯 ─────────────────────────
+  //
+  //  ★ = ユーザー要望「ターミナル (素のシェル) が CLI の画面と横並びで
+  //    開かれる。 下に開かれるようにしてほしい」。 素のシェルは会話や CLI と
+  //    並べて読む物ではなく**その下で使う物**なので、 左右の枠
+  //    ([_splitCliSession] / [_sideCliSession] / [_extraCliSessions]) には
+  //    入れず、 画面の下の帯に出す。
+  //
+  //  ★ **双子を作らない**。 帯そのものはテキスト / マークダウンの編集画面と
+  //    同じ [_EditorTerminalBand] をそのまま使う (高さを変える線・殻の名前と
+  //    今いる場所の見出し・畳む / 終わるのボタンまで 1 か所)。
+  //  ★ 帯に居る殻は [_cliTabs] に入れない。 同じ [AgentCliSession] を 2 枚の
+  //    [AgentTerminal] で描くと、 xterm の描画側が同じ [Terminal] を互いの
+  //    幅へ直し合って走っている画面が壊れる ([_splitCliSession] の ★ と同じ
+  //    理由)。 だから帯へ迎える時は札と左右の枠から必ず外す。
+  //  ★ 畳んでも**止めない** ([AgentCliRunner.active] に残る)。 もう一度
+  //    ターミナルを開けば同じ殻の続きが出る。
+  //  ★ **static にしてはいけない** ([_splitCliSession] と同じ理由: この欄は
+  //    浮遊窓とペインで 2 つ同時に開ける。 static にすると両方が同じ殻を
+  //    描いて桁数を取り合う)。
+  AgentCliSession? _bottomShell;
+
+  /// 帯を開いているか (false = 畳んでいる。 殻は生きたまま)。
+  bool _bottomShellOpen = false;
+
+  /// 帯の高さ。 欄を開き直しても覚えておく ([_splitRatio] と同じ扱い)。
+  static double _bottomShellH = _EditorTerminalBand.kDefaultH;
+
+  /// 上 (会話 / CLI) に必ず残す高さ。 これを割る狭さでは帯を開かず、
+  /// 畳んだ札 (24px) だけを出す (= 行き止まりを作らない)。
+  static const double _kBottomShellKeepTop = 220.0;
+
+  /// その殻が、 どこかの [AgentTerminal] に既に描かれているか。
+  ///
+  /// ★ 同じ殻を 2 枚の [AgentTerminal] に出すと桁数を取り合って壊れるので、
+  ///   迎える前と、 畳んだ札から開き直す時に必ず確かめる。
+  bool _shellDrawnSomewhere(AgentCliSession s) => AgentTerminalState.live
+      .any((t) => t.mounted && identical(t.widget.session, s));
+
+  /// どこにも映っていない、 生きている素のシェル。
+  ///
+  /// ★ 欄を閉じて開き直すと [_bottomShell] は消える (static にできないため)。
+  ///   走っている殻は [AgentCliRunner.active] に残っているので、 そこから
+  ///   迎え直す。 **他所で描かれている物は取らない**。
+  AgentCliSession? _orphanShellForBand() {
+    for (final s in AgentCliRunner.active.reversed) {
+      if (!s.isShell || !s.running) continue;
+      if (_cliTabs.contains(s)) continue;
+      if (_shellDrawnSomewhere(s)) continue;
+      return s;
+    }
+    return null;
+  }
+
+  /// 走っている殻 [s] を帯へ迎える (札と左右の枠からは外す)。
+  void _adoptShellIntoBand(AgentCliSession s) {
+    final prev = _bottomShell;
+    // 帯は 1 本だけ。 先に居た殻は止めずに札へ返す (黙って消さない)。
+    if (prev != null && !identical(prev, s) && prev.running) {
+      _registerCliTab(prev);
+    }
+    setState(() {
+      _bottomShell = s;
+      _bottomShellOpen = true;
+      _cliTabs.removeWhere((e) => identical(e, s));
+      if (identical(_splitCliSession, s)) {
+        _splitCliSession = null;
+        _splitTerminal = null;
+      }
+      if (identical(_sideCliSession, s)) {
+        _sideCliSession = null;
+        _sideTerminal = null;
+      }
+      _extraCliSessions.removeWhere((e) => identical(e, s));
+      _extraCliTerminals.remove(s);
+      // 主の枠に出ていた時は会話へ戻す (同じ殻を上と下に出さない)。
+      if (identical(_lastCliSession, s)) {
+        _lastCliSession = null;
+        _inlineTerminal = null;
+        _inlineTerminalTitle = '';
+        _inlineIsTerminal = false;
+      }
+    });
+    _focusBandShell(s);
+  }
+
+  /// 帯の端末に打てるようにする (他の端末には掛け金を掛け直す)。
+  ///
+  /// ★ [_buildCliSplitPane] の Listener と同じ手当て。 端末は焦点が空くと
+  ///   700 ミリ秒ごとに取り返しに来るので、 選ばなかった側に掛け金を掛け
+  ///   直すまで打ち込み先が変わらない。
+  void _focusBandShell(AgentCliSession s) {
+    _noRefocusUntil = DateTime.now().add(const Duration(milliseconds: 900));
+    if (_promptFocus.hasFocus) _promptFocus.unfocus();
+    _focusCliPane(s);
+  }
+
+  /// 下の帯に素のシェルを出す。
+  ///
+  /// ★ 押すたびに擬似端末を増やさない。 生きている殻があればそれを出し直し、
+  ///   場所が違う時は `cd` で移る (走り出した擬似端末の現在地は後から
+  ///   変えられないため)。
+  /// [forceNew] … 殻の種類を選んで押した時 (= 選んだ物と違う殻を使い回さない)。
+  Future<void> _openShellBand(MindMapProvider provider, String dir,
+      {String shellId = '', bool forceNew = false}) async {
+    if (!AgentCli.supported) return;
+    final alive = (_bottomShell != null && _bottomShell!.running)
+        ? _bottomShell
+        : _orphanShellForBand();
+    if (!forceNew && alive != null) {
+      String norm(String v) => v
+          .trim()
+          .replaceAll('/', Platform.pathSeparator)
+          .replaceAll(RegExp(r'[\\/]+$'), '')
+          .toLowerCase();
+      if (dir.trim().isNotEmpty && norm(alive.shownDirectory) != norm(dir)) {
+        alive.send(_cdCommandFor(alive, dir));
+        alive.noteDirectoryChanged(dir);
+      }
+      _adoptShellIntoBand(alive);
+      return;
+    }
+    // ★ 新しく起こす時、 どこにも映っていない殻は札へ戻しておく。 でないと
+    //   走っている擬似端末が、 戻る道の無いまま残り続ける。
+    if (alive != null && !identical(alive, _bottomShell)) {
+      _registerCliTab(alive);
+    }
+    final s = AgentCliRunner.begin(
+        buildShellSession(provider, dir, shellId: shellId));
+    // 終わったら帯を片付ける (走っていない殻を出し続けない)。
+    unawaited(s.finished.then((_) {
+      if (!mounted || !identical(_bottomShell, s)) return;
+      setState(() {
+        _bottomShell = null;
+        _bottomShellOpen = false;
+      });
+    }));
+    _adoptShellIntoBand(s);
+  }
+
+  /// 帯の殻を終わらせて畳む。
+  void _endBottomShell() {
+    try {
+      _bottomShell?.kill();
+    } catch (_) {}
+    setState(() {
+      _bottomShell = null;
+      _bottomShellOpen = false;
+    });
+  }
+
+  /// 畳んでいる間に出す細い札 (押すと開き直す)。
+  ///
+  /// ★ 畳むと殻は生きたまま見えなくなるので、 戻る道をここに残す
+  ///   (= 行き止まりを作らない)。 端末そのものは描かないので、 桁数の
+  ///   取り合いは起きない。
+  Widget _buildBottomShellBar(MindMapProvider provider, AgentCliSession s) {
+    return Container(
+      height: 24,
+      color: const Color(0xFF1A1A2E),
+      padding: const EdgeInsets.only(left: 10, right: 2),
+      child: Row(children: [
+        const Icon(Icons.terminal_rounded, size: 13, color: Color(0xFF9CCC65)),
+        const SizedBox(width: 6),
+        Expanded(
+          child: ListenableBuilder(
+            listenable: s,
+            builder: (_, __) => Text('${s.title}   ${s.shownDirectory}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white38, fontSize: 11)),
+          ),
+        ),
+        IconButton(
+          tooltip: provider.t('cli.endSession'),
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
+          icon: const Icon(Icons.delete_outline_rounded,
+              size: 14, color: Colors.white38),
+          onPressed: _endBottomShell,
+        ),
+        IconButton(
+          tooltip: provider.t('btn.open'),
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
+          icon: const Icon(Icons.keyboard_double_arrow_up_rounded,
+              size: 15, color: Colors.white54),
+          onPressed: () {
+            // 他所で描かれていたら、 こちらは手放す (2 枚描きを作らない)。
+            if (_shellDrawnSomewhere(s)) {
+              setState(() => _bottomShell = null);
+              return;
+            }
+            setState(() => _bottomShellOpen = true);
+            _focusBandShell(s);
+          },
+        ),
+      ]),
+    );
+  }
+
+  /// 会話 / CLI の列 [body] の**下**に殻の帯を足す。
+  ///
+  /// ★ 出していない時も**同じ形で包む** (帯の所は場所を取らない
+  ///   [SizedBox.shrink])。 有る無しで包みを足し引きすると木の形が変わり、
+  ///   走っている端末が作り直されてしまう (この欄の他の所と同じ決まり)。
+  /// ★ 高さは**その場の残り**で抑える (窓の高さで決め打ちにすると、 分割
+  ///   ペインのような低い所で上が 0px まで潰れて溢れる = 編集画面の帯と
+  ///   同じ手当て)。
+  Widget _withBottomShellBand(MindMapProvider provider, Widget body) {
+    return LayoutBuilder(builder: (_, room) {
+      final s = _bottomShell;
+      Widget band = const SizedBox.shrink();
+      if (s != null) {
+        final double rest = room.maxHeight.isFinite
+            ? room.maxHeight - _kBottomShellKeepTop
+            : _EditorTerminalBand.kMaxH;
+        if (!_bottomShellOpen || rest < _EditorTerminalBand.kMinH) {
+          band = _buildBottomShellBar(provider, s);
+        } else {
+          final double h = _bottomShellH
+              .clamp(_EditorTerminalBand.kMinH,
+                  math.max(_EditorTerminalBand.kMinH, rest))
+              .toDouble();
+          band = Listener(
+            behavior: HitTestBehavior.translucent,
+            onPointerDown: (_) => _focusBandShell(s),
+            child: _EditorTerminalBand(
+              provider: provider,
+              session: s,
+              height: h,
+              onHeightDelta: (dy) => setState(() => _bottomShellH =
+                  (_bottomShellH - dy).clamp(_EditorTerminalBand.kMinH,
+                      _EditorTerminalBand.kMaxH)),
+              onHide: () => setState(() => _bottomShellOpen = false),
+              onEnd: _endBottomShell,
+            ),
+          );
+        }
+      }
+      return Column(children: [
+        Expanded(child: body),
+        band,
+      ]);
+    });
   }
 
   /// タブ 1 枚分の端末 (左右どちらの側でも同じ作りにする)。
@@ -284058,8 +284760,24 @@ class _McpChatDialogState extends State<_McpChatDialog>
 
   /// タブ [s] を右側に並べる (= 結合)。 左は今見ている物のまま。
   void _splitWithTab(MindMapProvider provider, AgentCliSession s) {
+    // ★ 分割ビューでは並べ方は**札の並び**で決まるので、 手で組む道は通さない
+    //   (通すと [_splitCliSession] が埋まり、 どの枠にも描かれない端末を
+    //   抱え込む。 おまけに [_normaliseSplitOrder] が [_lastCliSession] と
+    //   [_inlineTerminal] を勝手に入れ替える)。 札を札の上へ落とした時は、
+    //   その札を打ち込み先にするだけにする (並べ替えは札の**間**の受け口
+    //   [_buildTabDropGap] が受ける)。
+    if (_cliGridActive) {
+      _onCliTabTap(provider, s);
+      return;
+    }
     if (identical(s, _lastCliSession)) return;
     if (!_cliTabs.contains(s)) return;
+    // ★ 素のシェルは右に並べない (= ユーザー要望「下に開いてほしい」)。
+    //   分割ボタンや札の落とし込みで選ばれた時も、 下の帯へ回す。
+    if (s.isShell) {
+      _adoptShellIntoBand(s);
+      return;
+    }
     // 既に並んでいる物をもう一度落とされたら何もしない。
     if (_extraCliSessions.any((e) => identical(e, s))) return;
     // ★ = ユーザー要望「3 画面や 4 画面にできるように」。 2 枚目が埋まって
@@ -284231,6 +284949,37 @@ class _McpChatDialogState extends State<_McpChatDialog>
   }
 
   void _onCliTabTap(MindMapProvider provider, AgentCliSession s) {
+    // ★ 分割ビューでは、 左端の 4 枚は**既に**どこかの枠に出ている (並びで
+    //   決まる)。 押された物を打ち込み先にするだけで、 枠は差し替えない。
+    //   まだ出ていない札 (5 枚目より後ろ / 幅や高さが足りなくて出せなかった
+    //   分) を押した時は、 並びの先頭へ動かして出す (でないと押しても何も
+    //   起きない札が残る)。
+    if (_cliGridActive) {
+      final grid = _gridSessions();
+      final shownN = _gridShownCount <= 0 ? grid.length : _gridShownCount;
+      final pane = grid.indexWhere((e) => identical(e, s));
+      if (pane >= 0 && pane < shownN) {
+        if (_splitFocusPane != pane) setState(() => _splitFocusPane = pane);
+        _focusCliPane(s);
+        return;
+      }
+      if (grid.isNotEmpty) {
+        final from = _tabOrder.indexWhere((e) => identical(e, s));
+        final to = _tabOrder.indexWhere((e) => identical(e, grid.first));
+        if (from >= 0 && to >= 0 && from != to) {
+          setState(() {
+            final moved = _tabOrder.removeAt(from);
+            _tabOrder.insert(to.clamp(0, _tabOrder.length), moved);
+          });
+        }
+      }
+      if (!identical(s, _lastCliSession)) {
+        _showRunningCliTerminal(provider, s);
+      }
+      if (mounted) setState(() => _splitFocusPane = 0);
+      _focusCliPane(s);
+      return;
+    }
     if (_inlineTerminal != null && identical(s, _lastCliSession)) {
       _focusCliPane(s);
       return;
@@ -284304,6 +285053,9 @@ class _McpChatDialogState extends State<_McpChatDialog>
   /// 木の中で引っ越して作り直されないように。 作り直されると巻き上げの位置や
   /// 開いていた欄が消え、 タブ切り替えの掃除も通らなくなる)。
   Widget _buildCliTerminalArea(MindMapProvider provider) {
+    // ★ 分割ビュー (= ユーザー要望)。 手で組む道 (この下) には一切触らずに、
+    //   札の並びから組む別の道をここで分ける。
+    if (_cliGridActive) return _buildCliGridArea(provider);
     final mate = _activeSplitSession;
     if (mate == null) {
       _splitCliSession = null;
@@ -284525,6 +285277,157 @@ class _McpChatDialogState extends State<_McpChatDialog>
           ),
         ),
       ),
+    );
+  }
+
+  /// 上下に積んだ時の境目 (掴めない = 取り分は等分)。
+  Widget _buildCliGridRowDivider() => Container(
+        height: 8,
+        color: Colors.white.withValues(alpha: 0.04),
+        child: Center(
+          child: Container(
+            width: 32,
+            height: 2,
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.18),
+              borderRadius: BorderRadius.circular(1),
+            ),
+          ),
+        ),
+      );
+
+  /// 分割ビューの置き場 (= 札の並びの左から 4 枚までを 1 / 1x2 / 2x2 に)。
+  ///
+  /// ★ 1 セッション = 1 ビュー ([_gridSessions] の説明を見る)。
+  /// ★ 主の枠 ([_inlineTerminal]) はそのまま使い回す。 組み直すと巻き上げの
+  ///   位置や開いていた欄が消えるので、 **同じ札の分だけは作り直さない**。
+  /// ★ 入る幅 / 高さが無い時は枚数を減らす (狭い所で全部潰れるのを防ぐ。
+  ///   細くすると走っている CLI の桁数がその場で変わって戻らない)。
+  Widget _buildCliGridArea(MindMapProvider provider) {
+    // 閉じた札の控えは捨てる (端末 1 枚で画面 1 万行を抱えている)。
+    _gridCliTerminals.removeWhere((k, _) => !_cliTabs.contains(k));
+    final all = _gridSessions();
+    if (all.isEmpty) {
+      _gridShownCount = 0;
+      return _inlineTerminal ?? const SizedBox.shrink();
+    }
+    return LayoutBuilder(builder: (_, cons) {
+      final w = cons.maxWidth;
+      final h = cons.maxHeight;
+      final perRow = w >= _kGridMinPaneW * 2 + 8 ? 2 : 1;
+      final maxRows = (h.isFinite && h >= _kGridMinPaneH * 2 + 8) ? 2 : 1;
+      final cap = perRow * maxRows;
+      final n = all.length < cap ? all.length : cap;
+      final shown = all.sublist(0, n);
+      // 札を押した時に「出ていない札」 を見分けるため、 出せた数を控える。
+      _gridShownCount = n;
+      final split = shown.length > 1;
+      final rows = <Widget>[];
+      for (var i = 0; i < shown.length; i += perRow) {
+        if (rows.isNotEmpty) rows.add(_buildCliGridRowDivider());
+        final cells = <Widget>[];
+        for (var k = i; k < i + perRow && k < shown.length; k++) {
+          if (cells.isNotEmpty) cells.add(_buildCliSplitDivider());
+          cells.add(Expanded(
+              child: _buildCliGridCell(provider, k, shown[k], split)));
+        }
+        rows.add(Expanded(
+            child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: cells)));
+      }
+      return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch, children: rows);
+    });
+  }
+
+  /// 分割ビューの 1 枚 (**見出し** + 端末)。
+  ///
+  /// ★ = 元のご不満「タブと今表示されている画面の結び付きが分かりにくい」。
+  ///   枠の中に**札の名前**を出す。 縁の色 ([_buildCliSplitPane]) だけでは、
+  ///   3〜4 枚並べた時にどれがどれか分からない。
+  /// ★ 見出しの高さは常に同じ (22)。 出し入れで高さが揺れると、 走って
+  ///   いる CLI の行数がその場で変わる。
+  /// ★ 見出しを押すと打ち込み先になり、 右クリックは札と同じ一覧を出す。
+  Widget _buildCliGridCell(MindMapProvider provider, int index,
+      AgentCliSession s, bool split) {
+    // 主の枠に出している札は、 組み上げた物をそのまま使い回す。
+    final Widget term;
+    final cached = _inlineTerminal;
+    if (identical(s, _lastCliSession) &&
+        cached is AgentTerminal &&
+        identical(cached.session, s)) {
+      term = cached;
+    } else {
+      term = _gridCliTerminals.putIfAbsent(
+          s, () => _buildCliTerminal(provider, s));
+    }
+    final on = split && _splitFocusPane == index;
+    return _buildCliSplitPane(
+      index,
+      Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        SizedBox(
+          height: 22,
+          child: Material(
+            color: on
+                ? const Color(0xFF9CCC65).withValues(alpha: 0.14)
+                : Colors.white.withValues(alpha: 0.04),
+            child: InkWell(
+              onTap: () => _onCliTabTap(provider, s),
+              onSecondaryTapDown: (d) =>
+                  unawaited(_showCliTabMenu(provider, s, d.globalPosition)),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+                child: Row(children: [
+                  Text('${index + 1}',
+                      style: const TextStyle(
+                          color: Colors.white38,
+                          fontSize: 9.5,
+                          fontWeight: FontWeight.w700)),
+                  const SizedBox(width: 5),
+                  Icon(Icons.circle,
+                      size: 6,
+                      color: s.running
+                          ? const Color(0xFF9CCC65)
+                          : Colors.white24),
+                  const SizedBox(width: 5),
+                  Expanded(
+                    child: Text(s.title,
+                        maxLines: 1,
+                        softWrap: false,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            color: on ? Colors.white : Colors.white60,
+                            fontSize: 10.5,
+                            fontWeight:
+                                on ? FontWeight.w700 : FontWeight.w400)),
+                  ),
+                  if (_dirLabel(s.shownDirectory).isNotEmpty) ...[
+                    const SizedBox(width: 5),
+                    const Icon(Icons.folder_outlined,
+                        size: 9, color: Colors.white38),
+                    const SizedBox(width: 2),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 90),
+                      child: Tooltip(
+                        message: s.shownDirectory,
+                        child: Text(_dirLabel(s.shownDirectory),
+                            maxLines: 1,
+                            softWrap: false,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                color: Colors.white38, fontSize: 9.5)),
+                      ),
+                    ),
+                  ],
+                ]),
+              ),
+            ),
+          ),
+        ),
+        Expanded(child: term),
+      ]),
+      split,
     );
   }
 
@@ -284758,6 +285661,11 @@ class _McpChatDialogState extends State<_McpChatDialog>
   void _splitChatWith(MindMapProvider provider, AgentCliSession s) {
     if (!_cliTabs.contains(s)) return;
     if (_extraCliSessions.any((e) => identical(e, s))) return;
+    // ★ 素のシェルは会話の右にも並べない (= ユーザー要望)。 下の帯へ回す。
+    if (s.isShell) {
+      _adoptShellIntoBand(s);
+      return;
+    }
     // ★ = ユーザー要望「3 画面や 4 画面に」。 既に会話の隣が埋まって
     //   いるなら、 その続きとして足す。
     if (_activeSideSession != null && !identical(_sideCliSession, s)) {
@@ -285049,6 +285957,9 @@ class _McpChatDialogState extends State<_McpChatDialog>
               if (context.findAncestorStateOfType<_FloatingPanelWindowState>() !=
                   null)
                 IconButton(
+                  // ★ 畳んだ丸をこのボタンと同じ場所に出すため、 押した時に
+                  //   居場所を測れるようにする ([_setCollapsed])。
+                  key: _collapseBtnKey,
                   visualDensity: VisualDensity.compact,
                   constraints: _hdrBtnConstraints(context),
                   padding: _narrowHeader(context)
@@ -285161,7 +286072,11 @@ class _McpChatDialogState extends State<_McpChatDialog>
               //      使用量 / キュー / 停止 / 終了) を持っているので、 その帯は
               //      その側の CLI に効く。 この上の帯と「新規タブ」 は
               //      左側 (= いま選んでいるタブ) に効く。
-              if (_inlineTerminal != null && _inlineIsTerminal)
+              // ★ 分割ビューの時は出さない (並べ方は札の並びで決まるので、
+              //   手で組むボタンが残っていると押しても何も起きない)。
+              if (_inlineTerminal != null &&
+                  _inlineIsTerminal &&
+                  !_cliGridActive)
                 IconButton(
                   visualDensity: VisualDensity.compact,
                   constraints: _hdrBtnConstraints(context),
@@ -285620,7 +286535,9 @@ class _McpChatDialogState extends State<_McpChatDialog>
       //   画面を細く折り返し直し、 広げても元には戻らない。
       // ★ 余白は**常に**渡す (寄せない時は 0)。 有る無しで包みを足し引き
       //   すると木の形が変わり、 走っている端末が作り直されてしまう。
-      final pad = _activeSplitSession != null ? 0.0 : _readingSidePad;
+      final pad = (_activeSplitSession != null || _cliGridActive)
+          ? 0.0
+          : _readingSidePad;
       if (_cliTabs.isEmpty) {
         return Padding(
           padding: EdgeInsets.symmetric(horizontal: pad),
@@ -285795,6 +286712,14 @@ class _McpChatDialogState extends State<_McpChatDialog>
 
   void _showRunningCliTerminal(
       MindMapProvider provider, AgentCliSession session) {
+    // ★ = ユーザー要望「ターミナルは CLI の画面と横並びではなく下に開いて
+    //   ほしい」。 素のシェルは主の枠に出さず、 画面の下の帯へ回す。 ここは
+    //   札を押した時・タブを閉じた後の移り先・同じ場所の殻を覗き直す時が
+    //   全部通る**唯一の funnel** なので、 1 か所で塞げる。
+    if (session.isShell) {
+      _adoptShellIntoBand(session);
+      return;
+    }
     _lastCliSession = session;
     _registerCliTab(session);
     // ★ ここからも見張りを付け直す。 この欄は閉じ開きで作り直されるのに、
@@ -286081,18 +287006,12 @@ class _McpChatDialogState extends State<_McpChatDialog>
       final dir =
           tabDir.isNotEmpty ? tabDir : await terminalBaseDir(provider);
       if (!mounted) return;
-      final s = buildShellSession(provider, dir, shellId: shellId);
-      final n = _nextCliTabTitle(s.title);
-      _runAgentCliSession(
-          provider,
-          n.isEmpty
-              ? s
-              : AgentCliSession(
-                  title: n,
-                  exePath: s.exePath,
-                  arguments: s.arguments,
-                  workingDirectory: s.workingDirectory,
-                  isShell: true));
+      // ★ = ユーザー要望「下に開かれるようにしてほしい」。 素のシェルは札にも
+      //   左右の枠にも入れず、 画面の**下の帯**に出す。 見出しは帯が殻の名前と
+      //   今いる場所を出すので、 番号を振って見分ける必要も無くなった。
+      // ★ 殻の種類を選んで押した時は必ず新しく起こす (= 選んだ物と違う殻を
+      //   使い回さない)。 先に帯に居た殻は止めずに札へ返す。
+      await _openShellBand(provider, dir, shellId: shellId, forceNew: true);
       return;
     }
     // 垢を指定して開く (= ユーザー要望: 別々の垢で 2 タブ)。
@@ -286724,23 +287643,46 @@ class _McpChatDialogState extends State<_McpChatDialog>
                 style: const TextStyle(color: Colors.white, fontSize: 12.5)),
           ]),
         ),
+        // ── 出し方 (= ユーザー要望: そのタブ単体で開くモード /
+        //    分割ビューモード) ──
+        //    ★ 枠の見出しの右クリックもここへ来る ([_buildCliGridCell])。
+        //      帯のボタンだけだと、 枠から単体モードへ戻る道が無い。
         PopupMenuItem<String>(
-          value: split ? 'unsplit' : 'split',
+          value: 'gridmode',
           height: 38,
           child: Row(mainAxisSize: MainAxisSize.min, children: [
             Icon(
-                split
-                    ? Icons.close_fullscreen_rounded
-                    : Icons.vertical_split_rounded,
+                _cliGridMode
+                    ? Icons.crop_square_rounded
+                    : Icons.grid_view_rounded,
                 size: 15,
-                color: const Color(0xFF7CD992)),
+                color: const Color(0xFF9CCC65)),
             const SizedBox(width: 9),
-            Text(provider.t(split ? 'cli.unsplit' : 'cli.split'),
+            Text(provider.t(_cliGridMode ? 'cli.viewSingle' : 'cli.viewGrid'),
                 style: const TextStyle(color: Colors.white, fontSize: 12.5)),
           ]),
         ),
+        // ★ 手で組む左右分割は**単体モードの物**。 分割ビューでは、 並べ方は
+        //   札の並びで決まる (= ユーザー要望のモード分け)。
+        if (!_cliGridActive)
+          PopupMenuItem<String>(
+            value: split ? 'unsplit' : 'split',
+            height: 38,
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(
+                  split
+                      ? Icons.close_fullscreen_rounded
+                      : Icons.vertical_split_rounded,
+                  size: 15,
+                  color: const Color(0xFF7CD992)),
+              const SizedBox(width: 9),
+              Text(provider.t(split ? 'cli.unsplit' : 'cli.split'),
+                  style: const TextStyle(color: Colors.white, fontSize: 12.5)),
+            ]),
+          ),
         // この札を、 今並べている所へ**足す** (= 3 枚目 / 4 枚目)。
-        if (split &&
+        if (!_cliGridActive &&
+            split &&
             _extraCliSessions.length < _kMaxExtraPanes &&
             !_splitPaneSessions().any((e) => e != null && identical(e, s)))
           PopupMenuItem<String>(
@@ -286760,6 +287702,10 @@ class _McpChatDialogState extends State<_McpChatDialog>
       ],
     );
     if (picked == null || !mounted) return;
+    if (picked == 'gridmode') {
+      _setCliGridMode(provider, !_cliGridMode);
+      return;
+    }
     if (picked == 'addthis') {
       if (_activeSideSession != null) {
         _splitChatWith(provider, s);
@@ -287305,7 +288251,17 @@ class _McpChatDialogState extends State<_McpChatDialog>
                 final mate = _activeSplitSession;
                 final side = _activeSideSession;
                 final bool on;
-                if (_inlineTerminal != null && mate != null) {
+                // ★ 分割ビュー: 枠の割り当ては**札の並び**で決まるので、
+                //   手で組む入れ物 ([mate] / [side]) はどちらも null になる。
+                //   この判定を足さないと下の「どちらでもない」 枝に落ちて、
+                //   別の札を押して打ち込み先を移しても**帯の色が主の枠の札に
+                //   残る** (= 「どの札がどの画面か分からない」 が帯の側に
+                //   残ってしまう)。 枠の番号と同じ札だけを光らせる。
+                if (_cliGridActive) {
+                  final pane =
+                      _gridSessions().indexWhere((e) => identical(e, s));
+                  on = pane >= 0 && pane == _splitFocusPane;
+                } else if (_inlineTerminal != null && mate != null) {
                   // 端末どうしの左右: 左 = _lastCliSession / 右 = mate。
                   final isLeft = identical(s, _lastCliSession);
                   final isRight = identical(s, mate);
@@ -287517,6 +288473,30 @@ class _McpChatDialogState extends State<_McpChatDialog>
                 ),
               );
             }),
+          // ── 出し方の切り替え (= ユーザー要望: そのタブ単体で開くモード /
+          //    分割ビューモード) ──
+          //    ★ 帯の右端、 「+」 のすぐ左。 どちらの形で出しているのかが
+          //      **札の帯の上**で分かるように、 ここに置く。
+          if (_cliTabs.isNotEmpty)
+            Tooltip(
+              message: _cliGridMode
+                  ? provider.t('cli.viewSingleTip')
+                  : provider.t('cli.viewGridTip'),
+              child: IconButton(
+                padding: EdgeInsets.zero,
+                iconSize: 16,
+                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                icon: Icon(
+                    _cliGridMode
+                        ? Icons.grid_view_rounded
+                        : Icons.crop_square_rounded,
+                    size: 16,
+                    color: _cliGridMode
+                        ? const Color(0xFF9CCC65)
+                        : Colors.white54),
+                onPressed: () => _setCliGridMode(provider, !_cliGridMode),
+              ),
+            ),
           // ★ Builder で包むのは、 押したボタンの位置に一覧を出すため
           //   (= 決め打ちの座標だと、 分割ペインや浮かせた窓で明後日の所に
           //   出る)。
@@ -287611,25 +288591,45 @@ class _McpChatDialogState extends State<_McpChatDialog>
                   style: const TextStyle(color: Colors.white, fontSize: 12.5)),
             ]),
           ),
+        // ── 出し方 (= ユーザー要望: そのタブ単体で開くモード /
+        //    分割ビューモード) ──
         PopupMenuItem<String>(
-          value: split ? 'unsplit' : 'split',
+          value: 'gridmode',
           height: 38,
           child: Row(mainAxisSize: MainAxisSize.min, children: [
             Icon(
-                split
-                    ? Icons.close_fullscreen_rounded
-                    : Icons.vertical_split_rounded,
+                _cliGridMode
+                    ? Icons.crop_square_rounded
+                    : Icons.grid_view_rounded,
                 size: 15,
-                color: const Color(0xFF7CD992)),
+                color: const Color(0xFF9CCC65)),
             const SizedBox(width: 9),
-            Text(provider.t(split ? 'cli.unsplit' : 'cli.split'),
+            Text(provider.t(_cliGridMode ? 'cli.viewSingle' : 'cli.viewGrid'),
                 style: const TextStyle(color: Colors.white, fontSize: 12.5)),
           ]),
         ),
+        // ★ 手で組む左右分割は**単体モードの物** (分割ビューの並べ方は札の
+        //   並びで決まるので、 ここから組ませない)。
+        if (!_cliGridActive)
+          PopupMenuItem<String>(
+            value: split ? 'unsplit' : 'split',
+            height: 38,
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(
+                  split
+                      ? Icons.close_fullscreen_rounded
+                      : Icons.vertical_split_rounded,
+                  size: 15,
+                  color: const Color(0xFF7CD992)),
+              const SizedBox(width: 9),
+              Text(provider.t(split ? 'cli.unsplit' : 'cli.split'),
+                  style: const TextStyle(color: Colors.white, fontSize: 12.5)),
+            ]),
+          ),
         // ★ = ユーザー指摘「3〜4 分割って CLI や API の画面をだよ?」。
         //   並べている時は「もう 1 つ増やす」 を出す (左右分割のボタンは
         //   並べている間は「やめる」 になるので、 増やす道が無かった)。
-        if (_canAddSplitPane)
+        if (!_cliGridActive && _canAddSplitPane)
           PopupMenuItem<String>(
             value: 'addpane',
             height: 38,
@@ -287647,6 +288647,10 @@ class _McpChatDialogState extends State<_McpChatDialog>
       ],
     );
     if (picked == null || !mounted) return;
+    if (picked == 'gridmode') {
+      _setCliGridMode(provider, !_cliGridMode);
+      return;
+    }
     if (picked == 'addpane') {
       _addSplitPane(provider);
       return;
@@ -287704,14 +288708,14 @@ class _McpChatDialogState extends State<_McpChatDialog>
     final shellDir = openShellDirOnStart;
     if (shellDir != null) {
       openShellDirOnStart = null;
-      for (final t in _cliTabs) {
-        if (t.isShell && t.running && t.workingDirectory == shellDir) {
-          _showRunningCliTerminal(provider, t);
-          return;
-        }
-      }
-      _runAgentCliSession(provider, buildShellSession(provider, shellDir));
-      return;
+      // ★ = ユーザー要望「ターミナル (素のシェル) が CLI の画面と横並びで
+      //   開かれる。 下に開かれるようにしてほしい」。 札 (タブ) にも左右の
+      //   枠にもせず、 画面の**下の帯**に出す。 生きている殻があれば
+      //   [_openShellBand] が使い回し、 場所が違えば `cd` で移る
+      //   (押すたびに擬似端末を増やさない)。
+      // ★ ここでは return しない。 上 (会話 / CLI) は前に見ていた画面のまま
+      //   続けるので、「CLI の画面の下にターミナル」 という形になる。
+      unawaited(_openShellBand(provider, shellDir));
     }
     // ★ 「パソコンに入れた AI」 を選んで開いた時は、 その一覧から始める。
     if (openCliListOnStart) {
@@ -288849,18 +289853,9 @@ class _McpChatDialogState extends State<_McpChatDialog>
                         ? _cliWorkDir.trim()
                         : await terminalBaseDir(provider);
                     if (!mounted) return;
-                    final sh = buildShellSession(provider, dir);
-                    final n = _nextCliTabTitle(sh.title);
-                    _runAgentCliSession(
-                        provider,
-                        n.isEmpty
-                            ? sh
-                            : AgentCliSession(
-                                title: n,
-                                exePath: sh.exePath,
-                                arguments: sh.arguments,
-                                workingDirectory: sh.workingDirectory,
-                                isShell: true));
+                    // ★ = ユーザー要望「下に開かれるようにしてほしい」。
+                    //   素のシェルは札ではなく画面の下の帯に出す。
+                    await _openShellBand(provider, dir, forceNew: true);
                   },
                 ),
               ),
@@ -289599,7 +290594,9 @@ class _McpChatDialogState extends State<_McpChatDialog>
     // ★ 既に同じフォルダーの殻が開いていれば、 そちらを覚き直すだけ
     //   (= ユーザー要望: 同じフォルダーを開こうとした時は起こさない)。
     if (_focusOpenedCliTab(provider, dir, '')) return;
-    _runAgentCliSession(provider, buildShellSession(provider, dir));
+    // ★ = ユーザー要望「下に開かれるようにしてほしい」。 素のシェルは
+    //   画面の下の帯に出す (横並びの枠には入れない)。
+    await _openShellBand(provider, dir);
   }
 
   /// 管理者として、 OS の窓でターミナルを開く。
@@ -290144,6 +291141,9 @@ class _McpChatDialogState extends State<_McpChatDialog>
     unawaited(provider.loadMcpInfoDismissed());
     unawaited(provider.loadMcpPreamble());
     unawaited(provider.loadMcpModelBarHidden());
+    // タブの出し方 (単体 / 分割ビュー) を、 覚えている物に戻す
+    // (= ユーザー要望のモード分け)。
+    unawaited(_loadCliGridMode());
     // アプリの説明書を読み込んでおく (= 既定で AI へ渡す。 ユーザー要望)。
     unawaited(provider.loadAppAgentsGuide().then((_) {
       if (mounted) setState(() {});
@@ -290222,6 +291222,9 @@ class _McpChatDialogState extends State<_McpChatDialog>
     // ★ セッションは止めない (= ユーザー要望: 閉じても処理は続ける)。
     HardwareKeyboard.instance.removeHandler(_onPanelHotkey);
     _livePanels.remove(this);
+    // 分割ビューを描いていた欄が閉じたら、 次に開いた欄が引き継げるように
+    // 所有権を手放す (= 覚えた出し方はそのまま)。
+    if (identical(_cliGridOwner, this)) _cliGridOwner = null;
     WidgetsBinding.instance.removeObserver(this);
     _session.removeListener(_onSessionChanged);
     _promptFocus.dispose();
@@ -291406,7 +292409,14 @@ class _McpChatDialogState extends State<_McpChatDialog>
         //   切り出すと焦点や巻き上げの面倒を丸ごと写し取る事になる。
         // ★ 列まるごとを左に置くので、 見出しの帯 (窓を掴む所・畳む・
         //   全画面・閉じる) も左半分に入る。 右半分に帯は出ない。
-        child: _buildChatSideBySide(
+        // ★ = ユーザー要望「ターミナル (素のシェル) が CLI の画面と横並びで
+        //   開かれる。 下に開かれるようにしてほしい」。 会話 / 端末の列
+        //   まるごとを上に置いて、 その下に殻の帯を足す。 出していない時も
+        //   同じ形で包むので、 走っている端末は木の中で引っ越さない
+        //   (= 作り直されない)。
+        child: _withBottomShellBand(
+          provider,
+          _buildChatSideBySide(
           provider,
           (sharedHeader) =>
               Column(mainAxisSize: MainAxisSize.min, children: [
@@ -292017,6 +293027,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
           ),
           ],
         ]),
+        ),
         ),
       ),
     );

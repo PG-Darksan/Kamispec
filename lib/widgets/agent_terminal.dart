@@ -1809,7 +1809,20 @@ class AgentTerminalState extends State<AgentTerminal> {
                   //   流れた会話を遡りたい)。 ホイールでも遡れる。
                   child: Scrollbar(
                     controller: _scroll,
-                    thumbVisibility: true,
+                    // ★ 棒は**動かしている時だけ**出す (= ユーザー要望: 常に
+                    //   出ていると邪魔)。 false にすると、 巻き上げている間
+                    //   だけ浮かび上がり、 手を止めて少し経つと消える
+                    //   (Flutter が ScrollUpdateNotification で浮かせ、
+                    //   ScrollEndNotification から timeToFade 後に消す)。
+                    // ★ アプリ全体の既定 (main.dart の
+                    //   `_autoHideScrollbarTheme`) も「動かす時とホバー中
+                    //   だけ」 なので、 この上書きを外すと揃う。
+                    // ★ 出力が流れている間は光らない。 下端への追従は xterm が
+                    //   `_offset.correctBy` で行い、 これは通知を出さない。
+                    // ★ 透明な間でも、 棒が有るはずの帯にマウスを乗せれば
+                    //   浮かび上がる (RawScrollbar.handleHover)。 だから
+                    //   掴んで動かす道 (interactive) は残る。
+                    thumbVisibility: false,
                     interactive: true,
                     // ★ 棒が 2 本出ていたのを 1 本に (= ユーザー報告)。
                     //   端末の中身は素の `Scrollable` で、 パソコン版の

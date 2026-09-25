@@ -6561,9 +6561,13 @@ class _MemoWindowAppState extends State<_MemoWindowApp> with WindowListener {
                         ? FloatL10n.t('memo.showFooter')
                         : FloatL10n.t('memo.hideFooter'),
                     icon: Icon(
+                        // ★ = ユーザー要望「目のアイコン以外にしてほしい」。
+                        //   このアプリで 「隠す / 戻す」 に使っている二重矢印
+                        //   (ヘッダー非表示・ Zen モードの札・ 分割パネルの
+                        //    隠した帯と同じ物) に揃える。
                         _chromeHidden
-                            ? Icons.visibility_off_outlined
-                            : Icons.visibility_outlined,
+                            ? Icons.keyboard_double_arrow_down_rounded
+                            : Icons.keyboard_double_arrow_up_rounded,
                         size: 15,
                         color: _chromeHidden
                             ? Colors.white38
@@ -9999,6 +10003,39 @@ class _CalcWindowAppState extends State<_CalcWindowApp> {
   bool _pinned = true;
   Timer? _topTimer;
 
+  /// 自前ヘッダーを出すか (= ユーザー要望: 電卓と関数電卓のフローティング
+  /// モードにも、 ヘッダーを非表示にするボタンが欲しい)。
+  ///
+  /// 控えは取らない (= その場だけ)。 アプリの中の浮かぶ電卓や Web 窓の
+  /// ヘッダー非表示と同じ作法に揃えてある。
+  bool _headerVisible = true;
+
+  /// ヘッダーを隠している時、 上端にカーソルが乗っているか
+  /// (= 乗せるまで戻すボタンを出さない)。
+  bool _hoverTop = false;
+
+  /// ヘッダーの表示 / 非表示。 OS のタイトルバーも一緒に隠す
+  /// (= ユーザー報告: ボタンを押してもいちばん上の帯 (OS のタイトルバー) が
+  /// 残って、 隠れたように見えなかった ── Web 窓と同じ扱い)。
+  ///
+  /// ★ 隠すと窓枠の ✕ も消えるので、 戻す口と閉じる口を上端の細い帯に
+  ///   必ず残す ([build] の else 側)。
+  Future<void> _setHeaderVisible(bool v) async {
+    setState(() => _headerVisible = v);
+    try {
+      // サブ窓では先に ensureInitialized が要る (= この窓の HWND を
+      // window_manager に教える。 _applyTop / _fitToContent と同じ作法)。
+      await windowManager.ensureInitialized();
+      await windowManager.setTitleBarStyle(
+        v ? TitleBarStyle.normal : TitleBarStyle.hidden,
+        windowButtonVisibility: v,
+      );
+    } catch (_) {}
+    if (!mounted) return;
+    // 帯と OS のタイトルバーの分だけ高さが変わるので、 描かれてから合わせ直す。
+    WidgetsBinding.instance.addPostFrameCallback((_) => _fitToContent());
+  }
+
   /// 関数電卓で出しているか (= ユーザー要望: 普通の電卓と関数電卓を
   /// ヘッダーから切り替えられるように)。 **既定は普通の電卓** (false)。
   ///
@@ -10049,7 +10086,11 @@ class _CalcWindowAppState extends State<_CalcWindowApp> {
       await windowManager.ensureInitialized();
       final cur = await windowManager.getSize();
       // 34 = 自前ヘッダー、 44 = OS のタイトルバーと枠 (メモ窓と同じ見積もり)。
-      await windowManager.setSize(Size(cur.width, h + 34.0 + 44.0));
+      // ★ ヘッダーを隠している時は、 自前ヘッダーが 6px の細い帯になり、
+      //   OS のタイトルバーも消えるので、 その分だけ詰める
+      //   (= 隠した分ちゃんと小さくなるように)。
+      final chrome = _headerVisible ? 34.0 + 44.0 : 6.0 + 10.0;
+      await windowManager.setSize(Size(cur.width, h + chrome));
     } catch (_) {}
   }
 
@@ -10093,11 +10134,11 @@ class _CalcWindowAppState extends State<_CalcWindowApp> {
   /// 閉じる: タイマーを止めてから本体へフォーカスを返して閉じる
   /// (= サブ窓の後始末教訓: タイマー停止漏れが本体巻き添えの原因になる)。
   ///
-  /// ★ ヘッダーの ✕ を外したので、 今は呼び出す所が無い (= ユーザー要望:
-  ///   ✕ が 2 つあるので下の方は要らない)。 閉じるのは窓の枠の ✕ で、
-  ///   その時は入れ物ごと片付けられるので見回りも一緒に止まる。
-  ///   また ✕ を戻したくなった時のために残しておく。
-  // ignore: unused_element
+  /// ★ 普段はヘッダーに ✕ を置かない (= ユーザー要望: ✕ が 2 つあるので
+  ///   下の方は要らない) ── 閉じるのは窓の枠の ✕ で、 その時は入れ物ごと
+  ///   片付けられるので見回りも一緒に止まる。
+  ///   ただしヘッダーを隠している間は枠の ✕ も消えるので、 上端の細い帯に
+  ///   出す ✕ からここを呼ぶ。
   Future<void> _close() async {
     _topTimer?.cancel();
     _topTimer = null;
@@ -10130,76 +10171,144 @@ class _CalcWindowAppState extends State<_CalcWindowApp> {
         backgroundColor: const Color(0xFF1B1B2A),
         body: Column(children: [
           // ── ドラッグで動かせるタイトル帯 (モーダル移動ループは使わない) ──
-          GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onPanStart: (_) => _dragger.start(),
-            onPanUpdate: (d) =>
-                _dragger.update(d, View.of(context).devicePixelRatio),
-            child: Container(
-              height: 34,
-              color: const Color(0xFF23233A),
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              child: Row(children: [
-                Icon(_sci ? Icons.science_rounded : Icons.calculate_rounded,
-                    color: acc, size: 16),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                      FloatL10n.t(_sci ? 'calc.title' : 'calc.basicTitle'),
-                      style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700),
-                      overflow: TextOverflow.ellipsis),
+          //    ★ = ユーザー要望「電卓と関数電卓のフローティングモードにも、
+          //      ヘッダーを非表示にするボタンが欲しい」。 隠している時は
+          //      上端の細い帯だけを残す (メモ窓 / Web 窓と同じ作法)。
+          if (_headerVisible)
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onPanStart: (_) => _dragger.start(),
+              onPanUpdate: (d) =>
+                  _dragger.update(d, View.of(context).devicePixelRatio),
+              child: Container(
+                height: 34,
+                color: const Color(0xFF23233A),
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: Row(children: [
+                  Icon(_sci ? Icons.science_rounded : Icons.calculate_rounded,
+                      color: acc, size: 16),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                        FloatL10n.t(_sci ? 'calc.title' : 'calc.basicTitle'),
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700),
+                        overflow: TextOverflow.ellipsis),
+                  ),
+                  // ── 普通の電卓 ⇔ 関数電卓 (= ユーザー要望: ヘッダーから
+                  //    切り替えられるように) ──
+                  IconButton(
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints(minWidth: 28, minHeight: 28),
+                    tooltip: FloatL10n.t(_sci ? 'calc.toBasic' : 'calc.toSci'),
+                    icon: Icon(
+                        _sci
+                            ? Icons.calculate_rounded
+                            : Icons.functions_rounded,
+                        color: Colors.white70,
+                        size: 15),
+                    onPressed: () {
+                      final next = !_sci;
+                      setState(() => _sci = next);
+                      // ignore: discarded_futures
+                      _persistCalcMode(next);
+                      // 中身の高さが変わるので、 窓の高さも合わせ直す。
+                      WidgetsBinding.instance
+                          .addPostFrameCallback((_) => _fitToContent());
+                    },
+                  ),
+                  // ── ヘッダーを隠す (= ユーザー要望: 電卓と関数電卓の
+                  //    フローティングモードにも、 ヘッダーを非表示にする
+                  //    ボタンが欲しい) ──
+                  //    隠した後は上端の細い帯にカーソルを乗せれば戻せる
+                  //    (メモ窓 / Web 窓 / アプリの中の浮かぶ道具と同じ作法)。
+                  IconButton(
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints(minWidth: 28, minHeight: 28),
+                    tooltip: FloatL10n.t('memo.hideHeader'),
+                    icon: const Icon(Icons.keyboard_double_arrow_up_rounded,
+                        color: Colors.white38, size: 15),
+                    onPressed: () => _setHeaderVisible(false),
+                  ),
+                  // 最前面固定の切替
+                  IconButton(
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints(minWidth: 28, minHeight: 28),
+                    tooltip: FloatL10n.t('float.pin'),
+                    icon: Icon(
+                        _pinned
+                            ? Icons.push_pin_rounded
+                            : Icons.push_pin_outlined,
+                        color: _pinned ? acc : Colors.white38,
+                        size: 15),
+                    onPressed: () {
+                      setState(() => _pinned = !_pinned);
+                      // ignore: discarded_futures
+                      _applyTop(_pinned);
+                    },
+                  ),
+                  // ── 閉じる (✕) は窓の枠にもあるので、 こちらには置かない ──
+                  //    (= ユーザー要望: ✕ が 2 つあるので下の方は要らない)。
+                  //    枠の ✕ で閉じると、 この窓の入れ物ごと片付けられるので、
+                  //    ここの見回り (_topTimer) も一緒に止まる。
+                  //    (ヘッダーを隠している間だけは、 上端の細い帯に ✕ を
+                  //     出す ── 隠すと枠の ✕ も消えるため)。
+                ]),
+              ),
+            )
+          else
+            // 隠している時: 上端の細い帯。 カーソルを乗せた時だけ
+            // 「ヘッダーを表示」 と 「閉じる」 が出る (Web 窓と同じ作り)。
+            // 帯を掴んで窓を動かせるようにもしておく (ヘッダーが無い間の
+            // 移動口)。
+            //
+            // ★ ヘッダーを隠すと OS のタイトルバー (= 窓枠の ✕) も一緒に
+            //   消えるので、 閉じる口もこの帯に置く ([_close])。
+            MouseRegion(
+              onEnter: (_) => setState(() => _hoverTop = true),
+              onExit: (_) => setState(() => _hoverTop = false),
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onPanStart: (_) => _dragger.start(),
+                onPanUpdate: (d) =>
+                    _dragger.update(d, View.of(context).devicePixelRatio),
+                child: Container(
+                  height: _hoverTop ? 26 : 6,
+                  width: double.infinity,
+                  color: const Color(0xFF23233A),
+                  alignment: Alignment.centerRight,
+                  child: _hoverTop
+                      ? Row(mainAxisSize: MainAxisSize.min, children: [
+                          IconButton(
+                            tooltip: FloatL10n.t('memo.showHeader'),
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                                minWidth: 26, minHeight: 26),
+                            icon: const Icon(
+                                Icons.keyboard_double_arrow_down_rounded,
+                                color: Colors.white54,
+                                size: 15),
+                            onPressed: () => _setHeaderVisible(true),
+                          ),
+                          IconButton(
+                            tooltip: FloatL10n.t('btn.close'),
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                                minWidth: 26, minHeight: 26),
+                            icon: const Icon(Icons.close_rounded,
+                                color: Colors.white54, size: 15),
+                            onPressed: () => unawaited(_close()),
+                          ),
+                        ])
+                      : const SizedBox.shrink(),
                 ),
-                // ── 普通の電卓 ⇔ 関数電卓 (= ユーザー要望: ヘッダーから
-                //    切り替えられるように) ──
-                IconButton(
-                  padding: EdgeInsets.zero,
-                  constraints:
-                      const BoxConstraints(minWidth: 28, minHeight: 28),
-                  tooltip: FloatL10n.t(_sci ? 'calc.toBasic' : 'calc.toSci'),
-                  icon: Icon(
-                      _sci
-                          ? Icons.calculate_rounded
-                          : Icons.functions_rounded,
-                      color: Colors.white70,
-                      size: 15),
-                  onPressed: () {
-                    final next = !_sci;
-                    setState(() => _sci = next);
-                    // ignore: discarded_futures
-                    _persistCalcMode(next);
-                    // 中身の高さが変わるので、 窓の高さも合わせ直す。
-                    WidgetsBinding.instance
-                        .addPostFrameCallback((_) => _fitToContent());
-                  },
-                ),
-                // 最前面固定の切替
-                IconButton(
-                  padding: EdgeInsets.zero,
-                  constraints:
-                      const BoxConstraints(minWidth: 28, minHeight: 28),
-                  tooltip: FloatL10n.t('float.pin'),
-                  icon: Icon(
-                      _pinned
-                          ? Icons.push_pin_rounded
-                          : Icons.push_pin_outlined,
-                      color: _pinned ? acc : Colors.white38,
-                      size: 15),
-                  onPressed: () {
-                    setState(() => _pinned = !_pinned);
-                    // ignore: discarded_futures
-                    _applyTop(_pinned);
-                  },
-                ),
-                // ── 閉じる (✕) は窓の枠にもあるので、 こちらには置かない ──
-                //    (= ユーザー要望: ✕ が 2 つあるので下の方は要らない)。
-                //    枠の ✕ で閉じると、 この窓の入れ物ごと片付けられるので、
-                //    ここの見回り (_topTimer) も一緒に止まる。
-              ]),
+              ),
             ),
-          ),
           // ── 本体 (アプリ内の浮かぶ窓と共通の部品) ──
           //    普通の電卓と関数電卓を切り替える (= ユーザー要望)。
           Expanded(
