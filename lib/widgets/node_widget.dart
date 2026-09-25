@@ -876,8 +876,20 @@ class _NodeWidgetState extends State<NodeWidget> {
 
     // フォントサイズ: ノード個別設定があればそれを優先、なければグローバルデフォルト
     // ノードの大きさに関わらず文字サイズは固定
+    //
+    // ★ 題名 (= 要素の中に出る 1 行目) は、 個別の題名指定が無ければ
+    //   **個別のメモ指定**を拾う (= ユーザー報告:「メモの字サイズ設定が
+    //   どこに適用されているのか分からない、 要素内文字の大きさが
+    //   変わっていない」)。 文字サイズのつまみは統合リッチテキストを
+    //   前提に「メモの字」 1 本へ寄せたが、 実際の持ち物を数えると
+    //   richText も memoText も持たない **題名だけの要素**が大多数で、
+    //   メモ側を動かしても描く物が無く、 残った唯一のつまみが死んでいた。
+    //   ※ 順番は mind_map_node.dart の titleMaxLines /
+    //     estimateTableTitleBarHeight / _computeVisualHeight と必ず
+    //     揃えること (ずれると当たり判定と接続点が描画とずれる)。
     final double titleFontSize =
-        (node.titleFontSize ?? widget.defaultTitleFontSize).clamp(8.0, 28.0);
+        (node.titleFontSize ?? node.memoFontSize ?? widget.defaultTitleFontSize)
+            .clamp(8.0, 28.0);
     final double memoFontSize =
         (node.memoFontSize ?? widget.defaultMemoFontSize).clamp(6.0, 22.0);
 
@@ -1259,10 +1271,12 @@ class _NodeWidgetState extends State<NodeWidget> {
                                           overflow: TextOverflow.ellipsis,
                                           style: TextStyle(
                                             color: titleTextColor,
-                                            fontSize:
-                                                (node.titleFontSize ?? 15.0)
-                                                    .clamp(8.0, 28.0)
-                                                    .toDouble(),
+                                            // ★ 上で決めた実寸を使う (個別の
+                                            //   題名 → 個別のメモ → 既定)。
+                                            //   15.0 決め打ちだと model の
+                                            //   estimateTableTitleBarHeight と
+                                            //   帯の高さが合わない。
+                                            fontSize: titleFontSize,
                                             fontWeight: FontWeight.w700,
                                             height: 1.2,
                                           ),
@@ -1346,8 +1360,11 @@ class _NodeWidgetState extends State<NodeWidget> {
                                           overflow: TextOverflow.ellipsis,
                                           style: TextStyle(
                                             color: titleTextColor,
-                                            fontSize: node.titleFontSize ??
-                                                widget.defaultTitleFontSize,
+                                            // ★ 上で決めた実寸 (clamp 済み) を
+                                            //   使う。 model の
+                                            //   estimateTableTitleBarHeight と
+                                            //   必ず同じ値に。
+                                            fontSize: titleFontSize,
                                             fontWeight: FontWeight.w700,
                                             height: 1.2,
                                           ),

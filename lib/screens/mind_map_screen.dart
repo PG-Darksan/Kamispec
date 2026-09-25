@@ -21,7 +21,7 @@ import 'package:ffi/ffi.dart' as pkgffi;
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart'
-    show ScrollDirection, RenderRepaintBoundary;
+    show ScrollDirection, RenderRepaintBoundary, RenderProxyBox;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -73,6 +73,8 @@ import '../widgets/agent_terminal.dart';
 import '../widgets/connection_painter.dart';
 import '../widgets/node_widget.dart';
 import '../widgets/google_search_dialog.dart';
+import '../widgets/git_history_dialog.dart';
+import '../services/git_history.dart';
 import '../widgets/auto_click_palette.dart' show AutoClickPalette;
 import '../widgets/auto_clicker.dart';
 import '../services/ffmpeg_path.dart';
@@ -8453,6 +8455,26 @@ class _MindMapScreenState extends State<MindMapScreen>
     } catch (e) {
       debugPrint('reveal file failed: $e');
     }
+  }
+
+  /// 開いたフォルダーの git のコミット履歴を見せる (= ユーザー要望)。
+  ///
+  /// ★ git は **実行ファイルを直に** 起こす (= 隠し powershell / cmd は
+  ///   起こさない。 セキュリティソフトに撃たれてアプリごと落ちるため)。
+  ///   起こす所と読み取りは lib/services/git_history.dart にまとめてある。
+  /// ★ 窓は押したメニューのすぐ近くに出す (= 既存の _showNearDialogMain の
+  ///   作法)。 ドロワーから開くので分割ペインは基準にしない。
+  /// ★ git が無い / git の管理下でない時は、 窓の中で理由を知らせる
+  ///   (黙って何も起きないのを避ける)。
+  void _showGitHistory(String dir) {
+    final d = dir.trim();
+    if (d.isEmpty) return;
+    unawaited(_showNearDialogMain<void>(
+      width: 640,
+      height: 560,
+      inPane: false,
+      builder: (dctx) => GitHistoryDialog(dir: d),
+    ));
   }
 
   /// ページ一覧のメニューの「エクスプローラーで場所を開く」 (= ユーザー要望)。
@@ -22538,7 +22560,7 @@ class _MindMapScreenState extends State<MindMapScreen>
               },
               // AI ボタン右クリック/長押し → 質問モード(AI 切替)/子要素生成モードの
               //   選択ダイアログ。 アクションバーを閉じてから中央に出すので重ならない。
-              onAIMode: () => _showNodeAiModeMenu(nodeId),
+              onAIMode: (at) => _showNodeAiModeMenu(nodeId, at: at),
               // ── カレンダーに登録 (左タップメニュー専用) ──
               onAddToCalendar: () {
                 _removeOverlay();
@@ -24889,7 +24911,11 @@ class _MindMapScreenState extends State<MindMapScreen>
     final fg = provider.isDarkMode ? Colors.white : const Color(0xFF101018);
     final style = TextStyle(
       color: fg,
-      fontSize: (node.titleFontSize ?? provider.defaultTitleFontSize)
+      // ★ 描画 (node_widget.dart の titleFontSize) と同じ順番にする。
+      //   打っている最中の大きさと、 置いた後の大きさを合わせる。
+      fontSize: (node.titleFontSize ??
+              node.memoFontSize ??
+              provider.defaultTitleFontSize)
           .clamp(8.0, 28.0)
           .toDouble(),
       height: 1.25,
@@ -41980,13 +42006,18 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// モード」 の選択ダイアログ。 ノードが中央にあるとアクションバーと重なる
   /// 問題 (= ユーザー要望) を避けるため、 まずアクションバーを閉じてから、
   /// 画面の安定した context で中央モーダルとして表示する。
-  void _showNodeAiModeMenu(String nodeId) {
+  void _showNodeAiModeMenu(String nodeId, {Offset? at}) {
     if (!mounted) return;
     _removeOverlay(); // アクションバー (色パレット/スライダー含む) を閉じる
     final provider = context.read<MindMapProvider>();
     if (provider.nodes[nodeId] == null) return;
-    // ★ 要素のそばに出す (= ユーザー要望: 画面の隅ではなく近くに)。
-    final anchor = _nodeScreenRect(nodeId);
+    // ★ 押した所に出す (= ユーザー要望: クリックした位置に出す)。
+    //   位置が分からない入口 (キーボード等) だけ要素のそばに落とす。
+    //   幅 0 の枠を渡すと _positionNearAnchor が「その点の真下」 に
+    //   置いて、 画面からはみ出す分は clamp してくれる。
+    final anchor = at != null
+        ? Rect.fromLTWH(at.dx, at.dy - 8, 0, 0)
+        : _nodeScreenRect(nodeId);
     showDialog<String>(
       context: context,
       barrierColor:
@@ -74171,6 +74202,17 @@ class _MindMapScreenState extends State<MindMapScreen>
             icon: Icons.folder_open_rounded,
             iconColor: const Color(0xFF4FC3F7),
             label: provider.t('folder.openInOs')),
+        // ★ git の管理下のフォルダーにだけ「コミット履歴」 を出す
+        //   (= ユーザー要望: 開いたフォルダーの git の履歴を見たい)。
+        //   判定は `.git` を上へ辿るだけで、 答えは覚えるので、 メニューを
+        //   組む時に見ても重くない。 git が入っていない環境では窓の中で
+        //   知らせる。
+        if (e.isDir && _isDesktop && GitHistory.looksLikeRepo(e.path))
+          _menuItem<String>(
+              value: 'gitLog',
+              icon: Icons.history_rounded,
+              iconColor: const Color(0xFF6C63FF),
+              label: provider.t('git.history')),
         // ★ 消す (= ユーザー要望: 手動でも消せないのは変)。
         //   ごみ箱へ送るので、 押し間違えても Windows 側から戻せる。
         _menuItem<String>(
@@ -74206,6 +74248,8 @@ class _MindMapScreenState extends State<MindMapScreen>
         } else {
           unawaited(_revealFileInOs(e.path));
         }
+      } else if (v == 'gitLog') {
+        _showGitHistory(e.path);
       } else if (v == 'delete') {
         unawaited(_deleteDiskEntries(provider, [e.path]));
       }
@@ -74397,6 +74441,20 @@ class _MindMapScreenState extends State<MindMapScreen>
               ],
             ),
           ),
+          // ★ 開いたフォルダーの見出しから、 その場で git のコミット履歴を
+          //   出せるようにする (= ユーザー要望)。 git の管理下でなければ
+          //   出さない。
+          if (path.isNotEmpty &&
+              _isDesktop &&
+              GitHistory.looksLikeRepo(path))
+            IconButton(
+              tooltip: provider.t('git.history'),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+              icon: const Icon(Icons.history_rounded,
+                  size: 15, color: Color(0xFF6C63FF)),
+              onPressed: () => _showGitHistory(path),
+            ),
           if (path.isNotEmpty)
             IconButton(
               tooltip: provider.t('folder.openInOs'),
@@ -75975,6 +76033,16 @@ class _MindMapScreenState extends State<MindMapScreen>
               icon: Icons.folder_open_rounded,
               iconColor: const Color(0xFF4FC3F7),
               label: provider.t('folder.openInOs')),
+          // ★ 開いたフォルダーが git の管理下なら、 コミット履歴を出す
+          //   (= ユーザー要望)。 どこの履歴かが分かるように、 下にフォルダー
+          //   名も添える。
+          if (_isDesktop && GitHistory.looksLikeRepo(dir))
+            _menuItem<_AddMenuAction>(
+                value: _AddMenuAction.gitHistory,
+                icon: Icons.history_rounded,
+                iconColor: const Color(0xFF6C63FF),
+                label: provider.t('git.history'),
+                formatHint: _baseNameOf(dir)),
           _menuItem<_AddMenuAction>(
               value: _AddMenuAction.toggleAppFiles,
               icon: _diskShowAppFiles
@@ -76066,11 +76134,18 @@ class _MindMapScreenState extends State<MindMapScreen>
           if (dir != null) {
             _diskCache.remove(dir);
             _diskLoading.remove(dir);
+            // ★ 「ここは git の管理下か」 の控えも捨てる (= 点検で判明:
+            //   負の答えを覚えたままなので、 git init / clone した後に
+            //   「コミット履歴」 の項目が出てこなかった)。
+            GitHistory.forgetRepoMemo();
             setState(() {});
           }
           break;
         case _AddMenuAction.revealInOs:
           if (dir != null) unawaited(_revealDirectory(dir));
+          break;
+        case _AddMenuAction.gitHistory:
+          if (dir != null) _showGitHistory(dir);
           break;
         case _AddMenuAction.toggleAppFiles:
           unawaited(_toggleShowAppFiles());
@@ -76259,6 +76334,17 @@ class _MindMapScreenState extends State<MindMapScreen>
               icon: Icons.folder_open_rounded,
               iconColor: const Color(0xFF4FC3F7),
               label: provider.t('folder.openInOs')));
+      // ★ 連動先が git の管理下なら「コミット履歴」 も並べる (= ユーザー要望)。
+      if (_isDesktop &&
+          GitHistory.looksLikeRepo((folder.linkedDirPath ?? '').trim())) {
+        items.insert(
+            1,
+            _menuItem<_FolderAction>(
+                value: _FolderAction.gitHistory,
+                icon: Icons.history_rounded,
+                iconColor: const Color(0xFF6C63FF),
+                label: provider.t('git.history')));
+      }
     }
 
     showMenu<_FolderAction>(
@@ -76275,6 +76361,9 @@ class _MindMapScreenState extends State<MindMapScreen>
       switch (action) {
         case _FolderAction.openInOs:
           unawaited(_revealDirectory(folder.linkedDirPath ?? ''));
+          break;
+        case _FolderAction.gitHistory:
+          _showGitHistory((folder.linkedDirPath ?? '').trim());
           break;
         case _FolderAction.rename:
           // ダイアログではなく一覧のその行で打ち替える (= ユーザー要望)
@@ -78981,6 +79070,20 @@ class _MindMapScreenState extends State<MindMapScreen>
       items: [
         // ★ 見出し (「どの画面で開きますか」) は出さない
         //   (= ユーザー要望: 並んでいる項目を見れば分かるので不要)。
+        // ★ 分割を解除して全画面で開く (= ユーザー要望: 一番上に)。
+        //   -1 を目印にする (スロットは 0..3 なので衝突しない)。
+        PopupMenuItem<int>(
+          value: -1,
+          height: 38,
+          child: Row(children: [
+            const Icon(Icons.close_fullscreen_rounded,
+                size: 15, color: Color(0xFFFFB74D)),
+            const SizedBox(width: 8),
+            Text(provider.t('drawer.dissolveAndOpenFull'),
+                style: const TextStyle(color: Colors.white, fontSize: 13)),
+          ]),
+        ),
+        const PopupMenuDivider(height: 1),
         for (final k in slots)
           PopupMenuItem<int>(
             value: k,
@@ -78999,19 +79102,6 @@ class _MindMapScreenState extends State<MindMapScreen>
                   style: const TextStyle(color: Colors.white, fontSize: 13)),
             ]),
           ),
-        // ★ 分割を解除して全画面で開く (= ユーザー要望: 一番下に)。
-        //   -1 を目印にする (スロットは 0..3 なので衝突しない)。
-        PopupMenuItem<int>(
-          value: -1,
-          height: 38,
-          child: Row(children: [
-            const Icon(Icons.close_fullscreen_rounded,
-                size: 15, color: Color(0xFFFFB74D)),
-            const SizedBox(width: 8),
-            Text(provider.t('drawer.dissolveAndOpenFull'),
-                style: const TextStyle(color: Colors.white, fontSize: 13)),
-          ]),
-        ),
       ],
     );
   }
@@ -97814,9 +97904,14 @@ class _MindMapScreenState extends State<MindMapScreen>
               builder: (_, setSlider) => Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(provider.t('common.titleLabel'),
-                      style:
-                          const TextStyle(color: Colors.white54, fontSize: 12)),
+                  // ★ 何に効くのかを見出しで言う (= ユーザー報告:「どこに
+                  //   適用されているのか分からない」)。 触れば説明も出す。
+                  Tooltip(
+                    message: provider.t('font.titleRowHint'),
+                    child: Text(provider.t('font.titleRowLabel'),
+                        style: const TextStyle(
+                            color: Colors.white54, fontSize: 12)),
+                  ),
                   Row(children: [
                     const Icon(Icons.title_rounded,
                         color: Colors.white38, size: 16),
@@ -97855,9 +97950,12 @@ class _MindMapScreenState extends State<MindMapScreen>
                     ),
                   ]),
                   const SizedBox(height: 12),
-                  Text(provider.t('common.memoLabel'),
-                      style:
-                          const TextStyle(color: Colors.white54, fontSize: 12)),
+                  Tooltip(
+                    message: provider.t('font.memoRowHint'),
+                    child: Text(provider.t('font.memoRowLabel'),
+                        style: const TextStyle(
+                            color: Colors.white54, fontSize: 12)),
+                  ),
                   Row(children: [
                     const Icon(Icons.notes_rounded,
                         color: Colors.white38, size: 16),
@@ -117460,7 +117558,9 @@ class _ActionOverlay extends StatefulWidget {
   /// AI ボタンの右クリック/長押し。 親 (画面) 側でアクションバーを閉じてから
   /// 「質問モード(AI 切替) / 子要素生成モード」 の選択ダイアログを中央に出す
   /// (= ユーザー要望: ノードが中央にあるとメニューがアクションバーと重なる対策)。
-  final VoidCallback onAIMode;
+  /// 右クリック / 長押しした**画面上の位置**を渡す
+  /// (= ユーザー要望: 設定の窓をクリックした所に出す)。
+  final void Function(Offset globalPos) onAIMode;
 
   /// 左クリックメニューに「カレンダーに登録」ボタンとして追加。
   /// (右クリックには方向 (anchorMode) ボタン他へリプレース)
@@ -117894,8 +117994,10 @@ class _ActionOverlayState extends State<_ActionOverlay>
         !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
     final label = provider.browserAiTargetLabel;
     return GestureDetector(
-      onSecondaryTapDown: isDesktop ? (_) => widget.onAIMode() : null,
-      onLongPressStart: isDesktop ? null : (_) => widget.onAIMode(),
+      onSecondaryTapDown:
+          isDesktop ? (d) => widget.onAIMode(d.globalPosition) : null,
+      onLongPressStart:
+          isDesktop ? null : (d) => widget.onAIMode(d.globalPosition),
       child: Tooltip(
         // モバイルでは Tooltip 既定の長押し表示が上の onLongPressStart と
         //   競合するため手動表示にする (= ユーザー要望: モバイル長押しで AI 切替)。
@@ -183825,6 +183927,9 @@ enum _FolderAction {
 
   /// 連動先のフォルダーを OS のファイル管理で開く (= ユーザー要望)。
   openInOs,
+
+  /// 連動先の git のコミット履歴を見る (= ユーザー要望)。
+  gitHistory,
 }
 
 /// drawer のページコンテキストメニュー (showMenu) の選択肢
@@ -184246,6 +184351,9 @@ enum _AddMenuAction {
 
   /// エクスプローラーでこのフォルダーを開く
   revealInOs,
+
+  /// 開いたフォルダーの git のコミット履歴を見る (= ユーザー要望)
+  gitHistory,
 
   /// アプリが書き出した .json を出す / 隠す
   toggleAppFiles,
@@ -247105,12 +247213,20 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog>
   /// フリーハンドの入 / 切。 入れた時はパレットも一緒に出す
   /// (= ユーザー要望: 選んだのに色や太さの設定項目が出てこない)。
   /// モードは 1 つだけ立つ形にそろえる (図形のパレットとは場所が重なる)。
-  void _toggleInkMode() {
+  ///
+  /// [anchor] に押したボタンの BuildContext を渡すと、 札をそのボタンの
+  /// 真下に出す (= ユーザー要望: 書き込む項目がボタンの位置に出るように)。
+  /// 一度掴んで動かした後も、 押し直せばまたボタンの下へ戻る。
+  void _toggleInkMode({BuildContext? anchor}) {
+    final at = _palettePosNearButton(anchor, _inkPalW);
     // 札だけ閉じている時は、 モードは切らずに札を出し直す。
     // (= 携帯では長押しが Tooltip に食われ、 右クリックも無いので、
     //   一度 x で閉じると色や太さに戻れなくなる。)
     if (_inkMode && !_pptxInkPaletteOpen) {
-      setState(() => _pptxInkPaletteOpen = true);
+      setState(() {
+        if (at != null) _pptxInkPalettePos = at;
+        _pptxInkPaletteOpen = true;
+      });
       return;
     }
     final next = !_inkMode;
@@ -247123,12 +247239,27 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog>
         _magicEraseMode = false;
         _aiReplaceMode = false;
         _pptxShapePaletteOpen = false;
+        if (at != null) _pptxInkPalettePos = at;
         _pptxInkPaletteOpen = true;
       } else {
         _pptxInkPaletteOpen = false;
       }
     });
     _inkDraftTick.value++;
+  }
+
+  /// 札だけを出し入れする (= ボタンの右クリック / 長押し)。 出す時は
+  /// 押したボタンの真下へ置く。
+  void _toggleInkPaletteNear(BuildContext? anchor) {
+    if (_pptxInkPaletteOpen) {
+      setState(() => _pptxInkPaletteOpen = false);
+      return;
+    }
+    final at = _palettePosNearButton(anchor, _inkPalW);
+    setState(() {
+      if (at != null) _pptxInkPalettePos = at;
+      _pptxInkPaletteOpen = true;
+    });
   }
 
   /// フリーハンドの色 / 太さ / 手振れ補正のパレット (= ユーザー要望)。
@@ -247146,9 +247277,10 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog>
     ];
     const accent = Color(0xFF5FD3B2);
     // 画面に収める (= 図形のパレットと同じ。 幅の決め打ちはモバイルで
-    //   右半分が画面の外へ出てしまう)。
+    //   右半分が画面の外へ出てしまう)。 幅は「ボタンの真下に置く」 計算でも
+    //   使うので _inkPalW に寄せている (二重実装しない)。
     final scrW = MediaQuery.sizeOf(context).width;
-    final palW = math.min(520.0, math.max(280.0, scrW - 16));
+    final palW = _inkPalW;
     return Positioned(
       left: _pptxInkPalettePos.dx
           .clamp(0.0, math.max(0.0, scrW - palW))
@@ -247406,47 +247538,104 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog>
   /// 点線で引くか (= ユーザー要望: 点線も引けるように)。
   bool _shapeInsDashed = false;
 
-  void _toggleShapePalette() {
+  /// 図形のパレットの幅 (= 札を描く時と、 置く場所を決める時で同じ値)。
+  double get _shapePalW {
+    final scrW = MediaQuery.sizeOf(context).width;
+    return math.min(726.0, math.max(280.0, scrW - 16));
+  }
+
+  /// 図形のパレットを出す / 畳む。 [anchor] を渡すとそのボタンの真下へ出す
+  /// (= フリーハンドと同じ作法にそろえる)。
+  void _toggleShapePalette({BuildContext? anchor}) {
     if (!_pptxShapePaletteOpen) _exitInkMode();
+    final at =
+        _pptxShapePaletteOpen ? null : _palettePosNearButton(anchor, _shapePalW);
     setState(() {
       _pptxShapePaletteOpen = !_pptxShapePaletteOpen;
+      if (at != null) _pptxShapePalettePos = at;
       // 2 枚が同じ場所に重なるので、 片方を出したらもう片方は畳む。
       if (_pptxShapePaletteOpen) _pptxTablePaletteOpen = false;
     });
   }
 
   /// 表のパレットを出す / 畳む (= ユーザー要望: 図形と同じパレット形式)。
-  void _toggleTablePalette() {
+  /// [anchor] を渡すとそのボタンの真下へ出す (= フリーハンドと同じ作法)。
+  void _toggleTablePalette({BuildContext? anchor}) {
     if (_pptxTablePaletteOpen) {
       setState(() => _pptxTablePaletteOpen = false);
       return;
     }
     _exitInkMode();
+    final at = _palettePosNearButton(anchor, _tablePalW, palH: 72);
     setState(() {
       _pptxShapePaletteOpen = false;
+      if (at != null) _pptxTablePalettePos = at;
       _pptxTablePaletteOpen = true;
     });
   }
 
+  /// フリーハンドのパレットの幅 (= 札を描く時と、 置く場所を決める時で
+  /// 同じ値を使う。 式を 2 か所に持つと中央合わせがずれる)。
+  double get _inkPalW {
+    final scrW = MediaQuery.sizeOf(context).width;
+    return math.min(520.0, math.max(280.0, scrW - 16));
+  }
+
+  /// 表のパレットの幅 (同上)。
+  double get _tablePalW {
+    final scrW = MediaQuery.sizeOf(context).width;
+    return math.min(640.0, math.max(288.0, scrW - 16));
+  }
+
+  /// 浮く札 (パレット) を画面座標 [globalPos] の近くに置くための座標。
+  ///
+  /// = ユーザー要望「書き込む項目は押したボタンの位置に出るように」。
+  ///   札は Positioned でスライドの Stack に乗っているので、 画面座標を
+  ///   Stack の座標へ直し、 はみ出す分は Stack の内側へ丸める。
+  ///   [center] が true なら札の横中央を [globalPos] に合わせる
+  ///   (= ボタンの真下に出す用)。 false なら札の左上を合わせる
+  ///   (= 右クリックの従来どおりの出方)。
+  ///   ヘッダーのボタンは Stack の外 (上) にあるので dy は 0 へ丸められ、
+  ///   結果として「ボタンの真下」に出る。 測れない時は null
+  ///   (= 今の場所のまま) を返す。
+  Offset? _palettePosNearGlobal(Offset? globalPos, double palW,
+      {double palH = 120, bool center = true}) {
+    if (globalPos == null || !globalPos.dx.isFinite || !globalPos.dy.isFinite) {
+      return null;
+    }
+    final box = _slideStackKey.currentContext?.findRenderObject();
+    if (box is! RenderBox || !box.attached || !box.hasSize) return null;
+    final l = box.globalToLocal(globalPos);
+    final double x = center ? l.dx - palW / 2 : l.dx;
+    return Offset(
+      x.clamp(0.0, math.max(0.0, box.size.width - palW)).toDouble(),
+      l.dy.clamp(0.0, math.max(0.0, box.size.height - palH)).toDouble(),
+    );
+  }
+
+  /// 押したボタン ([anchorCtx] の RenderBox) の真下中央に札を置く座標。
+  /// = ユーザー要望「フリーハンドで書き込む項目がボタンの位置に出るように」。
+  Offset? _palettePosNearButton(BuildContext? anchorCtx, double palW,
+      {double palH = 120}) {
+    final box = anchorCtx?.findRenderObject();
+    if (box is! RenderBox || !box.attached || !box.hasSize) return null;
+    return _palettePosNearGlobal(
+      box.localToGlobal(Offset(box.size.width / 2, box.size.height + 4)),
+      palW,
+      palH: palH,
+    );
+  }
+
   /// 表のパレットを [globalPos] (画面座標) の近くに出す。
-  /// = ユーザー要望「画面左上ではなく押した所の辺りに」。 札は Positioned で
-  ///   スライドの Stack に乗っているので、 Stack の座標に直してから置く。
+  /// = ユーザー要望「画面左上ではなく押した所の辺りに」。 座標の直し方と
+  ///   画面内への丸めは _palettePosNearGlobal に寄せている (二重実装しない)。
+  ///   右クリックからの出方は今まで通り「押した点が札の左上」 なので
+  ///   center: false。
   void _openTablePaletteNear(Offset? globalPos) {
     _exitInkMode();
-    Offset pos = _pptxTablePalettePos;
-    final box = _slideStackKey.currentContext?.findRenderObject();
-    if (globalPos != null &&
-        globalPos.dx.isFinite &&
-        globalPos.dy.isFinite &&
-        box is RenderBox &&
-        box.attached &&
-        box.hasSize) {
-      final l = box.globalToLocal(globalPos);
-      pos = Offset(
-        l.dx.clamp(0.0, math.max(0.0, box.size.width - 300)).toDouble(),
-        l.dy.clamp(0.0, math.max(0.0, box.size.height - 60)).toDouble(),
-      );
-    }
+    final pos = _palettePosNearGlobal(globalPos, _tablePalW,
+            palH: 72, center: false) ??
+        _pptxTablePalettePos;
     setState(() {
       _pptxShapePaletteOpen = false;
       _pptxTablePalettePos = pos;
@@ -247517,7 +247706,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog>
     //   折り返せるようにする。
     final scrW = MediaQuery.sizeOf(context).width;
     final narrow = scrW < 560;
-    final palW = math.min(640.0, math.max(288.0, scrW - 16));
+    final palW = _tablePalW;
     final pr = context.read<MindMapProvider>();
     final th = _kPptxTableThemes[
         _tableThemeIndex.clamp(0, _kPptxTableThemes.length - 1)];
@@ -247852,7 +248041,7 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog>
     //   幅 726 の決め打ちだったので、 412px の画面では半分近く (閉じる ×
     //   を含む右側) が画面の外へ出て、 触れなくなっていた。 画面に収める。
     final scrW = MediaQuery.sizeOf(context).width;
-    final palW = math.min(726.0, math.max(280.0, scrW - 16));
+    final palW = _shapePalW;
     return Positioned(
       left: _pptxShapePalettePos.dx
           .clamp(0.0, math.max(0.0, scrW - palW))
@@ -252102,20 +252291,23 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog>
                         //    パレット形式にして、 出したまま複数連続して
                         //    入れられるように) ──
                         //    以前は幕のある窓で、 1 個入れるたびに閉じていた。
-                        IconButton(
-                          tooltip: context
-                              .read<MindMapProvider>()
-                              .t('pptx.insertTable'),
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(
-                              minWidth: 30, minHeight: 30),
-                          icon: Icon(Icons.table_chart_rounded,
-                              size: 19,
-                              color: _pptxTablePaletteOpen
-                                  ? const Color(0xFFB3E5FC)
-                                  : const Color(0xFF4FC3F7)),
-                          onPressed:
-                              _slides.isEmpty ? null : _toggleTablePalette,
+                        Builder(
+                          builder: (bctx) => IconButton(
+                            tooltip: context
+                                .read<MindMapProvider>()
+                                .t('pptx.insertTable'),
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                                minWidth: 30, minHeight: 30),
+                            icon: Icon(Icons.table_chart_rounded,
+                                size: 19,
+                                color: _pptxTablePaletteOpen
+                                    ? const Color(0xFFB3E5FC)
+                                    : const Color(0xFF4FC3F7)),
+                            onPressed: _slides.isEmpty
+                                ? null
+                                : () => _toggleTablePalette(anchor: bctx),
+                          ),
                         ),
                         // ── 図形の挿入 (= ユーザー要望: マインドマップの
                         //    ような横長のダイアログが出るように) ──
@@ -252135,8 +252327,9 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog>
                                 color: _pptxShapePaletteOpen
                                     ? const Color(0xFFE1BEE7)
                                     : const Color(0xFFAB47BC)),
-                            onPressed:
-                                _slides.isEmpty ? null : _toggleShapePalette,
+                            onPressed: _slides.isEmpty
+                                ? null
+                                : () => _toggleShapePalette(anchor: bctx),
                           ),
                         ),
                         // ── 選んだ図形 / 文字 / 画像にアニメーションを足す
@@ -256976,6 +257169,27 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
   /// 上下にドラッグしたら複数行選択されるように)。 Listener + MouseRegion
   /// で見ているので、 指でのスクロールは今までどおり効く。
   bool _lineDragSelecting = false;
+
+  /// クリックで編集を始めた直後だけ、 入力欄まかせの「カーソルを見せる」
+  /// を止めておく期限 (= ユーザー要望: クリックだけでは画面を追従させない。
+  /// 左右キーや範囲選択で画面の端を越えた時だけ動かす)。
+  ///
+  /// ★ 時刻で持つ理由: この追従は入力欄 (EditableText) が**フォーカスの
+  ///   1〜3 フレーム後**に post-frame で走らせる物で、 こちらの
+  ///   post-frame とどちらが先かは決まっていない。 「何フレームか」 で
+  ///   数えると取りこぼすので、 一拍ぶんの時間で塞ぐ。 キーを押した時の
+  ///   追従はこの窓 (0.35 秒) を過ぎているので邪魔しない。
+  DateTime? _blockRevealUntil;
+
+  bool get _revealBlocked {
+    final t = _blockRevealUntil;
+    return t != null && DateTime.now().isBefore(t);
+  }
+
+  /// 編集中の行から外へなぞり始めた時の控え (= ユーザー要望: ダブル
+  /// クリックすると 1 行しか選べないので、 そのまま複数行を選べるように)。
+  int? _dragFromEditIdx;
+  Offset? _dragFromEditStart;
   int? _lineDragAnchor;
 
   // ── なぞり選択が画面の外へ出た時に、 ついていく (= ユーザー要望:
@@ -257273,6 +257487,8 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
 
   void _endLineDrag() {
     _lineDragSelecting = false;
+    _dragFromEditIdx = null;
+    _dragFromEditStart = null;
     _dragScrollLastGlobal = null;
     _stopDragScroll();
   }
@@ -259446,8 +259662,14 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
   /// 見なして、 その後の確定で増えた行の分だけ付け直す。 行をクリックした
   /// 時だけ渡す (= 押した番号は組んだ時の物なので、 入力欄の onTapOutside が
   /// 先に走って行が割り付けられると 1 つ上の行が開く。 _commitSplitAt の覚書)。
+  /// [follow] を false にすると、 開いた行を画面内へ引き戻さない
+  /// (= ユーザー要望: クリックしただけでは画面を動かさない。 押した行は
+  /// そもそも見えているので引き戻す必要が無い)。
   void _beginEditLine(int idx,
-      {int? caret, bool pushUndo = true, bool fromStaleIndex = false}) {
+      {int? caret,
+      bool pushUndo = true,
+      bool fromStaleIndex = false,
+      bool follow = true}) {
     if (idx < 0 || idx >= _lines.length) return;
     if (pushUndo) _pushUndo();
     _commitEdit();
@@ -259469,6 +259691,12 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
     //   「カーソルを見せる」 ために外側の巻物まで動かす事があるので、
     //   後で元の位置へ戻す。
     final hKeep = _hScroll.hasClients ? _hScroll.offset : null;
+    // クリックで開く時は、 入力欄の自動追従ごと塞ぐ (_NoAutoReveal)。
+    if (!follow) {
+      _blockRevealUntil = DateTime.now().add(const Duration(milliseconds: 350));
+    } else {
+      _blockRevealUntil = null;
+    }
     setState(() {
       _editingIdx = idx;
       _editOriginal = _lines[idx];
@@ -259483,7 +259711,9 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
       _editFocus.requestFocus();
       // 入力欄まかせの追従は一拍遅れるので、 自分で即座に引き戻す
       // (= ユーザー要望: カーソルの追従を敏感に素早く)。
-      _ensureLineVisible(idx, downward: down);
+      // ただしクリックで開いた時は動かさない (= ユーザー要望: 右の方の
+      // 文字を押しただけで画面が付いて来るのをやめる)。
+      if (follow) _ensureLineVisible(idx, downward: down);
       // ★ デスクトップの TextField はフォーカスを渡した瞬間に「全選択」
       //   になる (= ユーザー報告: クリックすると最初ブロック選択になって
       //   1 テンポ遅れる)。 フォーカスが乗った次のフレームでクリック位置の
@@ -262620,7 +262850,20 @@ $currentText
       // ★ 画面の外へ出ても追いかける (= ユーザー要望)。 行の上に入った時
       //   だけを見ていると、 外に出た瞬間に入る行が無くなって止まる。
       onPointerMove: (e) {
-        if (!_lineDragSelecting) return;
+        if (!_lineDragSelecting) {
+          // ★ 編集中の行の中からなぞり始めて、 行の外へ出た時
+          //   (= ユーザー要望: ダブルクリックした後も複数行を選べるように)。
+          //   入力欄の中は文字選択に任せたいので、 1 行ぶん縦に離れてから
+          //   行の範囲選択へ引き継ぐ。
+          final from = _dragFromEditIdx;
+          final st = _dragFromEditStart;
+          if (from == null || st == null) return;
+          if ((e.position.dy - st.dy).abs() < _lineHeight) return;
+          _lineDragSelecting = true;
+          _lineDragAnchor = from;
+          _dragFromEditIdx = null;
+          _dragFromEditStart = null;
+        }
         _extendDragSelectionTo(e.position);
         _updateDragScroll(e.position);
       },
@@ -262830,7 +263073,11 @@ $currentText
                   }
                   return KeyEventResult.ignored;
                 },
-                child: TextField(
+                // ★ 入力欄が勝手に外側の巻物を動かすのを塞ぐ包み
+                //   (= ユーザー要望: クリックしただけでは画面を追従させない)。
+                child: _NoAutoReveal(
+                  blocked: () => _revealBlocked,
+                  child: TextField(
                   controller: _editCtrl,
                   focusNode: _editFocus,
                   maxLines: 1,
@@ -262868,7 +263115,7 @@ $currentText
                   //   隠れないようにするのはこの余白の仕事)。
                   scrollPadding: const EdgeInsets.symmetric(vertical: 20),
                   onTapOutside: (_) => _commitEdit(),
-                ),
+                )),
               ),
             ),
           ],
@@ -262898,14 +263145,42 @@ $currentText
           });
         },
         child: Listener(
-          onPointerDown: (_) {
-            if (_editingIdx == idx) return; // 編集中の行は文字選択に任せる
+          onPointerDown: (e) {
+            if (_editingIdx == idx) {
+              // 編集中の行は文字選択に任せる。 ただし行の外まで
+              // なぞったら複数行選択へ渡せるよう、 始めた所を控える。
+              _dragFromEditIdx = idx;
+              _dragFromEditStart = e.position;
+              return;
+            }
             _lineDragSelecting = true;
             _lineDragAnchor = idx;
           },
           child: InkWell(
         onTapDown: (d) => _lineTapPos = d.localPosition,
         onTap: () {
+          // ★ Shift を押しながらのクリックで、 今いる行からそこまでを
+          //   まとめて選ぶ (= ユーザー要望: ダブルクリックだと 1 行しか
+          //   選べず、 複数行を選べないのが使い辛い)。
+          if (HardwareKeyboard.instance.isShiftPressed) {
+            final base = _selAnchorLine ?? _editingIdx ?? _selFocusLine ?? idx;
+            if (_editingIdx != null) _commitEdit();
+            // 確定で行が増えていたら、 押した番号を付け直す
+            // (_commitSplitAt の覚書と同じ理由)。
+            var to = idx;
+            if (_commitSplitAdded > 0 &&
+                _commitSplitAt >= 0 &&
+                to > _commitSplitAt) {
+              to += _commitSplitAdded;
+            }
+            if (_lines.isEmpty) return;
+            to = to.clamp(0, _lines.length - 1);
+            setState(() {
+              _selAnchorLine = base.clamp(0, _lines.length - 1);
+              _selFocusLine = to;
+            });
+            return;
+          }
           int? caret;
           final p = _lineTapPos;
           // 組んだ時の中身で計算する (理由は _buildLine 冒頭の覚書)。
@@ -262951,7 +263226,9 @@ $currentText
             tp.dispose();
           }
           // 押した番号は画面を組んだ時の物なので、 付け直してもらう。
-          _beginEditLine(idx, caret: caret, fromStaleIndex: true);
+          // follow: false = 押した所は見えているので画面は動かさない。
+          _beginEditLine(idx,
+              caret: caret, fromStaleIndex: true, follow: false);
         },
         child: Container(
           key: isCurrent ? _curLineKey : null,
@@ -263129,6 +263406,51 @@ $currentText
       i = j;
     }
     return out;
+  }
+}
+
+/// 中身の「カーソルを見せる」 (showOnScreen) をここで止める包み。
+///
+/// テキストエディタの 1 行は横に長い入力欄で、 EditableText は
+/// フォーカスが乗った数フレーム後に**外側の縦・横スクロールまで**
+/// 動かしてカーソルを見せようとする。 行の右の方をクリックしただけで
+/// 画面が付いて来るのはこれが正体
+/// (= ユーザー要望: クリックだけでは追従させず、 左右キーや範囲選択で
+/// 画面の端を越えた時だけ動かす)。
+///
+/// ★ [blocked] は**その場で読む関数**にしてある。 塞ぐかどうかが変わる
+///   たびに組み直さなくて済む (組み直すと入力欄が作り直されて、
+///   カーソルの位置が飛ぶ)。
+class _NoAutoReveal extends SingleChildRenderObjectWidget {
+  const _NoAutoReveal({required this.blocked, required Widget super.child});
+
+  final bool Function() blocked;
+
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      _RenderNoAutoReveal(blocked);
+
+  @override
+  void updateRenderObject(BuildContext context, _RenderNoAutoReveal r) {
+    r.blocked = blocked;
+  }
+}
+
+class _RenderNoAutoReveal extends RenderProxyBox {
+  _RenderNoAutoReveal(this.blocked);
+
+  bool Function() blocked;
+
+  @override
+  void showOnScreen({
+    RenderObject? descendant,
+    Rect? rect,
+    Duration duration = Duration.zero,
+    Curve curve = Curves.ease,
+  }) {
+    if (blocked()) return; // ここで打ち止め (親の巻物へ渡さない)
+    super.showOnScreen(
+        descendant: descendant, rect: rect, duration: duration, curve: curve);
   }
 }
 
@@ -284727,6 +285049,12 @@ class _McpChatDialogState extends State<_McpChatDialog>
         onPickLanguage: s.supportsSlashCommands
             ? () => unawaited(_pickAgentCliLanguage(provider, s))
             : null,
+        // ★ = ユーザー要望「codexCLI から出された powershell コマンド等を
+        //   クリックしたらターミナルが開いて shell で実行されるように」。
+        //   確認は端末側 (AgentTerminal) で済んでいる。 ここは殻を用意して
+        //   渡すだけ (AI の CLI へは打ち込まない)。
+        onRunCommand: (cmd, run) =>
+            unawaited(_runCommandInShell(provider, s, cmd, run)),
         // ★ = ユーザー要望「codexCLI の本文中で右クリックすることは無いから、
         //   画面分割や新規タブ作成などの項目を出すように割り当てられないか」。
         //   帯の右クリックと同じ一覧を出す。
@@ -286733,6 +287061,9 @@ class _McpChatDialogState extends State<_McpChatDialog>
         onPickLanguage: session.supportsSlashCommands
             ? () => unawaited(_pickAgentCliLanguage(provider, session))
             : null,
+        // ★ 出力のコマンドを押した時 (= ユーザー要望)。 殻へ回す。
+        onRunCommand: (cmd, run) =>
+            unawaited(_runCommandInShell(provider, session, cmd, run)),
         // ★ 本文の右クリックに一覧を出す (= ユーザー要望)。 実機で確かめたら
         //   **主の枠の端末には付いていなかった** (付けたのは左右に並べた時に
         //   使う [_buildCliTerminal] だけで、 端末は 3 か所で組んでいる)。
@@ -290313,6 +290644,9 @@ class _McpChatDialogState extends State<_McpChatDialog>
         onPickLanguage: session.supportsSlashCommands
             ? () => unawaited(_pickAgentCliLanguage(provider, session))
             : null,
+        // ★ 出力のコマンドを押した時 (= ユーザー要望。 上と同じ理由)。
+        onRunCommand: (cmd, run) =>
+            unawaited(_runCommandInShell(provider, session, cmd, run)),
         // ★ 本文の右クリックに一覧を出す (= ユーザー要望。 上と同じ理由)。
         onContextMenu: (pos) => unawaited(_showTabStripMenu(provider, pos)),
         onRunAgain: () => _runAgentCliSession(
@@ -290597,6 +290931,65 @@ class _McpChatDialogState extends State<_McpChatDialog>
     // ★ = ユーザー要望「下に開かれるようにしてほしい」。 素のシェルは
     //   画面の下の帯に出す (横並びの枠には入れない)。
     await _openShellBand(provider, dir);
+  }
+
+  /// CLI の出力から押されたコマンドを、 **素のシェル**で受け取る
+  /// (= ユーザー要望: codexCLI から出された powershell コマンド等をクリック
+  ///  したらターミナルが開いて shell で実行されるように)。
+  ///
+  /// ★ AI の CLI へ打ち込んではいけない (向こうは「指示」 として読むので
+  ///   コマンドとしては走らない)。 必ず殻のセッションへ渡す。
+  /// ★ 殻の用意は [_openShellBand] に任せる (= **双子を作らない**)。 あれが
+  ///   「生きている殻を使い回す・場所が違えば `cd` で移る・無ければ 1 本だけ
+  ///   起こす・終わったら帯を片付ける」 を全部持っている。 ここで
+  ///   `buildShellSession` を直に呼ぶと**押すたびに擬似端末が増える**:
+  ///   帯へ迎えた殻は [_adoptShellIntoBand] が [_cliTabs] から外すので、
+  ///   札を探す形では二度と見つからない。
+  /// ★ [run] が false の時は Enter を送らない (= 端末に乗った行を読んでから
+  ///   利用者が自分で押す)。 中身の確認は端末側 (AgentTerminal) で済んでいる。
+  /// ★ 渡すのは**1 行だけ**。 制御文字が混じった物は捨てる。
+  Future<void> _runCommandInShell(MindMapProvider provider,
+      AgentCliSession from, String command, bool run) async {
+    final cmd = command.trim();
+    if (cmd.isEmpty || cmd.length > 500) return;
+    if (cmd.codeUnits.any((c) => c < 0x20 || c == 0x7f)) return;
+    // ★ 押された端末が既に殻なら、 そこへ打つ (別の殻を起こさない)。
+    //   [_runAgentCliSession] は殻も通り得るため。
+    if (from.isShell) {
+      if (!from.running) return;
+      if (run) {
+        from.send(cmd);
+      } else {
+        from.sendRaw(cmd);
+      }
+      _focusCliPane(from);
+      return;
+    }
+    if (!AgentCli.supported) return;
+    final before = _bottomShell;
+    // 走らせる場所は**その CLI が今いるフォルダー**。
+    await _openShellBand(provider, from.shownDirectory);
+    if (!mounted) return;
+    final target = _bottomShell;
+    if (target == null || !target.running) return;
+    // ★ 起こしたばかりの殻は、 名乗りを出し切るまで待つ。
+    //   [AgentCliSession.starting] は「出力が一度途切れた」 で下りるので、
+    //   速い機械でも遅い機械でも合う (待ち時間を決め打ちにしない)。
+    //   待たずに送っても擬似端末が控えてくれるので走りはするが、 名乗りの
+    //   途中に行が挟まって読みにくい。
+    if (!identical(target, before)) {
+      for (var i = 0; i < 60 && target.starting; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        if (!mounted) return;
+      }
+      if (!target.running) return;
+    }
+    if (run) {
+      target.send(cmd);
+    } else {
+      target.sendRaw(cmd);
+    }
+    _focusBandShell(target);
   }
 
   /// 管理者として、 OS の窓でターミナルを開く。

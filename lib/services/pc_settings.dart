@@ -1373,4 +1373,51 @@ class PcSettings {
       _freeScheme(scheme);
     }
   }
+
+  // ── 電池 / 省電力モード ──────────────────────────────────────────
+
+  /// 電池の残りと、 今つながっている電源。
+  ///
+  /// `GetSystemPowerStatus` の SYSTEM_POWER_STATUS は
+  /// ACLineStatus(0) / BatteryFlag(1) / BatteryLifePercent(2) の並び。
+  /// どちらも 255 が「分からない」 なので、 その時は -1 にして返す。
+  static PcBatteryState readBattery() {
+    const unknown = PcBatteryState(
+        hasBattery: false, percent: -1, onAc: true, charging: false);
+    if (!isSupported) return unknown;
+    final buf = pkgffi.calloc<ffi.Uint8>(12);
+    try {
+      final f = _kernel32.lookupFunction<_GetSystemPowerStatusNative,
+          _GetSystemPowerStatusDart>('GetSystemPowerStatus');
+      if (f(buf) == 0) return unknown;
+      final ac = buf[0];
+      final flag = buf[1];
+      final pct = buf[2];
+      return PcBatteryState(
+        hasBattery: flag != 128,
+        percent: pct > 100 ? -1 : pct,
+        onAc: ac != 0,
+        charging: (flag & 8) != 0,
+      );
+    } catch (_) {
+      return unknown;
+    } finally {
+      pkgffi.calloc.free(buf);
+    }
+  }
+}
+
+/// 電池の様子。 [percent] は 0〜100、 分からない時は -1。
+class PcBatteryState {
+  final bool hasBattery;
+  final int percent;
+  final bool onAc;
+  final bool charging;
+
+  const PcBatteryState({
+    required this.hasBattery,
+    required this.percent,
+    required this.onAc,
+    required this.charging,
+  });
 }

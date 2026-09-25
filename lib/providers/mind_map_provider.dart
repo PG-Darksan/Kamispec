@@ -24245,6 +24245,75 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Esta pasta ja esta aberta',
       'ru': 'Эта папка уже открыта',
     },
+    // ★ = ユーザー要望「codexCLI から出された powershell コマンド等をクリック
+    //   したらターミナルが開いて shell で実行されるようにして欲しい」。
+    //   押しただけでは走らせない = ここで中身を見せて確かめる。
+    'cli.runCmdTitle': {
+      'ja': 'このコマンドを端末で走らせますか',
+      'en': 'Run this command in the terminal?',
+      'zh': '要在终端中运行此命令吗',
+      'ko': '이 명령을 터미널에서 실행할까요',
+      'es': '¿Ejecutar este comando en la terminal?',
+      'fr': 'Exécuter cette commande dans le terminal ?',
+      'de': 'Diesen Befehl im Terminal ausführen?',
+      'pt': 'Executar este comando no terminal?',
+      'ru': 'Выполнить эту команду в терминале?',
+    },
+    'cli.runCmdDir': {
+      'ja': '走らせる場所',
+      'en': 'Working folder',
+      'zh': '运行位置',
+      'ko': '실행 위치',
+      'es': 'Carpeta de trabajo',
+      'fr': 'Dossier de travail',
+      'de': 'Arbeitsordner',
+      'pt': 'Pasta de trabalho',
+      'ru': 'Рабочая папка',
+    },
+    'cli.runCmdHint': {
+      'ja': '中身を確かめてから送ります。 送るのは 1 行だけです。 「打ち込むだけ」 を選ぶと、 端末に入るだけで走りません (Enter は自分で押します)。',
+      'en': 'The command is sent only after you confirm it, and always one line at a time. Choose “Type only” to put it on the prompt without running it — you press Enter yourself.',
+      'zh': '确认后才会发送，每次只发送一行。选择「仅输入」只会填入提示符而不运行，由你自己按回车。',
+      'ko': '확인한 뒤에만 보냅니다. 한 번에 한 줄입니다. 「입력만」을 고르면 프롬프트에만 들어가고 실행되지 않습니다 (Enter는 직접 누릅니다).',
+      'es': 'El comando se envía solo tras tu confirmación, y siempre una sola línea. Con “Solo escribir” queda en el prompt sin ejecutarse: tú pulsas Enter.',
+      'fr': 'La commande n’est envoyée qu’après confirmation, une seule ligne à la fois. Avec « Écrire seulement », elle reste sur l’invite sans s’exécuter : c’est vous qui appuyez sur Entrée.',
+      'de': 'Der Befehl wird erst nach Ihrer Bestätigung gesendet, immer nur eine Zeile. Mit „Nur eintippen“ steht er an der Eingabe, ohne zu laufen — Enter drücken Sie selbst.',
+      'pt': 'O comando só é enviado após a sua confirmação, e sempre uma linha. Com “Apenas digitar” ele fica no prompt sem executar: você pressiona Enter.',
+      'ru': 'Команда отправляется только после подтверждения, и всегда по одной строке. «Только ввести» поместит её в приглашение без запуска — Enter вы нажимаете сами.',
+    },
+    'cli.runCmdRisky': {
+      'ja': '消す / 元に戻せない操作が含まれています。 端末に打ち込むだけにします。 中身を読んでから、 自分で Enter を押してください。',
+      'en': 'This line can delete things or cannot be undone, so it will only be typed into the terminal. Read it there and press Enter yourself.',
+      'zh': '该行可能删除文件或无法撤销，因此只会输入到终端。请先阅读，再自行按回车。',
+      'ko': '삭제하거나 되돌릴 수 없는 작업이 들어 있어 터미널에 입력만 합니다. 내용을 확인한 뒤 직접 Enter를 누르세요.',
+      'es': 'Esta línea puede borrar cosas o ser irreversible, así que solo se escribirá en la terminal. Léela allí y pulsa Enter tú mismo.',
+      'fr': 'Cette ligne peut supprimer des éléments ou être irréversible : elle sera seulement écrite dans le terminal. Relisez-la, puis appuyez vous-même sur Entrée.',
+      'de': 'Diese Zeile kann Dinge löschen oder ist nicht umkehrbar, daher wird sie nur ins Terminal eingetippt. Lesen Sie sie dort und drücken Sie Enter selbst.',
+      'pt': 'Esta linha pode apagar coisas ou ser irreversível, por isso será apenas digitada no terminal. Leia-a lá e pressione Enter você mesmo.',
+      'ru': 'Эта строка может что-то удалить или необратима, поэтому она будет только введена в терминал. Прочитайте её и нажмите Enter сами.',
+    },
+    'cli.runCmdTypeOnly': {
+      'ja': '打ち込むだけ',
+      'en': 'Type only',
+      'zh': '仅输入',
+      'ko': '입력만',
+      'es': 'Solo escribir',
+      'fr': 'Écrire seulement',
+      'de': 'Nur eintippen',
+      'pt': 'Apenas digitar',
+      'ru': 'Только ввести',
+    },
+    'cli.runCmdRun': {
+      'ja': '実行する',
+      'en': 'Run',
+      'zh': '执行',
+      'ko': '실행',
+      'es': 'Ejecutar',
+      'fr': 'Exécuter',
+      'de': 'Ausführen',
+      'pt': 'Executar',
+      'ru': 'Выполнить',
+    },
     // ★ = ユーザー要望: 下のチャット欄だけ別の相手にする。
     'md.aiEngineApp': {
       'ja': 'アプリの設定のまま',
@@ -37264,15 +37333,94 @@ class MindMapProvider extends ChangeNotifier {
       'ru': 'Не удалось получить данные: {status}',
     },
     'font.appliesToAll': {
-      'ja': '※ 個別設定のないノード全てに適用されます',
-      'en': '* Applies to all nodes without individual settings',
-      'zh': '※ 适用于所有未单独设置的节点',
-      'ko': '※ 개별 설정이 없는 모든 노드에 적용됩니다',
-      'es': '* Se aplica a todos los nodos sin ajustes individuales',
-      'fr': '* S’applique à tous les nœuds sans réglage individuel',
-      'de': '* Gilt für alle Knoten ohne individuelle Einstellungen',
-      'pt': '* Aplica-se a todos os nós sem configurações individuais',
-      'ru': '* Применяется ко всем узлам без индивидуальных настроек',
+      'ja': '※ 上は要素の 1 行目 (題名)、 下は 2 行目以降 (メモ)。 '
+          '大きさを個別に決めた要素には効きません。',
+      'en': '* Top = a node’s first line (title); bottom = the rest (memo). '
+          'Nodes with their own size are unaffected.',
+      'zh': '※ 上为节点第一行（标题），下为其余部分（备注）。已单独设置大小的节点不受影响。',
+      'ko': '※ 위는 요소의 첫 줄 (제목), 아래는 둘째 줄 이후 (메모) 입니다. '
+          '크기를 개별 지정한 요소에는 적용되지 않습니다.',
+      'es': '* Arriba = la primera línea del nodo (título); abajo = el resto '
+          '(nota). No afecta a los nodos con su propio tamaño.',
+      'fr': '* En haut = la première ligne du nœud (titre) ; en bas = le reste '
+          '(note). Sans effet sur les nœuds ayant leur propre taille.',
+      'de': '* Oben = erste Zeile des Knotens (Titel); unten = der Rest '
+          '(Notiz). Knoten mit eigener Größe bleiben unverändert.',
+      'pt': '* Acima = a primeira linha do nó (título); abaixo = o resto '
+          '(nota). Nós com tamanho próprio não são afetados.',
+      'ru': '* Сверху — первая строка узла (заголовок), снизу — остальное '
+          '(заметка). Узлы со своим размером не затрагиваются.',
+    },
+    // ── 全体の文字サイズ設定ダイアログの見出し ──
+    // ★ = ユーザー報告「メモの字サイズ設定がどこに適用されているのか
+    //   分からない」。 汎用の「タイトル」「メモ」 だけでは要素のどこに
+    //   効くのか読めないので、 このダイアログ専用の名前と説明を持つ。
+    'font.titleRowLabel': {
+      'ja': '要素の字 (1 行目・題名)',
+      'en': 'Node text (1st line / title)',
+      'zh': '节点文字（第一行・标题）',
+      'ko': '요소 글자 (첫 줄・제목)',
+      'es': 'Texto del nodo (1.ª línea / título)',
+      'fr': 'Texte du nœud (1re ligne / titre)',
+      'de': 'Knotentext (1. Zeile / Titel)',
+      'pt': 'Texto do nó (1.ª linha / título)',
+      'ru': 'Текст узла (1-я строка / заголовок)',
+    },
+    'font.titleRowHint': {
+      'ja': '要素の中に出る 1 行目の文字の大きさ。 題名だけの要素は '
+          'ここで変わります。',
+      'en': 'Size of the first line inside a node. Nodes that have only a '
+          'title change here.',
+      'zh': '节点内第一行文字的大小。只有标题的节点由此处控制。',
+      'ko': '요소 안 첫 줄의 글자 크기입니다. 제목만 있는 요소는 여기서 '
+          '바뀝니다.',
+      'es': 'Tamaño de la primera línea dentro del nodo. Los nodos que solo '
+          'tienen título cambian aquí.',
+      'fr': 'Taille de la première ligne dans le nœud. Les nœuds qui n’ont '
+          'qu’un titre changent ici.',
+      'de': 'Größe der ersten Zeile im Knoten. Knoten mit nur einem Titel '
+          'ändern sich hier.',
+      'pt': 'Tamanho da primeira linha dentro do nó. Nós que só têm título '
+          'mudam aqui.',
+      'ru': 'Размер первой строки внутри узла. Узлы только с заголовком '
+          'меняются здесь.',
+    },
+    'font.memoRowLabel': {
+      'ja': 'メモの字 (2 行目以降)',
+      'en': 'Memo text (2nd line on)',
+      'zh': '备注文字（第二行起）',
+      'ko': '메모 글자 (둘째 줄 이후)',
+      'es': 'Texto de la nota (desde la 2.ª línea)',
+      'fr': 'Texte de la note (à partir de la 2e ligne)',
+      'de': 'Notiztext (ab der 2. Zeile)',
+      'pt': 'Texto da nota (a partir da 2.ª linha)',
+      'ru': 'Текст заметки (со 2-й строки)',
+    },
+    'font.memoRowHint': {
+      'ja': '要素の 2 行目以降 (メモ) の文字の大きさ。 メモを書いていない '
+          '要素では見た目が変わりません。 上に出る黄色いふきだしは '
+          '「説明書き」 で、 別のものです。',
+      'en': 'Size of the memo text in a node (2nd line on). Nodes without a '
+          'memo look unchanged. The yellow bubble above a node is the '
+          'caption — a different thing.',
+      'zh': '节点第二行起（备注）文字的大小。没有写备注的节点外观不会变化。'
+          '节点上方的黄色气泡是「说明」，是另一回事。',
+      'ko': '요소의 둘째 줄 이후 (메모) 글자 크기입니다. 메모를 쓰지 않은 '
+          '요소는 겉모습이 바뀌지 않습니다. 요소 위의 노란 말풍선은 '
+          '「설명」 으로 다른 것입니다.',
+      'es': 'Tamaño del texto de la nota (desde la 2.ª línea). Los nodos sin '
+          'nota no cambian. El globo amarillo de encima es la leyenda, que '
+          'es otra cosa.',
+      'fr': 'Taille du texte de la note (à partir de la 2e ligne). Les nœuds '
+          'sans note ne changent pas. La bulle jaune au-dessus est la '
+          'légende, autre chose.',
+      'de': 'Größe des Notiztexts (ab der 2. Zeile). Knoten ohne Notiz ändern '
+          'sich nicht. Die gelbe Sprechblase darüber ist die '
+          'Bildunterschrift — etwas anderes.',
+      'pt': 'Tamanho do texto da nota (a partir da 2.ª linha). Nós sem nota '
+          'não mudam. O balão amarelo acima é a legenda, que é outra coisa.',
+      'ru': 'Размер текста заметки (со 2-й строки). Узлы без заметки не '
+          'меняются. Жёлтая выноска сверху — это подпись, другое.',
     },
     'font.globalTitle': {
       'ja': '全体の文字サイズ設定',
@@ -53895,6 +54043,128 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Arquivo não encontrado: abrimos a pasta',
       'ru': 'Файл не найден — открыта папка',
     },
+    // ── 開いたフォルダーの git のコミット履歴 (= ユーザー要望) ──
+    'git.history': {
+      'ja': 'コミット履歴',
+      'en': 'Commit history',
+      'zh': '提交历史',
+      'ko': '커밋 기록',
+      'es': 'Historial de commits',
+      'fr': 'Historique des commits',
+      'de': 'Commit-Verlauf',
+      'pt': 'Histórico de commits',
+      'ru': 'История коммитов',
+    },
+    'git.noGit': {
+      'ja': 'git が見つかりません。git を入れると履歴が読めます',
+      'en': 'git not found — install git to read the history',
+      'zh': '未找到 git，安装 git 后即可查看历史',
+      'ko': 'git을 찾을 수 없습니다. git을 설치하면 기록을 볼 수 있습니다',
+      'es': 'No se encontró git: instálalo para ver el historial',
+      'fr': "git est introuvable : installez-le pour lire l'historique",
+      'de': 'git nicht gefunden — installiere git, um den Verlauf zu lesen',
+      'pt': 'git não encontrado — instale o git para ver o histórico',
+      'ru': 'git не найден — установите git, чтобы читать историю',
+    },
+    'git.notRepo': {
+      'ja': 'このフォルダーは git の管理下ではありません',
+      'en': 'This folder is not under git',
+      'zh': '此文件夹不在 git 管理之下',
+      'ko': '이 폴더는 git으로 관리되지 않습니다',
+      'es': 'Esta carpeta no está bajo control de git',
+      'fr': "Ce dossier n'est pas suivi par git",
+      'de': 'Dieser Ordner wird nicht von git verwaltet',
+      'pt': 'Esta pasta não está sob controle do git',
+      'ru': 'Эта папка не под управлением git',
+    },
+    'git.empty': {
+      'ja': 'まだコミットがありません',
+      'en': 'No commits yet',
+      'zh': '还没有提交',
+      'ko': '아직 커밋이 없습니다',
+      'es': 'Aún no hay commits',
+      'fr': 'Aucun commit pour le moment',
+      'de': 'Noch keine Commits',
+      'pt': 'Ainda não há commits',
+      'ru': 'Коммитов пока нет',
+    },
+    'git.thisFolderOnly': {
+      'ja': 'このフォルダーだけ',
+      'en': 'This folder only',
+      'zh': '仅此文件夹',
+      'ko': '이 폴더만',
+      'es': 'Solo esta carpeta',
+      'fr': 'Ce dossier uniquement',
+      'de': 'Nur dieser Ordner',
+      'pt': 'Somente esta pasta',
+      'ru': 'Только эта папка',
+    },
+    'git.more': {
+      'ja': 'もっと読む',
+      'en': 'Load more',
+      'zh': '加载更多',
+      'ko': '더 불러오기',
+      'es': 'Cargar más',
+      'fr': 'Charger plus',
+      'de': 'Mehr laden',
+      'pt': 'Carregar mais',
+      'ru': 'Загрузить ещё',
+    },
+    'git.shownCount': {
+      'ja': '{n} 件',
+      'en': '{n} commits',
+      'zh': '{n} 条',
+      'ko': '{n} 건',
+      'es': '{n} commits',
+      'fr': '{n} commits',
+      'de': '{n} Commits',
+      'pt': '{n} commits',
+      'ru': '{n} коммитов',
+    },
+    'git.changedFiles': {
+      'ja': '変更されたファイル',
+      'en': 'Changed files',
+      'zh': '变更的文件',
+      'ko': '변경된 파일',
+      'es': 'Archivos modificados',
+      'fr': 'Fichiers modifiés',
+      'de': 'Geänderte Dateien',
+      'pt': 'Arquivos alterados',
+      'ru': 'Изменённые файлы',
+    },
+    'git.noFiles': {
+      'ja': '変更されたファイルはありません',
+      'en': 'No files changed',
+      'zh': '没有变更的文件',
+      'ko': '변경된 파일이 없습니다',
+      'es': 'Ningún archivo modificado',
+      'fr': 'Aucun fichier modifié',
+      'de': 'Keine Dateien geändert',
+      'pt': 'Nenhum arquivo alterado',
+      'ru': 'Файлы не изменялись',
+    },
+    'git.copyHash': {
+      'ja': 'コミット ID をコピー',
+      'en': 'Copy commit id',
+      'zh': '复制提交 ID',
+      'ko': '커밋 ID 복사',
+      'es': 'Copiar el id del commit',
+      'fr': "Copier l'id du commit",
+      'de': 'Commit-ID kopieren',
+      'pt': 'Copiar o id do commit',
+      'ru': 'Скопировать id коммита',
+    },
+    'git.copied': {
+      'ja': 'コピーしました',
+      'en': 'Copied',
+      'zh': '已复制',
+      'ko': '복사했습니다',
+      'es': 'Copiado',
+      'fr': 'Copié',
+      'de': 'Kopiert',
+      'pt': 'Copiado',
+      'ru': 'Скопировано',
+    },
     'cli.login': {
       'ja': 'ログイン',
       'en': 'Sign in',
@@ -70503,23 +70773,28 @@ class MindMapProvider extends ChangeNotifier {
     //   これは**要素の中に出る本文 (メモ)** の文字の大きさ。 要素の上に出る
     //   黄色いふきだしは別物 (説明書き / caption)。 名前とヒントで分ける。
     'overlay.memoFontHint': {
-      'ja': '要素の中に出る本文 (メモ) の文字の大きさ。 '
+      'ja': 'この要素の中に出る文字の大きさ。 題名だけの要素にも効きます。 '
           '上に出る黄色いふきだしは「説明書き」 で、 別のものです。',
-      'en': 'Size of the memo text shown inside the node. The yellow bubble '
-          'above the node is the caption — a different thing.',
-      'zh': '节点内部备忘文字的大小。节点上方的黄色气泡是「说明」，是另一回事。',
-      'ko': '요소 안에 나오는 메모 글자 크기입니다. 요소 위의 노란 말풍선은 '
-          '「설명」 으로 다른 것입니다.',
-      'es': 'Tamaño del texto de la nota dentro del nodo. El globo amarillo de '
-          'encima es la leyenda, que es otra cosa.',
-      'fr': 'Taille du texte de la note à l’intérieur du nœud. La bulle jaune '
-          'au-dessus est la légende, qui est autre chose.',
-      'de': 'Größe des Notiztexts im Knoten. Die gelbe Sprechblase darüber ist '
-          'die Bildunterschrift und etwas anderes.',
-      'pt': 'Tamanho do texto da nota dentro do nó. O balão amarelo acima é a '
-          'legenda, que é outra coisa.',
-      'ru': 'Размер текста заметки внутри узла. Жёлтая выноска сверху — это '
-          'подпись, другое.',
+      'en': 'Size of the text inside this node. It also applies to nodes that '
+          'have only a title. The yellow bubble above the node is the '
+          'caption — a different thing.',
+      'zh': '此节点内文字的大小。只有标题的节点同样有效。'
+          '节点上方的黄色气泡是「说明」，是另一回事。',
+      'ko': '이 요소 안에 나오는 글자 크기입니다. 제목만 있는 요소에도 '
+          '적용됩니다. 요소 위의 노란 말풍선은 「설명」 으로 다른 것입니다.',
+      'es': 'Tamaño del texto dentro de este nodo. También se aplica a los '
+          'nodos que solo tienen título. El globo amarillo de encima es la '
+          'leyenda, que es otra cosa.',
+      'fr': 'Taille du texte à l’intérieur de ce nœud. S’applique aussi aux '
+          'nœuds qui n’ont qu’un titre. La bulle jaune au-dessus est la '
+          'légende, autre chose.',
+      'de': 'Größe des Texts in diesem Knoten. Gilt auch für Knoten mit nur '
+          'einem Titel. Die gelbe Sprechblase darüber ist die '
+          'Bildunterschrift — etwas anderes.',
+      'pt': 'Tamanho do texto dentro deste nó. Também se aplica a nós que só '
+          'têm título. O balão amarelo acima é a legenda, que é outra coisa.',
+      'ru': 'Размер текста внутри этого узла. Применяется и к узлам только с '
+          'заголовком. Жёлтая выноска сверху — это подпись, другое.',
     },
     'ai.nodePromptRule': {
       'ja': '【この指示の決まり】特に指示が無い限り、 新しいページは作らないで '
@@ -70565,16 +70840,21 @@ class MindMapProvider extends ChangeNotifier {
           '«{title}»), передавая parentId "{node}" в add_node. Для более '
           'глубоких уровней используйте parentIndex.',
     },
+    // ★ 道具箱に残った唯一のつまみは、 題名だけの要素にも効くように
+    //   なった (node_widget.dart の titleFontSize)。 「メモの字」 では
+    //   何に効くのか伝わらないので「要素の字」 と呼ぶ。
+    //   ※ 右クリックメニュー側の双子 (_CtxFontSizeRow) はラベルが生の
+    //     'M' でこのキーを通っていないので、 そちらには届かない。
     'overlay.memoFontLabel': {
-      'ja': 'メモの字',
-      'en': 'Memo',
-      'zh': '备忘',
-      'ko': '메모',
-      'es': 'Nota',
-      'fr': 'Note',
-      'de': 'Notiz',
-      'pt': 'Nota',
-      'ru': 'Заметка',
+      'ja': '要素の字',
+      'en': 'Node text',
+      'zh': '节点文字',
+      'ko': '요소 글자',
+      'es': 'Texto',
+      'fr': 'Texte',
+      'de': 'Text',
+      'pt': 'Texto',
+      'ru': 'Текст',
     },
     // ── ストップウォッチ & タイマーダイアログ ──
     'stopwatch.tab': {
@@ -105247,7 +105527,65 @@ $cleanQ
         if (p['id'] == cur.id || p['folderId'] == fid) p
     ];
     final shown = (near.isEmpty ? all : near).take(max).toList();
+    // ★ 今のページを先頭へ寄せる (= ユーザー要望: ページを開いた状態で
+    //   指示した時に、 フォルダーを上から探されるのが冗長)。 一覧の
+    //   どこにあるか分からないと、 AI は結局 list_pages を呼び直す。
+    final i = shown.indexWhere((p) => p['id'] == cur.id);
+    if (i > 0) shown.insert(0, shown.removeAt(i));
     return shown;
+  }
+
+  /// いま開いているページの手短な中身。
+  ///
+  /// = ユーザー要望「ページを開いた状態で何か指示出すと、 フォルダーから
+  ///   AI が位置から探していて冗長。 まずは開いたページ内から探すように」。
+  ///   下ごしらえ (system prompt) にこれを載せてしまえば、 場所を確かめる
+  ///   ための list_pages / list_folders が要らなくなる。
+  ///
+  /// ★ 下ごしらえの組み立ては同期なので、 **同期で作れる分だけ**にしてある。
+  ///   prefs に本文を持つ種別 (markdown / document / paint / videoEditor) は
+  ///   中身がここに出ないので、 代わりに読む道具の名前を添える。
+  Map<String, Object?> mcpCurrentPageBrief({int maxTitles = 40}) {
+    if (_pages.isEmpty) return const <String, Object?>{};
+    final p = currentPage;
+    final out = <String, Object?>{
+      'pageId': p.id,
+      'name': p.name,
+      'type': p.pageType,
+      'folderId': p.folderId,
+      'nodeCount': p.nodes.length,
+    };
+    if (p.pageType == 'normal' || p.pageType == 'bookshelf') {
+      final titles = <Map<String, Object?>>[];
+      for (final n in p.nodes.values) {
+        if (titles.length >= maxTitles) break;
+        final t = n.title.trim();
+        titles.add({
+          'nodeId': n.id,
+          'title': t.length > 60 ? '${t.substring(0, 60)}…' : t,
+        });
+      }
+      out['nodes'] = titles;
+      final rest = p.nodes.length - titles.length;
+      if (rest > 0) out['moreNodes'] = rest;
+    } else {
+      out['readWith'] = switch (p.pageType) {
+        'markdown' => 'read_markdown',
+        'document' => 'read_document',
+        'paint' => 'read_paint_items',
+        'videoEditor' => 'list_video_editor_items',
+        _ => 'read_page',
+      };
+    }
+    final fd = _frontDocument;
+    if (fd != null) {
+      out['openFileOnTop'] = {
+        'name': fd.name,
+        'kind': fd.kind,
+        'path': fd.path,
+      };
+    }
+    return out;
   }
 
   /// AI へ渡さなかったページが何枚あるか (= 隠していると誤解させないため)。

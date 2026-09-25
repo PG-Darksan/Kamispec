@@ -1048,7 +1048,11 @@ class MindMapNode {
   /// タイトルの表示可能な最大行数
   /// node.height が大きいほど多くの行を表示する。最低2行を保証。
   int get titleMaxLines {
-    final fs = (titleFontSize ?? 15.0).clamp(8.0, 28.0);
+    // ★ node_widget.dart の titleFontSize と同じ順番 (個別の題名 → 個別の
+    //   メモ → アプリの既定)。 15.0 決め打ちのままだと、 既定を大きく
+    //   している人の許容行数が実際より多く出て、 文字が枠からはみ出す。
+    final fs = (titleFontSize ?? memoFontSize ?? defaultTitleFontSizeHint)
+        .clamp(8.0, 28.0);
     // height 内のテキスト領域 (上下paddingを引く)
     final available = height - 16.0;
     if (available <= 0) return 2;
@@ -1065,7 +1069,13 @@ class MindMapNode {
   /// の描画と合わせること (上下 padding=4、 maxLines=3、 line height=1.2)。
   double estimateTableTitleBarHeight() {
     if (title.isEmpty) return 14.0;
-    final fs = (titleFontSize ?? 15.0).clamp(8.0, 28.0).toDouble();
+    // ★ node_widget.dart の titleFontSize と同じ順番 (個別の題名 → 個別の
+    //   メモ → アプリの既定)。 描画側は既定を見ているのにここだけ 15.0
+    //   決め打ちだったため、 既定を 15 以外にすると表 / 図ノードの帯の
+    //   高さが描画とずれていた (既存のズレも一緒に閉じる)。
+    final fs = (titleFontSize ?? memoFontSize ?? defaultTitleFontSizeHint)
+        .clamp(8.0, 28.0)
+        .toDouble();
     // 利用可能なテキスト幅 = ノード幅 - 左右 padding(14*2=28)
     final maxW = (width - 28.0).clamp(20.0, double.infinity).toDouble();
     final tp = TextPainter(
@@ -1183,8 +1193,13 @@ class MindMapNode {
 
     double h = height;
     // タイトルの折り返し分の追加高さ（文字サイズはノード幅に連動しない）
+    // ★ node_widget.dart の titleFontSize と**同じ順番**で決める
+    //   (個別の題名 → 個別のメモ → アプリの既定)。 メモの指定が題名の
+    //   大きさを動かすようになったので、 ここを揃えないと箱を小さく
+    //   見積もり、 当たり判定・接続点・グループ枠が描画とずれる。
     final effectiveTitleFont =
-        (titleFontSize ?? defaultTitleFontSizeHint).clamp(8.0, 28.0);
+        (titleFontSize ?? memoFontSize ?? defaultTitleFontSizeHint)
+            .clamp(8.0, 28.0);
     // 利用可能なテキスト幅。
     // ★ 実際に描く箱は width - 20 (node_widget.dart の SizedBox)。 ここを
     //   25 にしていたため 1 行多く見積もり、 その分の空白が下に残っていた

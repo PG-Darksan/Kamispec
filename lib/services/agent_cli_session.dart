@@ -116,6 +116,16 @@ class AgentCliSession extends ChangeNotifier {
   /// 終わった時の返り値 (まだなら null)。
   int? exitCode;
 
+  // ── 端末の大きさを子へ伝える所 ────────────────────────────────
+  /// 最後に子へ伝えた桁数 / 行数。
+  int _ptyCols = 0;
+  int _ptyRows = 0;
+
+  /// 落ち着くまで待つための時計と、 待っている間の最新の大きさ。
+  Timer? _resizeTimer;
+  int? _pendingCols;
+  int? _pendingRows;
+
   /// 「止める」 を押して終わらせたか。
   bool stoppedByUser = false;
 
@@ -871,6 +881,9 @@ class AgentCliSession extends ChangeNotifier {
         },
       );
       _pty = pty;
+      // 起動時に渡した大きさを覚える (同じ値で SIGWINCH を送らないため)。
+      _ptyCols = terminal.viewWidth > 0 ? terminal.viewWidth : 80;
+      _ptyRows = terminal.viewHeight > 0 ? terminal.viewHeight : 25;
       _running = true;
       // 立ち上がり直し。 「起動中」 からやり直す (= 停止を出さない)。
       _startedAt = DateTime.now();
@@ -918,9 +931,29 @@ class AgentCliSession extends ChangeNotifier {
         } catch (_) {}
       };
       terminal.onResize = (w, h, pw, ph) {
-        try {
-          pty.resize(h, w);
-        } catch (_) {}
+        // ★ つまみを動かしている間は、 桁が 1 つ変わるたびに合図が来る
+        //   (300px 動かせば 40 回ほど)。 そのまま渡すと CLI は**そのたびに
+        //   会話を丸ごと描き直す**ので、 写しが何十枚も積み上がって
+        //   「最初から読み込まれた」 ように見える
+        //   (= ユーザー報告: CLI の画面の大きさを変えると会話が最初から
+        //   読み込まれて描画される)。 大きさが落ち着いてから 1 回だけ渡す。
+        if (w <= 0 || h <= 0) return;
+        if (w == _ptyCols && h == _ptyRows) return; // 変わっていない
+        _pendingCols = w;
+        _pendingRows = h;
+        _resizeTimer?.cancel();
+        _resizeTimer = Timer(const Duration(milliseconds: 260), () {
+          _resizeTimer = null;
+          final c = _pendingCols;
+          final r = _pendingRows;
+          if (c == null || r == null) return;
+          if (c == _ptyCols && r == _ptyRows) return;
+          _ptyCols = c;
+          _ptyRows = r;
+          try {
+            pty.resize(r, c);
+          } catch (_) {}
+        });
       };
       unawaited(_watchExit(pty));
       notifyListeners();
@@ -1031,6 +1064,8 @@ class AgentCliSession extends ChangeNotifier {
     _sub = null;
     terminal.onOutput = null;
     terminal.onResize = null;
+    _resizeTimer?.cancel();
+    _resizeTimer = null;
     terminal.write('\r\n[終了しました (コード $code)]\r\n');
     notifyListeners();
     if (!_finished.isCompleted) _finished.complete(code);
@@ -1096,6 +1131,8 @@ class AgentCliSession extends ChangeNotifier {
   @override
   void dispose() {
     // 画面が消えても止めない。 後始末は終わった時に済ませてある。
+    _resizeTimer?.cancel();
+    _resizeTimer = null;
     super.dispose();
   }
 }

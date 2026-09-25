@@ -85,6 +85,36 @@ final Map<LogicalKeyboardKey, TerminalKey> _kTermKeys = {
   LogicalKeyboardKey.f12: TerminalKey.f12,
 };
 
+/// 出力の中の「押せる所」 (URL かコマンド)。
+///
+/// ★ = ユーザー要望「codexCLI から出された powershell コマンド等をクリック
+///   したらターミナルが開いて shell で実行されるようにして欲しい」。
+///   URL を押したら開く仕組み (b438) と**同じ当たり判定**を通すので、
+///   1 つの型で運ぶ。 レコードは項目が増えると別の型になり、 同じ関数で
+///   受け取れないため小さなクラスにしてある。
+class _TermHit {
+  const _TermHit({
+    required this.text,
+    required this.row,
+    required this.from,
+    required this.to,
+    required this.cmd,
+  });
+
+  /// URL そのもの、 またはコマンドの 1 行。
+  final String text;
+
+  /// 押された行 (巻物の中での番号)。
+  final int row;
+
+  /// その行の中で何枡目から何枡目か (前後の行にはみ出す時は負や cols 超え)。
+  final int from;
+  final int to;
+
+  /// true = コマンド (走らせる)、 false = URL (開く)。
+  final bool cmd;
+}
+
 class AgentTerminal extends StatefulWidget {
   const AgentTerminal({
     super.key,
@@ -93,6 +123,7 @@ class AgentTerminal extends StatefulWidget {
     this.onRunAgain,
     this.onPickLanguage,
     this.onContextMenu,
+    this.onRunCommand,
   });
 
   /// 走らせている物。 この widget は覗くだけで、 止めたりはしない。
@@ -111,6 +142,18 @@ class AgentTerminal extends StatefulWidget {
   /// 右クリックすることは無いから、 画面分割や新規タブ作成などの項目を
   /// 出すように割り当てられないか」)。 渡されなければ今までどおり何もしない。
   final void Function(Offset globalPosition)? onContextMenu;
+
+  /// 出力の中の「コマンドらしい 1 行」 を押して、 **確認まで済んだ**時
+  /// (= ユーザー要望: codexCLI が出した powershell のコマンド等を押したら
+  ///  ターミナルが開いて走るように)。
+  ///
+  /// ★ 渡すのは**必ず 1 行**。 [run] が true なら Enter まで送る、 false なら
+  ///   **打ち込むだけ** (走らせるかは利用者が端末で決める)。
+  /// ★ 渡されない時は、 この端末自身が殻 (`AgentCliSession.isShell`) なら
+  ///   そこへ打ち込み、 そうでなければ**押せるようにしない**
+  ///   (押しても何も起きない下線を出さない)。 AI の CLI へ打ち込むと
+  ///   「指示」 として読まれてしまい、 コマンドとしては走らない。
+  final void Function(String command, bool run)? onRunCommand;
 
   @override
   State<AgentTerminal> createState() => AgentTerminalState();
@@ -203,6 +246,19 @@ class AgentTerminalState extends State<AgentTerminal> {
   ///   そのURL先に飛べるようにして欲しい」。 ここも端末そのものを組み直さず、
   ///   小さな札だけに配る (= 点滅対策)。
   final ValueNotifier<Rect?> _linkRectVn = ValueNotifier<Rect?>(null);
+
+  /// いま指しているのが URL かコマンドか (下線の色と太さを分けるだけ)。
+  ///
+  /// ★ 札の組み直しは [_linkRectVn] が起こすので、 **場所を配る直前に**
+  ///   ここへ入れておけば、 その組み直しで新しい値が読まれる。
+  bool _linkIsCmd = false;
+
+  /// コマンドの確認窓を出している間の掛け金。
+  ///
+  /// ★ このコードベースのダイアログには再入防止が無い物が多く、 連打すると
+  ///   同じ窓が積み上がる。 端末は色と枠だらけで押し間違いが起きやすいので、
+  ///   ここは 1 枚だけに限る。
+  bool _cmdConfirmOpen = false;
 
   /// 左ボタンが押された場所と時刻。
   ///
@@ -573,6 +629,59 @@ class AgentTerminalState extends State<AgentTerminal> {
   /// ★ 16bit に収まらない字 (絵文字など) も**空白 1 つ**に置き換える。
   ///   `writeCharCode` はそういう字を 2 単位で書くので、 そのまま入れると
   ///   以降の位置が 1 つずつずれる。 URL は ASCII なので置き換えて困らない。
+  // ── 出力の中の「コマンドらしい 1 行」 を見分ける決まり ──────────────────
+  //
+  //  ★ = ユーザー要望「codexCLI から出された powershell コマンド等をクリック
+  //    したらターミナルが開いて shell で実行されるようにして欲しい」。
+  //  ★ URL と違ってコマンドは形が決まっていない。 **誤検知が害になる**ので
+  //    (押し間違いで消す系が走る)、 取りこぼす方へ倒す。 拾うのは
+  //    「下の白名簿の言葉で始まる 1 行」 だけ。
+  //  ★ `^` は付けない。 頭に釘付けするのは `matchAsPrefix` の役目で、 `^` を
+  //    書くと入力の 0 文字目しか見なくなる (枠線を落とした後では使えない)。
+
+  /// 頭に付いた飾り (枠線を落とした後の、 箇条書きの印や見せかけの
+  /// プロンプト)。 後ろに空白を要るので `>out.txt` は飾りと見なさない。
+  ///
+  /// ★ 生文字列にバックスラッシュを入れない形にしてある
+  ///   (`C:\dir>` は `[A-Za-z]:[^>]{0,200}>` で足りる)。
+  static final RegExp _kCmdLeadRe = RegExp(
+      r'(?:PS\s+[^>]{0,200}>|[A-Za-z]:[^>]{0,200}>|[-*>$]|\d{1,2}\s*[.)])\s+');
+
+  /// コマンドの先頭に来る言葉 (白名簿)。
+  ///
+  /// ★ 文章にも出る短い語 (make / set / type / copy / echo / cat / ls /
+  ///   dir / code / where) は**入れない**。 `go` は後ろに副命令を要求する形
+  ///   だけ入れる (「go to the folder」 を拾わないため)。
+  static final RegExp _kCmdHeadRe = RegExp(
+      r'(?:powershell|pwsh|cmd|git|gh|npm|npx|pnpm|yarn|flutter|dart'
+      r'|python3?|py|pip3?|node|deno|bun|adb|gradlew|dotnet|msbuild|cmake'
+      r'|cargo|rustup|rustc|winget|choco|scoop|curl|wget|tar|ssh|scp'
+      r'|robocopy|xcopy|findstr|rg|ffmpeg|sqlite3|explorer|taskkill|schtasks'
+      r'|reg|ipconfig|netstat|docker|kubectl|mvn|gradle|pytest|poetry|ruff'
+      r'|go\s+(?:build|run|test|mod|get|install)'
+      r'|Get-\w+|Set-\w+|New-\w+|Remove-\w+|Copy-Item|Move-Item|Test-Path'
+      r'|Start-Process|Invoke-\w+|Select-String)(?:\.exe)?(?=\s|$)',
+      caseSensitive: false);
+
+  /// 文章の句読点。 1 つでも入っていたら説明文と見なして押せるようにしない。
+  static final RegExp _kCmdProseRe = RegExp(r'[、。「」『』・？！，；]');
+
+  /// 消す / 元に戻せない操作の言葉。 入っていたら「打ち込むだけ」 しか
+  /// 出さない (= 押し間違い・AI の暴走で消えるのを防ぐ最後の歯止め)。
+  ///
+  /// ★ `format` は**ドライブ指定が付いた時だけ**危ないと見る。 `\bformat\b`
+  ///   にすると `dart format` と `git log --pretty=format:` まで巻き込む
+  ///   (このリポジトリは analyzer が壊れていて `dart format` を常用する)。
+  static final RegExp _kCmdRiskyRe = RegExp(
+      r'(?:\bRemove-Item\b|\bri\s+-|\brm\s|\bdel\s|\berase\s|\brmdir\b|\brd\s'
+      r'|\bformat\s+[A-Za-z]:|\bdiskpart\b|\bmkfs|\bdd\s+if=|\bcipher\s+/w'
+      r'|\bgit\s+(?:reset\s+--hard|clean\s+-|push\s+(?:-f\b|--force))'
+      r'|\bshutdown\b|\brestart-computer\b|\bstop-computer\b|\btaskkill\b'
+      r'|\bstop-process\b|\breg\s+delete\b|\bset-executionpolicy\b'
+      r'|\bicacls\b|\btakeown\b|\bInvoke-Expression\b|\biex\b|\bsudo\b'
+      r'|\bchmod\s+-R|\bchown\s+-R|\bnpm\s+publish\b|(?:^|\s)>(?!>)\s*\S)',
+      caseSensitive: false);
+
   String _cellsOf(BufferLine line, int cols) {
     final sb = StringBuffer();
     final n = line.length < cols ? line.length : cols;
@@ -623,7 +732,7 @@ class AgentTerminalState extends State<AgentTerminal> {
   /// 返す物は URL と、 **押された行の中で**何枡目から何枡目か (下線用。 前後の
   /// 行にはみ出す時は負の値や `cols` 超えになるので、 使う側で丸める)。
   /// 折り返してちぎれた URL も `isWrapped` を辿ってつなぎ直す。
-  ({String url, int row, int from, int to})? _urlAtGlobal(Offset globalPos) {
+  _TermHit? _urlAtGlobal(Offset globalPos) {
     final term = _s.terminal;
     final cols = term.viewWidth;
     final lines = term.buffer.lines;
@@ -632,21 +741,10 @@ class AgentTerminalState extends State<AgentTerminal> {
     if (cell == null) return null;
     final row = cell.y;
     if (row < 0 || row >= lines.length) return null;
-    // 折り返しの元と続きを探す。
-    var head = row;
-    while (head > 0 && lines[head].isWrapped) {
-      head--;
-    }
-    var tail = row;
-    while (tail + 1 < lines.length && lines[tail + 1].isWrapped) {
-      tail++;
-    }
-    final sb = StringBuffer();
-    for (var i = head; i <= tail; i++) {
-      sb.write(_cellsOf(lines[i], cols));
-    }
-    final text = sb.toString();
-    final rowHead = (row - head) * cols;
+    // 折り返しの元と続きは [_joinedLineAt] が辿る (コマンド判定と共通)。
+    final j = _joinedLineAt(row, cols);
+    final text = j.text;
+    final rowHead = j.rowHead;
     final at = rowHead + cell.x;
     for (final m in _kUrlRe.allMatches(text)) {
       final s = m.start;
@@ -671,13 +769,96 @@ class AgentTerminalState extends State<AgentTerminal> {
       if (at < s || at >= e) continue;
       var url = text.substring(s, e);
       if (url.toLowerCase().startsWith('www.')) url = 'https://$url';
-      return (url: url, row: row, from: s - rowHead, to: e - rowHead);
+      return _TermHit(
+          text: url,
+          row: row,
+          from: s - rowHead,
+          to: e - rowHead,
+          cmd: false);
     }
     return null;
   }
 
+  /// [row] を含む「折り返しでつながった 1 行」 を、 枡と同じ並びで返す。
+  ///
+  /// ★ URL とコマンドの**両方がこれを使う** (= 同じ仕組みに相乗り)。
+  ({String text, int rowHead}) _joinedLineAt(int row, int cols) {
+    final lines = _s.terminal.buffer.lines;
+    var head = row;
+    while (head > 0 && lines[head].isWrapped) {
+      head--;
+    }
+    var tail = row;
+    while (tail + 1 < lines.length && lines[tail + 1].isWrapped) {
+      tail++;
+    }
+    final sb = StringBuffer();
+    for (var i = head; i <= tail; i++) {
+      sb.write(_cellsOf(lines[i], cols));
+    }
+    return (text: sb.toString(), rowHead: (row - head) * cols);
+  }
+
+  /// [globalPos] にある「コマンドらしい 1 行」 を割り出す。
+  ///
+  /// ★ 渡す先が無い時は**押せるようにしない** (押しても何も起きない下線を
+  ///   出さない)。 渡す先 = [AgentTerminal.onRunCommand]、 または この端末
+  ///   自身が殻であること。
+  /// ★ 返すのは**必ず 1 行**。 制御文字が混じった行は捨てるので、 束が
+  ///   一度に流れることは起こらない。
+  /// ★ 枠線 (TUI の `│ …… │`)・箇条書きの印・見せかけのプロンプトを落として
+  ///   から、 白名簿の言葉で始まるかだけを見る。
+  _TermHit? _cmdAtGlobal(Offset globalPos) {
+    if (widget.onRunCommand == null && !_s.isShell) return null;
+    final term = _s.terminal;
+    final cols = term.viewWidth;
+    final lines = term.buffer.lines;
+    if (cols <= 0 || lines.length <= 0) return null;
+    final cell = _cellAtGlobal(globalPos, exact: true);
+    if (cell == null) return null;
+    final row = cell.y;
+    if (row < 0 || row >= lines.length) return null;
+    final j = _joinedLineAt(row, cols);
+    final text = j.text;
+    final at = j.rowHead + cell.x;
+    // 枠線と余白を落とす。
+    bool deco(int c) =>
+        c == 0x20 || c == 0x09 || c == 0xA0 || (c >= 0x2500 && c <= 0x259F);
+    var s = 0;
+    var e = text.length;
+    while (s < e && deco(text.codeUnitAt(s))) {
+      s++;
+    }
+    while (e > s && deco(text.codeUnitAt(e - 1))) {
+      e--;
+    }
+    // 箇条書きの印や見せかけのプロンプトも落とす (2 段まで)。
+    for (var i = 0; i < 2; i++) {
+      final m = _kCmdLeadRe.matchAsPrefix(text, s);
+      if (m == null || m.end > e) break;
+      s = m.end;
+      while (s < e && deco(text.codeUnitAt(s))) {
+        s++;
+      }
+    }
+    if (e - s < 2 || e - s > 500) return null;
+    final body = text.substring(s, e);
+    if (_kCmdHeadRe.matchAsPrefix(body) == null) return null;
+    if (_kCmdProseRe.hasMatch(body)) return null;
+    for (final c in body.codeUnits) {
+      if (c < 0x20 || c == 0x7f) return null;
+    }
+    if (at < s || at >= e) return null;
+    return _TermHit(
+        text: body,
+        row: row,
+        from: s - j.rowHead,
+        to: e - j.rowHead,
+        cmd: true);
+  }
+
   /// 下線を出す場所を配る (この widget の中での座標)。
-  void _updateLinkRect(({String url, int row, int from, int to})? hit) {
+  void _updateLinkRect(_TermHit? hit) {
     final st = _viewKey.currentState;
     final box = _stackKey.currentContext?.findRenderObject();
     if (hit == null || st == null || box is! RenderBox || !box.hasSize) {
@@ -696,6 +877,7 @@ class AgentTerminalState extends State<AgentTerminal> {
       final cs = rt.cellSize;
       final tl = box.globalToLocal(
           rt.localToGlobal(rt.getOffset(CellOffset(c0, hit.row))));
+      _linkIsCmd = hit.cmd;
       _linkRectVn.value =
           Rect.fromLTWH(tl.dx, tl.dy, (c1 - c0) * cs.width, cs.height);
     } catch (_) {
@@ -713,23 +895,142 @@ class AgentTerminalState extends State<AgentTerminal> {
     if (cx == _hoverCellX && cy == _hoverCellY) return;
     _hoverCellX = cx;
     _hoverCellY = cy;
-    _updateLinkRect(_urlAtGlobal(e.position));
+    // URL が先 (開くだけで害が小さい)。 無ければコマンドを見る。
+    _updateLinkRect(_urlAtGlobal(e.position) ?? _cmdAtGlobal(e.position));
   }
 
   /// 叩かれた所に URL があれば開く。
   ///
   /// ★ 出先はこのアプリの他の所と同じ**外のブラウザー**。
   Future<void> _openLinkAt(Offset globalPos) async {
-    final hit = _urlAtGlobal(globalPos);
+    final hit = _urlAtGlobal(globalPos) ?? _cmdAtGlobal(globalPos);
     if (hit == null) return;
-    final uri = Uri.tryParse(hit.url);
-    if (uri == null || !uri.hasScheme) return;
     _linkRectVn.value = null;
+    // ★ コマンドは**ここでは走らせない**。 中身を見せて確かめてから。
+    if (hit.cmd) {
+      await _confirmAndRunCommand(hit.text);
+      return;
+    }
+    final uri = Uri.tryParse(hit.text);
+    if (uri == null || !uri.hasScheme) return;
     try {
       await launchUrl(uri, mode: LaunchMode.externalApplication);
     } catch (_) {
       // 開けなかった時は黙って諦める (端末の表示は壊さない)。
     }
+  }
+
+  /// 押されたコマンドを、 **中身を見せて確かめてから**端末へ渡す。
+  ///
+  /// ★ ここが安全の要。 押しただけでは走らない。
+  ///   ・全文と「どこで走らせるか」 を出す
+  ///   ・1 回に渡すのは**1 行だけ** (束では流さない)
+  ///   ・消す / 元に戻せない語が入っていた時は「打ち込むだけ」 しか出さない
+  ///     (走らせるには、 端末に乗った行を自分で読んで Enter を押す)
+  /// ★ 窓は**一番近い Navigator** に出す (`useRootNavigator: false`)。 浮遊窓
+  ///   (`_FloatingPanelWindow`) は自前の Navigator を持っているので、 根っこへ
+  ///   出すと窓の裏に積まれて押せなくなる。 サブ窓の中でも、 この端末の
+  ///   context は窓の MaterialApp の**内側**なので同じ形で届く。
+  Future<void> _confirmAndRunCommand(String cmd) async {
+    if (!mounted || _cmdConfirmOpen) return;
+    final provider = context.read<MindMapProvider>();
+    final dir = _s.shownDirectory;
+    final risky = _kCmdRiskyRe.hasMatch(cmd);
+    _cmdConfirmOpen = true;
+    bool? run;
+    try {
+      run = await showDialog<bool>(
+        context: context,
+        useRootNavigator: false,
+        builder: (dctx) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E32),
+          title: Row(children: [
+            Icon(risky ? Icons.warning_amber_rounded : Icons.terminal_rounded,
+                size: 18,
+                color:
+                    risky ? const Color(0xFFE53935) : const Color(0xFF9CCC65)),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(provider.t('cli.runCmdTitle'),
+                  style: const TextStyle(color: Colors.white, fontSize: 14)),
+            ),
+          ]),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF12121F),
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(color: Colors.white12),
+                ),
+                child: SelectableText(cmd,
+                    style: const TextStyle(
+                        color: Color(0xFFD7E3F4),
+                        fontSize: 12,
+                        height: 1.5,
+                        fontFamily: 'Consolas')),
+              ),
+              const SizedBox(height: 10),
+              Text('${provider.t('cli.runCmdDir')}  $dir',
+                  style: const TextStyle(
+                      color: Colors.white54, fontSize: 11, height: 1.5)),
+              const SizedBox(height: 8),
+              Text(
+                  risky
+                      ? provider.t('cli.runCmdRisky')
+                      : provider.t('cli.runCmdHint'),
+                  style: TextStyle(
+                      color: risky ? const Color(0xFFFFB347) : Colors.white54,
+                      fontSize: 11,
+                      height: 1.6)),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dctx).pop(null),
+              child: Text(provider.t('common.cancel'),
+                  style: const TextStyle(color: Colors.white54)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(dctx).pop(false),
+              child: Text(provider.t('cli.runCmdTypeOnly'),
+                  style: const TextStyle(color: Color(0xFF8AB4F8))),
+            ),
+            // ★ 消す系が入っていたら「実行する」 は**出さない**。
+            if (!risky)
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF43B97F),
+                    foregroundColor: Colors.white),
+                onPressed: () => Navigator.of(dctx).pop(true),
+                child: Text(provider.t('cli.runCmdRun')),
+              ),
+          ],
+        ),
+      );
+    } finally {
+      _cmdConfirmOpen = false;
+    }
+    if (run == null || !mounted) return;
+    final cb = widget.onRunCommand;
+    if (cb != null) {
+      // 殻を用意して渡すのは画面側の仕事 (AI の CLI へは打ち込まない)。
+      cb(cmd, run);
+      return;
+    }
+    // この端末自身が殻なら、 その場へ打ち込む (ヘッダーのターミナル / 編集
+    // 画面の下の帯)。
+    if (!_s.isShell || !_s.running) return;
+    if (run) {
+      _s.send(cmd);
+    } else {
+      _s.sendRaw(cmd);
+    }
+    _returnToTerminal();
   }
 
   // ── 打ち込み ────────────────────────────────────────────────────────────
@@ -1991,17 +2292,26 @@ class AgentTerminalState extends State<AgentTerminal> {
                     height: r?.height ?? 0.0,
                     child: r == null
                         ? const SizedBox.shrink()
-                        : const MouseRegion(
+                        : MouseRegion(
                             opaque: false,
                             cursor: SystemMouseCursors.click,
                             child: DecoratedBox(
                               decoration: BoxDecoration(
+                                // ★ コマンドは URL と見分けが付くように、
+                                //   緑の太い下線 + 薄い敷きにする
+                                //   (押すと「走らせる」 = 重い方だから)。
+                                color: _linkIsCmd
+                                    ? const Color(0x269CCC65)
+                                    : null,
                                 border: Border(
                                   bottom: BorderSide(
-                                      color: Color(0xFF8AB4F8), width: 1),
+                                      color: _linkIsCmd
+                                          ? const Color(0xFF9CCC65)
+                                          : const Color(0xFF8AB4F8),
+                                      width: _linkIsCmd ? 2 : 1),
                                 ),
                               ),
-                              child: SizedBox.expand(),
+                              child: const SizedBox.expand(),
                             ),
                           ),
                   ),
