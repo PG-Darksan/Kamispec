@@ -26,6 +26,7 @@
 //   ので、 本物の端末と同じ見え方になる (= ユーザー報告: 日本語が打てない)。
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
@@ -194,6 +195,19 @@ class AgentTerminalState extends State<AgentTerminal> {
   final _queueCtrl = TextEditingController();
   final _queueFocus = FocusNode(debugLabel: 'agent_cli_queue');
   bool _queueOpen = false;
+
+  /// いま中身を直している順番待ちの通し番号 ([QueuedPrompt.id]、
+  /// null = 新しく足す)。
+  ///
+  /// ★ = ユーザー要望「キューの内容を編集できるようにして欲しい」。
+  ///   別の窓は出さず、 下の入力欄をそのまま「直す欄」 として使い回す。
+  /// ★ **並びの位置ではなく通し番号で持つ**。 直している間に先頭の 1 件が
+  ///   渡って番号がずれても、 同じ文言が 2 つ並んでいても、 狙った行だけを
+  ///   書き直せる (位置や文言で指すと別の行を書き潰す)。
+  int? _queueEditId;
+
+  /// 「全部消す」 を一度押した状態 (もう一度押すと本当に消す)。
+  bool _queueClearArmed = false;
 
   /// いまの会話で投げた指示の一覧を出しているか (= ユーザー要望)。
   bool _histOpen = false;
@@ -443,6 +457,8 @@ class AgentTerminalState extends State<AgentTerminal> {
       _histOpen = false;
       _queueOpen = false;
       _queueCtrl.clear();
+      _queueEditId = null;
+      _queueClearArmed = false;
       _focusTried = false;
       // ★ 前のタブで外へ出ていた掛け金は下ろす。 下ろさないと
       //   `_grabFocusSoon` が素通りして、 選んだタブに打ち込めない。
@@ -490,9 +506,13 @@ class AgentTerminalState extends State<AgentTerminal> {
     // ★ 件数だけだと控えの上限 (100 件) に達した後で「履歴」 欄が
     //   止まるので、 最後の 1 行も見る。
     final lastSent = sent.isEmpty ? '' : sent.last;
+    // ★ 溜めた分は 100 件まで入るので、 全部つないで比べると 500 ミリ秒
+    //   ごとに数十 KB の文字列を作る事になる。 件数と、 順番待ちが動いた
+    //   回数 ([AgentCliSession.queueRev]) だけ見る (入れ替えや書き直しでも
+    //   必ず増える)。
     return '${_s.running}|${_s.busyForUi}|${_s.starting}|${_s.launchFailed}'
         '|${_s.launchError}|${_s.launchDiedEarly}|${_s.stoppedByUser}'
-        '|${_s.exitCode}|${_s.queueMode}|${_s.queued.join(String.fromCharCode(1))}'
+        '|${_s.exitCode}|${_s.queueMode}|${_s.queuedCount}|${_s.queueRev}'
         '|${_s.limitWaiting}|$lim|${_s.limitZoneNote}|${_s.needsResumeWord}'
         '|${sent.length}|$lastSent|${_s.shownDirectory}|${_s.resumeWord}';
   }
@@ -1514,19 +1534,69 @@ class AgentTerminalState extends State<AgentTerminal> {
     );
   }
 
-  /// 順番待ちに 1 件足す。
+  /// いま直している行が、 並びの何番目に居るか (居なければ -1)。
+  int get _queueEditAt {
+    final id = _queueEditId;
+    if (id == null) return -1;
+    return _s.queuedItems.indexWhere((e) => e.id == id);
+  }
+
+  /// 順番待ちに 1 件足す (直している最中はその 1 件を書き換える)。
   ///
-  /// ★ = ユーザー要望「5 件まで貯めておけるように」。 満杯の時は
+  /// ★ = ユーザー要望「100 件まで貯めておけるように」。 満杯の時は
   ///   黙って捨てず、 入れられなかったと分かるように残す。
   void _addQueued() {
     final t = _queueCtrl.text.trim();
     if (t.isEmpty) return;
+    final editing = _queueEditId;
+    if (editing != null) {
+      if (_s.updateQueuedId(editing, t)) {
+        _queueCtrl.clear();
+        setState(() => _queueEditId = null);
+        return;
+      }
+      // ★ 直している間に渡ってしまった = もう直せない。 黙って捨てず、
+      //   新しく足す方へ落とす。
+      _queueEditId = null;
+    }
     if (!_s.enqueue(t)) {
       setState(() {});
       return;
     }
     _queueCtrl.clear();
     setState(() {});
+  }
+
+  /// 溜めた 1 件を下の入力欄へ移して直せるようにする。
+  void _editQueued(QueuedPrompt item) {
+    _queueCtrl.text = item.text;
+    _queueCtrl.selection =
+        TextSelection.collapsed(offset: _queueCtrl.text.length);
+    setState(() {
+      _queueEditId = item.id;
+      _queueClearArmed = false;
+    });
+    _queueFocus.requestFocus();
+  }
+
+  /// 溜めた 1 件を取り消す (通し番号で指すので取り違えない)。
+  void _removeQueued(QueuedPrompt item) {
+    setState(() {
+      _s.cancelQueuedId(item.id);
+      // 直していた行が消えたら、 直すのもやめる。
+      if (_queueEditId == item.id) {
+        _queueEditId = null;
+        _queueCtrl.clear();
+      }
+    });
+  }
+
+  /// 直すのをやめる (入力欄を空に戻す)。
+  void _cancelQueueEdit() {
+    if (_queueEditId == null && _queueCtrl.text.isEmpty) return;
+    _queueCtrl.clear();
+    setState(() => _queueEditId = null);
+    _queueFocus.requestFocus();
   }
 
   static String _two(int v) => v.toString().padLeft(2, '0');
@@ -1544,6 +1614,11 @@ class AgentTerminalState extends State<AgentTerminal> {
     required String buttonLabel,
     required VoidCallback onSubmit,
     required VoidCallback onClose,
+    // Esc を押した時 (= 直すのをやめる)。 null なら Esc は横取りしない。
+    VoidCallback? onEscape,
+    // 帯全体の背の上限。 [extra] に `Flexible` を置く時は必ず渡す事
+    //   (Column の高さが決まっていないと `Flexible` は組めない)。
+    double? maxHeight,
     List<Widget> extra = const [],
   }) {
     return Container(
@@ -1552,85 +1627,105 @@ class AgentTerminalState extends State<AgentTerminal> {
         color: Color(0xFF141426),
         border: Border(top: BorderSide(color: Colors.white12)),
       ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [
-          Icon(icon, size: 14, color: color),
-          const SizedBox(width: 6),
-          Expanded(
-            child: Text(note,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Colors.white38, fontSize: 10.5)),
-          ),
-          IconButton(
-            tooltip: '閉じる',
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
-            icon:
-                const Icon(Icons.close_rounded, size: 15, color: Colors.white38),
-            onPressed: onClose,
-          ),
-        ]),
-        const SizedBox(height: 4),
-        Row(children: [
-          Expanded(
-            // ★ Enter は改行、 Ctrl+Enter で確定 (= ユーザー要望)。
-            //   TextField の Enter を横取りするには Focus(onKeyEvent) で
-            //   handled を返すしかない。 かな漢字変換の最中は渡す。
-            child: Focus(
-              onKeyEvent: (node, event) {
-                if (event is! KeyDownEvent) return KeyEventResult.ignored;
-                final k = event.logicalKey;
-                if (k != LogicalKeyboardKey.enter &&
-                    k != LogicalKeyboardKey.numpadEnter) {
-                  return KeyEventResult.ignored;
-                }
-                if (!HardwareKeyboard.instance.isControlPressed) {
-                  return KeyEventResult.ignored;
-                }
-                final c = ctrl.value.composing;
-                if (c.isValid && !c.isCollapsed) return KeyEventResult.ignored;
-                onSubmit();
-                return KeyEventResult.handled;
-              },
-              child: TextField(
-                controller: ctrl,
-                focusNode: focus,
-                autofocus: true,
-                minLines: 1,
-                maxLines: 4,
-                keyboardType: TextInputType.multiline,
-                textInputAction: TextInputAction.newline,
-                style: const TextStyle(color: Colors.white, fontSize: 12),
-                decoration: InputDecoration(
-                  hintText: hint,
-                  hintStyle:
-                      const TextStyle(color: Colors.white24, fontSize: 11.5),
-                  filled: true,
-                  fillColor: Colors.white.withValues(alpha: 0.06),
-                  isDense: true,
-                  contentPadding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                  border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(8),
-                      borderSide: BorderSide.none),
+      child: ConstrainedBox(
+        constraints:
+            BoxConstraints(maxHeight: maxHeight ?? double.infinity),
+        child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(children: [
+                Icon(icon, size: 14, color: color),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(note,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: Colors.white38, fontSize: 10.5)),
                 ),
-              ),
-            ),
-          ),
-          const SizedBox(width: 6),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF37474F),
-              visualDensity: VisualDensity.compact,
-            ),
-            onPressed: onSubmit,
-            child: Text(buttonLabel,
-                style: const TextStyle(fontSize: 11, color: Colors.white)),
-          ),
-        ]),
-        ...extra,
-      ]),
+                IconButton(
+                  tooltip: '閉じる',
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+                  icon:
+                      const Icon(Icons.close_rounded, size: 15, color: Colors.white38),
+                  onPressed: onClose,
+                ),
+              ]),
+              const SizedBox(height: 4),
+              Row(children: [
+                Expanded(
+                  // ★ **Enter で確定、 Shift+Enter で改行** (= ユーザー要望)。
+                  //   以前は逆 (Enter が改行 / Ctrl+Enter で確定) だったが、 チャット
+                  //   欄と同じ手触りにした。 Ctrl+Enter も今までどおり確定として受ける。
+                  //   TextField の Enter を横取りするには Focus(onKeyEvent) で
+                  //   handled を返すしかない。 かな漢字変換の最中は渡す (変換を決める
+                  //   Enter で送ってしまわないように)。
+                  child: Focus(
+                    onKeyEvent: (node, event) {
+                      if (event is! KeyDownEvent) return KeyEventResult.ignored;
+                      final k = event.logicalKey;
+                      // Esc = 直すのをやめる (かな漢字変換中は変換の取り消しへ渡す)。
+                      if (k == LogicalKeyboardKey.escape && onEscape != null) {
+                        final c0 = ctrl.value.composing;
+                        if (c0.isValid && !c0.isCollapsed) {
+                          return KeyEventResult.ignored;
+                        }
+                        onEscape();
+                        return KeyEventResult.handled;
+                      }
+                      if (k != LogicalKeyboardKey.enter &&
+                          k != LogicalKeyboardKey.numpadEnter) {
+                        return KeyEventResult.ignored;
+                      }
+                      // Shift+Enter は改行 = 入力側へそのまま渡す。
+                      if (HardwareKeyboard.instance.isShiftPressed) {
+                        return KeyEventResult.ignored;
+                      }
+                      final c = ctrl.value.composing;
+                      if (c.isValid && !c.isCollapsed) return KeyEventResult.ignored;
+                      onSubmit();
+                      return KeyEventResult.handled;
+                    },
+                    child: TextField(
+                      controller: ctrl,
+                      focusNode: focus,
+                      autofocus: true,
+                      minLines: 1,
+                      maxLines: 4,
+                      keyboardType: TextInputType.multiline,
+                      textInputAction: TextInputAction.newline,
+                      style: const TextStyle(color: Colors.white, fontSize: 12),
+                      decoration: InputDecoration(
+                        hintText: hint,
+                        hintStyle:
+                            const TextStyle(color: Colors.white24, fontSize: 11.5),
+                        filled: true,
+                        fillColor: Colors.white.withValues(alpha: 0.06),
+                        isDense: true,
+                        contentPadding:
+                            const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                        border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8),
+                            borderSide: BorderSide.none),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF37474F),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  onPressed: onSubmit,
+                  child: Text(buttonLabel,
+                      style: const TextStyle(fontSize: 11, color: Colors.white)),
+                ),
+              ]),
+              ...extra,
+            ]),
+      ),
     );
   }
 
@@ -1705,57 +1800,168 @@ class AgentTerminalState extends State<AgentTerminal> {
     );
   }
 
-  Widget _buildQueueBar() {
-    final q = _s.queued;
+  /// [paneH] … この端末に与えられている高さ (0 = 分からない)。 溜めた分を
+  /// 出す一覧の背を、 端末が潰れない範囲に収めるのに使う。
+  Widget _buildQueueBar(double paneH) {
+    final q = _s.queuedItems;
+    final editingAt = _queueEditAt;
+    final editingNow = editingAt >= 0;
+    // ★ 帯は下の Column の**伸び縮みしない子**なので、 背が高いままだと
+    //   狭いペイン (CLI を 2 段に割った時など) で端末を 0 まで押し潰して
+    //   はみ出す。 与えられた高さの 8 割までに抑え、 入り切らない分は
+    //   一覧を縮めて巻物にする。
+    final double barCap =
+        paneH > 0 ? (paneH * 0.8).clamp(110.0, 340.0).toDouble() : 340.0;
+    final double listCap = math.min(196.0, math.max(44.0, barCap - 116.0));
     return _buildBar(
       icon: Icons.playlist_add_rounded,
       color: _s.queueFull
           ? const Color(0xFFE57373)
           : const Color(0xFFFFB347),
-      // ★ 何件まで入れられるかを常に出す (= ユーザー要望: 5 件まで)。
+      maxHeight: barCap,
+      // ★ 何件まで入れられるかを常に出す (= ユーザー要望: 100 件まで)。
       //   満杯の時は「入らない」 と分かる色と文言にする。
-      note: _s.queueFull
-          ? 'これ以上は溜められません '
-              '(${AgentCliSession.kMaxQueued} 件まで)。 渡し終えるか、 下の × で減らしてください'
-          : '処理が終わって落ち着いたら、 ここに入れた指示を順番に渡します '
-              '(${q.length} 件)',
+      note: editingNow
+          ? '${editingAt + 1} 件目を直しています (Enter で確定 / Esc でやめる)'
+          : _s.queueFull
+              ? 'これ以上は溜められません '
+                  '(${AgentCliSession.kMaxQueued} 件まで)。 渡し終えるか、 下の × で減らしてください'
+              : '処理が終わって落ち着いたら、 ここに入れた指示を順番に渡します '
+                  '(${q.length} / ${AgentCliSession.kMaxQueued} 件)',
       ctrl: _queueCtrl,
       focus: _queueFocus,
-      hint: '次に渡す指示 (Ctrl+Enter で確定 / Enter は改行)',
-      buttonLabel: '追加',
+      hint: editingNow
+          ? '直した内容 (Enter で確定 / Shift+Enter で改行)'
+          : '次に渡す指示 (Enter で確定 / Shift+Enter で改行)',
+      buttonLabel: editingNow ? '直す' : '追加',
       onSubmit: _addQueued,
+      onEscape: editingNow ? _cancelQueueEdit : null,
       onClose: () {
-        setState(() => _queueOpen = false);
+        setState(() {
+          _queueOpen = false;
+          _queueEditId = null;
+          _queueClearArmed = false;
+        });
         _grabInput();
       },
       extra: [
         if (q.isNotEmpty) ...[
           const SizedBox(height: 5),
-          for (var i = 0; i < q.length; i++)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 3),
-              child: Row(children: [
-                Text('${i + 1}.',
-                    style: const TextStyle(
-                        color: Color(0xFFFFB347), fontSize: 10.5)),
-                const SizedBox(width: 5),
-                Expanded(
-                  child: Text(q[i],
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                          color: Colors.white60, fontSize: 10.5)),
+          // ── 溜めた分の並び (掴んで入れ替え / 押して中身を直す) ──
+          //    ★ = ユーザー要望「キューの順番を入れ替えたり、 内容を編集
+          //      できるようにして欲しい」。 100 件まで入るので、 背が高く
+          //      なり過ぎないように巻物にする (帯ごと画面を押し出さない)。
+          Flexible(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxHeight: listCap),
+              child: ReorderableListView.builder(
+                shrinkWrap: true,
+                padding: EdgeInsets.zero,
+                // 既定の掴み手は右端に出て × と重なるので、 自分で左に置く。
+                buildDefaultDragHandles: false,
+                itemCount: q.length,
+                // 位置の直し (抜く前 / 後) は session が持つ。
+                // ★ 直している行は通し番号で持っているので、 並べ替えても
+                //   追い掛ける必要が無い。
+                onReorder: (from, to) =>
+                    setState(() => _s.reorderQueued(from, to)),
+                proxyDecorator: (child, index, anim) => Material(
+                  color: const Color(0xFF23233A),
+                  borderRadius: BorderRadius.circular(6),
+                  child: child,
                 ),
-                InkWell(
-                  onTap: () => setState(() => _s.cancelQueued(i)),
-                  child: const Padding(
-                    padding: EdgeInsets.all(3),
-                    child: Icon(Icons.close_rounded,
-                        size: 12, color: Colors.white38),
-                  ),
-                ),
-              ]),
+                itemBuilder: (_, i) {
+                  final item = q[i];
+                  final mine = i == editingAt;
+                  return Padding(
+                    // ★ 通し番号を鍵にする (位置を鍵にすると、 先頭が渡った
+                    //   時に別の行の見た目を引き継いでしまう)。
+                    key: ValueKey('cliQueue${item.id}'),
+                    padding: const EdgeInsets.only(bottom: 3),
+                    child: Row(children: [
+                      ReorderableDragStartListener(
+                        index: i,
+                        child: const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 2),
+                          child: Icon(Icons.drag_indicator_rounded,
+                              size: 13, color: Colors.white30),
+                        ),
+                      ),
+                      Text('${i + 1}.',
+                          style: const TextStyle(
+                              color: Color(0xFFFFB347), fontSize: 10.5)),
+                      const SizedBox(width: 5),
+                      // 押すと下の入力欄へ移して直せる (= ユーザー要望)。
+                      Expanded(
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(4),
+                          onTap: () => _editQueued(item),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 2),
+                            child: Text(
+                                // 改行は 1 行に見せる (溜めた物は複数行もある)。
+                                item.text.replaceAll('\n', ' ⏎ '),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                    color: mine
+                                        ? const Color(0xFFFFD79A)
+                                        : Colors.white60,
+                                    fontSize: 10.5)),
+                          ),
+                        ),
+                      ),
+                      InkWell(
+                        onTap: () => _editQueued(item),
+                        child: const Padding(
+                          padding: EdgeInsets.all(3),
+                          child: Icon(Icons.edit_outlined,
+                              size: 12, color: Colors.white38),
+                        ),
+                      ),
+                      InkWell(
+                        onTap: () => _removeQueued(item),
+                        child: const Padding(
+                          padding: EdgeInsets.all(3),
+                          child: Icon(Icons.close_rounded,
+                              size: 12, color: Colors.white38),
+                        ),
+                      ),
+                    ]),
+                  );
+                },
+              ),
             ),
+          ),
+          // ── 全部消す (100 件を 1 つずつ消すのは大変なので) ──
+          //    ★ 押し間違いが痛いので、 一度目は「本当に消す?」 に変わる。
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton(
+              style: TextButton.styleFrom(
+                minimumSize: const Size(0, 26),
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                foregroundColor: _queueClearArmed
+                    ? const Color(0xFFE57373)
+                    : Colors.white38,
+              ),
+              onPressed: () {
+                if (!_queueClearArmed) {
+                  setState(() => _queueClearArmed = true);
+                  return;
+                }
+                _s.clearQueued();
+                _queueCtrl.clear();
+                setState(() {
+                  _queueClearArmed = false;
+                  _queueEditId = null;
+                });
+              },
+              child: Text(
+                  _queueClearArmed ? 'もう一度押すと全部消えます' : '全部消す',
+                  style: const TextStyle(fontSize: 10.5)),
+            ),
+          ),
         ],
       ],
     );
@@ -1789,7 +1995,7 @@ class AgentTerminalState extends State<AgentTerminal> {
                 'Waiting for the limit to lift (resumes at {time})')
             .replaceFirst(
                 '{time}', zone == null ? _clock(at) : '${_clock(at)} ($zone)');
-    final q = _s.queued.length;
+    final q = _s.queuedCount;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.fromLTRB(10, 6, 6, 6),
@@ -1988,7 +2194,11 @@ class AgentTerminalState extends State<AgentTerminal> {
     //   「戻ってきた」 を拾える口がどこにも無かった。
     //   Listener は押下の取り合いに参加しないので、 ボタンや
     //   帯を掴む操作を邪魔しない。
-    return Listener(
+    // ★ 与えられた高さを測る (= 順番待ちの帯が、 狭いペインで端末を
+    //   0 まで押し潰さないようにするため)。 決まっていない時は 0。
+    return LayoutBuilder(builder: (lctx, lc) {
+      final double paneH = lc.maxHeight.isFinite ? lc.maxHeight : 0.0;
+      return Listener(
       behavior: HitTestBehavior.translucent,
       onPointerDown: (_) => _returnToTerminal(),
       child: Column(children: [
@@ -2373,7 +2583,7 @@ class AgentTerminalState extends State<AgentTerminal> {
       // ── いまの会話で投げた指示 (= ユーザー要望: 現在の会話履歴) ──
       if (_histOpen && running) _buildHistoryPanel(),
       // ── 順番待ちの欄 (= ユーザー要望: キュー) ──
-      if (_queueOpen && running) _buildQueueBar(),
+      if (_queueOpen && running) _buildQueueBar(paneH),
       // ── 上限が解けるのを待っている時の帯 (= ユーザー要望: 予約の代わり) ──
       if (running && _s.limitWaiting) _buildLimitWaitBar(),
       // ── 下の帯 ──
@@ -2527,14 +2737,14 @@ class AgentTerminalState extends State<AgentTerminal> {
                         _grabInput();
                       },
                     ),
-                  // ── 順番待ち (= ユーザー要望: 5 件まで貯めておける) ──
+                  // ── 順番待ち (= ユーザー要望: 100 件まで貯めておける) ──
                   //    ★ 上限に当たったら、 ここに溜めた分は消さずに
                   //      解けるまで待ってから渡る (上の帯に様子が出る)。
                   if (wantQueue)
                     _panelButton(
-                      label: _s.queued.isEmpty
+                      label: _s.queuedCount == 0
                           ? 'キュー'
-                          : 'キュー ${_s.queued.length}',
+                          : 'キュー ${_s.queuedCount}',
                       icon: Icons.playlist_add_rounded,
                       tip: '処理が終わってから渡す指示を溜めておく '
                           '(${AgentCliSession.kMaxQueued} 件まで)。 '
@@ -2647,6 +2857,7 @@ class AgentTerminalState extends State<AgentTerminal> {
         ]),
       ),
     ]),
-    );
+      );
+    });
   }
 }

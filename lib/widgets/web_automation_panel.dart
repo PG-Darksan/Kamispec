@@ -18,6 +18,8 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+// 撮った動画を既定のプレイヤーで開く (= ユーザー要望: 録画の置き場)。
+import 'package:open_filex/open_filex.dart';
 import 'package:flutter/services.dart'
     show
         Clipboard,
@@ -31,7 +33,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 // アシスタントからの依頼を受ける合図。
-import '../main.dart' show automationRequestFromAssistant;
+import '../main.dart'
+    show
+        automationRequestFromAssistant,
+        automationRunForAssistant,
+        automationCancelRequest,
+        AutomationRunState;
 import '../providers/mind_map_provider.dart';
 // パソコンそのものを操作する (= ユーザー要望: PC 内のアプリを操作)。
 import '../services/agent_cli.dart';
@@ -797,6 +804,9 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
     // AI アシスタントからの依頼を受ける (= ユーザー要望: アシスタントに
     //   chrome を起動させて何かやってと言ったら自律的に動くように)。
     automationRequestFromAssistant.addListener(_onAssistantAutomation);
+    // ★ = 動作検証の機能修正案「自動操作の完了状態を MCP から確認・中止
+    //   できるようにする」。 止め方は画面の「停止」と**同じ道**を使う。
+    automationCancelRequest.addListener(_onAssistantAutomationCancel);
   }
 
   @override
@@ -806,6 +816,7 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
     _releaseGate();
     HardwareKeyboard.instance.removeHandler(_handleStopKey);
     automationRequestFromAssistant.removeListener(_onAssistantAutomation);
+    automationCancelRequest.removeListener(_onAssistantAutomationCancel);
     // 外のブラウザとのつながり (WebSocket) を残さない。
     unawaited(_releaseCdp());
     _schedTimer?.cancel();
@@ -825,6 +836,11 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
     automationRequestFromAssistant.value = null;
     if (_running || _agentBusy || _aiBusy) {
       _log('AI', 'アシスタントからの依頼は、 今の実行が終わるまで受けません');
+      // ★ 断った事を**言う**。 木に書くだけでは、 頸んだ側が「受け付けられた」
+      //   と思って待ち続けてしまう (= 動作検証の機能修正案)。
+      _publishAutomationPhase('refused',
+          error: 'another automation run is still going - nothing was started.',
+          finished: true);
       return;
     }
     final provider = context.read<MindMapProvider>();
@@ -834,8 +850,51 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
     });
     _saveAiDraft(_aiCtrl.text);
     _log('AI', 'アシスタントからの依頼: ${v.trim()}');
+    // この走りはアシスタントからのもの。 終わるまで番号を覚えておく。
+    _assistantRunId = automationRunForAssistant.value?.runId;
+    _publishAutomationPhase('running',
+        startedAtMs: DateTime.now().millisecondsSinceEpoch);
     // ignore: discarded_futures
     _runAgent(provider, v.trim(), keepSteps: _agentKeepSteps);
+  }
+
+  /// 今走っているのがアシスタントからの依頼なら、 その runId。
+  String? _assistantRunId;
+
+  /// 今の样子を [automationRunForAssistant] へ写す。
+  ///
+  /// ★ 書くのは**アシスタントが頸んだ走りの途中だけ**。 利用者が自分で
+  ///   始めた実行まで報告すると、 MCP から見た時に「頸んだ物が動いている」
+  ///   と取り違える。 refused だけは例外 (受けられなかったと伝えるため)。
+  void _publishAutomationPhase(String phase,
+      {String? status, String? error, int? startedAtMs, bool finished = false}) {
+    final cur = automationRunForAssistant.value;
+    if (cur == null) return;
+    if (phase != 'refused' && _assistantRunId != cur.runId) return;
+    automationRunForAssistant.value = cur.copyWith(
+      phase: phase,
+      status: status,
+      steps: _steps.length,
+      startedAtMs: startedAtMs,
+      finishedAtMs:
+          finished ? DateTime.now().millisecondsSinceEpoch : cur.finishedAtMs,
+      error: error,
+    );
+    if (finished) _assistantRunId = null;
+  }
+
+  /// MCP から「この走りを止めて」 と言われた。
+  void _onAssistantAutomationCancel() {
+    final want = automationCancelRequest.value;
+    if (want == null || !mounted) return;
+    automationCancelRequest.value = null;
+    final cur = automationRunForAssistant.value;
+    if (cur == null || cur.runId != want) return;
+    if (!_running && !_agentBusy) return;
+    // 画面の「停止」 と同じ道 (止め方を 2 本にしない)。
+    _requestStop();
+    _stopAgent();
+    _publishAutomationPhase('cancelled', finished: true);
   }
 
   Future<void> _load() async {
@@ -2739,6 +2798,8 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
       // ★ 終わったので元に戻す (ブラウザを隠す判断は受け側が持つ)。
       //   出していない時は戻す必要も無い。
       if (showBrowser) widget.onRunningChanged?.call(false, _requestStop);
+      // ★ setState が _agentStop を false に戻す前に、 止められたかを覚える。
+      final wasStopped = _agentStop || _cancel;
       if (mounted) {
         setState(() {
           _agentBusy = false;
@@ -2751,6 +2812,15 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
           }
         });
       }
+      // ★ 終わった事を必ず知らせる (= 動作検証の機能修正案: 呼んだ側が
+      //   「成功したのか失敗したのか」 を判定できなかった)。 止められた時は
+      //   cancelled。 手順が 1 つも組めなかった時は failed。
+      _publishAutomationPhase(
+        wasStopped ? 'cancelled' : (_steps.isEmpty ? 'failed' : 'done'),
+        status: _status,
+        error: _steps.isEmpty && !wasStopped ? _status : null,
+        finished: true,
+      );
     }
   }
 
@@ -3018,15 +3088,229 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
     }
   }
 
+  /// 撮れた動画を「自動操作の録画」 の置き場へ移す。 戻り値は移した後の道筋
+  /// (移せなかった時は元の道筋)。
+  ///
+  /// ★ 名前は撮った日時にする (`auto_20260926_0245.mp4`)。 元の
+  ///   `screen_<エポックミリ秒>.mp4` では、 どれがどの実行の物か分からない。
+  Future<String> _keepRecording(String path) async {
+    // ★ 利用者が録画の保存先を自分で選んでいる時は動かさない (選んだ所に
+    //   出来るのが筋。 置き場の欄もそちらを見る)。
+    if ((ScreenRecorder.customDir ?? '').trim().isNotEmpty) return path;
+    try {
+      final src = File(path);
+      if (!await src.exists()) return path;
+      final dir = await automationVideosDir();
+      final n = DateTime.now();
+      String two(int v) => v.toString().padLeft(2, '0');
+      final stem = 'auto_${n.year}${two(n.month)}${two(n.day)}'
+          '_${two(n.hour)}${two(n.minute)}${two(n.second)}';
+      var dest = File('${dir.path}${Platform.pathSeparator}$stem.mp4');
+      var i = 2;
+      while (await dest.exists()) {
+        dest = File('${dir.path}${Platform.pathSeparator}${stem}_$i.mp4');
+        i++;
+      }
+      try {
+        await src.rename(dest.path);
+      } catch (_) {
+        // 別のドライブだと rename は通らない。 写してから消す。
+        await src.copy(dest.path);
+        try {
+          await src.delete();
+        } catch (_) {}
+      }
+      return dest.path;
+    } catch (e) {
+      _log('録画', '置き場へ移せませんでした: $e');
+      return path;
+    }
+  }
+
+  /// 置き場にある録画 (新しい順)。
+  List<File> _videoFilesIn(Directory dir) {
+    try {
+      final list = dir
+          .listSync()
+          .whereType<File>()
+          .where((f) => f.path.toLowerCase().endsWith('.mp4'))
+          .toList();
+      list.sort((a, b) {
+        try {
+          return b.statSync().modified.compareTo(a.statSync().modified);
+        } catch (_) {
+          return 0;
+        }
+      });
+      return list;
+    } catch (_) {
+      return const <File>[];
+    }
+  }
+
+  /// 撮った動画の一覧 (= ユーザー要望: 「保存して置く場所がない」)。
+  ///
+  /// スクショの管理画面と同じ考え方で、 置き場を見せて / 開いて / 消せる
+  /// ようにするだけの軽い欄。
+  Future<void> _showAutoVideos(MindMapProvider provider) async {
+    if (_modalOpen) return;
+    _modalOpen = true;
+    try {
+      // 保存先を自分で選んでいる人はそちらを見せる (= 録画バーの設定)。
+      final chosen = (ScreenRecorder.customDir ?? '').trim();
+      final dir =
+          chosen.isNotEmpty ? Directory(chosen) : await automationVideosDir();
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        useRootNavigator: false,
+        builder: (dctx) => StatefulBuilder(
+          builder: (dctx, setLocal) {
+            final files = _videoFilesIn(dir);
+            return Dialog(
+              backgroundColor: const Color(0xFF1E1E32),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
+              child: SizedBox(
+                width: 560,
+                height: 460,
+                child: Column(children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(14, 12, 6, 6),
+                    child: Row(children: [
+                      const Icon(Icons.movie_rounded,
+                          size: 18, color: Color(0xFF80CBC4)),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(provider.t('auto.videos'),
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 14,
+                                fontWeight: FontWeight.w700)),
+                      ),
+                      IconButton(
+                        tooltip: provider.t('shots.openFolder'),
+                        icon: const Icon(Icons.folder_open_rounded,
+                            size: 18, color: Colors.white70),
+                        onPressed: () => unawaited(OpenFilex.open(dir.path)),
+                      ),
+                      IconButton(
+                        tooltip: provider.t('btn.close'),
+                        icon: const Icon(Icons.close_rounded,
+                            size: 18, color: Colors.white70),
+                        onPressed: () => Navigator.of(dctx).pop(),
+                      ),
+                    ]),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: SelectableText(dir.path,
+                          maxLines: 2,
+                          style: const TextStyle(
+                              color: Colors.white38, fontSize: 10.5)),
+                    ),
+                  ),
+                  const Divider(height: 1, color: Colors.white12),
+                  Expanded(
+                    child: files.isEmpty
+                        ? Center(
+                            child: Padding(
+                              padding: const EdgeInsets.all(24),
+                              child: Text(provider.t('auto.videosEmpty'),
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(
+                                      color: Colors.white38,
+                                      fontSize: 12,
+                                      height: 1.6)),
+                            ),
+                          )
+                        : ListView.builder(
+                            padding: const EdgeInsets.symmetric(vertical: 6),
+                            itemCount: files.length,
+                            itemBuilder: (_, i) {
+                              final f = files[i];
+                              final name = f.path.split(RegExp(r'[\\/]')).last;
+                              var sub = '';
+                              try {
+                                final st = f.statSync();
+                                final mb = st.size / (1024 * 1024);
+                                sub = '${mb.toStringAsFixed(1)} MB'
+                                    ' ・ ${st.modified.toString().split('.').first}';
+                              } catch (_) {}
+                              return ListTile(
+                                dense: true,
+                                leading: const Icon(Icons.play_circle_outline,
+                                    size: 20, color: Color(0xFF80CBC4)),
+                                title: Text(name,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                        color: Colors.white, fontSize: 12.5)),
+                                subtitle: sub.isEmpty
+                                    ? null
+                                    : Text(sub,
+                                        style: const TextStyle(
+                                            color: Colors.white38,
+                                            fontSize: 10.5)),
+                                onTap: () => unawaited(OpenFilex.open(f.path)),
+                                trailing: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      IconButton(
+                                        tooltip: provider.t('auto.videoPlay'),
+                                        icon: const Icon(
+                                            Icons.open_in_new_rounded,
+                                            size: 16,
+                                            color: Colors.white54),
+                                        onPressed: () =>
+                                            unawaited(OpenFilex.open(f.path)),
+                                      ),
+                                      IconButton(
+                                        tooltip: provider.t('common.delete'),
+                                        icon: const Icon(
+                                            Icons.delete_outline_rounded,
+                                            size: 16,
+                                            color: Color(0xFFFF8A80)),
+                                        onPressed: () {
+                                          try {
+                                            f.deleteSync();
+                                          } catch (_) {}
+                                          setLocal(() {});
+                                        },
+                                      ),
+                                    ]),
+                              );
+                            },
+                          ),
+                  ),
+                ]),
+              ),
+            );
+          },
+        ),
+      );
+    } finally {
+      _modalOpen = false;
+    }
+  }
+
   Future<void> _stopRunRecording() async {
     if (!_recStarted) return;
     _recStarted = false;
     try {
       final path = await ScreenRecorder.instance.stop();
       if (path.isNotEmpty) {
-        _madeFiles.add(File(path));
+        // ★ = ユーザー要望「自動操作で撮った動画を保存して置く場所が
+        //   ないのじゃない?」。 録画はアプリ専用フォルダー (英数字だけの
+        //   隠れた場所) に出来るので、 スクショと同じ並びの
+        //   `automation_videos` へ移しておく。 移せなかった時は元の場所の
+        //   ままにして、 実行そのものは止めない。
+        final moved = await _keepRecording(path);
+        _madeFiles.add(File(moved));
         if (mounted) {
-          _noteData(context.read<MindMapProvider>(), '録画', path);
+          _noteData(context.read<MindMapProvider>(), '録画', moved);
         }
       }
     } catch (e) {
@@ -3071,7 +3355,11 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
       _status = context.read<MindMapProvider>().t('auto.bpHit');
     });
     _log('停止', '$label の手前で止まりました');
+    // ★ 利用者の手待ちだと知らせる (= 動作検証の機能修正案「確認待ちを
+    //   判定できない」)。 待ちが解けたら running へ戻す。
+    _publishAutomationPhase('awaitingUser', status: _status);
     await g.future;
+    if (!_cancel) _publishAutomationPhase('running');
     return !_cancel;
   }
 
@@ -3579,6 +3867,9 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
     if (!mounted) return false;
     final provider = context.read<MindMapProvider>();
     if (mounted) setState(() => _status = question);
+    // ★ ここは利用者が答えるまで進まない。 MCP からは running と見分けが
+    //   付かないので、 awaitingUser として知らせる。
+    _publishAutomationPhase('awaitingUser', status: question);
     final ok = await showDialog<bool>(
       context: context,
       // 浮かぶ窓の中から出しても下に潜らないように。
@@ -7783,10 +8074,15 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
                     label: Text(provider.t('auto.agentStop'),
                         style: const TextStyle(
                             fontSize: 11, fontWeight: FontWeight.w700)),
-                    onPressed: () => setState(() {
-                      _agentStop = true;
-                      _cancel = true;
-                    }),
+                    onPressed: () {
+                      setState(() {
+                        _agentStop = true;
+                        _cancel = true;
+                      });
+                      // ★ 手で止めた時も MCP へ伝える (= 動作検証の機能修正案。
+                      //   伝えないと get_automation_status が running のままになる)。
+                      _publishAutomationPhase('cancelled', finished: true);
+                    },
                   ),
                 ),
               // ★ ヘッダーの AI ボタンは置かない (= ユーザー要望: 欄の
@@ -7814,6 +8110,17 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
                       _modalOpen = false;
                     }
                   },
+                ),
+              // 撮った動画の置き場 (= ユーザー要望: 「自動操作で撮った動画を
+              // 保存して置く場所がないのじゃない?」)。 録画できる所でだけ
+              // 出す。
+              if (!_running && _canRecordRun)
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  tooltip: provider.t('auto.videos'),
+                  icon: const Icon(Icons.movie_rounded,
+                      size: 17, color: Color(0xFF80CBC4)),
+                  onPressed: () => unawaited(_showAutoVideos(provider)),
                 ),
               // 新しいフローを作る (= ユーザー要望: 作り直したい時に、 今の
               // 手順を消して白紙から始められるように)。 手順が残っている時は

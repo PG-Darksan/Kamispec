@@ -47,6 +47,10 @@ import '../services/os_quick_toggles.dart';
 // ★ 「他のアプリの窓」 の行に出す、 窓の中身の小さな絵とアプリのアイコン
 //   (= ユーザー要望: 何の画面か分かりにくいのでプレビューを出す)。
 import '../services/window_preview.dart';
+import '../services/page_extract_js.dart';
+// 再生速度の錠前 (= 広告にも倍率を乗せる。 押し合いを起こさない形)。
+import '../services/video_rate_js.dart';
+import '../services/pc_bluetooth.dart';
 import '../services/pc_settings.dart';
 // ホイールの行数をその場で効かせる (= ユーザー要望)。
 import '../services/wheel_scroll_scale.dart';
@@ -71,6 +75,7 @@ import '../widgets/calc_body.dart';
 import '../widgets/anchor_below_layout.dart';
 import '../widgets/agent_terminal.dart';
 import '../widgets/connection_painter.dart';
+import '../widgets/book_search_sheet.dart';
 import '../widgets/node_widget.dart';
 import '../widgets/google_search_dialog.dart';
 import '../widgets/git_history_dialog.dart';
@@ -266,6 +271,7 @@ import '../main.dart'
         // AI アシスタントからの「自動操作をこの指示で動かして」
         // (= ユーザー要望: アシスタントから PC を操作)。
         automationRequestFromAssistant,
+        automationRunForAssistant,
         // デスクトップのショートカットからの「このボタンを実行して」
         // (= ユーザー要望: ボタンを一発で呼び出すショートカット)。
         commandRequestFromShortcut,
@@ -6377,6 +6383,12 @@ class _MindMapScreenState extends State<MindMapScreen>
       if (!mounted) return;
       await _showQuickPageSwitcher(context.read<MindMapProvider>());
     };
+    // ボタンから押した時は、 その近くに「ページ一覧 / ページを追加」 を出す
+    // (= ユーザー要望)。
+    openPageMenuFromAnywhere = (anchor) async {
+      if (!mounted) return;
+      await _showPageSwitchMenu(anchor, context.read<MindMapProvider>());
+    };
     // 差し替えた割り当て / 個別の on-off を尊重したいので、 組み合わせの
     // 解決は本体に任せる。
     commandIdForKeyEventFromAnywhere =
@@ -8881,6 +8893,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     openAssistantFromFloating = null;
     openUrlInAppFromAnywhere = null;
     openPageListFromAnywhere = null;
+    openPageMenuFromAnywhere = null;
     openSettingsFromAnywhere = null;
     setAppChromeHiddenFromAnywhere = null;
     _zenRevealPinTimer?.cancel();
@@ -12596,6 +12609,13 @@ class _MindMapScreenState extends State<MindMapScreen>
         //    再生速度に対応している。 ──
         if (commandId == 'openYoutube') {
           _openYoutubeBrowser(context, provider, forceHome: true);
+          break;
+        }
+        // ── Kindle は書籍検索を先に出す (= ユーザー要望) ──
+        //    ★ ここを特別扱いしないと、 開き方を一度でも選んだ人だけ
+        //      書籍検索に入れないままになる (_openKindle を通らない)。
+        if (commandId == 'openKindle') {
+          _openKindle(context, provider);
           break;
         }
         _openGoogleSearchDialog(context, provider,
@@ -29479,10 +29499,98 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   // ─── PC版：キャンバス右クリックメニュー ─────────────────────────────────
 
+  /// 「ページ切り替え」 のボタンを押した時に、 **押した所の近く**へ出す
+  /// 小さな一覧 (= ユーザー要望「ページ切り替えを押した際に新規ページの
+  /// 作成ボタンがない… ページ切り替えボタン付近にページ一覧と新規ページ作成の
+  /// 小項目が出てくるようにして欲しい」)。
+  ///
+  /// ★ 以前はいきなりページの一覧 (左から出るサイドメニュー) が開いて
+  ///   いたので、 そこから**新しいページを作る道が無かった**。 ここで
+  ///   「一覧」 と「作る」 の 2 つを選ばせる。
+  /// ★ キーボードの割り当て (ページ一覧を開く) と右クリックの項目は、
+  ///   今までどおり一覧を直に開く (既に選んだ後なので、 もう一段は挟まない)。
+  Future<void> _showPageSwitchMenu(
+      BuildContext anchorCtx, MindMapProvider provider) async {
+    if (!mounted) return;
+    RelativeRect pos = const RelativeRect.fromLTRB(80, 80, 0, 0);
+    final overlayCtx = Overlay.maybeOf(anchorCtx)?.context;
+    final overlay = overlayCtx?.findRenderObject();
+    final ro = anchorCtx.findRenderObject();
+    if (overlay is RenderBox && ro is RenderBox && ro.attached) {
+      final tl = ro.localToGlobal(Offset.zero, ancestor: overlay);
+      final br =
+          ro.localToGlobal(ro.size.bottomRight(Offset.zero), ancestor: overlay);
+      pos = RelativeRect.fromRect(
+          Rect.fromPoints(tl, br), Offset.zero & overlay.size);
+    }
+    Widget row(IconData icon, String label, Color color) =>
+        Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(icon, size: 15, color: color),
+          const SizedBox(width: 9),
+          Text(label,
+              style: const TextStyle(color: Colors.white, fontSize: 12.5)),
+        ]);
+    final picked = await showMenu<String>(
+      context: anchorCtx,
+      position: pos,
+      color: const Color(0xFF1E1E32),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(10),
+        side: BorderSide(color: Colors.white.withValues(alpha: 0.12)),
+      ),
+      items: <PopupMenuEntry<String>>[
+        PopupMenuItem<String>(
+          value: 'list',
+          height: 38,
+          child: row(Icons.menu_book_rounded, provider.t('cmd.openDrawer'),
+              const Color(0xFFBA68C8)),
+        ),
+        PopupMenuItem<String>(
+          value: 'new',
+          height: 38,
+          child: row(Icons.note_add_outlined, provider.t('menu.addPage'),
+              const Color(0xFF6C63FF)),
+        ),
+      ],
+    );
+    if (picked == null || !mounted) return;
+    if (picked == 'list') {
+      await _showQuickPageSwitcher(provider);
+      return;
+    }
+    _showDrawerAddMenu(
+        context, provider, anchorCtx.mounted ? anchorCtx : null);
+  }
+
+  /// 右クリックの 1 行の**真下**の位置 (画面全体での座標)。
+  ///
+  /// ★ = ユーザー要望「そのボタンの下に項目が出るようにして欲しい」。
+  ///   メニューを消してしまうと測れなくなるので、 消す**前**に呼ぶ事。
+  ///   測れなかった時は最後に押した所で代用する。
+  Offset _menuRowAnchor(GlobalKey key) {
+    final ro = key.currentContext?.findRenderObject();
+    if (ro is RenderBox && ro.attached && ro.hasSize) {
+      final tl = ro.localToGlobal(Offset.zero);
+      return Offset(tl.dx + ro.size.width / 2, tl.dy + ro.size.height);
+    }
+    return _lastGlobalPointerPos ?? const Offset(120, 120);
+  }
+
   /// ページを手早く切り替える (= ユーザー要望: 右クリックの一番上から)。
-  /// 押した所の近くに出し、 選ぶとそのページへ移る。
-  Future<void> _showQuickPageSwitcher(MindMapProvider provider) async {
+  ///
+  /// [nearAnchor] を渡すと、 左端から出るサイドメニューではなく**その位置の
+  /// 真下**に小さな一覧として出す (= ユーザー要望「右クリックでページ切り替えを
+  /// 押したら、 そのボタンの下に項目が出るようにして欲しい」)。 渡さない時
+  /// (キーボードの割り当て / 重ねて開いたファイルの中から) は今までどおり
+  /// サイドメニュー。
+  Future<void> _showQuickPageSwitcher(MindMapProvider provider,
+      {Offset? nearAnchor}) async {
     final ctrl = TextEditingController();
+    if (nearAnchor != null) {
+      await _showPageSwitcherNear(provider, ctrl, nearAnchor);
+      ctrl.dispose();
+      return;
+    }
     // ★ = ユーザー要望「マークダウンページ等のページ切り替えは、 ページ一覧が
     //   サイドメニューで出てくる形にして欲しい」。 以前は押した所の近くに出る
     //   小さな窓だったが、 本体の引き出しと同じく画面の左端から出る縦長の
@@ -29512,132 +29620,8 @@ class _MindMapScreenState extends State<MindMapScreen>
               color: const Color(0xFF1E1E32),
               elevation: 12,
               child: SafeArea(
-                child: StatefulBuilder(builder: (dctx, setD) {
-                  final q = ctrl.text.trim().toLowerCase();
-                  // ★ 候補は「いま開いているフォルダーの中」 だけ
-                  //   (= ユーザー要望)。 Ctrl+1〜9 も一覧 (ドロワー) も既に
-                  //   そうなっているので、 ここだけ全ページを並べていると
-                  //   基準がちぐはぐになる。 フォルダーを開いていない時は、
-                  //   いま見ているページと同じフォルダー → 一覧の直下、 の順
-                  //   (= 新規ページの行き先と同じ)。
-                  // ★ ただし**探している時は全ページから**。 そうしないと、
-                  //   別のフォルダーのページへここから移る手立てが無くなる。
-                  final fid = _targetFolderForNewPage(provider);
-                  final scope = q.isEmpty
-                      ? provider
-                          .pagesInFolder(fid)
-                          .where((p) => !provider.isPageHidden(p.id))
-                      : provider.pages.where((p) =>
-                          p.name.toLowerCase().contains(q) &&
-                          !provider.isPageHidden(p.id));
-                  final pages = [
-                    // ★ index は `provider.pages` の中での位置でなければ
-                    //   ならない (switchPage がそれを受け取るため)。 絞った
-                    //   並びの位置を渡すと、 まったく別のページへ飛ぶ。
-                    for (final p in scope)
-                      if (provider.pages.indexWhere((x) => x.id == p.id) >= 0)
-                        (i: provider.pages.indexWhere((x) => x.id == p.id),
-                            p: p),
-                  ];
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      // ── 見出し (= どのサイドメニューかが分かるように) ──
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(14, 12, 6, 6),
-                        child: Row(children: [
-                          const Icon(Icons.menu_book_rounded,
-                              size: 18, color: Color(0xFFBA68C8)),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(provider.t('ctx.switchPage'),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w700)),
-                          ),
-                          IconButton(
-                            tooltip: provider.t('btn.close'),
-                            icon: const Icon(Icons.close_rounded,
-                                size: 18, color: Colors.white54),
-                            onPressed: () => Navigator.pop(dctx),
-                          ),
-                        ]),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 12),
-                        child: TextField(
-                          controller: ctrl,
-                          autofocus: true,
-                          style: const TextStyle(
-                              color: Colors.white, fontSize: 13),
-                          decoration: InputDecoration(
-                            isDense: true,
-                            prefixIcon: const Icon(Icons.search_rounded,
-                                size: 18, color: Colors.white38),
-                            hintText: provider.t('ctx.switchPageHint'),
-                            hintStyle: const TextStyle(color: Colors.white24),
-                          ),
-                          onChanged: (_) => setD(() {}),
-                        ),
-                      ),
-                      // どこの中から選んでいるのかを出す (= 探すと全ページに
-                      //   広がるので、 今どちらなのかが分かるように)。
-                      if (q.isEmpty && fid != null)
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(14, 6, 12, 0),
-                          child: Row(children: [
-                            const Icon(Icons.folder_rounded,
-                                size: 13, color: Color(0xFF9CCC65)),
-                            const SizedBox(width: 5),
-                            Expanded(
-                              child: Text(
-                                provider.folders
-                                        .where((f) => f.id == fid)
-                                        .map((f) => f.name)
-                                        .firstOrNull ??
-                                    '',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                    color: Color(0xFF9CCC65), fontSize: 11),
-                              ),
-                            ),
-                          ]),
-                        ),
-                      const SizedBox(height: 6),
-                      Expanded(
-                        child: ListView(
-                          padding: const EdgeInsets.only(bottom: 12),
-                          children: [
-                            for (final e in pages)
-                              ListTile(
-                                dense: true,
-                                selected: e.p.id == provider.currentPage.id,
-                                selectedTileColor: Colors.white10,
-                                leading: Icon(_pageTypeIcon(e.p.pageType),
-                                    size: 18,
-                                    color: e.p.id == provider.currentPage.id
-                                        ? const Color(0xFFBA68C8)
-                                        : Colors.white54),
-                                title: Text(e.p.name,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                        color: Colors.white, fontSize: 13)),
-                                onTap: () {
-                                  Navigator.pop(dctx);
-                                  provider.switchPage(e.i);
-                                },
-                              ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  );
-                }),
+                child: _buildPageSwitcherBody(provider, ctrl,
+                    bounded: false),
               ),
             ),
           ),
@@ -29645,6 +29629,219 @@ class _MindMapScreenState extends State<MindMapScreen>
       },
     );
     ctrl.dispose();
+  }
+
+  /// 「ページ切り替え」 の中身 (見出し / 探す欄 / ページの一覧)。
+  ///
+  /// ★ 出し方が 2 通りある (左端から出る縦長のサイドメニューと、 押した所の
+  ///   真下に出る小さな一覧) ので、 中身だけここに切り出して**双子を作らない**
+  ///   ようにしてある。
+  /// [bounded] … 高さが中身次第の入れ物 (= 押した所の下に出す小さな一覧) か。
+  ///   true なら一覧は中身の分だけ縮み、 入り切らない分だけ巻物になる。
+  Widget _buildPageSwitcherBody(
+      MindMapProvider provider, TextEditingController ctrl,
+      {required bool bounded}) {
+    return StatefulBuilder(builder: (dctx, setD) {
+      final q = ctrl.text.trim().toLowerCase();
+      // ★ 候補は「いま開いているフォルダーの中」 だけ
+      //   (= ユーザー要望)。 Ctrl+1〜9 も一覧 (ドロワー) も既に
+      //   そうなっているので、 ここだけ全ページを並べていると
+      //   基準がちぐはぐになる。 フォルダーを開いていない時は、
+      //   いま見ているページと同じフォルダー → 一覧の直下、 の順
+      //   (= 新規ページの行き先と同じ)。
+      // ★ ただし**探している時は全ページから**。 そうしないと、
+      //   別のフォルダーのページへここから移る手立てが無くなる。
+      final fid = _targetFolderForNewPage(provider);
+      final scope = q.isEmpty
+          ? provider
+              .pagesInFolder(fid)
+              .where((p) => !provider.isPageHidden(p.id))
+          : provider.pages.where((p) =>
+              p.name.toLowerCase().contains(q) &&
+              !provider.isPageHidden(p.id));
+      final pages = [
+        // ★ index は `provider.pages` の中での位置でなければ
+        //   ならない (switchPage がそれを受け取るため)。 絞った
+        //   並びの位置を渡すと、 まったく別のページへ飛ぶ。
+        for (final p in scope)
+          if (provider.pages.indexWhere((x) => x.id == p.id) >= 0)
+            (i: provider.pages.indexWhere((x) => x.id == p.id),
+                p: p),
+      ];
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: bounded ? MainAxisSize.min : MainAxisSize.max,
+        children: [
+          // ── 見出し (= どのサイドメニューかが分かるように) ──
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 12, 6, 6),
+            child: Row(children: [
+              const Icon(Icons.menu_book_rounded,
+                  size: 18, color: Color(0xFFBA68C8)),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(provider.t('ctx.switchPage'),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700)),
+              ),
+              // ── 新しいページを作る (= ユーザー要望:
+              //    「新規ページの作成ボタンがない」) ──
+              //    一覧を閉じてから、 押した所の近くに
+              //    「どの種類で作るか」 の一覧を出す。
+              Builder(
+                builder: (bctx) => IconButton(
+                  tooltip: provider.t('menu.addPage'),
+                  icon: const Icon(Icons.note_add_outlined,
+                      size: 18, color: Color(0xFF9CCC65)),
+                  onPressed: () {
+                    Offset? at;
+                    final ro = bctx.findRenderObject();
+                    if (ro is RenderBox && ro.attached) {
+                      at = ro.localToGlobal(
+                          ro.size.bottomLeft(Offset.zero));
+                    }
+                    Navigator.pop(dctx);
+                    if (!mounted) return;
+                    _showDrawerAddMenu(
+                        context, provider, null, at);
+                  },
+                ),
+              ),
+              IconButton(
+                tooltip: provider.t('btn.close'),
+                icon: const Icon(Icons.close_rounded,
+                    size: 18, color: Colors.white54),
+                onPressed: () => Navigator.pop(dctx),
+              ),
+            ]),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: TextField(
+              controller: ctrl,
+              autofocus: true,
+              style: const TextStyle(
+                  color: Colors.white, fontSize: 13),
+              decoration: InputDecoration(
+                isDense: true,
+                prefixIcon: const Icon(Icons.search_rounded,
+                    size: 18, color: Colors.white38),
+                hintText: provider.t('ctx.switchPageHint'),
+                hintStyle: const TextStyle(color: Colors.white24),
+              ),
+              onChanged: (_) => setD(() {}),
+            ),
+          ),
+          // どこの中から選んでいるのかを出す (= 探すと全ページに
+          //   広がるので、 今どちらなのかが分かるように)。
+          if (q.isEmpty && fid != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 6, 12, 0),
+              child: Row(children: [
+                const Icon(Icons.folder_rounded,
+                    size: 13, color: Color(0xFF9CCC65)),
+                const SizedBox(width: 5),
+                Expanded(
+                  child: Text(
+                    provider.folders
+                            .where((f) => f.id == fid)
+                            .map((f) => f.name)
+                            .firstOrNull ??
+                        '',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: Color(0xFF9CCC65), fontSize: 11),
+                  ),
+                ),
+              ]),
+            ),
+          const SizedBox(height: 6),
+          Flexible(
+            child: ListView(
+              // ★ 押した所の下に出す時は中身の分だけ縮める
+              //   (入り切らない分は巻物になる)。
+              shrinkWrap: bounded,
+              padding: const EdgeInsets.only(bottom: 12),
+              children: [
+                for (final e in pages)
+                  ListTile(
+                    dense: true,
+                    selected: e.p.id == provider.currentPage.id,
+                    selectedTileColor: Colors.white10,
+                    leading: Icon(_pageTypeIcon(e.p.pageType),
+                        size: 18,
+                        color: e.p.id == provider.currentPage.id
+                            ? const Color(0xFFBA68C8)
+                            : Colors.white54),
+                    title: Text(e.p.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            color: Colors.white, fontSize: 13)),
+                    onTap: () {
+                      Navigator.pop(dctx);
+                      provider.switchPage(e.i);
+                    },
+                  ),
+              ],
+            ),
+          ),
+        ],
+      );
+    });
+  }
+
+  /// 押した所の**真下**に出す小さなページ一覧。
+  ///
+  /// ★ = ユーザー要望「右クリックでページ切り替えを押したら、 そのボタンの下に
+  ///   項目が出るようにして欲しい」。 左端から出るサイドメニュー (キーボードの
+  ///   割り当てや、 重ねて開いたファイルから開く時) はそのまま残してある。
+  /// ★ 位置決めは既にある [AnchorBelowLayout] に任せる (下に入らなければ上へ
+  ///   回り、 画面の縁からはみ出さない)。 [anchor] は画面全体での座標。
+  Future<void> _showPageSwitcherNear(MindMapProvider provider,
+      TextEditingController ctrl, Offset anchor) async {
+    await showDialog<void>(
+      context: context,
+      barrierColor: Colors.black.withValues(alpha: 0.28),
+      // ★ SafeArea で包まれると Stack の原点が画面の左上からずれ、 渡した
+      //   画面座標の分だけ下に出てしまう (Android の時計の帯の高さ)。
+      useSafeArea: false,
+      builder: (dctx) {
+        final screen = MediaQuery.sizeOf(dctx);
+        final w = math.min(320.0, math.max(220.0, screen.width - 32));
+        final h = math.min(430.0, math.max(200.0, screen.height * 0.6));
+        // ★ 探す欄が焦点を取るので、 携帯では鍵盤が上がってくる。 鍵盤の
+        //   高さを除けておかないと、 位置を決める側は画面が丸ごと空いている
+        //   と思い込み、 鍵盤の裏に出てしまう。
+        final kb = MediaQuery.viewInsetsOf(dctx).bottom;
+        return Stack(children: [
+          Positioned.fill(
+            child: Padding(
+              padding: EdgeInsets.only(bottom: kb),
+              child: CustomSingleChildLayout(
+              delegate: AnchorBelowLayout(anchor, gap: 4),
+              child: ConstrainedBox(
+                constraints: BoxConstraints(maxWidth: w, maxHeight: h),
+                child: Material(
+                  color: const Color(0xFF1E1E32),
+                  elevation: 14,
+                  borderRadius: BorderRadius.circular(12),
+                  clipBehavior: Clip.antiAlias,
+                  child: _buildPageSwitcherBody(provider, ctrl,
+                      bounded: true),
+                ),
+              ),
+            ),
+            ),
+          ),
+        ]);
+      },
+    );
   }
 
   // ─── フォルダーの中のファイルを横断して探す (= ユーザー要望: ページを
@@ -29929,6 +30126,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     final sw = mq.size.width;
     final sh = mq.size.height;
     const double menuW = 210.0;
+    // ★ ページ一覧は「ページ切り替え」 の行の真下に出す (= ユーザー要望)。
+    //   その行の位置を測るための鍵。
+    final GlobalKey switchPageItemKey = GlobalKey();
     // マークダウンページでは「ヘッダーの表示 / 非表示」 も出す
     // (= ユーザー要望: ヘッダーのボタンを廃止した代わりの入口)。
     final bool mdHeaderItem =
@@ -29979,12 +30179,17 @@ class _MindMapScreenState extends State<MindMapScreen>
               ),
               child: Column(mainAxisSize: MainAxisSize.min, children: [
                 _CtxMenuItem(
+                  key: switchPageItemKey,
                   icon: Icons.swap_horiz_rounded,
                   label: provider.t('ctx.switchPage'),
                   color: const Color(0xFFBA68C8),
                   onTap: () {
+                    // ★ 押した行の真下に一覧を出す (= ユーザー要望)。
+                    //   先に測ってからメニューを消す。
+                    final at = _menuRowAnchor(switchPageItemKey);
                     _removeOverlay();
-                    unawaited(_showQuickPageSwitcher(provider));
+                    unawaited(
+                        _showQuickPageSwitcher(provider, nearAnchor: at));
                   },
                 ),
                 if (mdViewItem)
@@ -30117,6 +30322,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     final isGalleryPage = provider.currentPage.pageType == 'bookshelf';
     // 割り方を「右に」 出すため、 項目そのものの位置を測る鍵 (= ユーザー要望)。
     final GlobalKey splitItemKey = GlobalKey();
+    // ★ = ユーザー要望「右クリックでページ切り替えを押したら、 そのボタンの下に
+    //   項目が出るようにして欲しい」。 行そのものの位置を測るための鍵。
+    final GlobalKey switchPageItemKey = GlobalKey();
     // ★ 画面分割は 2 系統ある。 マップを並べるセル分割 (_mapSplitOpen) と、
     //   Web / AI / ファイルを横 (モバイルは下) に出すパネル分割
     //   (_splitOpen / _splitLeftOpen)。 どちらが開いていても「分割している」
@@ -30165,13 +30373,17 @@ class _MindMapScreenState extends State<MindMapScreen>
         ),
       // ── ページ切り替え (左上を押しに行かずにここから移れる) ──
       _CtxMenuItem(
+        key: switchPageItemKey,
         menuId: 'switchPage',
         icon: Icons.swap_horiz_rounded,
         label: provider.t('ctx.switchPage'),
         color: const Color(0xFFBA68C8),
         onTap: () {
+          // ★ 一覧は**押した行の真下**に出す (= ユーザー要望)。 メニューを
+          //   消すと行の位置が測れなくなるので、 先に測ってから消す。
+          final at = _menuRowAnchor(switchPageItemKey);
           _removeOverlay();
-          unawaited(_showQuickPageSwitcher(provider));
+          unawaited(_showQuickPageSwitcher(provider, nearAnchor: at));
         },
       ),
       // ── このページを削除 (= ユーザー要望: 右クリックやタップ長押しに
@@ -35939,6 +36151,21 @@ class _MindMapScreenState extends State<MindMapScreen>
           _showSendNodeToPageDialog(nodeId);
         },
       ),
+      // ── このファイルを別の場所に保存 (= ユーザー要望「マークダウンなどの
+      //    ファイル要素を単体で選択して、 その他の所にダウンロードする項目を
+      //    追加して欲しい」)。 ファイルを抱えている要素の時だけ出す。
+      //    まとめて落とす道 (キャンバスの右クリックの一括ダウンロード) は
+      //    そのまま残してあり、 こちらは**押した 1 件だけ**を相手にする。 ──
+      if (_nodeHasSavableFile(node))
+        _CtxMenuItem(
+          icon: Icons.save_alt_rounded,
+          label: provider.t('ctx.saveFileAs'),
+          color: const Color(0xFF43B97F),
+          onTap: () {
+            _removeOverlay();
+            unawaited(_saveNodeFileAs(context, provider, nodeId));
+          },
+        ),
       // ── 動画 URL を共有 (= ユーザー要望: web から参照している動画の URL を
       //    共有できるように)。 ローカルファイル動画ではなく http(s) の web 動画
       //    (YouTube 等) の時だけ表示。 クリップボードへコピーして他アプリへ
@@ -39289,6 +39516,14 @@ class _MindMapScreenState extends State<MindMapScreen>
     final result = await _promptCreateFileTypeName(context, provider);
     if (result == null || !mounted) return;
     final page = provider.currentPage;
+    // ★ 棚がいっぱいの時は黙って何もしないのではなく理由を出す
+    //   (= 点検で判明: 1000 枚で打ち止めになると、 名前を決めた後に何も
+    //   起きなかった)。
+    if (page.pageType == 'bookshelf' &&
+        !provider.canPlaceShelfItems(1, page)) {
+      _showGalleryPlaceLimitSnack(provider);
+      return;
+    }
     final String? id = page.pageType == 'bookshelf'
         ? provider.mcpAddGalleryItem(page.id, text: result['name'])
         : provider.mcpAddNode(page.id,
@@ -40366,56 +40601,12 @@ class _MindMapScreenState extends State<MindMapScreen>
   }
 
   /// xlsx セル値をプレーン文字列へ変換する (AI 添付抽出用の簡易版)。
-  String _xlsxCellToPlain(xls.CellValue? v) {
-    if (v == null) return '';
-    if (v is xls.TextCellValue) {
-      // excel 4.x の TextCellValue.value は独自 TextSpan 型 → dynamic で走査。
-      final buf = StringBuffer();
-      void walk(dynamic span) {
-        if (span == null) return;
-        try {
-          final t = span.text;
-          if (t is String) buf.write(t);
-        } catch (_) {}
-        try {
-          final children = span.children;
-          if (children is Iterable) {
-            for (final c in children) {
-              walk(c);
-            }
-          }
-        } catch (_) {}
-      }
-
-      walk(v.value);
-      final r = buf.toString();
-      return r.isEmpty ? v.value.toString() : r;
-    }
-    if (v is xls.IntCellValue) return v.value.toString();
-    if (v is xls.DoubleCellValue) {
-      final d = v.value;
-      return d == d.truncateToDouble() ? d.toInt().toString() : d.toString();
-    }
-    if (v is xls.BoolCellValue) return v.value ? 'TRUE' : 'FALSE';
-    if (v is xls.DateCellValue) {
-      return '${v.year.toString().padLeft(4, '0')}-'
-          '${v.month.toString().padLeft(2, '0')}-'
-          '${v.day.toString().padLeft(2, '0')}';
-    }
-    if (v is xls.DateTimeCellValue) {
-      return '${v.year.toString().padLeft(4, '0')}-'
-          '${v.month.toString().padLeft(2, '0')}-'
-          '${v.day.toString().padLeft(2, '0')} '
-          '${v.hour.toString().padLeft(2, '0')}:'
-          '${v.minute.toString().padLeft(2, '0')}';
-    }
-    if (v is xls.TimeCellValue) {
-      return '${v.hour.toString().padLeft(2, '0')}:'
-          '${v.minute.toString().padLeft(2, '0')}';
-    }
-    if (v is xls.FormulaCellValue) return '=${v.formula}';
-    return v.toString();
-  }
+  /// 表のセル 1 つを素の文字にする。
+  ///
+  /// ★ 中身は [TalkReference.xlsxCellToPlain] 1 つにまとめた (= 同じ処理が
+  ///   3 か所にあり、 読み取り側だけ数値を落としていた)。
+  String _xlsxCellToPlain(xls.CellValue? v) =>
+      TalkReference.xlsxCellToPlain(v);
 
   /// OOXML (docx) の指定 XML パートを取り出してプレーンテキスト化する。
   String _extractOoxmlText(List<int> bytes, String partPath) {
@@ -53822,7 +54013,44 @@ class _MindMapScreenState extends State<MindMapScreen>
   }
 
   /// Kindle (Amazon の Kindle ストア / Cloud Reader) を開く (= ユーザー要望)。
+  /// Kindle ボタン。
+  ///
+  /// = ユーザー要望「Kindle のヒットする検索結果がイマイチだから、 kindle
+  ///   ボタンに書籍検索機能を設けて、 別で検索結果を手に入れて描画する」。
+  ///
+  /// ★ まず**アプリの書籍検索**を出す。 Amazon の検索結果を読むのではなく、
+  ///   鍵の要らない書誌 API から題名・著者・出版社・表紙・ISBN を取って
+  ///   一覧に描く ([BookSearch])。 選んだ本だけを Kindle ストアの検索
+  ///   (ISBN があれば ISBN) でアプリ内ブラウザへ渡す。
+  /// ★ 「本棚をそのまま開く」 のも残す (欄を空で閉じた時と、 一覧の
+  ///   「本棚を開く」)。
   void _openKindle(BuildContext ctx, MindMapProvider provider) async {
+    // 選んでいる要素の題名を最初の検索語にする (= すぐ探せるように)。
+    final seed = provider.selectedNode?.title.trim() ?? '';
+    await BookSearchSheet.show(
+      ctx,
+      initialQuery: seed.length > 60 ? seed.substring(0, 60) : seed,
+      onOpen: (hit, url) {
+        if (!mounted) return;
+        _openGoogleSearchDialog(
+          context,
+          provider,
+          initialUrl: url,
+          customTitle: hit.title.length > 24
+              ? '${hit.title.substring(0, 24)}…'
+              : hit.title,
+        );
+      },
+      // 今までどおり本棚をそのまま開く道も残す。
+      onOpenLibrary: () {
+        if (!mounted) return;
+        _openKindleLibrary(context, provider);
+      },
+    );
+  }
+
+  /// Kindle の本棚 (read.amazon) をそのまま開く。
+  void _openKindleLibrary(BuildContext ctx, MindMapProvider provider) {
     _openGoogleSearchDialog(
       ctx,
       provider,
@@ -67010,6 +67238,22 @@ class _MindMapScreenState extends State<MindMapScreen>
       // パネルが受け取ると null に戻る。 まだ残っていれば少し待って再送。
       if (automationRequestFromAssistant.value != null && tries < 12) {
         Future.delayed(const Duration(milliseconds: 400), repost);
+        return;
+      }
+      // ★ 諦めた事を必ず言う (= 動作検証の機能修正案「完了状態を MCP から
+      //   確認できるようにする」)。 今までは 12 回出し直して黙って止まって
+      //   いたので、 頼んだ側は永久に「受け付けた」 のまま待たされた。
+      if (automationRequestFromAssistant.value != null) {
+        automationRequestFromAssistant.value = null;
+        final run = automationRunForAssistant.value;
+        if (run != null && !run.isFinished) {
+          automationRunForAssistant.value = run.copyWith(
+            phase: 'failed',
+            error: 'the automation panel never opened, so nothing was run. '
+                'Ask the user to open 自動操作 (web automation) and try again.',
+            finishedAtMs: DateTime.now().millisecondsSinceEpoch,
+          );
+        }
       }
     }
 
@@ -68388,8 +68632,14 @@ class _MindMapScreenState extends State<MindMapScreen>
                 'needsUser': 'true',
             }
       ],
-      (id) => _executeHeaderCommand(id, provider),
+      (id) {
+        // ★ = 動作検証の機能修正案「MCP から開いた機能画面を閉じる操作」。
+        //   後で閉じられるように、 MCP が開いた物を控えておく。
+        _mcpOpenedCommands.add(id);
+        _executeHeaderCommand(id, provider);
+      },
     );
+    provider.registerMcpCommandCloser(_closeCommandForMcp);
     provider.registerMcpFileBuilder(_buildMcpFile);
     // ★ = ユーザー要望「作成するファイルのパスを明示しない場合等を除き、
     //   今開いているフォルダー外に新規ファイルやフォルダーを作成しない」。
@@ -68498,19 +68748,156 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
     if (!mounted) return {'error': 'the screen went away'};
     // ── 指定されたページをセルへ入れる ──
+    //
+    // ★ = 動作検証の不具合「分割表示の2枠目に特定の通常ページを指定できない」。
+    //   直した所は 3 つ。
+    //   (1) **名前でも受ける**。 今までは `p.id == raw` の丸一致だけだったので、
+    //       ページ名を渡されると誰にも当たらず couldNotPlace に落ちていた
+    //       (報告の「検証_normal が couldNotPlace」 の正体。 他の道具は
+    //        mcpPageById を通るのに、 ここだけ自前で照らし合わせていた)。
+    //   (2) **黙ってすり替えない**。 置いた後に _pageShownInSplitCell で
+    //       突き合わせ、 違う物が出ているならその理由を返す。 表示を決める
+    //       _resolveSplitCellPage は「今編集しているページ」「プランで開けない
+    //       ページ」「他のセルと同じページ」 を外して**別のページで埋める**が、
+    //       今まではそれを誰も報告していなかった。
+    //   (3) **指定順で結果が変わらない**。 1 枚ずつ置くと、 途中で編集セルが
+    //       移って前の回で入れたセルを上書きしていた。 まとめて 1 回で書く。
     final slots = _visibleSplitSlots();
-    final notPlaced = <String>[];
-    for (var i = 0; i < pageIds.length && i < slots.length; i++) {
-      final id = pageIds[i].trim();
-      if (id.isEmpty) continue;
-      final page = provider.pages.where((p) => p.id == id).firstOrNull;
-      if (page == null || !_splitEligiblePage(page)) {
-        notPlaced.add(id);
+    final notPlaced = <Map<String, Object?>>[];
+    final wanted = <int, MindMapPage>{};
+    final takenIds = <String>{};
+    for (var i = 0; i < pageIds.length; i++) {
+      final raw = pageIds[i].trim();
+      if (raw.isEmpty) continue;
+      if (i >= slots.length) {
+        notPlaced.add({
+          'requested': raw,
+          'reason': 'noCell',
+          'hint': 'this split has only ${slots.length} cell(s), so the '
+              '${i + 1}th page has nowhere to go.',
+        });
         continue;
       }
-      _openPageInSplitSlot(provider, page, slots[i]);
+      // id が丸一致 → 名前が丸一致 → 名前が大小文字を無視して一致。
+      var page = provider.pages.where((p) => p.id == raw).firstOrNull;
+      if (page == null) {
+        final byName =
+            provider.pages.where((p) => p.name.trim() == raw).toList();
+        final hits = byName.isNotEmpty
+            ? byName
+            : provider.pages
+                .where((p) => p.name.trim().toLowerCase() == raw.toLowerCase())
+                .toList();
+        if (hits.length > 1) {
+          notPlaced.add({
+            'requested': raw,
+            'reason': 'ambiguousName',
+            'candidates': [for (final p in hits) p.id],
+            'hint': 'more than one page has this name - pass the id.',
+          });
+          continue;
+        }
+        page = hits.firstOrNull;
+      }
+      if (page == null) {
+        notPlaced.add({
+          'requested': raw,
+          'reason': 'notFound',
+          'hint': 'pass the id from list_pages (a page name also works when '
+              'only one page has it).',
+        });
+        continue;
+      }
+      if (!_splitEligiblePage(page)) {
+        notPlaced.add({
+          'requested': raw,
+          'name': page.name,
+          'reason': 'pageType',
+          'pageType': page.pageType ?? 'normal',
+          'hint': 'document / videoEditor / automation pages cannot be shown '
+              'in a pane.',
+        });
+        continue;
+      }
+      if (provider.isPageLockedByPlan(page.id)) {
+        notPlaced.add({
+          'requested': raw,
+          'name': page.name,
+          'reason': 'lockedByPlan',
+          'hint': 'this page cannot be opened on the current plan.',
+        });
+        continue;
+      }
+      if (!takenIds.add(page.id)) {
+        notPlaced.add({
+          'requested': raw,
+          'name': page.name,
+          'reason': 'duplicateRequest',
+          'cell': slots[i],
+          'hint': 'the same page cannot fill two cells at once.',
+        });
+        continue;
+      }
+      wanted[slots[i]] = page;
+    }
+    if (wanted.isNotEmpty) {
+      // 編集セルは「今開いているページを頼まれたセル」 → 今の編集セルが
+      // 頼まれているならそのまま → それ以外は一番小さい番号。
+      final curId = provider.pages.isEmpty ? '' : provider.currentPage.id;
+      int editorSlot = wanted.keys.reduce((a, b) => a < b ? a : b);
+      for (final e in wanted.entries) {
+        if (e.value.id == curId) {
+          editorSlot = e.key;
+          break;
+        }
+      }
+      if (!wanted.containsKey(editorSlot) &&
+          wanted.containsKey(_mapSplitEditorSlot)) {
+        editorSlot = _mapSplitEditorSlot;
+      }
+      final editorPage = wanted[editorSlot];
+      if (editorPage != null && editorPage.id != curId) {
+        final i = provider.pages.indexOf(editorPage);
+        if (i >= 0) provider.switchPage(i);
+        if (provider.currentPage.id != editorPage.id) {
+          notPlaced.add({
+            'requested': editorPage.id,
+            'name': editorPage.name,
+            'reason': 'couldNotOpen',
+            'hint': 'the app refused to open this page (plan limit or it went '
+                'away).',
+          });
+        }
+      }
+      if (!mounted) return {'error': 'the screen went away'};
+      setState(() {
+        for (final e in wanted.entries) {
+          _mapSplitCellTool.remove(e.key);
+          _mapSplitCellFile.remove(e.key);
+          _mapSplitCellWeb.remove(e.key);
+          _mapSplitCellWebCur.remove(e.key);
+          _mapSplitCells[e.key] = e.value.id;
+        }
+        _mapSplitEditorSlot = editorSlot;
+        _syncNarrowPaneRatio();
+      });
     }
     if (!mounted) return {'error': 'the screen went away'};
+    // ★ 置けたと言う前に、 本当にそのページが出ているかを見る
+    //   (_pageShownInSplitCell が表示の正)。 違うならすり替わっている。
+    for (final e in wanted.entries) {
+      final shown = _pageShownInSplitCell(provider, e.key);
+      if (shown?.id == e.value.id) continue;
+      notPlaced.add({
+        'requested': e.value.id,
+        'name': e.value.name,
+        'cell': e.key,
+        'reason': 'substituted',
+        'showing': shown?.name ?? '(empty)',
+        'hint': 'the app put a different page in that cell - say so instead '
+            'of claiming the requested page is open.',
+      });
+    }
     // ── 実際にどうなったかを返す ──
     final now = !_mapSplitOpen
         ? 'off'
@@ -68528,7 +68915,16 @@ class _MindMapScreenState extends State<MindMapScreen>
       'pages': [
         for (final k in visible) _pageShownInSplitCell(provider, k)?.name ?? '',
       ],
+      // ★ 名前だけでは同名のページと見分けが付かないので id も返す。
+      'pageIds': [
+        for (final k in visible) _pageShownInSplitCell(provider, k)?.id ?? '',
+      ],
+      'editorCell': _mapSplitEditorSlot,
       if (notPlaced.isNotEmpty) 'couldNotPlace': notPlaced,
+      if (notPlaced.isNotEmpty)
+        'note': 'Some pages were NOT placed - each entry in couldNotPlace '
+            'says why in "reason". Tell the user which page did not go where '
+            'they asked; do not report this as a complete success.',
     };
   }
 
@@ -69000,12 +69396,44 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (pageId.isEmpty || name.isEmpty) return null;
     final page = provider.mcpPageById(pageId);
     if (page == null) return null;
+    final want = name.toLowerCase();
+    // ★ 「ディスク上の名前がそのまま一致」 を常に優先させるため、 緩い一致は
+    //   一周回し切ってから返す (先に見つけた方を返すと、 同じページに
+    //   「会議.md」 と「会議 (2).md」 が並んでいる時に違う方を書き換える)。
+    String? loose;
     for (final nd in page.nodes.values) {
-      final ap = nd.attachmentPath ?? '';
+      final ap = (nd.attachmentPath ?? '').trim();
       if (ap.isEmpty) continue;
-      if (_baseName(ap).toLowerCase() == name.toLowerCase()) return ap;
+      final disk = _baseName(ap).toLowerCase();
+      if (disk == want) return ap;
+      if (loose != null) continue;
+      // ★ = 動作検証の不具合「同名の既存添付が置換されず、 重複する」。
+      //   貼る時に [uniqueAttachmentPath] が「会議 (2).md」 と番号を振るので、
+      //   **ディスク上の名前**は頼まれた名前と一致しない。 そのため
+      //   (1) 要素が覚えているきれいな名前 ([attachmentName]) と
+      //   (2) 番号を外したディスク上の名前 — でも見る。
+      //
+      //   ★ 目印は**アプリ自身の書類フォルダーの中に写しが有る事**
+      //   ([mcpFileWasCreatedHere] の緩い判定)。 控え (`mcp_created_files_v1`)
+      //   だけを見る strict では**この枝は決して通らない**: 控えに載る物は
+      //   [mcpAddFileNode] が attachmentName にディスク上の名前を入れるので、
+      //   上の disk == want で先に返っているから (b442 の直しが効いていな
+      //   かった正体)。 利用者がデスクトップや書類に置いてある元ファイルは
+      //   この判定に入らないので、 名前だけを頼りに書き換える心配はない。
+      if (!provider.mcpFileWasCreatedHere(ap)) continue;
+      final shown = (nd.attachmentName ?? '').trim().toLowerCase();
+      if (shown == want || _stripDupSuffix(disk) == want) loose = ap;
     }
-    return null;
+    return loose;
+  }
+
+  /// 「会議 (2).md」 → 「会議.md」。 [uniqueAttachmentPath] がぶつかった時に
+  /// 振る番号を外すだけ (番号が無い名前はそのまま返る)。
+  /// 見せる名前を決める [displayFileNameFor] と同じ型。
+  static String _stripDupSuffix(String fileName) {
+    final m = RegExp(r'^(.+) \((\d+)\)(\.[^.]*)?$').firstMatch(fileName);
+    if (m == null) return fileName;
+    return '${m.group(1)}${m.group(3) ?? ''}';
   }
 
   /// MCP から作るファイルを、 実際にどこへ書くか決める。
@@ -69173,9 +69601,16 @@ class _MindMapScreenState extends State<MindMapScreen>
       //   ファイルと 2 枚目のタイルになっていた)。
       final onPage = _mcpExistingPathOnPage(provider, pageId, name);
       Directory? dir;
+      // ★ 貼ってある道筋が**今もそこに在る時だけ**書き直しの相手にする
+      //   (= 点検で判明: フォルダーを移された / 別の機械から同期で来た
+      //   ページでは、 在りもしない場所へ書こうとして失敗していた)。
+      String? onPageTarget;
       if (onPage != null) {
         final d = File(onPage).parent;
-        if (await d.exists()) dir = d;
+        if (await d.exists()) {
+          dir = d;
+          onPageTarget = onPage;
+        }
       }
       // ★ = 動作検証レポート「明示した対象ページは別フォルダーなのに、
       //   生成物は一覧で開いている『913』 の連動先へ保存された」。
@@ -69200,8 +69635,11 @@ class _MindMapScreenState extends State<MindMapScreen>
       // ★ 他のページだけが使っているファイルの上には書かない
       //   (= RISK-01)。 その時は 名前_1.拡張子 へ逃がし、
       //   元のファイルには 1 バイトも触らない。
-      final file =
-          File(await _mcpWritePath(provider, pageId, '${dir.path}/$name'));
+      // ★ 見付かった物は**その道筋のまま**書き直す (= 前置きの付いた名前で
+      //   保存されている時に、 同じフォルダーの「素の名前」 へ書いてしまうと
+      //   2 つ目のファイルと 2 枚目のタイルが出来る)。
+      final candidate = onPageTarget ?? '${dir.path}/$name';
+      final file = File(await _mcpWritePath(provider, pageId, candidate));
       name = _baseName(file.path); // 逃がした時は名前が変わっている
       // 書く前に見ておく (書いた後だと必ず true になる)。
       final replaced = await file.exists();
@@ -77075,11 +77513,6 @@ class _MindMapScreenState extends State<MindMapScreen>
             icon: Icons.edit_outlined,
             iconColor: const Color(0xFF4FC3F7),
             label: provider.t('page.rename')),
-        _menuItem<_PageAction>(
-            value: _PageAction.moveToFolder,
-            icon: Icons.drive_file_move_outlined,
-            iconColor: const Color(0xFFFFB347),
-            label: provider.t('page.moveToFolder')),
         // ── アイコンを変える (= ユーザー要望: ページごと / 種類ごとに) ──
         _menuItem<_PageAction>(
             value: _PageAction.changeIcon,
@@ -77201,9 +77634,6 @@ class _MindMapScreenState extends State<MindMapScreen>
         case _PageAction.rename:
           final i = provider.pages.indexOf(page);
           if (i >= 0) _renamePageDialog(ctx, provider, i);
-          break;
-        case _PageAction.moveToFolder:
-          _showMoveToFolderSheet(ctx, provider, page);
           break;
         case _PageAction.changeIcon:
           // ignore: discarded_futures
@@ -77367,142 +77797,6 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 直前に開いたページメニューの位置 (= ユーザー要望: 移動先の一覧は
   /// 画面下からではなく、 押したボタンの近くに出す)。
   RelativeRect? _lastPageMenuPos;
-
-  void _showMoveToFolderSheet(
-      BuildContext context, MindMapProvider provider, MindMapPage page) {
-    // ── 押したボタンの近くにメニューとして出す (= ユーザー要望) ──
-    final anchor = _lastPageMenuPos;
-    if (anchor != null) {
-      // ignore: discarded_futures
-      showMenu<String>(
-        context: context,
-        position: anchor,
-        color: const Color(0xFF1E1E32),
-        items: [
-          PopupMenuItem<String>(
-            value: '',
-            child: Row(children: [
-              const Icon(Icons.eject_outlined,
-                  color: Color(0xFF4FC3F7), size: 18),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(provider.t('page.moveToRoot'),
-                    style:
-                        const TextStyle(color: Colors.white, fontSize: 13.5)),
-              ),
-              if (page.folderId == null)
-                const Icon(Icons.check_rounded,
-                    color: Color(0xFF43B97F), size: 16),
-            ]),
-          ),
-          for (final f in provider.folders)
-            PopupMenuItem<String>(
-              value: f.id,
-              child: Row(children: [
-                const Icon(Icons.folder_rounded,
-                    color: Color(0xFFFFB347), size: 18),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(f.name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style:
-                          const TextStyle(color: Colors.white, fontSize: 13.5)),
-                ),
-                if (page.folderId == f.id)
-                  const Icon(Icons.check_rounded,
-                      color: Color(0xFF43B97F), size: 16),
-              ]),
-            ),
-          const PopupMenuDivider(),
-          PopupMenuItem<String>(
-            value: '__new__',
-            child: Row(children: [
-              const Icon(Icons.create_new_folder_outlined,
-                  color: Color(0xFFFFB347), size: 18),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(provider.t('folder.createAndMove'),
-                    style:
-                        const TextStyle(color: Colors.white, fontSize: 13.5)),
-              ),
-            ]),
-          ),
-        ],
-      ).then((sel) {
-        if (sel == null || !mounted) return;
-        if (sel == '__new__') {
-          _addFolderAndMoveDialog(this.context, provider, page);
-          return;
-        }
-        provider.movePageToFolder(page.id, sel.isEmpty ? null : sel);
-      });
-      return;
-    }
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: const Color(0xFF1E1E32),
-      shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (sheetCtx) {
-        return SafeArea(
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
-              child: Text(provider.t('page.moveToFolder'),
-                  style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w700)),
-            ),
-            const Divider(color: Colors.white12, height: 1),
-            // ルート(フォルダー外)
-            ListTile(
-              leading:
-                  const Icon(Icons.eject_outlined, color: Color(0xFF4FC3F7)),
-              title: Text(provider.t('page.moveToRoot'),
-                  style: const TextStyle(color: Colors.white, fontSize: 14)),
-              trailing: page.folderId == null
-                  ? const Icon(Icons.check_rounded, color: Color(0xFF43B97F))
-                  : null,
-              onTap: () {
-                provider.movePageToFolder(page.id, null);
-                Navigator.pop(sheetCtx);
-              },
-            ),
-            const Divider(color: Colors.white12, height: 1),
-            // 既存フォルダー
-            for (final f in provider.folders)
-              ListTile(
-                leading:
-                    const Icon(Icons.folder_rounded, color: Color(0xFFFFB347)),
-                title: Text(f.name,
-                    style: const TextStyle(color: Colors.white, fontSize: 14)),
-                trailing: page.folderId == f.id
-                    ? const Icon(Icons.check_rounded, color: Color(0xFF43B97F))
-                    : null,
-                onTap: () {
-                  provider.movePageToFolder(page.id, f.id);
-                  Navigator.pop(sheetCtx);
-                },
-              ),
-            // 新規フォルダー作成
-            ListTile(
-              leading: const Icon(Icons.create_new_folder_outlined,
-                  color: Color(0xFFFFB347)),
-              title: Text(provider.t('folder.createAndMove'),
-                  style: const TextStyle(color: Colors.white, fontSize: 14)),
-              onTap: () {
-                Navigator.pop(sheetCtx);
-                _addFolderAndMoveDialog(context, provider, page);
-              },
-            ),
-            const SizedBox(height: 8),
-          ]),
-        );
-      },
-    );
-  }
 
   /// 新規フォルダー作成 + ページをそのフォルダーに移動
   void _addFolderAndMoveDialog(
@@ -80487,6 +80781,82 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// たびに窓が増える)。 「複数開けるようにする」 を入れている時は増やす。
   final Map<String, OverlayEntry> _floatingPanelSingletons = {};
 
+  /// MCP (run_app_command) が開いた機能の控え。 close_app_command を id 無しで
+  /// 呼ばれた時に「自分が開けた物だけ」 を閉じるために使う。
+  final Set<String> _mcpOpenedCommands = {};
+
+  /// その機能を分割ペインに埋めているセル (無ければ null)。
+  int? _splitSlotOfTool(String id) {
+    for (final e in _mapSplitCellTool.entries) {
+      if (e.value == id) return e.key;
+    }
+    return null;
+  }
+
+  /// MCP から「この画面を閉じて」 と言われた。
+  ///
+  /// ★ = 動作検証の機能修正案「MCP から開いた機能画面を閉じる操作」。
+  ///   閉じられるのは**控えのある 2 通り**だけ:
+  ///   (a) 浮遊窓 — [_floatingPanelSingletons] が機能の id をそのまま鍵に
+  ///       しているので、 [_closeFloatingPanelByKey] で閉じられる。
+  ///   (b) 分割ペインに埋めた道具 — [_mapSplitCellTool] から探して
+  ///       [_closeEmbeddedPaneTool] (× で閉じた時と同じ道) を通す。
+  ///   全画面のダイアログ (showDialog) は控えが無いので**閉じられない**。
+  ///   そこで嘘を言わず、 理由を付けて返す (= この直しの要点)。
+  Future<Map<String, Object?>> _closeCommandForMcp(String id, bool probe) async {
+    if (!mounted) return {'error': 'the screen went away'};
+    final provider = context.read<MindMapProvider>();
+    final want = id.trim();
+    final ids = want.isEmpty ? _mcpOpenedCommands.toList() : <String>[want];
+    if (ids.isEmpty) {
+      return {
+        'closed': const <String>[],
+        'notOpen': const <Map<String, Object?>>[],
+        'note': 'nothing was opened from here, so nothing was closed.',
+      };
+    }
+    final closed = <String>[];
+    final notOpen = <Map<String, Object?>>[];
+    for (final cid in ids) {
+      if (!provider.mcpCommands.any((c) => c['id'] == cid)) {
+        notOpen.add({'id': cid, 'reason': 'unknownCommand'});
+        continue;
+      }
+      if (_floatingPanelSingletons.containsKey(cid)) {
+        if (!probe) _closeFloatingPanelByKey(cid);
+        closed.add(cid);
+        continue;
+      }
+      final slot = _splitSlotOfTool(cid);
+      if (slot != null) {
+        if (!probe) _closeEmbeddedPaneTool(slot, cid);
+        closed.add(cid);
+        continue;
+      }
+      notOpen.add({
+        'id': cid,
+        'reason': _openStyleOf(cid) == 'full' ? 'fullScreenDialog' : 'notOpen',
+        'hint': _openStyleOf(cid) == 'full'
+            ? 'this feature opens as a full-screen dialog, which only the '
+                'user can close (Esc or the close button).'
+            : 'it is not open right now.',
+      });
+    }
+    if (!probe) {
+      for (final c in closed) {
+        _mcpOpenedCommands.remove(c);
+      }
+      if (mounted) setState(() {});
+    }
+    return {
+      'closed': closed,
+      if (notOpen.isNotEmpty) 'notOpen': notOpen,
+      if (closed.isEmpty && notOpen.isNotEmpty)
+        'note': 'Nothing was closed - read "notOpen" and tell the user why, '
+            'instead of saying the screen was closed.',
+    };
+  }
+
   /// 合言葉で開いたフローティング窓を「中身側の閉じるボタン」 から閉じる
   /// ための受け口。 Overlay には pop すべき route が無いので、 中身が
   /// Navigator.pop すると本体の画面が閉じてしまう — その誤爆防止。
@@ -81324,6 +81694,29 @@ class _MindMapScreenState extends State<MindMapScreen>
       final paneBtns = _paneHeaderButtons[k] ?? const <String>[];
       // このセルに埋め込まれているファイルビューア (無ければ null)。
       final WidgetBuilder? embedded = _mapSplitCellFile[k];
+      // ── 自前の帯を持つページの上には札を重ねない (= ユーザー報告:
+      //    「画面分割した際にマークダウンページのページ名とタブが被って
+      //    しまっている」) ──
+      //    マークダウン・フリーノート・文書のページは、 セルの**一番上**に
+      //    自分のタブの帯を描く。 札は Positioned(left: 6, top: 6) で
+      //    セル全体を基準に浮くので、 座標がまるごと重なっていた。
+      //    見た目が潰れるだけでなく、 札が前面に居るので**1 枚目のタブが
+      //    押せない** (押すとページ入れ替えの一覧が出る) という二次被害も
+      //    あった。 帯の高さのぶん下へ逃がす。
+      //    ★ 帯の高さは窓の幅で変わる (狭い時は 2 段になる)。 マークダウン
+      //      側の判定 (720px) と同じ数を使う。
+      final MindMapPage? cellPage = _pageShownInSplitCell(provider, k);
+      final String cellType = cellPage?.pageType ?? '';
+      final bool ownsTopBar = toolId == null &&
+          embedded == null &&
+          (cellType == 'markdown' ||
+              cellType == 'paint' ||
+              cellType == 'document');
+      final bool narrowTopBar = MediaQuery.of(context).size.width < 720;
+      final double pageBadgeTop =
+          ownsTopBar ? (narrowTopBar ? 84.0 : 48.0) : 6.0;
+      final double paneBtnTop =
+          ownsTopBar ? (narrowTopBar ? 110.0 : 74.0) : 32.0;
       Widget cellStack = Stack(fit: StackFit.expand, children: [
           inner,
           // ── ペインのミニヘッダー (コピーされた全体ヘッダーボタン。
@@ -81333,7 +81726,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           if (paneBtns.isNotEmpty && !_hidePaneHeaders)
             Positioned(
               left: 6,
-              top: 32,
+              top: paneBtnTop,
               child: Container(
                 padding:
                     const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
@@ -81356,7 +81749,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           if (!_hidePaneHeaders && toolId == null && embedded == null)
           Positioned(
             left: 6,
-            top: 6,
+            top: pageBadgeTop,
             child: GestureDetector(
               onTapDown: (d) => _showSplitCellPageMenu(
                   provider, k, isEditor, d.globalPosition),
@@ -82272,6 +82665,119 @@ class _MindMapScreenState extends State<MindMapScreen>
                 setS(() {});
               },
             ),
+            // ═══ Jev 判断補助 (ベータ) ═══════════════════════════
+            //
+            // = ユーザー要望 4 件 (振り分け / 広告ブロック / 検索の絞り込み
+            //   / 書籍検索) の入口。
+            //
+            // ★ 既定は全部切。 外へ文章の断片を送るので、 利用者が自分で
+            //   入れるまで通信しない。
+            // ★ 広告ブロックだけは親スイッチの外に置いてある。 1 段目
+            //   (名前で分かる広告を隠す) は判断も通信も要らないので、
+            //   何も送りたくない人でも使えるようにするため。
+            _behaviorSectionLabel('jev', provider.t('settings.groupJev')),
+            _settingsToggleTile(
+              icon: provider.adBlockEnabled
+                  ? Icons.block_rounded
+                  : Icons.block_outlined,
+              color: provider.adBlockEnabled
+                  ? const Color(0xFF7FD8A0)
+                  : Colors.white54,
+              title: provider.t('jev.adBlock'),
+              helpKey: 'jev.adBlockHelp',
+              value: provider.adBlockEnabled,
+              onChanged: (v) async {
+                await provider.setAdBlockEnabled(v);
+                setS(() {});
+              },
+            ),
+            _settingsToggleTile(
+              icon: provider.jevEnabled
+                  ? Icons.psychology_rounded
+                  : Icons.psychology_outlined,
+              color: provider.jevEnabled
+                  ? const Color(0xFFBA68C8)
+                  : Colors.white54,
+              title: provider.t('jev.enabled'),
+              helpKey: 'jev.enabledHelp',
+              value: provider.jevEnabled,
+              onChanged: (v) async {
+                await provider.setJevEnabled(v);
+                setS(() {});
+              },
+            ),
+            // ── 親が入っている時だけ、 機能ごとの入切を出す ──
+            //    (切っている時に並べても効かないので、 見出しごと隠す)
+            if (provider.jevEnabled) ...[
+              _settingsToggleTile(
+                icon: Icons.alt_route_rounded,
+                color: provider.jevRouteEnabled
+                    ? const Color(0xFF4FC3F7)
+                    : Colors.white54,
+                title: provider.t('jev.route'),
+                helpKey: 'jev.routeHelp',
+                value: provider.jevRouteEnabled,
+                onChanged: (v) async {
+                  await provider.setJevRouteEnabled(v);
+                  setS(() {});
+                },
+              ),
+              _settingsToggleTile(
+                icon: Icons.search_rounded,
+                color: provider.jevSearchEnabled
+                    ? const Color(0xFF4FC3F7)
+                    : Colors.white54,
+                title: provider.t('jev.search'),
+                helpKey: 'jev.searchHelp',
+                value: provider.jevSearchEnabled,
+                onChanged: (v) async {
+                  await provider.setJevSearchEnabled(v);
+                  setS(() {});
+                },
+              ),
+              _settingsToggleTile(
+                icon: Icons.menu_book_rounded,
+                color: provider.jevBookEnabled
+                    ? const Color(0xFFFFB74D)
+                    : Colors.white54,
+                title: provider.t('jev.book'),
+                helpKey: 'jev.bookHelp',
+                value: provider.jevBookEnabled,
+                onChanged: (v) async {
+                  await provider.setJevBookEnabled(v);
+                  setS(() {});
+                },
+              ),
+              // 広告の 2 段目 (判別が付かない塊を聞く) は、 1 段目が
+              //   入っている時だけ意味があるので条件を重ねる。
+              if (provider.adBlockEnabled)
+                _settingsToggleTile(
+                  icon: Icons.ads_click_rounded,
+                  color: provider.jevAdBlockEnabled
+                      ? const Color(0xFF7FD8A0)
+                      : Colors.white54,
+                  title: provider.t('jev.adBlockDeep'),
+                  helpKey: 'jev.adBlockDeepHelp',
+                  value: provider.jevAdBlockEnabled,
+                  onChanged: (v) async {
+                    await provider.setJevAdBlockEnabled(v);
+                    setS(() {});
+                  },
+                ),
+              // 使った回数と金額 (判断は入力だけの課金なので極小)。
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 2, 14, 10),
+                child: Text(
+                  '${provider.t('jev.usage')}: '
+                  '${provider.jevCalls} '
+                  '(\$${provider.jevSpentUsd.toStringAsFixed(4)})'
+                  '${provider.jevLastModel.isEmpty ? '' : ' / '
+                      '${provider.jevLastModel}'}',
+                  style: const TextStyle(
+                      color: Colors.white38, fontSize: 11.5),
+                ),
+              ),
+            ],
     ];
   }
 
@@ -82379,15 +82885,29 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// モニターの繋がり方、 画面そのものの話 (拡大率・壁紙・明るさ)、
   /// スクリーンセーバー、 スリープと電源、 音声の出力先。
   /// マウスそのものの設定は隣のタブへ移した (= ユーザー要望「項目分けして」)。
-  List<Widget> _displaySettingsChildren({
+  // ═══ PC 設定 — 「選択肢」 ごとの中身 ═══════════════════════════
+  //
+  // = ユーザー要望「ディスプレイ設定の項目が長い為、 PC設定の中に
+  //   bluetooth やオーディオ設定などの選択肢を増やして分けて、 その
+  //   選択肢を押すと項目が出てくる仕様にして欲しい」。
+  //
+  // ★ 1 枚の長い並びを入れ物ごとに割った。 割り方の決まり:
+  //   ・見出し (`_pcSectionLabel`) はそのまま中に残す。 選択肢の名前と
+  //     二重になるが、 中に入った時に何の話か分かる方を取った。
+  //   ・出す / 出さないは [_pcCatAvailable] が決める。 中身が空になる OS で
+  //     選択肢だけ並ぶのを防ぐ。 **中身を作って空かどうか見る形にはしない**
+  //     (Bluetooth の読み取りが一覧を組むたびに走ってしまう)。
+  //   ・どの入れ物も同じ引数を取る (使わない物もある)。 [_pcCategoryChildren]
+  //     から一様に呼べるようにするため。
+
+  List<Widget> _pcMonitorChildren({
     required MindMapProvider provider,
     required BuildContext ctx,
     required BuildContext sheetCtx,
     required void Function(VoidCallback) setS,
   }) {
+    if (kIsWeb || !Platform.isWindows) return const [];
     return [
-      if (!kIsWeb && Platform.isWindows) ...[
-        // ── 画面をまたぐ時の動き (モニターの繋がり方) ──
         _pcSectionLabel(provider.t('cursorWrap.section')),
         // ★ アプリを開いている間の回り込みは無料 (= ユーザー要望)。
         //   Pro 以上が要るのは「アプリを閉じていても効かせる」 (常駐) だけ
@@ -82516,36 +83036,60 @@ class _MindMapScreenState extends State<MindMapScreen>
             setS(() {});
           },
         ),
+    ];
+  }
 
+  List<Widget> _pcScreenChildren({
+    required MindMapProvider provider,
+    required BuildContext ctx,
+    required BuildContext sheetCtx,
+    required void Function(VoidCallback) setS,
+  }) {
+    if (kIsWeb || !Platform.isWindows) return const [];
+    return [
         // ── 画面の拡大率と壁紙・明るさ ──
         const SizedBox(height: 6),
         _MonitorDisplaySettings(provider: provider),
+    ];
+  }
 
+  List<Widget> _pcOsLookChildren({
+    required MindMapProvider provider,
+    required BuildContext ctx,
+    required BuildContext sheetCtx,
+    required void Function(VoidCallback) setS,
+  }) {
+    if (kIsWeb || !Platform.isWindows) return const [];
+    return [
         // ── Windows の見た目 (明るい / 暗い) (= ユーザー要望: PC 自体の
         //    ダークモードの切り替えもここでできるように) ──
         _pcSectionLabel(provider.t('osTheme.title')),
         _OsThemeInline(provider: provider),
+    ];
+  }
 
-        // ── 電源と画面 ──
-        // ★ = ユーザー要望「電源モード、 ディスプレイの消灯時間や
-        //   スクリーンセーバーの時間設定は項目としてまとめて欲しい」。
-        //   これまでは電源モードとデスクトップ切替がヘッダーのボタンにしか
-        //   無く、 消灯時間とセーバーは別々の見出しに分かれていた。
-        //   同じ「電源と画面」 の下に 4 つ並べる。
-        _pcSectionLabel(provider.t('pcPower.groupTitle')),
-        _PowerModeInline(provider: provider),
-        _pcSubLabel(provider.t('power.title')),
-        _PowerTimeoutInline(provider: provider),
-        _pcSubLabel(provider.t('saver.title')),
-        _ScreenSaverInline(provider: provider),
-
+  List<Widget> _pcAudioChildren({
+    required MindMapProvider provider,
+    required BuildContext ctx,
+    required BuildContext sheetCtx,
+    required void Function(VoidCallback) setS,
+  }) {
+    if (kIsWeb || !Platform.isWindows) return const [];
+    return [
         // ── 音声の出力先 ──
         _pcSectionLabel(provider.t('audioOut.title')),
         _AudioOutputInline(provider: provider),
-      ],
+    ];
+  }
 
-      // ── 高リフレッシュレート (Android) ──
-      if (!kIsWeb && Platform.isAndroid) ...[
+  List<Widget> _pcRefreshChildren({
+    required MindMapProvider provider,
+    required BuildContext ctx,
+    required BuildContext sheetCtx,
+    required void Function(VoidCallback) setS,
+  }) {
+    if (kIsWeb || !Platform.isAndroid) return const [];
+    return [
         _pcSectionLabel(provider.t('refresh.setting')),
         _settingsToggleTile(
           icon: provider.highRefreshRate
@@ -82563,8 +83107,376 @@ class _MindMapScreenState extends State<MindMapScreen>
             setS(() {});
           },
         ),
-      ],
     ];
+  }
+
+  List<Widget> _pcPowerChildren({
+    required MindMapProvider provider,
+    required BuildContext ctx,
+    required BuildContext sheetCtx,
+    required void Function(VoidCallback) setS,
+  }) {
+    if (kIsWeb || !Platform.isWindows) return const [];
+    return [
+        // ── 電源と画面 ──
+        // ★ = ユーザー要望「電源モード、 ディスプレイの消灯時間や
+        //   スクリーンセーバーの時間設定は項目としてまとめて欲しい」。
+        //   これまでは電源モードとデスクトップ切替がヘッダーのボタンにしか
+        //   無く、 消灯時間とセーバーは別々の見出しに分かれていた。
+        //   同じ「電源と画面」 の下に 4 つ並べる。
+        _pcSectionLabel(provider.t('pcPower.groupTitle')),
+        _PowerModeInline(provider: provider),
+        _pcSubLabel(provider.t('power.title')),
+        _PowerTimeoutInline(provider: provider),
+        _pcSubLabel(provider.t('saver.title')),
+        _ScreenSaverInline(provider: provider),
+
+        // ── 電池が減ったら省電力モードへ (= ユーザー要望: バッテリーが
+        //    ％以下になったら省電力モードに切り替える設定項目) ──
+        ..._pcBatterySaverRows(provider: provider, setS: setS),
+    ];
+  }
+
+  /// 電池の残りで電源モードを落とす設定の行 (電源の入れ物の中)。
+  ///
+  /// ★ 電池が無い機械では何も出さない (デスクトップ PC で「バッテリーが
+  ///   少なくなったら」 の行を出しても意味が無い)。
+  List<Widget> _pcBatterySaverRows({
+    required MindMapProvider provider,
+    required void Function(VoidCallback) setS,
+  }) {
+    if (kIsWeb || !Platform.isWindows) return const [];
+    if (!provider.hasBattery) return const [];
+    final st = provider.readBatteryState();
+    final on = provider.batterySaverEnabled;
+    return [
+      _pcSubLabel(provider.t('battery.autoSaver')),
+      _settingsToggleTile(
+        icon: on ? Icons.battery_saver_rounded : Icons.battery_std_rounded,
+        color: on ? const Color(0xFF7FD8A0) : Colors.white54,
+        title: provider.t('battery.autoSaver'),
+        helpKey: 'battery.autoSaverHelp',
+        value: on,
+        onChanged: (v) async {
+          await provider.setBatterySaverEnabled(v);
+          setS(() {});
+        },
+      ),
+      // 閾値のつまみ。 切っている間は薄くして触れないようにする。
+      Opacity(
+        opacity: on ? 1.0 : 0.45,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 2, 12, 6),
+          child: Row(children: [
+            Text(provider.t('battery.threshold'),
+                style: const TextStyle(color: Colors.white70, fontSize: 12)),
+            Expanded(
+              child: Slider(
+                value: provider.batterySaverThreshold.toDouble(),
+                min: 5,
+                max: 90,
+                divisions: 17,
+                label: '${provider.batterySaverThreshold}%',
+                onChanged: on
+                    ? (v) => setS(
+                        () => provider.setBatterySaverThreshold(v.round()))
+                    : null,
+              ),
+            ),
+            SizedBox(
+              width: 44,
+              child: Text('${provider.batterySaverThreshold}%',
+                  textAlign: TextAlign.right,
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w700)),
+            ),
+          ]),
+        ),
+      ),
+      // 今の残量 (設定が効いているか目で確かめられるように)。
+      Padding(
+        padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+        child: Row(children: [
+          Icon(
+              st.charging
+                  ? Icons.battery_charging_full_rounded
+                  : Icons.battery_full_rounded,
+              size: 14,
+              color: Colors.white38),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+                st.percent < 0
+                    ? provider.t('battery.now')
+                    : '${provider.t('battery.now')}: ${st.percent}%'
+                        '${st.onAc ? ' (AC)' : ''}',
+                style:
+                    const TextStyle(color: Colors.white38, fontSize: 11.5)),
+          ),
+          if (provider.batterySaverApplied)
+            Text(provider.t('power.saver'),
+                style: const TextStyle(
+                    color: Color(0xFF7FD8A0),
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w700)),
+        ]),
+      ),
+    ];
+  }
+
+  /// Bluetooth の読み取り結果の控え。 窓を開けた時に 1 回読む。
+  ///
+  /// ★ 組み立てのたびに読まない。 電波は出さない呼び出しだが、
+  ///   それでも毎フレーム叩く物ではない。 「読み直す」 を押した時だけ
+  ///   入れ替える。
+  PcBluetoothState? _btState;
+
+  /// Bluetooth の入れ物。 読むだけ (入 / 切と登録は Windows に任せる)。
+  List<Widget> _pcBluetoothChildren({
+    required MindMapProvider provider,
+    required BuildContext ctx,
+    required BuildContext sheetCtx,
+    required void Function(VoidCallback) setS,
+  }) {
+    final st = _btState;
+    if (st == null || !st.hasRadio) {
+      return [
+        _pcSectionLabel(provider.t('pc.catBluetooth')),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+          child: Text(provider.t('bt.noRadio'),
+              style: const TextStyle(color: Colors.white38, fontSize: 11.5)),
+        ),
+      ];
+    }
+    return [
+      _pcSectionLabel(provider.t('pc.catBluetooth')),
+      for (final r in st.radios)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 2, 12, 2),
+          child: Row(children: [
+            const Icon(Icons.bluetooth_rounded,
+                size: 15, color: Color(0xFF4FC3F7)),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(r.name,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.white, fontSize: 13)),
+            ),
+          ]),
+        ),
+      _pcSubLabel(provider.t('bt.devices')),
+      if (st.devices.isEmpty)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+          child: Text(provider.t('bt.noDevices'),
+              style: const TextStyle(color: Colors.white38, fontSize: 11.5)),
+        ),
+      for (final d in st.devices)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 2, 12, 2),
+          child: Row(children: [
+            Icon(
+                d.connected
+                    ? Icons.bluetooth_connected_rounded
+                    : Icons.bluetooth_disabled_rounded,
+                size: 14,
+                color:
+                    d.connected ? const Color(0xFF7FD8A0) : Colors.white24),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(d.name,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      color: d.connected ? Colors.white : Colors.white54,
+                      fontSize: 12.5)),
+            ),
+            if (d.connected)
+              Text(provider.t('bt.connected'),
+                  style: const TextStyle(
+                      color: Color(0xFF7FD8A0), fontSize: 11)),
+          ]),
+        ),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 2),
+        child: Text(provider.t('bt.note'),
+            style: const TextStyle(color: Colors.white38, fontSize: 11)),
+      ),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(8, 4, 8, 6),
+        child: Wrap(children: [
+          TextButton.icon(
+            onPressed: () => setS(() => _btState = PcBluetooth.read()),
+            icon: const Icon(Icons.refresh_rounded, size: 15),
+            label: Text(provider.t('bt.reload'),
+                style: const TextStyle(fontSize: 12)),
+          ),
+          TextButton.icon(
+            onPressed: PcBluetooth.openWindowsBluetoothSettings,
+            icon: const Icon(Icons.open_in_new_rounded, size: 15),
+            label: Text(provider.t('bt.openWindows'),
+                style: const TextStyle(fontSize: 12)),
+          ),
+        ]),
+      ),
+    ];
+  }
+
+  /// この端末でその選択肢を出すか。
+  bool _pcCatAvailable(String id) {
+    final win = !kIsWeb && Platform.isWindows;
+    switch (id) {
+      case 'mouse':
+      case 'monitors':
+      case 'screen':
+      case 'oslook':
+      case 'power':
+      case 'audio':
+        return win;
+      case 'bluetooth':
+        // アダプターが無い機械では出さない (控えは窓を開けた時に読む)。
+        return win && (_btState?.hasRadio ?? false);
+      case 'refresh':
+        return !kIsWeb && Platform.isAndroid;
+    }
+    return false;
+  }
+
+  /// PC 設定に並べる「選択肢」 (この端末で出せる物だけ)。
+  List<({String id, IconData icon, Color color, String title})> _pcCategories(
+    MindMapProvider provider,
+  ) {
+    final all = <({String id, IconData icon, Color color, String title})>[
+      (
+        id: 'mouse',
+        icon: Icons.mouse_rounded,
+        color: const Color(0xFF4FC3F7),
+        title: provider.t('pc.tabMouse')
+      ),
+      (
+        id: 'monitors',
+        icon: Icons.devices_rounded,
+        color: const Color(0xFF9FA8DA),
+        title: provider.t('cursorWrap.section')
+      ),
+      (
+        id: 'screen',
+        icon: Icons.desktop_windows_rounded,
+        color: const Color(0xFF81D4FA),
+        title: provider.t('display.title')
+      ),
+      (
+        id: 'oslook',
+        icon: Icons.dark_mode_rounded,
+        color: const Color(0xFFCE93D8),
+        title: provider.t('osTheme.title')
+      ),
+      (
+        id: 'power',
+        icon: Icons.battery_charging_full_rounded,
+        color: const Color(0xFF7FD8A0),
+        title: provider.t('pc.catPower')
+      ),
+      (
+        id: 'audio',
+        icon: Icons.volume_up_rounded,
+        color: const Color(0xFFFFB74D),
+        title: provider.t('audioOut.title')
+      ),
+      (
+        id: 'bluetooth',
+        icon: Icons.bluetooth_rounded,
+        color: const Color(0xFF64B5F6),
+        title: provider.t('pc.catBluetooth')
+      ),
+      (
+        id: 'refresh',
+        icon: Icons.speed_rounded,
+        color: const Color(0xFF7FD8A0),
+        title: provider.t('refresh.setting')
+      ),
+    ];
+    return [
+      for (final c in all)
+        if (_pcCatAvailable(c.id)) c
+    ];
+  }
+
+  /// 選択肢 1 つぶんの中身。
+  List<Widget> _pcCategoryChildren(
+    String id, {
+    required MindMapProvider provider,
+    required BuildContext ctx,
+    required BuildContext sheetCtx,
+    required void Function(VoidCallback) setS,
+  }) {
+    switch (id) {
+      case 'mouse':
+        return _mouseSettingsChildren(
+            provider: provider, ctx: ctx, sheetCtx: sheetCtx, setS: setS);
+      case 'monitors':
+        return _pcMonitorChildren(
+            provider: provider, ctx: ctx, sheetCtx: sheetCtx, setS: setS);
+      case 'screen':
+        return _pcScreenChildren(
+            provider: provider, ctx: ctx, sheetCtx: sheetCtx, setS: setS);
+      case 'oslook':
+        return _pcOsLookChildren(
+            provider: provider, ctx: ctx, sheetCtx: sheetCtx, setS: setS);
+      case 'power':
+        return _pcPowerChildren(
+            provider: provider, ctx: ctx, sheetCtx: sheetCtx, setS: setS);
+      case 'audio':
+        return _pcAudioChildren(
+            provider: provider, ctx: ctx, sheetCtx: sheetCtx, setS: setS);
+      case 'bluetooth':
+        return _pcBluetoothChildren(
+            provider: provider, ctx: ctx, sheetCtx: sheetCtx, setS: setS);
+      case 'refresh':
+        return _pcRefreshChildren(
+            provider: provider, ctx: ctx, sheetCtx: sheetCtx, setS: setS);
+    }
+    return const [];
+  }
+
+  /// 開いている選択肢 (null = 選択肢の一覧)。 窓を閉じても覚えておく
+  /// (= 同じ所を続けて触る時に毎回選び直さなくて済む)。
+  String? _pcOpenCategory;
+
+  /// 選択肢の一覧に出す 1 行。
+  Widget _pcCategoryTile(
+    ({String id, IconData icon, Color color, String title}) c,
+    void Function(VoidCallback) setS,
+  ) {
+    return InkWell(
+      onTap: () => setS(() => _pcOpenCategory = c.id),
+      borderRadius: BorderRadius.circular(10),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+        margin: const EdgeInsets.symmetric(vertical: 3),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.04),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+        ),
+        child: Row(children: [
+          Icon(c.icon, size: 18, color: c.color),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(c.title,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 13.5,
+                    fontWeight: FontWeight.w600)),
+          ),
+          const Icon(Icons.chevron_right_rounded,
+              size: 18, color: Colors.white38),
+        ]),
+      ),
+    );
   }
 
   /// この端末に「ディスプレイ設定」 に出す物があるか。
@@ -82574,17 +83486,34 @@ class _MindMapScreenState extends State<MindMapScreen>
       !kIsWeb && (Platform.isWindows || Platform.isAndroid);
 
 
-  /// 「PC設定」 を開く (= ユーザー要望: マウス設定とディスプレイ設定に
-  /// 項目分けして、 PC設定というボタンの中に 2 タブで入れる)。
+  /// 「PC設定」 を開く。
   ///
-  /// [initialTab] は 0 = マウス設定 / 1 = ディスプレイ設定。
-  /// 昔からの「ディスプレイ設定」 のボタンやショートカットは、 ここの
-  /// ディスプレイ側のタブを開く ([_openDisplaySettings])。
-  void _openPcSettings({int initialTab = 0}) {
+  /// = ユーザー要望「ディスプレイ設定の項目が長い為、 PC設定の中に
+  ///   bluetooth やオーディオ設定などの選択肢を増やして分けて、 その
+  ///   選択肢を押すと項目が出てくる仕様にして欲しい」。
+  ///
+  /// ★ 以前は「マウス設定 / ディスプレイ設定」 の 2 タブで、 ディスプレイ側に
+  ///   全部 (モニターの繋がり方・拡大率・見た目・電源・音声) が縦に並んで
+  ///   いた。 今は**選択肢の一覧**を出して、 押した 1 つだけを出す。
+  ///   [initialCategory] を渡すとその選択肢から開く。
+  ///
+  /// ★ 開いていた選択肢は [_pcOpenCategory] に残るので、 閉じて開き直すと
+  ///   同じ所に戻る (続けて触る時に選び直さなくて済む)。
+  void _openPcSettings({String? initialCategory}) {
     if (_displayDialogOpen) return;
     _displayDialogOpen = true;
     final screenCtx = context;
     final provider = context.read<MindMapProvider>();
+    // ★ Bluetooth は窓を開ける時に 1 回だけ読む (組み立てのたびに叩かない)。
+    //   これが選択肢を出すかどうかの判断にもなる ([_pcCatAvailable])。
+    if (PcBluetooth.isSupported) {
+      try {
+        _btState = PcBluetooth.read();
+      } catch (_) {
+        _btState = null;
+      }
+    }
+    if (initialCategory != null) _pcOpenCategory = initialCategory;
     // ★ 画面の真ん中ではなく、 押したボタンの近くに出す (= ユーザー要望)。
     //   位置決めは他の設定窓と同じ仕組み (最後に押した場所を使う)。
     final at = _lastGlobalPointerPos;
@@ -82608,123 +83537,105 @@ class _MindMapScreenState extends State<MindMapScreen>
               : math.min(at.dy + 16, math.max(12.0, scr.height - 260))
                   .toDouble();
           final bodyH = math.max(200.0, scr.height - top - 16);
-          // ★ マウス設定の中身は Windows でしか意味が無い (感度もボタン
-          //   割り当ても Win32 の機能)。 Android では 2 タブにせず、
-          //   今までどおり「ディスプレイ設定」 の 1 枚だけ出す。
-          final twoTabs = !kIsWeb && Platform.isWindows;
+          final cats = _pcCategories(provider);
+          // 開いていた選択肢が今の端末に無い時は一覧へ戻す。
+          final hit = [
+            for (final c in cats)
+              if (c.id == _pcOpenCategory) c
+          ];
+          final open = hit.isEmpty ? null : hit.first;
           return Stack(children: [
             Positioned(
               left: left,
               top: top,
               width: w,
-              child: DefaultTabController(
-                length: 2,
-                initialIndex: initialTab.clamp(0, 1),
-                child: Dialog(
-                  insetPadding: EdgeInsets.zero,
-                  alignment: Alignment.topLeft,
-                  backgroundColor: const Color(0xFF12121F),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16),
-                      side: BorderSide(
-                          color: Colors.white.withValues(alpha: 0.10))),
-                  child: ConstrainedBox(
-                    constraints: BoxConstraints(maxWidth: w, maxHeight: bodyH),
-                    child: Column(mainAxisSize: MainAxisSize.min, children: [
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(18, 16, 8, 4),
-                        child: Row(children: [
-                          const Icon(Icons.settings_applications_rounded,
-                              color: Color(0xFF4FC3F7), size: 20),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Text(
-                                provider.t(twoTabs
-                                    ? 'pc.title'
-                                    : 'menu.displaySettings'),
-                                style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.w700)),
-                          ),
+              child: Dialog(
+                insetPadding: EdgeInsets.zero,
+                alignment: Alignment.topLeft,
+                backgroundColor: const Color(0xFF12121F),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                    side: BorderSide(
+                        color: Colors.white.withValues(alpha: 0.10))),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(maxWidth: w, maxHeight: bodyH),
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(8, 12, 8, 4),
+                      child: Row(children: [
+                        // 中に入っている時だけ「戻る」。 一覧では印だけ。
+                        if (open != null)
                           IconButton(
-                            icon: const Icon(Icons.close_rounded,
-                                color: Colors.white54, size: 20),
-                            onPressed: () => Navigator.of(dctx).pop(),
+                            tooltip: provider.t('pc.back'),
+                            icon: const Icon(Icons.arrow_back_rounded,
+                                color: Colors.white70, size: 20),
+                            onPressed: () =>
+                                setS(() => _pcOpenCategory = null),
+                          )
+                        else
+                          const Padding(
+                            padding: EdgeInsets.only(left: 10, right: 2),
+                            child: Icon(Icons.settings_applications_rounded,
+                                color: Color(0xFF4FC3F7), size: 20),
                           ),
-                        ]),
-                      ),
-                      // ── 2 つのタブ ──
-                      if (twoTabs)
-                        TabBar(
-                        indicatorColor: const Color(0xFF4FC3F7),
-                        indicatorSize: TabBarIndicatorSize.tab,
-                        labelColor: Colors.white,
-                        unselectedLabelColor: Colors.white38,
-                        labelStyle: const TextStyle(
-                            fontSize: 12.5, fontWeight: FontWeight.w700),
-                        unselectedLabelStyle: const TextStyle(fontSize: 12.5),
-                        tabs: [
-                          Tab(
-                              height: 40,
-                              icon: const Icon(Icons.mouse_rounded, size: 16),
-                              iconMargin: EdgeInsets.zero,
-                              child: Text(provider.t('pc.tabMouse'))),
-                          Tab(
-                              height: 40,
-                              icon: const Icon(Icons.desktop_windows_rounded,
-                                  size: 16),
-                              iconMargin: EdgeInsets.zero,
-                              child: Text(provider.t('pc.tabDisplay'))),
-                        ],
-                      ),
-                      const Divider(color: Colors.white12, height: 1),
-                      Flexible(
-                        child: twoTabs
-                            ? TabBarView(children: [
-                                SingleChildScrollView(
-                                  padding:
-                                      const EdgeInsets.fromLTRB(14, 4, 14, 16),
-                                  child: Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: _mouseSettingsChildren(
-                                      provider: provider,
-                                      ctx: screenCtx,
-                                      sheetCtx: dctx,
-                                      setS: setS,
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(open?.title ?? provider.t('pc.title'),
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w700)),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close_rounded,
+                              color: Colors.white54, size: 20),
+                          onPressed: () => Navigator.of(dctx).pop(),
+                        ),
+                      ]),
+                    ),
+                    const Divider(color: Colors.white12, height: 1),
+                    Flexible(
+                      child: SingleChildScrollView(
+                        padding: const EdgeInsets.fromLTRB(14, 6, 14, 16),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: open == null
+                              ? [
+                                  if (cats.isEmpty)
+                                    Padding(
+                                      padding: const EdgeInsets.fromLTRB(
+                                          4, 8, 4, 8),
+                                      child: Text(
+                                          provider.t('pc.windowsOnly'),
+                                          style: const TextStyle(
+                                              color: Colors.white54,
+                                              fontSize: 12.5)),
+                                    )
+                                  else
+                                    Padding(
+                                      padding: const EdgeInsets.fromLTRB(
+                                          4, 2, 4, 6),
+                                      child: Text(provider.t('pc.catHint'),
+                                          style: const TextStyle(
+                                              color: Colors.white38,
+                                              fontSize: 11.5)),
                                     ),
-                                  ),
+                                  for (final c in cats)
+                                    _pcCategoryTile(c, setS),
+                                ]
+                              : _pcCategoryChildren(
+                                  open.id,
+                                  provider: provider,
+                                  ctx: screenCtx,
+                                  sheetCtx: dctx,
+                                  setS: setS,
                                 ),
-                                SingleChildScrollView(
-                                  padding:
-                                      const EdgeInsets.fromLTRB(14, 4, 14, 16),
-                                  child: Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: _displaySettingsChildren(
-                                      provider: provider,
-                                      ctx: screenCtx,
-                                      sheetCtx: dctx,
-                                      setS: setS,
-                                    ),
-                                  ),
-                                ),
-                              ])
-                            : SingleChildScrollView(
-                                padding:
-                                    const EdgeInsets.fromLTRB(14, 4, 14, 16),
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: _displaySettingsChildren(
-                                    provider: provider,
-                                    ctx: screenCtx,
-                                    sheetCtx: dctx,
-                                    setS: setS,
-                                  ),
-                                ),
-                              ),
+                        ),
                       ),
-                    ]),
-                  ),
+                    ),
+                  ]),
                 ),
               ),
             ),
@@ -82733,10 +83644,6 @@ class _MindMapScreenState extends State<MindMapScreen>
       ),
     ).whenComplete(() => _displayDialogOpen = false);
   }
-
-  /// 昔からの「ディスプレイ設定」 の入り口。 PC設定のディスプレイ側の
-  /// タブを開く (ヘッダーのボタンや Ctrl+ショートカットはそのまま効く)。
-  void _openDisplaySettings() => _openPcSettings(initialTab: 1);
 
   /// 二重に開かないための札。
   bool _displayDialogOpen = false;
@@ -92415,13 +93322,23 @@ class _MindMapScreenState extends State<MindMapScreen>
                 //    ファイルを開いた状態でもページを移れるように) ──
                 //    この画面は本体の上に重ねて開くので、 引き出しにも
                 //    ヘッダーにも手が届かない。
-                IconButton(
+                Builder(
+                  builder: (btnCtx) => IconButton(
                   tooltip: mdProvider.t('cmd.openDrawer'),
                   icon: const Icon(Icons.list_alt_rounded,
                       size: 18, color: Colors.white70),
                   onPressed: () async {
                     final before = mdProvider.currentPage.id;
-                    await openPageListFromAnywhere?.call();
+                    // ★ = ユーザー要望: ボタンの近くに「ページ一覧 /
+                    //   ページを追加」 の小さな一覧を出す。 本体が預けて
+                    //   いない時 (= 別プロセスの窓など) は今までどおり
+                    //   一覧を直に開く。
+                    final menu = openPageMenuFromAnywhere;
+                    if (menu != null) {
+                      await menu(btnCtx);
+                    } else {
+                      await openPageListFromAnywhere?.call();
+                    }
                     if (!mounted) return;
                     // 別のページを選んだなら、 そちらへ出て行く。
                     if (mdProvider.currentPage.id != before &&
@@ -92429,6 +93346,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                       Navigator.of(popCtx).maybePop();
                     }
                   },
+                  ),
                 ),
                 IconButton(
                   tooltip: mdProvider.t('menu.settings'),
@@ -97636,6 +98554,12 @@ class _MindMapScreenState extends State<MindMapScreen>
     final name = result['name']!;
     var page = provider.currentPage;
     String? id;
+    // ★ 同上 (棚がいっぱいなら理由を出して戻る)。
+    if (page.pageType == 'bookshelf' &&
+        !provider.canPlaceShelfItems(1, page)) {
+      _showGalleryPlaceLimitSnack(provider);
+      return;
+    }
     if (page.pageType == 'bookshelf') {
       id = provider.mcpAddGalleryItem(page.id, text: name);
     } else if ((page.pageType ?? 'normal') == 'normal') {
@@ -100860,6 +101784,114 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// 添付ファイル名が attachmentName に保存されていない場合の推定ロジック。
   /// data:URL なら mime から拡張子を推測、それ以外は src の末尾セグメントから取得。
+  /// その要素が「別の場所へ保存できるファイル」 を抱えているか。
+  ///
+  /// ★ = ユーザー要望「マークダウンなどのファイル要素を単体で選択して
+  ///   その他の所にダウンロードする項目」。 md / docx / xlsx / pptx / pdf /
+  ///   txt / csv / 画像はどれも普通の `attachmentPath` の要素で、 専用の欄は
+  ///   無い。 `contentType` で見ると、 貼り方や作り方によっては
+  ///   `attachment` になっていない物を取りこぼすので**道筋が入っているか**
+  ///   で見る。
+  /// ★ ローカルの動画だけは `youtubeUrl` に入っている (モデルの作り)。
+  ///   web の動画 (http) はファイルではないので対象外。
+  bool _nodeHasSavableFile(MindMapNode node) {
+    if ((node.attachmentPath ?? '').trim().isNotEmpty) return true;
+    final v = (node.youtubeUrl ?? '').trim();
+    return v.isNotEmpty && !v.startsWith('http');
+  }
+
+  /// 押した 1 件のファイルを、 選んだ場所へ保存する。
+  ///
+  /// ★ 一括ダウンロード ([_bulkDownloadSelectedAttachments]) は範囲選択と
+  ///   その子まで相手にするので使い回さない。 ここは [nodeId] だけを見る
+  ///   (範囲選択が残っていても、 押した物だけが保存される)。
+  /// ★ パソコンは保存先を聞く。 携帯は書き出してから共有の窓へ渡す
+  ///   (= アプリの他のダウンロードと同じ作法。 SAF へ二度書きしない)。
+  Future<void> _saveNodeFileAs(
+      BuildContext context, MindMapProvider provider, String nodeId) async {
+    final node = provider.nodes[nodeId];
+    if (node == null) return;
+    var src = (node.attachmentPath ?? '').trim();
+    if (src.isEmpty) src = (node.youtubeUrl ?? '').trim();
+    if (src.isEmpty) return;
+    final isData = src.startsWith('data:');
+    final isHttp = src.startsWith('http://') || src.startsWith('https://');
+    // ★ 無い物で保存先を聞かない (= 場所を選ばせてから「ありません」 は
+    //   一番たちが悪い)。
+    if (!isData && !isHttp && !await File(src).exists()) {
+      if (!context.mounted) return;
+      _appSnack(
+          context,
+          SnackBar(
+              content: Text('${provider.t('export.fail')}: $src'),
+              backgroundColor: const Color(0xFFFF6B6B)));
+      return;
+    }
+    final provided = (node.attachmentName ?? '').trim();
+    final name =
+        provided.isNotEmpty ? provided : _guessAttachmentName(node, src);
+    final dot = name.lastIndexOf('.');
+    final ext = dot > 0 ? name.substring(dot + 1).toLowerCase() : '';
+    final bool desktop = !kIsWeb &&
+        (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
+    String outPath;
+    if (desktop) {
+      final picked = await FilePicker.platform.saveFile(
+        dialogTitle: provider.t('fsv.download'),
+        fileName: name,
+        type: ext.isEmpty ? FileType.any : FileType.custom,
+        allowedExtensions: ext.isEmpty ? null : [ext],
+      );
+      if (picked == null) return; // 取り消し
+      // ★ Windows の保存ダイアログは拡張子を補ってくれない (file_picker が
+      //   lpstrDefExt を渡さない)。 名前を打ち直されると拡張子の無い道が
+      //   返るので、 こちらで足す。
+      outPath = (ext.isNotEmpty && !picked.toLowerCase().endsWith('.$ext'))
+          ? '$picked.$ext'
+          : picked;
+    } else {
+      final dir = await getApplicationDocumentsDirectory();
+      final exportDir = Directory('${dir.path}/exports');
+      if (!await exportDir.exists()) await exportDir.create(recursive: true);
+      outPath = '${exportDir.path}/$name';
+    }
+    try {
+      if (isData) {
+        final comma = src.indexOf(',');
+        if (comma <= 0) throw const FormatException('invalid data URL');
+        await File(outPath)
+            .writeAsBytes(base64Decode(src.substring(comma + 1)), flush: true);
+      } else if (isHttp) {
+        final resp = await http.get(Uri.parse(src));
+        if (resp.statusCode != 200) {
+          throw Exception('HTTP ${resp.statusCode}');
+        }
+        await File(outPath).writeAsBytes(resp.bodyBytes, flush: true);
+      } else {
+        // ★ 読み込まずに写す (動画や PDF を丸ごと記憶に載せない)。
+        await File(src).copy(outPath);
+      }
+    } catch (e) {
+      if (!context.mounted) return;
+      _appSnack(
+          context,
+          SnackBar(
+              content: Text('${provider.t('export.fail')}: $e'),
+              backgroundColor: const Color(0xFFFF6B6B)));
+      return;
+    }
+    if (!desktop) await openPathWithOs(outPath);
+    if (!context.mounted) return;
+    _appSnack(
+        context,
+        SnackBar(
+            content: Text(provider
+                .t('attach.bulkDownload.success')
+                .replaceAll('{n}', '1')
+                .replaceAll('{path}', outPath)),
+            backgroundColor: const Color(0xFF43B97F)));
+  }
+
   String _guessAttachmentName(MindMapNode node, String src) {
     final title = node.title.trim();
     final safeTitle = title.isEmpty
@@ -120771,6 +121803,27 @@ const String _kCtrlClickInterceptorJs = r'''
   }
   document.addEventListener('click', function(e){ handle(e, false); }, true);
   document.addEventListener('auxclick', function(e){ handle(e, true); }, true);
+  // ── Ctrl+W / Ctrl+Shift+T をこちら側へ渡す (= ユーザー要望: Ctrl+W で
+  //    タブを閉じられるように) ──
+  //    ページ (WebView) に焦点がある間、 打鍵は WebView が受け取ってしまい
+  //    Flutter 側の受け口には**一つも届かない**。 ページの中で捕まえて
+  //    postMessage で渡す (Ctrl+クリックを渡しているのと同じ道)。
+  function key(e){
+    try {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      var k = String(e.key || '').toLowerCase();
+      if (k === 'w' && !e.shiftKey) {
+        e.preventDefault(); e.stopPropagation();
+        try { window.chrome.webview.postMessage(
+          JSON.stringify({t:'closetab'})); } catch(err){}
+      } else if (k === 't' && e.shiftKey) {
+        e.preventDefault(); e.stopPropagation();
+        try { window.chrome.webview.postMessage(
+          JSON.stringify({t:'reopentab'})); } catch(err){}
+      }
+    } catch(err){}
+  }
+  document.addEventListener('keydown', key, true);
   // ── window.open を新しいタブへ振り替える ──
   // 呼び出し元が戻り値のウィンドウを触っても落ちないよう、 無害なスタブを返す。
   try {
@@ -120815,6 +121868,27 @@ const String _kCtrlClickInterceptorJs = r'''
         url: u,
         foreground: fg == 1 || fg == true || fg == '1',
       );
+    }
+  } catch (_) {}
+  return null;
+}
+
+/// ページの中で押された Ctrl+W / Ctrl+Shift+T の知らせなら、 その種類を返す。
+///
+/// ★ = ユーザー要望「Ctrl+W でタブを閉じられるように」。 WebView に焦点が
+///   ある間は打鍵が Flutter まで届かないので、 ページの中で捕まえて
+///   ([_kCtrlClickInterceptorJs] の `keydown`) ここへ流す。
+String? _parseTabKeyWebMessage(dynamic msg) {
+  try {
+    dynamic data = msg;
+    if (data is String) {
+      final s = data.trim();
+      if (!s.startsWith('{')) return null;
+      data = jsonDecode(s);
+    }
+    if (data is Map) {
+      final t = data['t'];
+      if (t == 'closetab' || t == 'reopentab') return '$t';
     }
   } catch (_) {}
   return null;
@@ -121919,6 +122993,18 @@ try {
         await _controller
             .addScriptToExecuteOnDocumentCreated(_kCtrlClickInterceptorJs);
       } catch (_) {}
+      // ── 再生速度の錠前を document created で入れる (= ユーザー報告:
+      //    広告に倍率が乗らない) ──
+      //    プレイヤーが最初の `playbackRate = 1` を書くより先に setter を
+      //    掴む。 倍率は前の文書で控えた値 (sessionStorage) を自分で拾うので、
+      //    読み込み直後のプリロール広告にも間に合う (`_onPageLoaded` 経由の
+      //    `_injectPlaybackRate` では遅い)。 webview_windows は登録した
+      //    script を外せないが、 錠前は倍率を焼き込んでいないので登録は
+      //    1 回きりでよい。
+      try {
+        await _controller.addScriptToExecuteOnDocumentCreated(
+            videoRateLockInstallJs(fallbackRate: widget.initialRate));
+      } catch (_) {}
       _controller.webMessage.listen((msg) {
         if (!mounted) return;
         final hit = _parseCtrlClickWebMessage(msg);
@@ -121931,6 +123017,22 @@ try {
             openUrlInNewTab(hit.url);
           } else {
             _openInNewWinTab(hit.url);
+          }
+          return;
+        }
+        // ── ページの中で押された Ctrl+W / Ctrl+Shift+T (= ユーザー要望) ──
+        //    WebView に焦点がある間は打鍵が Flutter へ届かないので、
+        //    ページから渡してもらう。 中身は下の [_handleWinTabHotkey] と同じ。
+        final tabKey = _parseTabKeyWebMessage(msg);
+        if (tabKey != null) {
+          if (tabKey == 'closetab') {
+            if (_winTabs.length <= 1) {
+              Navigator.of(context).maybePop();
+            } else {
+              _closeWinTab(_winActiveTab);
+            }
+          } else {
+            _reopenClosedWinTab();
           }
           return;
         }
@@ -122560,36 +123662,16 @@ try {
     ''');
   }
 
+  /// 再生倍率を注入する (モバイル全画面の双子)。
+  ///
+  /// ★ 以前はここも 200ms ごとに全部の `<video>` へ押し付けていた。 広告中は
+  ///   YouTube が 1.0 に戻すので押し合いになり、 そのたびに `ratechange` が
+  ///   飛んで音の通り道が組み直される (= モバイル側で「広告中に音が途切れ
+  ///   途切れ」 として報告された形)。 押し返すのをやめ、 setter を横取りして
+  ///   **書かせない**錠前へ委ねる ([lib/services/video_rate_js.dart])。
+  ///   見回り・掛け直し・保険は錠前の側が持っている。
   void _injectPlaybackRate() {
-    _controller.executeScript('''
-      (function() {
-        window.__MM_RATE__ = $_playbackRate;
-        function applyAll() {
-          try {
-            var vs = document.querySelectorAll('video');
-            for (var i = 0; i < vs.length; i++) {
-              if (vs[i].playbackRate !== window.__MM_RATE__) {
-                vs[i].playbackRate = window.__MM_RATE__;
-              }
-            }
-          } catch(e) {}
-        }
-        applyAll();
-        if (window.__MM_RATE_INSTALLED__) return;
-        window.__MM_RATE_INSTALLED__ = true;
-        setInterval(applyAll, 200);
-        document.addEventListener('ratechange', function(e) {
-          try {
-            if (e.target && e.target.tagName === 'VIDEO' &&
-                e.target.playbackRate !== window.__MM_RATE__) {
-              e.target.playbackRate = window.__MM_RATE__;
-            }
-          } catch(err) {}
-        }, true);
-        document.addEventListener('loadeddata', applyAll, true);
-        document.addEventListener('play', applyAll, true);
-      })();
-    ''');
+    _controller.executeScript(videoRateApplyJs(_playbackRate));
   }
 
   /// PiP→全画面復帰時の続き再生用シーク (= ユーザー要望: 先頭に戻るバグ修正)。
@@ -145921,7 +147003,10 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
         //   null になる。 引き出しにも見出しにも手が届かない、 一番この
         //   項目が要る場面で消えていた。 行き先は `_openPageSwitcher` が
         //   選ぶので、 ここでは条件を付けない。
-        btn(provider.t('ctx.switchPage'), () => _openPageSwitcher(provider)),
+        // ★ 一覧は押した所の下に出す (= ユーザー要望)。 この吹き出しは行の
+        //   位置を教えてくれないので、 最後に押した所を基準にする。
+        btn(provider.t('ctx.switchPage'),
+            () => _openPageSwitcher(provider, at: _lastPointerPos)),
       ],
     );
   }
@@ -146213,9 +147298,11 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
   void _openPageSwitcher(MindMapProvider provider, {Offset? at}) {
     final host = _mdHost;
     if (host != null && host.mounted) {
-      // 窓は押した所の近くに出す (今までと同じ基準)。
+      // ★ 押した所の**真下**に一覧を出す (= ユーザー要望)。 以前は
+      //   `_lastGlobalPointerPos` に入れるだけで、 一覧はそれを見ていな
+      //   かったため黙って捨てられていた。
       if (at != null) host._lastGlobalPointerPos = at;
-      unawaited(host._showQuickPageSwitcher(provider));
+      unawaited(host._showQuickPageSwitcher(provider, nearAnchor: at));
       return;
     }
     final open = openPageListFromAnywhere;
@@ -175356,8 +176443,14 @@ const String _kBgPlaybackPatchJs = r"""
       if (!window.__MM_BG_KEEP__ || window.__MM_USER_PAUSED__) return;
       var v = window.__MM_mainVideo();
       if (!v || v.ended) return;
+      // ★ 終わり際は触らない。 幅は**倍率に比例**させる (= 4 倍なら 250ms の
+      //   1 刻みで 1 秒進むので、 0.35 秒の帯を跨ぎ越して終端でも play() を
+      //   撃ち続けていた。 広告にも倍率が乗るようになったぶん効いてくる)。
+      var rr = Number(window.__MM_RATE__);
+      if (!(rr && isFinite(rr) && rr > 1)) rr = 1;
+      var tail = 0.35 * rr;
       if (v.duration && isFinite(v.duration) &&
-          v.currentTime >= v.duration - 0.35) return;
+          v.currentTime >= v.duration - tail) return;
       if (v.paused) v.play().catch(function(){});
     } catch (e) {}
   }, 250);
@@ -176613,7 +177706,14 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
       // Service を止める、というシーケンスが起きうる。paused に入る
       // たびに Service が生きているか確認して、止まっていたら再起動する。
       // ensureRunning は refCount を変えずに生存確認だけ行う。
-      _BgPlaybackController.ensureRunning().catchError((_) {});
+      // ★ 自分の札を持っていない時は取り直す (= 背景再生を後から ON に
+      //   した / 何かの拍子に札を落とした、 のどちらでも「画面は開いて
+      //   いるのに常駐だけ止まっている」 を自分で直せるようにする)。
+      if (_BgPlaybackController.holds(this)) {
+        _BgPlaybackController.ensureRunning().catchError((_) {});
+      } else {
+        unawaited(_initAndStartForegroundService());
+      }
       // バックグラウンド遷移を検出。WebView 側の <video> が継続的に
       // pause される (Android の WebView 仕様) ので、Timer を起動して
       // 短い間隔で play() を呼び続ける。
@@ -176844,12 +177944,14 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
         );
       } catch (_) {}
     }
-    await _BgPlaybackController.start();
+    // ★ 持ち主として `this` を渡す (= 自分が取った分だけを返すため。
+    //   詳しくは [_BgPlaybackController._owners] の説明)。
+    await _BgPlaybackController.acquire(this);
   }
 
   /// Foreground Service を停止する。動画ページを閉じるときに呼ぶ。
   Future<void> _stopForegroundService() async {
-    await _BgPlaybackController.stop();
+    await _BgPlaybackController.release(this);
   }
 
   /// URL を解析して _isYoutube / _isMp4 / _currentVideoId を更新する（同期版）
@@ -177024,7 +178126,9 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
     _switchGuardTimer?.cancel();
     // 知らせが届かなかった時の保険 (= 押しても二度と進めなくならないように)。
     _switchGuardTimer = Timer(const Duration(seconds: 8), () {
-      if (gen == _navGen) _switchingVideo = false;
+      if (gen != _navGen) return;
+      _switchingVideo = false;
+      _rearmAfterVideoSwitch();
     });
     _analyzeUrlSync(url);
     // ★ mp4 へ移る時に WebView を作り直させない。 `_isMp4 && !_useWebViewFallback`
@@ -177048,7 +178152,11 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage>
       //   動画の音が残ったり、 YouTube の自動再生と取り合いになっていた)。
       //   古い移動なら止めるだけで終わる。
       if (!_isMp4) {
-        await _stopPlayerForHandover();
+        // ★ 裏で聞いている間は音を止めない (= ユーザー報告: 切り替わりで
+        //   バックグラウンド再生が不安定)。 ここで止めていたのは YouTube 自身の
+        //   「次の動画まで n 秒」 を黙らせるためだが、 その画面は裏では出ない。
+        //   止めるとその分まるまる無音になり、 戻ってこない事もあった。
+        await _stopPlayerForHandover(keepSound: _bgPlayKeeper != null);
         if (gen != _navGen) return;
       }
       if (_isMp4) {
@@ -177773,56 +178881,26 @@ v.addEventListener('play', function() {
     }
   }
 
-  /// 再生倍率を注入（広告中・新 video 要素出現時にも追従するウォッチャー付き）
-  /// ★ = ユーザー報告「広告が入ったタイミングで音声が途切れ途切れ」。
-  ///   以前は**ページの全部の <video>** に 200ms ごとに速度を押し付けて
-  ///   いた。 YouTube は広告の間だけ速度を 1.0 に戻すので、 こちらが
-  ///   押し返す → 向こうが戻す、 を 1 秒に何度も繰り返し、 そのたびに
-  ///   音の通り道が組み直されて途切れていた。 広告の間は触らず、 相手も
-  ///   本編の 1 つだけにする。 見回りも 1 秒に落とす (実際の切り替わりは
-  ///   ratechange / loadeddata / play で拾えている)。
+  /// 再生倍率を注入する。
+  ///
+  /// ★ = ユーザー報告「youtube の再生速度倍率が広告には適用されなくなった」。
+  ///   これは YouTube の仕様変更ではなく、 こちらが自分で止めていた。
+  ///   b438 まではここに `if (isAd()) return;` があり、 広告の間は速度に
+  ///   一切触らない作りだった。 それ自体は**別の報告**「広告が入ると音が
+  ///   途切れ途切れ」 への対処で、 原因は押し合い — YouTube は広告の間だけ
+  ///   速度を 1.0 に戻すので、 こちらが押し返す → 向こうが戻す、 を 1 秒に
+  ///   何度も繰り返し、 そのたびに `ratechange` が飛んで音の通り道が
+  ///   組み直されていた。
+  ///
+  /// ★ 今の形: **押し返すのをやめて、書かせない**
+  ///   ([lib/services/video_rate_js.dart] の錠前)。 `playbackRate` の setter を
+  ///   横取りして、 向こうの 1.0 を**値を動かさずに**握りつぶす。 値が
+  ///   変わらないので `ratechange` は飛ばず、 音の通り道も組み直されない。
+  ///   → 広告にも倍率が乗る / 音も切れない が同時に立つ。
+  ///   見回り・掛け直し・広告の門 (錠が掛からない環境用の保険) はすべて
+  ///   錠前の側が持っているので、 ここは倍率を渡すだけでよい。
   Future<void> _injectPlaybackRate() async {
-    await _c?.evaluateJavascript(source: '''
-      (function(){
-        window.__MM_RATE__ = $_playbackRate;
-        function mainV(){
-          try {
-            return window.__MM_mainVideo
-                ? window.__MM_mainVideo()
-                : document.querySelector('video');
-          } catch(e) { return null; }
-        }
-        function isAd(){
-          try { return window.__MM_isAd ? window.__MM_isAd() : false; }
-          catch(e) { return false; }
-        }
-        function applyAll(){
-          try {
-            if (isAd()) return;
-            var v = mainV();
-            if (v && v.playbackRate !== window.__MM_RATE__) {
-              v.playbackRate = window.__MM_RATE__;
-            }
-          } catch(e) {}
-        }
-        applyAll();
-        if (window.__MM_RATE_INSTALLED__) return;
-        window.__MM_RATE_INSTALLED__ = true;
-        setInterval(applyAll, 1000);
-        document.addEventListener('ratechange', function(e){
-          try {
-            if (isAd()) return;
-            if (e.target && e.target.tagName === 'VIDEO' &&
-                e.target === mainV() &&
-                e.target.playbackRate !== window.__MM_RATE__) {
-              e.target.playbackRate = window.__MM_RATE__;
-            }
-          } catch(err) {}
-        }, true);
-        document.addEventListener('loadeddata', applyAll, true);
-        document.addEventListener('play', applyAll, true);
-      })();
-    ''');
+    await _c?.evaluateJavascript(source: videoRateApplyJs(_playbackRate));
   }
 
   /// 再生位置トラッカー: 3 秒ごとに currentTime を FlutterPosition ハンドラに送信
@@ -177996,13 +179074,47 @@ v.addEventListener('play', function() {
     _switchingVideo = true;
     _switchGuardTimer?.cancel();
     _switchGuardTimer = Timer(const Duration(seconds: 3), () {
-      if (gen == _navGen) _switchingVideo = false;
+      if (gen != _navGen) return;
+      _switchingVideo = false;
+      // ★ 読み終わりの知らせが来ない造り (SPA) では、 ここが最後の
+      //   再武装の機会になる。
+      _rearmAfterVideoSwitch();
     });
+    // 裏で聞いている時は、 新しい動画に合わせて仕掛けを立て直す。
+    _rearmAfterVideoSwitch();
     // ★ 自動送りの印はここでは下ろさない (= ユーザー報告: 切り替わりで
     //   不安定)。 この知らせは移動の**始まり**で届く。 こちらの読み込みが
     //   まだ飛んでいる最中に YouTube 自身の自動再生が先に動いた場合、 ここで
     //   下ろすと二本目の「終わった」 が通って 1 本飛ばしになる。 下ろすのは
     //   読み終わり (onLoadStop / 進捗 100%) と 12 秒の保険だけに任せる。
+  }
+
+  /// 動画が切り替わった後の再武装。
+  ///
+  /// ★ = ユーザー報告「バックグラウンド再生が動画が切り替わるタイミングで
+  ///   不安定になる」。 裏に回っている間の仕掛けは 3 つあるが、 どれも
+  ///   **前の動画のために**立っているだけで、 切り替えの後に立て直す道が
+  ///   無かった:
+  ///     ・ページの中の鳴らし直し (`__MM_BG_KEEP__`) … 新しい文書 (ハード
+  ///       ナビゲーション) では false に戻る
+  ///     ・常駐 (Foreground Service) … 何かの拍子に止まっていても、 誰も
+  ///       確かめ直さない
+  ///     ・速さ … 新しい `<video>` には掛かっていない事がある
+  ///   切り替えの合図が来たら、 まとめて立て直す。
+  /// ★ 前面に居る時は何もしない (利用者の操作を上書きしないため)。
+  ///   裏に居るかどうかは、 裏でだけ動く見張り ([_bgPlayKeeper]) で見る。
+  void _rearmAfterVideoSwitch() {
+    if (!mounted) return;
+    if (_bgPlayKeeper == null) return;
+    _setPageBgKeep(true);
+    _forceVideoPlay();
+    unawaited(_injectPlaybackRate());
+    if (!Platform.isAndroid) return;
+    if (_BgPlaybackController.holds(this)) {
+      _BgPlaybackController.ensureRunning().catchError((_) {});
+    } else {
+      unawaited(_initAndStartForegroundService());
+    }
   }
 
   Future<void> _restorePosition() async {
@@ -182192,6 +183304,21 @@ v.addEventListener('play', function() {
                                   injectionTime: iaw
                                       .UserScriptInjectionTime.AT_DOCUMENT_START,
                                 ),
+                                // ── 再生速度の錠前も document start で ──
+                                //    (= ユーザー報告: 広告に倍率が乗らない)
+                                //    プレイヤーが最初の `playbackRate = 1` を
+                                //    書くより**先に** setter を掴む。 倍率は
+                                //    前の文書で控えた値 (sessionStorage) を
+                                //    自分で拾うので、 読み込み直後に始まる
+                                //    プリロール広告にも間に合う (Dart 側の
+                                //    `_injectPlaybackRate` は onLoadStop 後で、
+                                //    それでは広告に間に合わない)。
+                                iaw.UserScript(
+                                  source: videoRateLockInstallJs(
+                                      fallbackRate: widget.initialRate),
+                                  injectionTime: iaw
+                                      .UserScriptInjectionTime.AT_DOCUMENT_START,
+                                ),
                               ]),
                               onWebViewCreated: (controller) {
                                 _c = controller;
@@ -182481,10 +183608,10 @@ v.addEventListener('play', function() {
                                 //   裏で動画が切り替わると再生が止まる)。 前の
                                 //   動画が止まった時点で常駐が畳まれている事が
                                 //   あり、 その時は二度と音が戻らなかった。
-                                if (_bgPlayKeeper != null) {
-                                  _BgPlaybackController.ensureRunning()
-                                      .catchError((_) {});
-                                }
+                                //   ★ ページの中の鳴らし直し (__MM_BG_KEEP__) は
+                                //     新しい文書では false に戻っているので、
+                                //     ここで立て直す。 常駐の札も持ち直す。
+                                _rearmAfterVideoSwitch();
                                 // ★ この読み終わりが「今向かっている動画」 の
                                 //   物か控える。 途中で次へ押されていたら、
                                 //   以降の後始末 (位置の復元・見た目・速さ) は
@@ -184279,7 +185406,6 @@ class _MarkdownDiagramPainter extends CustomPainter {
 
 enum _PageAction {
   rename,
-  moveToFolder,
 
   /// ページ一覧のアイコンを変える (= ユーザー要望)
   changeIcon,
@@ -200720,7 +201846,12 @@ class _PiPMiniPlayerState extends State<_PiPMiniPlayer>
             notifTitle: provider.t('bg.notificationTitle'),
             notifArtist: provider.t('bg.notificationArtist'),
           );
-          await _BgPlaybackController.start();
+          // ★ 持ち主として `this` を渡す。 以前はただの数を増やすだけで、
+          //   しかも下の dispose が**無条件で**減らしていたので、 ここを
+          //   通らなかった PiP を開いて閉じるだけで、 まだ開いている全画面
+          //   プレイヤーの分を横取りして常駐が止まっていた
+          //   (= ユーザー報告「切り替えのタイミングで不安定」 の主因)。
+          await _BgPlaybackController.acquire(this);
         }
       } catch (e) {
         debugPrint('PiP foreground service start failed: $e');
@@ -200737,8 +201868,9 @@ class _PiPMiniPlayerState extends State<_PiPMiniPlayer>
     try {
       WakelockPlus.disable();
     } catch (_) {}
-    // PiP を閉じるときに Foreground Service も停止
-    _BgPlaybackController.stop();
+    // PiP を閉じるときに Foreground Service も停止。
+    // ★ 自分が取った時だけ返る (取っていなければ何も起きない)。
+    _BgPlaybackController.release(this);
     super.dispose();
   }
 
@@ -200766,7 +201898,12 @@ class _PiPMiniPlayerState extends State<_PiPMiniPlayer>
       // ── Foreground Service の生存確認・再起動 ──
       // 2回目以降の画面オフでバックグラウンド再生が止まる問題への対策。
       // ensureRunning は refCount を変えずに生存確認だけ行う。
-      _BgPlaybackController.ensureRunning().catchError((_) {});
+      // ★ 全画面側と同じく、 札を持っていなければ取り直す。
+      if (_BgPlaybackController.holds(this)) {
+        _BgPlaybackController.ensureRunning().catchError((_) {});
+      } else if (Platform.isAndroid) {
+        _BgPlaybackController.acquire(this).catchError((_) {});
+      }
       if (_pipBgPlayKeeper == null) {
         _forcePiPVideoPlay();
         // フルスクリーン版と同じく 200ms 間隔。Android WebView の
@@ -208984,8 +210121,8 @@ class _BackgroundAudioHandler extends BaseAudioHandler {
     String notifArtist = '動画再生中',
   })  : _notifTitle = notifTitle,
         _notifArtist = notifArtist {
-    // 1秒の無音 (data URI の WAV) をループ再生する。
-    _initSilentLoop();
+    // 無音をループ再生して、 常駐が「音を鳴らしているアプリ」 の形を保つ。
+    unawaited(_ensureSource());
     // playerStateStream で停止検知 → 自動再開 (二重保険)
     _player.playerStateStream.listen((state) {
       if (!_stoppedExplicitly &&
@@ -209011,27 +210148,105 @@ class _BackgroundAudioHandler extends BaseAudioHandler {
     }
   }
 
+  /// 無音ループの用意 (1 回だけ走らせる。 [_ensureSource] から呼ぶ)。
+  Future<void>? _srcFuture;
+
+  /// 音源が使える状態になるまで待つ。 まだなら作る。
+  ///
+  /// ★ = ユーザー報告「バックグラウンド再生が動画の切り替わりで不安定」 の
+  ///   調べで判明: `stop()` の後は player が idle に落ちるが、 音源を作り
+  ///   直す道がコンストラクタにしか無かった。 `play()` の前に必ずここを
+  ///   通して、 止まった後でも鳴らし直せるようにする。
+  /// 用意が今走っている最中か (= 二重に `setAudioSource` しないための鍵)。
+  bool _srcLoading = false;
+
+  Future<void> _ensureSource() async {
+    // 走っている最中なら、 それを待つだけ (コンストラクタと watchdog の
+    // play() が重なると、 音源を二度入れに行ってしまう)。
+    if (_srcLoading) {
+      await _srcFuture;
+      return;
+    }
+    if (_srcFuture != null &&
+        _player.processingState != ja.ProcessingState.idle) {
+      await _srcFuture;
+      return;
+    }
+    _srcLoading = true;
+    final f = _initSilentLoop().whenComplete(() => _srcLoading = false);
+    _srcFuture = f;
+    await f;
+  }
+
+  /// 無音の PCM WAV をその場で組み立てる。
+  ///
+  /// ★ = 点検で判明した不具合: ここに書いてあった base64 は「1 秒の無音」 と
+  ///   説明されていたが、 実際は **44 バイトのヘッダだけで data の長さが 0**
+  ///   (サンプル 0 個) だった。 `LoopMode.all` を掛けても即 completed に
+  ///   落ちるので、 無音ループは**一度も鳴っていなかった**。 常駐そのものは
+  ///   `playbackState.playing = true` で保っているので今日まで気付かれ
+  ///   なかったが、 音を持たない再生は OS から見て弱い。 実体を持たせる。
+  /// ★ 長さは 10 秒。 1 秒にすると ExoPlayer のループ遷移が毎秒起きて、
+  ///   そのたびに just_audio が知らせを送る (= watchdog の間隔を 0.5 秒から
+  ///   4 秒へ空けて音切れを直したばかりなので、 別の口から 1 Hz を戻さない)。
+  /// ★ 16bit signed / mono。 無音は 0 なので埋め直しも要らない (8bit だと
+  ///   無音が 0x80 という罠があり、 端末による当たり外れもある)。
+  static String _buildSilentWavDataUri() {
+    const int rate = 8000;
+    const int seconds = 10;
+    const int dataLen = rate * seconds * 2; // 16bit mono
+    final bytes = BytesBuilder();
+    void wU32(int v) {
+      bytes.addByte(v & 0xFF);
+      bytes.addByte((v >> 8) & 0xFF);
+      bytes.addByte((v >> 16) & 0xFF);
+      bytes.addByte((v >> 24) & 0xFF);
+    }
+
+    void wU16(int v) {
+      bytes.addByte(v & 0xFF);
+      bytes.addByte((v >> 8) & 0xFF);
+    }
+
+    bytes.add(ascii.encode('RIFF'));
+    wU32(36 + dataLen);
+    bytes.add(ascii.encode('WAVE'));
+    bytes.add(ascii.encode('fmt '));
+    wU32(16);
+    wU16(1); // PCM
+    wU16(1); // mono
+    wU32(rate);
+    wU32(rate * 2); // byteRate
+    wU16(2); // blockAlign
+    wU16(16); // bits
+    bytes.add(ascii.encode('data'));
+    wU32(dataLen);
+    bytes.add(Uint8List(dataLen)); // 全部 0 = 無音
+    return 'data:audio/wav;base64,${base64Encode(bytes.takeBytes())}';
+  }
+
   Future<void> _initSilentLoop() async {
     try {
-      // ── audio_session の設定 ──
-      // 動画再生用の AudioSession として明示することで、OS にも「これは
-      // メディア再生中」を宣言する。focus を取りには行かないが、属性は
-      // 正しく設定する。
-      // (audio_service が裏で audio_session も持っているので、こちらは
-      //  最小限の宣言だけ)
-      // 1 秒の無音 PCM WAV (44 byte header + 1秒分のゼロサンプル)。
-      const silentWavBase64 =
-          'UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=';
+      // ★ 音量は音源より**先に**落とす。 音源を入れた瞬間に watchdog の
+      //   play() が走っても、 音が漏れないようにするため。
+      await _player.setVolume(0.0); // 完全無音
       await _player.setAudioSource(
-        ja.AudioSource.uri(Uri.parse('data:audio/wav;base64,$silentWavBase64')),
+        ja.AudioSource.uri(Uri.parse(_buildSilentWavDataUri())),
         preload: true,
       );
       await _player.setLoopMode(ja.LoopMode.all);
-      await _player.setVolume(0.0); // 完全無音
+      await _player.setVolume(0.0);
+      silentLoopError = null;
     } catch (e) {
+      // ★ 握り潰さない。 ここが黙って死ぬと「バックグラウンド再生が時々
+      //   止まる」 として何年も残る (= 今回の 0 長 WAV がまさにそれ)。
+      silentLoopError = '$e';
       debugPrint('Silent loop init failed: $e');
     }
   }
+
+  /// 無音ループの用意に失敗した時の理由 (開発者向け。 null なら正常)。
+  static String? silentLoopError;
 
   /// watchdog Timer を起動。play() 中だけ動く。
   /// 500ms ごとに player.play() を強制呼び出し + playbackState に
@@ -209077,6 +210292,10 @@ class _BackgroundAudioHandler extends BaseAudioHandler {
   Future<void> play() async {
     _stoppedExplicitly = false;
     try {
+      // ★ 止まった後でも鳴らし直せるように、 音源の用意を必ず通す
+      //   (= `stop()` の後は idle に落ちていて、 そのまま play() しても
+      //   鳴らなかった)。
+      await _ensureSource();
       await _player.play();
       playbackState.add(playbackState.value.copyWith(
         playing: true,
@@ -209141,8 +210360,29 @@ class _BgPlaybackController {
   static _BackgroundAudioHandler? _handler;
   static bool _initializing = false;
 
-  /// 「動画ページの数」参照カウント。0 の時 Service 停止、1 以上で維持。
-  static int _refCount = 0;
+  /// 「今この常駐が要る」 と言っている持ち主の集まり。
+  ///
+  /// ★ = ユーザー報告「バックグラウンド再生が動画の切り替わりで不安定」 の
+  ///   主因。 以前はただの数 (`int _refCount`) で、 足す側と引く側が
+  ///   釣り合っていなかった:
+  ///     ・PiP の `initState` は **条件付き**で acquire する
+  ///       (背景再生が ON で Android で、 しかも overlay 越しに provider が
+  ///        引けた時だけ)
+  ///     ・PiP の `dispose` は **無条件**で release する
+  ///   そのため「acquire していない PiP を開いて閉じる」 だけで、 **まだ
+  ///   開いている全画面プレイヤーの分を 1 つ横取り**して数が 0 になり、
+  ///   1 秒後に常駐が止まっていた。 しかも `ensureRunning()` は
+  ///   「数が 0 なら何もしない」 ので、 その後は二度と生き返らない。
+  ///   全画面 ⇄ PiP の行き来は**動画を切り替える前後**に起きるので、
+  ///   利用者からは「切り替えのタイミングで裏の音が死ぬ」 と見える。
+  /// ★ 持ち主を札 (オブジェクト) で持つと、 二重に足す / 持っていない物を
+  ///   返す のどちらも**構造的に起こらない**。
+  static final Set<Object> _owners = <Object>{};
+
+  /// 設定画面など、 札を持たない所から使う共通の持ち主。
+  static const Object _manualOwner = 'manual';
+
+  static int get _refCount => _owners.length;
 
   /// release 時の遅延停止 Timer。1秒以内に再 acquire されたらキャンセル
   /// される (= フルスクリーン↔PiP 遷移中の一瞬の 0 を許容)。
@@ -209177,15 +210417,21 @@ class _BgPlaybackController {
   }
 
   /// 旧 API 互換: 内部的に acquire を呼ぶ。
-  static Future<void> start() => acquire();
+  static Future<void> start([Object? owner]) => acquire(owner);
 
   /// 旧 API 互換: 内部的に release を呼ぶ。
-  static Future<void> stop() => release();
+  static Future<void> stop([Object? owner]) => release(owner);
+
+  /// この持ち主が今この常駐を握っているか (= 返してよいか)。
+  static bool holds(Object owner) => _owners.contains(owner);
 
   /// 動画ページが開いた時呼ぶ。Service を起動 or 維持。
-  static Future<void> acquire() async {
+  ///
+  /// [owner] は呼んだ画面そのもの (`this`) を渡す。 同じ持ち主が二度呼んでも
+  /// 1 つとして数える。
+  static Future<void> acquire([Object? owner]) async {
     if (!Platform.isAndroid) return;
-    _refCount++;
+    _owners.add(owner ?? _manualOwner);
     debugPrint('BgPlayback: acquire (refCount=$_refCount)');
     // 既に保留中の停止 Timer があれば取消 (= 0 にはならず維持される)
     _stopTimer?.cancel();
@@ -209193,12 +210439,17 @@ class _BgPlaybackController {
     await _ensureRunning();
   }
 
-  /// 動画ページが閉じた時呼ぶ。1秒の grace period 後にカウント 0 なら停止。
+  /// 動画ページが閉じた時呼ぶ。1秒の grace period 後に持ち主が居なければ停止。
   /// 1秒以内に新しい動画ページが acquire したら停止しない (= 遷移中の維持)。
-  static Future<void> release() async {
+  ///
+  /// ★ **持っていない持ち主が返しても何も起きない**。 これが上の説明にある
+  ///   「横取り」 を止める要。
+  static Future<void> release([Object? owner]) async {
     if (!Platform.isAndroid) return;
-    _refCount--;
-    if (_refCount < 0) _refCount = 0;
+    if (!_owners.remove(owner ?? _manualOwner)) {
+      debugPrint('BgPlayback: release ignored (not an owner)');
+      return;
+    }
     debugPrint('BgPlayback: release (refCount=$_refCount)');
     if (_refCount > 0) return; // まだ他のページが開いている
     // 遅延停止: 1秒後にもまだ 0 なら本当に停止する
@@ -209289,7 +210540,7 @@ class _BgPlaybackController {
   static Future<void> forceStop() async {
     if (!Platform.isAndroid) return;
     debugPrint('BgPlayback: forceStop (was refCount=$_refCount)');
-    _refCount = 0;
+    _owners.clear();
     _stopTimer?.cancel();
     _stopTimer = null;
     await _stopNow();
@@ -210336,6 +211587,55 @@ class _WinGoogleSearchViewState extends State<_WinGoogleSearchView> {
   /// 音楽サイトなら「裏に回っても止めない」 JS を流す (= ユーザー要望:
   /// SoundCloud / Spotify 等のバックグラウンド再生)。 設定が OFF なら何も
   /// しない。 対象サイト以外にも流さない (普通のページの挙動は変えない)。
+  /// 広告落としを当てる (モバイル枝)。
+  ///
+  /// = ユーザー要望「google 検索に Jev を導入して広告ブロック」。
+  /// 1 段目 (名前で分かる広告を CSS で隠す) を入れてから、 判別が付かな
+  /// かった塊だけを Jev に聞く。 取れなければ 1 段目だけで終わる。
+  ///
+  /// ★ デスクトップ枝は doc-created で 1 回入れてあるので、 ここは
+  ///   モバイル専用。 Linux 枝には JS を入れる口が無いので当たらない。
+  Future<void> _applyAdBlockMobile(iaw.InAppWebViewController c) async {
+    if (!mounted) return;
+    final MindMapProvider prov;
+    try {
+      prov = context.read<MindMapProvider>();
+    } catch (_) {
+      return;
+    }
+    final js = prov.adBlockInstallJsOrNull();
+    if (js == null) return;
+    try {
+      await c.evaluateJavascript(source: js);
+    } catch (_) {
+      return;
+    }
+    if (!prov.jevAdBlockEnabled) return;
+    // 聞くのは検索結果のページだけ (無駄に判断を買わない)。
+    final u = _cur.toLowerCase();
+    if (!u.contains('google.') || !u.contains('/search')) return;
+    try {
+      final raw = await c.evaluateJavascript(source: googleAdCandidatesJs());
+      if (raw == null) return;
+      final text = raw is String ? raw : '$raw';
+      if (text.trim().isEmpty || text.trim() == '[]') return;
+      final j = jsonDecode(text);
+      if (j is! List) return;
+      final blocks = <Map<String, String>>[];
+      for (final e in j) {
+        if (e is! Map) continue;
+        final id = '${e['id'] ?? ''}';
+        final t = '${e['text'] ?? ''}';
+        if (id.isEmpty || t.isEmpty) continue;
+        blocks.add({'id': id, 'text': t});
+      }
+      if (blocks.isEmpty) return;
+      final ads = await prov.jevPickAdBlocks(blocks);
+      if (ads.isEmpty || !mounted) return;
+      await c.evaluateJavascript(source: googleAdApplyJs(ads));
+    } catch (_) {}
+  }
+
   void _applyWebAudioKeepAlive(String url) {
     if (!mounted) return;
     try {
@@ -210425,6 +211725,16 @@ try {
       //    Web 版 (read.amazon) の URL に読み替えてアプリ内で開く。
       try {
         await _ctrl.addScriptToExecuteOnDocumentCreated(_kBlockExternalAppJs);
+      } catch (_) {}
+      // ── 広告落とし (= ユーザー要望) ──
+      //    ★ この 1 か所で、 浮遊検索・脇の検索・分割セルの埋め込みなど
+      //      この widget を使う画面すべてに効く。
+      try {
+        final adJs =
+            context.read<MindMapProvider>().adBlockInstallJsOrNull();
+        if (adJs != null) {
+          await _ctrl.addScriptToExecuteOnDocumentCreated(adJs);
+        }
       } catch (_) {}
       // ── 位置情報を渡す (= ユーザー報告: Google マップ / Earth で現在地が
       //    表示されない)。 WebView2 は Windows の位置情報プロバイダに繋がって
@@ -210559,6 +211869,7 @@ try {
           _cur = url.toString();
           widget.onUrlChanged?.call(_cur);
           _applyWebAudioKeepAlive(_cur);
+          _applyAdBlockMobile(c);
         },
         // YouTube 等の SPA は onLoadStop が走らないので history でも拾う。
         onUpdateVisitedHistory: (c, url, _) {
@@ -210566,6 +211877,8 @@ try {
           _cur = url.toString();
           widget.onUrlChanged?.call(_cur);
           _applyWebAudioKeepAlive(_cur);
+          // ★ 検索し直しでも当て直す (広告が戻るのを防ぐ)。
+          _applyAdBlockMobile(c);
         },
       );
     }
@@ -211125,6 +212438,13 @@ void Function(String url, {bool newTab})? openUrlInAppFromAnywhere;
 /// ★ 引き出しそのものは開けない (重ねた画面の**裏**で開いてしまい、
 ///   見えないのに入力だけ吸う)。 上に出せる「ページを選ぶ窓」 を使う。
 Future<void> Function()? openPageListFromAnywhere;
+
+/// 「ページ切り替え」 の**ボタン**から呼ぶ入口 (= ユーザー要望: 押した所の
+/// 近くに「ページ一覧」「ページを追加」 の小さな一覧を出す)。
+///
+/// ★ [openPageListFromAnywhere] は一覧を直に開く口で、 キーボードの割り当てや
+///   右クリックの項目はそちらを使う (既に選んだ後なのでもう一段挟まない)。
+Future<void> Function(BuildContext anchor)? openPageMenuFromAnywhere;
 
 /// 押されたキーがどのコマンドかを本体に聞く入口。
 ///
@@ -227935,8 +229255,10 @@ class _CreateTableDialogState extends State<_CreateTableDialog> {
 
   static const int _maxQuickRows = 10;
   static const int _maxQuickCols = 10;
-  static const int _maxRows = 100;
-  static const int _maxCols = 30;
+  // ★ MCP の add_table_node と同じ上限を使う (= 画面からは作れない大きさの
+  //   表が道具からは作れてしまっていた)。 数字を 2 か所に持たない。
+  static const int _maxRows = MindMapProvider.kTableMaxRows;
+  static const int _maxCols = MindMapProvider.kTableMaxCols;
   static const double _cellSize = 22.0;
   static const double _cellGap = 2.0;
 
@@ -257182,6 +258504,14 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
   DateTime? _blockRevealUntil;
 
   bool get _revealBlocked {
+    // ★ モバイルでは塞がない。 縦の scrollPadding は「ソフトキーボードに
+    //   カーソルが隠れないように」 の仕事なので、 止めると打っている所が
+    //   見えなくなる。 困っているのはマウスで長い行の右を押す時なので、
+    //   デスクトップだけに効かせる。
+    if (kIsWeb ||
+        !(Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      return false;
+    }
     final t = _blockRevealUntil;
     return t != null && DateTime.now().isBefore(t);
   }
@@ -262160,6 +263490,11 @@ $currentText
       // 仕様を確かめたい時に説明書を読ませる (= ユーザー要望: skills 方式)。
       'list_app_docs',
       'read_app_doc',
+      // ★ 探す道具もこちらへ渡す (= こちらは別のエージェントの輪なので、
+      //   本体側だけに足すとテキストエディタの AI からは見えない)。
+      //   抜粋だけが返るので、 参照のために本文を丸ごと読ませずに済む。
+      'search_pages',
+      'search_folder_files',
     };
     final defs = jsonEncode([
       for (final t in McpServer.toolDefs)
@@ -263422,7 +264757,8 @@ $currentText
 ///   たびに組み直さなくて済む (組み直すと入力欄が作り直されて、
 ///   カーソルの位置が飛ぶ)。
 class _NoAutoReveal extends SingleChildRenderObjectWidget {
-  const _NoAutoReveal({required this.blocked, required Widget super.child});
+  const _NoAutoReveal({required this.blocked, required Widget child})
+      : super(child: child);
 
   final bool Function() blocked;
 
@@ -283693,6 +285029,11 @@ class _McpChatSession extends ChangeNotifier {
     //   全部要る時は AI が list_pages を呼ぶ (道具は残してある)。
     final pages = jsonEncode(provider.mcpNearbyPages());
     final hiddenPages = provider.mcpHiddenFromContextCount();
+    // ★ = ユーザー要望「ページを開いた状態で何か指示出すと、 フォルダーから
+    //   AI が位置から探していて冗長。 まずは開いたページ内から探すように」。
+    //   いま開いているページの中身 (ノードの題) を先に渡しておけば、
+    //   場所を確かめるための list_pages / list_folders が要らなくなる。
+    final curBrief = jsonEncode(provider.mcpCurrentPageBrief());
     // ユーザーが書き置いた前提を最優先で守らせる (= ユーザー要望)。
     final pre = provider.mcpPreamble.trim();
     final preBlock = pre.isEmpty
@@ -283727,7 +285068,24 @@ class _McpChatSession extends ChangeNotifier {
         'あなたはマインドマップアプリ「Kamispec」を操作するアシスタントです。\n'
         '以下のツールを使ってページやノードを読み書きできます。\n'
         'ツール定義: $tools\n'
-        '近くのページ一覧 (今のページと同じフォルダー): $pages\n'
+        // ★ 開いているページを**一覧より先**に置く (= 探し回らせない)。
+        '【いま開いているページ (どこを直すか書かれていない指示は、 '
+        'まずこのページの中で探して済ませてください)】\n'
+        '$curBrief\n'
+        'この内容はもう渡してあるので、 対象の場所を確かめるため '
+        'だけに list_pages や list_folders を呼ばないでください。 '
+        '上の nodes に見当たらない時や、 もっと細かく見たい時だけ '
+        'read_page (pageId を省けば今のページ) を呼びます。 '
+        'ほかのページを触るよう名指しされた時だけ一覧を引いて '
+        'ください。 '
+        '★ 探し物がある時は search_pages (要素の題名・メモ・注釈・表) '
+        'か search_folder_files (貼ってあるファイルの中身) を使って '
+        'ください。 どちらも当たった所の短い抜粋だけを返すので、 '
+        '一覧を引いてページを 1 枚ずつ読むより桁違いに軽いです。 '
+        'verdict が absent なら、 ページを順に読み始めず「見付から '
+        'なかった」 と伝えてください。\n'
+        '近くのページ一覧 (今のページと同じフォルダー / '
+        '先頭が今のページ): $pages\n'
         '${hiddenPages > 0 ? 'この一覧には出していないページが他に $hiddenPages 枚あります。'
             '必要なら list_pages で全部取れます。\n' : ''}'
         'ツールを使う時は、 説明文を付けず次の JSON だけを 1 つ返してください:\n'
@@ -283814,7 +285172,7 @@ class _McpChatSession extends ChangeNotifier {
         // ── どのページの背景かを取り違えない (= ユーザー報告: 直前に
         //    作らせたマークダウンのページの背景を変えてきた) ──
         '★ 背景を変えるのは、 名指しされない限り**利用者が今見て '
-        'いるページ** (list_pages の isCurrent が true の 1 枚) です。 '
+        'いるページ** (上の「いま開いているページ」 の pageId) です。 '
         'この会話でさっき自分が作ったページではありません。 pageId を '
         '省けば今のページになります。 マークダウンや動画エディターの '
         'ページには背景が無いので断られます。 その時は別のページを '
@@ -283829,11 +285187,14 @@ class _McpChatSession extends ChangeNotifier {
         // ── どのページの話かを取り違えない (= ユーザー報告: 「このページ
         //    消して」 と頼んだのに、 一覧を上から順に消していき最後の 1 枚
         //    しか残らなかった) ──
-        '★「このページ」「今開いているページ」 は、 list_pages の '
-        'isCurrent が true の 1 枚を指します。 名前から当てずっぽうで '
-        '選ばず、 消す前・種類を変える前に list_pages で確かめてください。 '
-        'pageId や nodeId は list_pages / read_page が返した物だけを使い、 '
-        'それらしい id を自分で組み立てないでください。\n'
+        '★「このページ」「今開いているページ」 は、 上の「いま開いて '
+        'いるページ」 の pageId の 1 枚を指します (list_pages なら '
+        'isCurrent が true の 1 枚と同じ物)。 名前から当てずっぽうで '
+        '選ばないでください。 名指しされた別のページを消す・種類を '
+        '変える時だけ list_pages で確かめます。 '
+        'pageId や nodeId は上の一覧か list_pages / read_page が返した '
+        '物だけを使い、 それらしい id を自分で組み立てないで '
+        'ください。\n'
         '★ 消す・入れ替える範囲は頼まれた分だけにしてください。 '
         '1 枚と言われたら 1 枚です。 逆に、 何枚でも消して構いません。 '
         '枚数の上限はないので、 複数枚・まとめて・全部と頼まれたら、 '
@@ -283961,6 +285322,11 @@ class _McpChatSession extends ChangeNotifier {
   /// 3000 文字を超え、 1200 文字では connections まで届かない)。
   static String _capToolResult(String name, String text) {
     const caps = {
+      // 探す道具は抜粋だけを返すので、 少し広く取る (途中で切ると
+      //   JSON が壊れて読めなくなる)。 件数と抜粋は provider 側で
+      //   既に絞ってある。
+      'search_pages': 6000,
+      'search_folder_files': 5000,
       'read_app_doc': 20000,
       'read_page': 8000,
       'text_file_read': 8000,
@@ -284354,6 +285720,30 @@ class _McpChatDialogState extends State<_McpChatDialog>
   /// なく独自の欄に出す。 以前は会話の上で展開していて、 開くと画面から
   /// はみ出していた)。 開いている間は会話の代わりにこの欄を出す。
   bool _showCapabilityPanel = false;
+
+  // ── 説明欄を「初回だけ」 自分から出すための覚え (= ユーザー要望) ──
+  //    ★ 出し終えた事は端末に残す (プロセスをまたいでも 1 回きり。 CLI の
+  //      単独窓もこの欄を使うため)。
+  static const String _kCapabilitySeenKey = 'mcpCapabilityShown_v1';
+  static bool? _capabilitySeen;
+
+  /// まだ一度も説明欄を出していなければ true (= 出してよい)。 呼んだ時点で
+  /// 「出した」 事にするので、 次からは false を返す。
+  Future<bool> _takeFirstCapabilityShow() async {
+    if (_capabilitySeen == true) return false;
+    try {
+      final sp = await SharedPreferences.getInstance();
+      if (sp.getBool(_kCapabilitySeenKey) ?? false) {
+        _capabilitySeen = true;
+        return false;
+      }
+      await sp.setBool(_kCapabilitySeenKey, true);
+    } catch (_) {
+      // 覚えられない時は今までどおり出す (初回扱い)。
+    }
+    _capabilitySeen = true;
+    return true;
+  }
 
   /// パネルを畳んでいるか (= ユーザー要望: AI アシスタントのパネルを
   /// 折り畳めるように)。 会話は残したまま、 見出しの帯だけにする。
@@ -285720,7 +287110,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
                           : Colors.white24),
                   const SizedBox(width: 5),
                   Expanded(
-                    child: Text(s.title,
+                    child: Text(s.tabTitle,
                         maxLines: 1,
                         softWrap: false,
                         overflow: TextOverflow.ellipsis,
@@ -285866,6 +287256,63 @@ class _McpChatDialogState extends State<_McpChatDialog>
   /// 札を掴んでいる最中か (= 受け口を広げるため)。
   bool _draggingCliTab = false;
 
+  // ── 札の名前を押したら必ず切り替わるようにする (= ユーザー要望
+  //    「ヘッダーのタブ名をクリックすることでタブを切り替えられるように」) ──
+  //
+  //  ★ 札は並べ替えのために [LongPressDraggable] (220ms) で包んである。
+  //    掴む判定が立ち上がると **InkWell の onTap は取り消される**ので、
+  //    少し長めに押しただけで「押したのに切り替わらない」 が起きていた。
+  //  ★ そこで名前の所だけ [Listener] で受ける。 Listener は勝ち負けの
+  //    取り合い (gesture arena) に入らないので、 掴む判定が勝っても
+  //    「押して → ほとんど動かさずに放した」 は必ず拾える (ブラウザの
+  //    タブと同じ手触り)。 動かしたら並べ替えなので何もしない。
+  /// 名前を押し始めた場所 (放した所と比べて、 掴んだのか押したのかを見る)。
+  Offset? _tabPressAt;
+
+  /// 直前に切り替えた相手と時刻 (Listener と InkWell の二重発火を防ぐ)。
+  Object? _lastTabSwitch;
+  DateTime _lastTabSwitchAt = DateTime.fromMillisecondsSinceEpoch(0);
+
+  /// 同じ札の切り替えを 400ms に 1 回だけ通す。
+  void _tabTapOnce(Object key, VoidCallback action) {
+    final now = DateTime.now();
+    final same = _lastTabSwitch is String
+        ? _lastTabSwitch == key
+        : identical(_lastTabSwitch, key);
+    if (same &&
+        now.difference(_lastTabSwitchAt) < const Duration(milliseconds: 400)) {
+      return;
+    }
+    _lastTabSwitch = key;
+    _lastTabSwitchAt = now;
+    action();
+  }
+
+  /// 札の名前を包んで「押して放したら切り替え」 にする。
+  Widget _tabNameTapArea({
+    required Object tapKey,
+    required VoidCallback onTap,
+    required Widget child,
+  }) {
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: (e) => _tabPressAt = e.position,
+      onPointerUp: (e) {
+        final from = _tabPressAt;
+        _tabPressAt = null;
+        if (from == null) return;
+        // ★ 掴んだかどうか ([_draggingCliTab]) では見ない。 長押しの判定は
+        //   **動かさなくても** 220ms で立ち上がるので、 それで弾くと
+        //   「少し長く押しただけ」 がまた切り替わらなくなる。 動いた距離
+        //   だけで見る (動かしていなければ、 どこにも落ちていない)。
+        if ((e.position - from).distance > 8) return;
+        _tabTapOnce(tapKey, onTap);
+      },
+      onPointerCancel: (_) => _tabPressAt = null,
+      child: child,
+    );
+  }
+
   /// 札と札の間に挟む、 細い「ここへ落とす」 受け口。
   ///
   /// ★ = ユーザー要望「ドラッグで位置を入れ替えられるようにして欲しい」。
@@ -285886,6 +287333,11 @@ class _McpChatDialogState extends State<_McpChatDialog>
         setState(() {
           final moved = _tabOrder.removeAt(from);
           _tabOrder.insert(to.clamp(0, _tabOrder.length), moved);
+          // ★ = ユーザー要望「入れ替えたら表示順もそれに合わせて変わるように」。
+          //   端末の並び ([_cliTabs]) も札の順にそろえる。 分割ビューの枠割りや
+          //   「次に出す札」 はこちらを見ているので、 そろえないと帯の並びと
+          //   画面の並びが食い違う。
+          _cliTabs.sort((a, b) => _tabRank(a).compareTo(_tabRank(b)));
         });
         // ★ = ユーザー要望「画面分割した状態でタブを動かしたら、 タブの並びが
         //   より左側にあるものが左の画面に出るように」。 並べ替えたら枠の
@@ -286297,6 +287749,25 @@ class _McpChatDialogState extends State<_McpChatDialog>
                   icon: const Icon(Icons.unfold_less_rounded,
                       color: Colors.white38, size: 19),
                   onPressed: () => _setCollapsed(true),
+                ),
+              // ── アプリの外に出す (= ユーザー要望: ヘッダーに置いて
+              //    欲しい) ──
+              //    ★ 一覧の下にも同じボタンがあるが、 端末を出している間は
+              //      一覧まで戻らないと押せなかった。 見出しにも置く。
+              //    ★ 既に単独窓の中で見ている時は出さない (出す先が無い)。
+              if (_isDesktop && !MindMapProvider.externalToolWindow)
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  constraints: _hdrBtnConstraints(context),
+                  padding: _narrowHeader(context)
+                      ? EdgeInsets.zero
+                      : const EdgeInsets.all(8),
+                  // ★ = ユーザー要望「アプリの外に出すボタンだけに色を付けないで
+                  //   欲しい、 周りに合わせて」。 見出しの他のボタンと同じ灰色に。
+                  tooltip: provider.t('float.popOutWindow'),
+                  icon: const Icon(Icons.open_in_new_rounded,
+                      color: Colors.white54, size: 18),
+                  onPressed: () => unawaited(_openCliExternalWindow(provider)),
                 ),
               // 説明をもう一度見る (= ユーザー要望: ヘッダーに ⓘ で置く)。
               // ★ CLI の画面では、 会話まわりのボタンは出さない (= ユーザー
@@ -286896,6 +288367,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
               size: 15, color: Colors.white38),
           onPressed: () {
             AgentCli.forget();
+            _invalidateCliFind();
             _showInlineTerminal(
                 _buildAgentCliList(provider), provider.t('cli.title'),
                 isTerminal: false);
@@ -287964,6 +289436,18 @@ class _McpChatDialogState extends State<_McpChatDialog>
                 style: const TextStyle(color: Colors.white, fontSize: 12.5)),
           ]),
         ),
+        // ★ = ユーザー要望「CLI などのタブの名前を変えられるように」。
+        PopupMenuItem<String>(
+          value: 'rename',
+          height: 38,
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            const Icon(Icons.drive_file_rename_outline_rounded,
+                size: 15, color: Color(0xFF80CBC4)),
+            const SizedBox(width: 9),
+            Text(provider.t('cli.renameTab'),
+                style: const TextStyle(color: Colors.white, fontSize: 12.5)),
+          ]),
+        ),
         PopupMenuItem<String>(
           value: 'close',
           height: 38,
@@ -287974,6 +289458,27 @@ class _McpChatDialogState extends State<_McpChatDialog>
                 style: const TextStyle(color: Colors.white, fontSize: 12.5)),
           ]),
         ),
+        // この札を、 今並べている所へ**足す** (= 3 枚目 / 4 枚目)。
+        // ★ = ユーザー要望「もう 1 つ並べるは 4 画面の上に持ってきて欲しい」。
+        //   「分割ビュー (4 画面)」 より手前に置く。
+        if (!_cliGridActive &&
+            split &&
+            _extraCliSessions.length < _kMaxExtraPanes &&
+            !_splitPaneSessions().any((e) => e != null && identical(e, s)))
+          PopupMenuItem<String>(
+            value: 'addthis',
+            height: 38,
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              const Icon(Icons.view_column_rounded,
+                  size: 15, color: Color(0xFF7CD992)),
+              const SizedBox(width: 9),
+              Text(
+                  provider
+                      .t('cli.splitAdd')
+                      .replaceFirst('{n}', '${_splitPaneCount() + 1}'),
+                  style: const TextStyle(color: Colors.white, fontSize: 12.5)),
+            ]),
+          ),
         // ── 出し方 (= ユーザー要望: そのタブ単体で開くモード /
         //    分割ビューモード) ──
         //    ★ 枠の見出しの右クリックもここへ来る ([_buildCliGridCell])。
@@ -288011,28 +289516,13 @@ class _McpChatDialogState extends State<_McpChatDialog>
                   style: const TextStyle(color: Colors.white, fontSize: 12.5)),
             ]),
           ),
-        // この札を、 今並べている所へ**足す** (= 3 枚目 / 4 枚目)。
-        if (!_cliGridActive &&
-            split &&
-            _extraCliSessions.length < _kMaxExtraPanes &&
-            !_splitPaneSessions().any((e) => e != null && identical(e, s)))
-          PopupMenuItem<String>(
-            value: 'addthis',
-            height: 38,
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              const Icon(Icons.view_column_rounded,
-                  size: 15, color: Color(0xFF7CD992)),
-              const SizedBox(width: 9),
-              Text(
-                  provider
-                      .t('cli.splitAdd')
-                      .replaceFirst('{n}', '${_splitPaneCount() + 1}'),
-                  style: const TextStyle(color: Colors.white, fontSize: 12.5)),
-            ]),
-          ),
       ],
     );
     if (picked == null || !mounted) return;
+    if (picked == 'rename') {
+      await _renameCliTab(provider, s);
+      return;
+    }
     if (picked == 'gridmode') {
       _setCliGridMode(provider, !_cliGridMode);
       return;
@@ -288277,36 +289767,33 @@ class _McpChatDialogState extends State<_McpChatDialog>
           borderRadius: BorderRadius.circular(6),
           child: InkWell(
             borderRadius: BorderRadius.circular(6),
-            onTap: () async {
-              // 端末を出していたら会話へ戻し、 押した会話へ切り替える。
-              _backToChatView();
-              if (provider.mcpCurrentSessionId != id) {
-                await provider.switchMcpSession(id);
-                if (!mounted) return;
-                _reloadFromSession();
-              }
-              if (mounted) setState(() {});
-            },
+            onTap: () =>
+                _tabTapOnce(id, () => unawaited(_onChatTabTap(provider, id))),
             child: Padding(
               padding: EdgeInsets.only(left: 8, right: many ? 2 : 8),
               child: Row(mainAxisSize: MainAxisSize.min, children: [
                 Icon(Icons.auto_awesome_rounded,
                     size: 12, color: on ? Colors.white : Colors.white38),
                 const SizedBox(width: 6),
-                ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 140),
-                  child: Text(
-                      title.isEmpty
-                          ? provider.t('cli.newTabAssistant')
-                          : title,
-                      maxLines: 1,
-                      softWrap: false,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                          color: on ? Colors.white : Colors.white60,
-                          fontSize: 11.5,
-                          fontWeight:
-                              on ? FontWeight.w700 : FontWeight.w400)),
+                // ★ 名前を押したら必ず切り替わるようにする (= ユーザー要望)。
+                _tabNameTapArea(
+                  tapKey: id,
+                  onTap: () => unawaited(_onChatTabTap(provider, id)),
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 140),
+                    child: Text(
+                        title.isEmpty
+                            ? provider.t('cli.newTabAssistant')
+                            : title,
+                        maxLines: 1,
+                        softWrap: false,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            color: on ? Colors.white : Colors.white60,
+                            fontSize: 11.5,
+                            fontWeight:
+                                on ? FontWeight.w700 : FontWeight.w400)),
+                  ),
                 ),
                 // ★ = ユーザー要望「AI(API) が開いているフォルダーが
                 //   表示されていないから表示されるように」。 端末の札と同じ形で、
@@ -288367,6 +289854,20 @@ class _McpChatDialogState extends State<_McpChatDialog>
     final w = _cliWorkDir.trim();
     if (w.isNotEmpty) return w;
     return terminalBaseDirOrNull(provider) ?? '';
+  }
+
+  /// 会話の札を押した時 (= 端末を出していたら会話へ戻し、 その会話へ移る)。
+  ///
+  /// ★ 名前を押した時 ([_tabNameTapArea]) と札を押した時の両方から呼ぶので、
+  ///   中身をここへ 1 つにまとめる。
+  Future<void> _onChatTabTap(MindMapProvider provider, String id) async {
+    _backToChatView();
+    if (provider.mcpCurrentSessionId != id) {
+      await provider.switchMcpSession(id);
+      if (!mounted) return;
+      _reloadFromSession();
+    }
+    if (mounted) setState(() {});
   }
 
   /// 会話の札を帯から外す (会話そのものは消さない = 一覧から開き直せる)。
@@ -288456,6 +289957,23 @@ class _McpChatDialogState extends State<_McpChatDialog>
   ///   別々の並びで持っていた間は、 会話の札を端末の札の間へ動かせなかった。
   ///   1 本にまとめて、 どちらも同じ受け口で並べ替えられるようにする。
   static final List<Object> _tabOrder = <Object>[];
+
+  /// 帯を横に流すための控え (パソコンでは車輪でだけ流す。 下の説明を見る)。
+  final ScrollController _cliTabBarScroll = ScrollController();
+
+  /// 車輪で帯を流す (パソコン用)。
+  void _cliTabBarWheel(PointerSignalEvent e) {
+    if (e is! PointerScrollEvent) return;
+    if (!_cliTabBarScroll.hasClients) return;
+    final p = _cliTabBarScroll.position;
+    // 縦の車輪でも横へ流す (帯は横向きなので、 そのまま足す)。
+    final d = e.scrollDelta.dy.abs() > e.scrollDelta.dx.abs()
+        ? e.scrollDelta.dy
+        : e.scrollDelta.dx;
+    final next =
+        (p.pixels + d).clamp(p.minScrollExtent, p.maxScrollExtent);
+    if (next != p.pixels) _cliTabBarScroll.jumpTo(next);
+  }
 
   List<Object> _orderedTabs(MindMapProvider provider) {
     final chat = _openChatIds(provider);
@@ -288549,7 +290067,19 @@ class _McpChatDialogState extends State<_McpChatDialog>
           //   入り切らない時はこの中だけが流れる (「+」 は外に残るので、
           //   いつでも右端で待っている)。
           Expanded(
-            child: ListView.builder(
+            // ★ = ユーザー要望「タブをドラッグで順番を入れ替えられるように」。
+            //   受け口 ([_buildTabDropGap]) も掴みも前から在ったのに始まらない
+            //   事が多かったのは、 帯が横に流れる一覧だから。 マウスの掴み
+            //   判定は **1px** 動いた時点で立つので、 長押し (220ms) を待つ前に
+            //   **スクロールが先に掴みを取って**しまい、 札のドラッグが負けて
+            //   いた。 パソコンでは帯を指で流す必要が無いので、 **流すのは
+            //   車輪だけ**にして取り合いを無くす。 触って使う端末は今までどおり。
+            child: Listener(
+              onPointerSignal: _isDesktop ? _cliTabBarWheel : null,
+              child: ListView.builder(
+              controller: _cliTabBarScroll,
+              physics:
+                  _isDesktop ? const NeverScrollableScrollPhysics() : null,
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 4),
               // ★ = ユーザー要望「ドラッグで位置を入れ替えられるように」。
@@ -288654,7 +290184,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
                               const Icon(Icons.vertical_split_rounded,
                                   size: 13, color: Color(0xFF4FC3F7)),
                               const SizedBox(width: 6),
-                              Text(s.title,
+                              Text(s.tabTitle,
                                   style: const TextStyle(
                                       color: Colors.white, fontSize: 11.5)),
                             ]),
@@ -288662,7 +290192,8 @@ class _McpChatDialogState extends State<_McpChatDialog>
                         ),
                         child: InkWell(
                           borderRadius: BorderRadius.circular(6),
-                          onTap: () => _onCliTabTap(provider, s),
+                          onTap: () =>
+                              _tabTapOnce(s, () => _onCliTabTap(provider, s)),
                           // ★ = ユーザー要望「codex や claudecode のタブを
                           //   右クリックした時にログインしているアカウントが
                           //   分かるようにして欲しいのと、 切り替えられる
@@ -288679,20 +290210,28 @@ class _McpChatDialogState extends State<_McpChatDialog>
                                       ? const Color(0xFF9CCC65)
                                       : Colors.white24),
                               const SizedBox(width: 6),
-                              ConstrainedBox(
-                                constraints:
-                                    const BoxConstraints(maxWidth: 130),
-                                child: Text(s.title,
-                                    maxLines: 1,
-                                    softWrap: false,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: TextStyle(
-                                        color:
-                                            on ? Colors.white : Colors.white60,
-                                        fontSize: 11.5,
-                                        fontWeight: on
-                                            ? FontWeight.w700
-                                            : FontWeight.w400)),
+                              // ★ 名前を押したら必ず切り替わるようにする
+                              //   (= ユーザー要望。 掴む判定に取り消されない
+                              //   [Listener] で受ける)。
+                              _tabNameTapArea(
+                                tapKey: s,
+                                onTap: () => _onCliTabTap(provider, s),
+                                child: ConstrainedBox(
+                                  constraints:
+                                      const BoxConstraints(maxWidth: 130),
+                                  child: Text(s.tabTitle,
+                                      maxLines: 1,
+                                      softWrap: false,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                          color: on
+                                              ? Colors.white
+                                              : Colors.white60,
+                                          fontSize: 11.5,
+                                          fontWeight: on
+                                              ? FontWeight.w700
+                                              : FontWeight.w400)),
+                                ),
                               ),
                               // ★ = ユーザー要望「タブと開いているフォルダーを
                               //   セットにしたタブって作れないの? どのタブが
@@ -288750,6 +290289,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
                   ),
                 );
               },
+            ),
             ),
           ),
           // ★ = ユーザー要望「参照するフォルダー先を画面毎に設定できる
@@ -288817,10 +290357,15 @@ class _McpChatDialogState extends State<_McpChatDialog>
                 padding: EdgeInsets.zero,
                 iconSize: 16,
                 constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                // ★ = ユーザー要望「分割表示にすると単体表示にするが紛らわしい
+                //   からアイコン入れ替えて欲しい」。 絵は**今の形**ではなく
+                //   **押すとどうなるか**を表す (説明文と同じ向きにそろえる)。
+                //   分割ビュー中は「1 枚にする」 の四角、 単体表示中は
+                //   「並べる」 の格子。
                 icon: Icon(
                     _cliGridMode
-                        ? Icons.grid_view_rounded
-                        : Icons.crop_square_rounded,
+                        ? Icons.crop_square_rounded
+                        : Icons.grid_view_rounded,
                     size: 16,
                     color: _cliGridMode
                         ? const Color(0xFF9CCC65)
@@ -288849,6 +290394,59 @@ class _McpChatDialogState extends State<_McpChatDialog>
       ),
       ),
     );
+  }
+
+  /// 札の名前を付け直す (= ユーザー要望「CLI などのタブの名前を変えられる
+  /// ようにして欲しい」)。 空にすると元の名前へ戻る。
+  ///
+  /// ★ 起こした時の名前 ([AgentCliSession.title]) は触らない。 あちらは
+  ///   開き直しや重複の見分けに使うため。 画面に出すのは `tabTitle`。
+  Future<void> _renameCliTab(
+      MindMapProvider provider, AgentCliSession s) async {
+    final ctrl = TextEditingController(text: s.tabTitle);
+    final name = await _showChatDialogCentered<String>(
+      width: 420,
+      height: 210,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E32),
+        title: Text(provider.t('cli.renameTab'),
+            style: const TextStyle(color: Colors.white, fontSize: 14)),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          TextField(
+            controller: ctrl,
+            autofocus: true,
+            style: const TextStyle(color: Colors.white, fontSize: 13),
+            decoration: InputDecoration(
+              isDense: true,
+              hintText: s.title,
+              hintStyle: const TextStyle(color: Colors.white24),
+            ),
+            onSubmitted: (v) => Navigator.of(dctx).pop(v),
+          ),
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text(provider.t('cli.renameTabHint'),
+                style: const TextStyle(color: Colors.white38, fontSize: 11)),
+          ),
+        ]),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dctx).pop(),
+            child: Text(provider.t('common.cancel'),
+                style: const TextStyle(color: Colors.white54)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(dctx).pop(ctrl.text),
+            child: Text(provider.t('btn.ok')),
+          ),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    if (name == null || !mounted) return;
+    s.rename(name);
+    setState(() {});
   }
 
   /// 帯を右クリックした時の一覧 (= ユーザー要望)。
@@ -288922,6 +290520,25 @@ class _McpChatDialogState extends State<_McpChatDialog>
                   style: const TextStyle(color: Colors.white, fontSize: 12.5)),
             ]),
           ),
+        // ★ = ユーザー指摘「3〜4 分割って CLI や API の画面をだよ?」。
+        //   並べている時は「もう 1 つ増やす」 を出す (左右分割のボタンは
+        //   並べている間は「やめる」 になるので、 増やす道が無かった)。
+        // ★ = ユーザー要望「もう 1 つ並べるは 4 画面の上に持ってきて欲しい」。
+        if (!_cliGridActive && _canAddSplitPane)
+          PopupMenuItem<String>(
+            value: 'addpane',
+            height: 38,
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              const Icon(Icons.view_column_rounded,
+                  size: 15, color: Color(0xFF7CD992)),
+              const SizedBox(width: 9),
+              Text(
+                  provider
+                      .t('cli.splitAdd')
+                      .replaceFirst('{n}', '${_splitPaneCount() + 1}'),
+                  style: const TextStyle(color: Colors.white, fontSize: 12.5)),
+            ]),
+          ),
         // ── 出し方 (= ユーザー要望: そのタブ単体で開くモード /
         //    分割ビューモード) ──
         PopupMenuItem<String>(
@@ -288954,24 +290571,6 @@ class _McpChatDialogState extends State<_McpChatDialog>
                   color: const Color(0xFF7CD992)),
               const SizedBox(width: 9),
               Text(provider.t(split ? 'cli.unsplit' : 'cli.split'),
-                  style: const TextStyle(color: Colors.white, fontSize: 12.5)),
-            ]),
-          ),
-        // ★ = ユーザー指摘「3〜4 分割って CLI や API の画面をだよ?」。
-        //   並べている時は「もう 1 つ増やす」 を出す (左右分割のボタンは
-        //   並べている間は「やめる」 になるので、 増やす道が無かった)。
-        if (!_cliGridActive && _canAddSplitPane)
-          PopupMenuItem<String>(
-            value: 'addpane',
-            height: 38,
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              const Icon(Icons.view_column_rounded,
-                  size: 15, color: Color(0xFF7CD992)),
-              const SizedBox(width: 9),
-              Text(
-                  provider
-                      .t('cli.splitAdd')
-                      .replaceFirst('{n}', '${_splitPaneCount() + 1}'),
                   style: const TextStyle(color: Colors.white, fontSize: 12.5)),
             ]),
           ),
@@ -289079,11 +290678,29 @@ class _McpChatDialogState extends State<_McpChatDialog>
   /// ログインはアプリが肩代わりしない。本物の擬似端末で CLI を起動すれば、
   /// CLI が自分で既定のブラウザを開き、戻りも自分で受け取る
   /// (VSCode の統合ターミナルと同じ考え方)。
+  /// CLI の探索結果の控え。
+  ///
+  /// ★ = ユーザー報告「CLI の画面を開く際に欄が頻繁に点滅する」。 一覧は
+  ///   `ListenableBuilder(listenable: provider)` の中に居るので、 provider が
+  ///   何か知らせるたびに組み直される。 そこで `AgentCli.findAll()` を
+  ///   **毎回呼んで**いたため、 `FutureBuilder` はそのつど「読み込み中」 へ
+  ///   戻り、 ぐるぐるが出ては消えるのを繰り返していた (= 点滅の正体)。
+  ///   探索そのものは [AgentCli] 側で控えているので重くはないが、 **Future が
+  ///   毎回別物になる**事が問題。 ここで 1 本持って使い回す。
+  /// ★ 入れ直し / 更新の後は [AgentCli.forget] と一緒に捨てる
+  ///   ([_invalidateCliFind])。
+  Future<List<AgentCliFound>>? _cliFindFuture;
+
+  Future<List<AgentCliFound>> get _cliFind =>
+      _cliFindFuture ??= AgentCli.findAll();
+
+  void _invalidateCliFind() => _cliFindFuture = null;
+
   Widget _buildAgentCliSection(MindMapProvider provider) {
     // ★ CLI の機能は Pro 以上 (= ユーザー要望)。 探しにも行かない。
     if (!provider.canUseCliAi) return _buildCliProRequired(provider);
     return FutureBuilder<List<AgentCliFound>>(
-      future: AgentCli.findAll(),
+      future: _cliFind,
       builder: (ctx, snap) {
         final list = snap.data ?? const <AgentCliFound>[];
         return Column(
@@ -289109,6 +290726,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
                     size: 16, color: Colors.white38),
                 onPressed: () {
                   AgentCli.forget();
+                  _invalidateCliFind();
                   setState(() {});
                 },
               ),
@@ -289686,7 +291304,8 @@ class _McpChatDialogState extends State<_McpChatDialog>
     return ListenableBuilder(
       listenable: provider,
       builder: (_, __) => FutureBuilder<List<AgentCliFound>>(
-      future: AgentCli.findAll(),
+      // ★ 毎回作り直さない (= 点滅の元。 [_cliFind] の説明を見る)。
+      future: _cliFind,
       builder: (ctx, snap) {
         if (snap.connectionState != ConnectionState.done) {
           return const Center(
@@ -289733,7 +291352,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
                         size: 16, color: Color(0xFF9CCC65)),
                     const SizedBox(width: 9),
                     Expanded(
-                      child: Text(s.title,
+                      child: Text(s.tabTitle,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
@@ -289779,25 +291398,10 @@ class _McpChatDialogState extends State<_McpChatDialog>
             //    ★ 既に単独窓の中で見ている時は「外に出す」 は出さない。
             if (_isDesktop && !MindMapProvider.externalToolWindow) ...[
               const SizedBox(height: 10),
+              // ★ = ユーザー要望「別の窓で開くは既に右上にボタンとしてある
+              //   から要らない」。 見出しの「アプリの外に出す」 に一本化した
+              //   ので、 ここからは外した (説明の 1 行はそのまま残す)。
               Row(children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: const Color(0xFF80CBC4),
-                      side: const BorderSide(color: Color(0xFF37605C)),
-                      visualDensity: VisualDensity.compact,
-                      padding: const EdgeInsets.symmetric(vertical: 9),
-                    ),
-                    icon: const Icon(Icons.open_in_new_rounded, size: 16),
-                    label: FittedBox(
-                      fit: BoxFit.scaleDown,
-                      child: Text(provider.t('cli.popOut'),
-                          style: const TextStyle(fontSize: 11.5)),
-                    ),
-                    onPressed: () => unawaited(_openCliExternalWindow(provider)),
-                  ),
-                ),
-                const SizedBox(width: 8),
                 Expanded(
                   child: OutlinedButton.icon(
                     style: OutlinedButton.styleFrom(
@@ -290673,6 +292277,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
       if (!mounted) return;
       // 入れ直した後は、 探し直さないと「見つかりません」 のままになる。
       AgentCli.forget();
+      _invalidateCliFind();
       if (session.stoppedByUser) {
         // ★ 「終了」 を押したら、 そのタブを畳む (= ユーザー要望: 新規タブ)。
         //   ★ タブになっている物は [_dropCliTab] に任せる (= 移り先の
@@ -290731,8 +292336,11 @@ class _McpChatDialogState extends State<_McpChatDialog>
       //   ★ 「止める」 を押した時は上の [stoppedByUser] で return 済み。
       //     終了コードが 0 以外の時は開き直さない (失敗を繰り返さない)。
       if (code == 0 && !session.isInstall && session.updateRestartWanted) {
-        session.updateRestartHandled = true;
-        unawaited(_reopenCliAfterUpdate(provider, session));
+        // ★ 掛け金は開けた時だけ (走っている最中の試みが空振りしていても、
+        //   ここで必ずもう一度試せるようにする)。
+        unawaited(_reopenCliAfterUpdate(provider, session).then((ok) {
+          if (ok) session.updateRestartHandled = true;
+        }));
       }
       // ★ 入れ終わらなかった時は、 理由の心当たりを出す (= ユーザー報告:
       //   セキュリティソフトに Node.js の動作を止められ、 インストールが
@@ -290749,6 +292357,9 @@ class _McpChatDialogState extends State<_McpChatDialog>
   /// ★ [_cliTabs] と同じく static。 この欄 (`_McpChatDialogState`) は閉じたり
   ///   開き直したりする度に作り直されるが、 走っている札はその間も生き続ける。
   static final Set<AgentCliSession> _cliUpdateWatched = <AgentCliSession>{};
+
+  /// 今まさに開き直している札 (知らせが何度も来るので重ねない)。
+  static final Set<AgentCliSession> _cliUpdateBusy = <AgentCliSession>{};
 
   /// 「更新が済んだ」 と言い出したら、 その場で新しいセッションを開く。
   ///
@@ -290770,9 +292381,18 @@ class _McpChatDialogState extends State<_McpChatDialog>
         return;
       }
       if (!s.updateRestartWanted) return;
-      // ★ 先に掛け金を立てる (終了の知らせでもう一度呼ばれるため)。
-      s.updateRestartHandled = true;
-      unawaited(_reopenCliAfterUpdate(provider, s));
+      // ★ 重ねて走らせない (知らせは何度も来る)。 掛け金 (= 二度と開かない)
+      //   は**開けた時だけ**立てる。 立てて失敗すると、 終了の知らせでの
+      //   やり直しまで塞いでしまう (= ユーザー報告「更新が終わっても画面が
+      //   更新されない」 の正体)。
+      if (_cliUpdateBusy.contains(s)) return;
+      _cliUpdateBusy.add(s);
+      unawaited(_reopenCliAfterUpdate(provider, s).then((ok) {
+        _cliUpdateBusy.remove(s);
+        if (ok) s.updateRestartHandled = true;
+      }).catchError((_) {
+        _cliUpdateBusy.remove(s);
+      }));
     }
 
     s.addListener(onNotify);
@@ -290792,23 +292412,34 @@ class _McpChatDialogState extends State<_McpChatDialog>
   ///   を打った時はこれしか手掛かりが無い) → その札の CLI ([cliKey])。
   /// ★ 走ったままの札は**畳まない**。 [_dropCliTab] は並びから外すだけで
   ///   擬似端末を止めないので、 見えない居残りになる。
-  Future<void> _reopenCliAfterUpdate(
+  /// 戻り値: **本当に開き直せたか**。
+  ///
+  /// ★ = ユーザー報告「codex CLI などのアップデートが終わったら画面更新して
+  ///   プロンプト投げれる状態にして」。 仕組みは前から在ったのに効かない事が
+  ///   あった正体は**掛け金の掛け方**だった。 呼ぶ側が先に
+  ///   [AgentCliSession.updateRestartHandled] を立ててから呼んでいたので、
+  ///   ここが途中で諦めた時 (入れ替えの最中で新しい版がまだ見つからない・
+  ///   走ったままで画面を奪わない、 など) でも掛け金だけが残り、 **その後の
+  ///   終了の知らせでの再試行が塞がれて**いた。 成否を返して、 呼ぶ側が
+  ///   「出来た時だけ」 掛けるようにする。
+  Future<bool> _reopenCliAfterUpdate(
       MindMapProvider provider, AgentCliSession done,
       {AgentCliKind? kind}) async {
     final pkg = done.updatePackage.trim().toLowerCase();
     final key = kind?.name ?? done.cliKey;
-    if (key.isEmpty && pkg.isEmpty) return;
+    if (key.isEmpty && pkg.isEmpty) return false;
     AgentCliFound? found;
     for (var i = 0; i < 2; i++) {
       if (i > 0) {
         // 入れ替えた直後は、 前の探索が控えを書き終える所と行き違って
         // 「見つかりません」 になる事がある。 1 度だけ間を置いて見直す。
         await Future<void>.delayed(const Duration(milliseconds: 700));
-        if (!mounted) return;
+        if (!mounted) return false;
       }
       AgentCli.forget();
+      _invalidateCliFind();
       final list = await AgentCli.findAll();
-      if (!mounted) return;
+      if (!mounted) return false;
       for (final f in list) {
         if (!f.installed) continue;
         final samePkg =
@@ -290825,12 +292456,15 @@ class _McpChatDialogState extends State<_McpChatDialog>
     if (hit == null) {
       // 見つからない時は、 終わった端末を見せ続けないよう一覧へ戻す。
       // まだ走っている札は、 そのまま見せておく (画面を奪わない)。
+      // ★ 走ったままの時は**何もしていない**ので false を返す。 掛け金を
+      //   立てずに帰り、 終了の知らせでもう一度試せるようにする。
       if (!done.running) {
         _showInlineTerminal(
             _buildAgentCliList(provider), provider.t('cli.title'),
             isTerminal: false);
+        return true;
       }
-      return;
+      return false;
     }
     // 同じ CLI の続きか (= 見出し・フォルダー・垢を引き継ぐか)。 導入 (npm)
     // の端末とシェルの札は会話ではないので、 一覧から開いた時と同じ既定で開く。
@@ -290844,14 +292478,14 @@ class _McpChatDialogState extends State<_McpChatDialog>
     var dirArg = '';
     if (sameCli) {
       await _ensureCliDirsLoaded();
-      if (!mounted) return;
+      if (!mounted) return false;
       final cur = done.shownDirectory.trim();
       var def = _cliWorkDir.trim();
       if (def.isEmpty) {
         try {
           def = (await terminalBaseDir(provider)).trim();
         } catch (_) {}
-        if (!mounted) return;
+        if (!mounted) return false;
       }
       if (cur.isNotEmpty && cur.toLowerCase() != def.toLowerCase()) {
         dirArg = cur;
@@ -290869,17 +292503,23 @@ class _McpChatDialogState extends State<_McpChatDialog>
         // 同じ場所・同じ垢なので、 「既に開かれています」 に当たらないよう
         // 必ず新しく起こす (= 新しいセッション)。
         forceNewSession: true);
-    if (!mounted) return;
+    // 開いた後に欄が閉じられた時は、 開けた事に変わりはない (= true)。
+    if (!mounted) return true;
     // 起こせなかった時 (道筋が無い・プランに掛かった等) は何も知らせない。
-    if (identical(_lastCliSession, before)) return;
+    if (identical(_lastCliSession, before)) return false;
     // ★ 終わっている札だけ畳む (終わった端末を並べたままにしない)。 走って
     //   いる物には手を出さない (外すだけでは止まらないので居残りになる)。
     if (!done.running && _cliTabs.contains(done)) {
       _dropCliTab(provider, done);
-      if (!mounted) return;
+      if (!mounted) return true;
     }
     showTopToast(
         context, provider.t('cli.updateReopened'), const Color(0xFF43B97F));
+    // ★ 開いた端末へ打ち込めるようにしておく (= ユーザー要望「プロンプト
+    //   投げれる状態にして」)。 開き直した直後は焦点がどこにも無い事がある。
+    final opened = _lastCliSession;
+    if (opened != null) _focusCliPane(opened);
+    return true;
   }
 
   /// 入れ終わらなかった時の案内。
@@ -291571,16 +293211,21 @@ class _McpChatDialogState extends State<_McpChatDialog>
         setState(() => _msgs
             .add(_McpChatMsg('ai', provider.t('drawer.aiNewPageGreeting'))));
       }
-      // ── まだ何も話していない時は、 説明欄を開いておく
-      //    (= ユーザー要望: 説明欄の項目は最初から開かれた状態に) ──
-      //    会話が残っている人の邪魔はしない。 説明を出している間は
-      //    入力欄が隠れるので、 途中の会話を塞いでしまわないようにする。
-      //    閉じるのは見出しの × か、 ヘッダーの ⓘ。
+      // ── 説明欄は**初めて開いた時だけ**出す (= ユーザー要望: 「MCP に
+      //    関する説明欄が開くのは初回だけで、 その後は最後に開いた画面が
+      //    出るように」) ──
+      //    ★ 以前は「まだ何も話していなければ出す」 だったので、 新しい
+      //      会話を開くたびに説明が出て、 その上 [_restoreLastInlineView]
+      //      が戻した端末の画面まで上書きしていた。
+      //    ★ 2 回目からは、 前に見ていた画面 (端末 / CLI の一覧 / 会話) を
+      //      そのまま出す。 説明は見出しの ⓘ からいつでも開ける。
       if (mounted &&
           _msgs.isEmpty &&
           widget.initialTask == null &&
-          !_showCapabilityPanel) {
-        setState(() => _showCapabilityPanel = true);
+          _inlineTerminal == null &&
+          !_showCapabilityPanel &&
+          await _takeFirstCapabilityShow()) {
+        if (mounted) setState(() => _showCapabilityPanel = true);
       }
       _scrollToEnd();
     });
@@ -291624,6 +293269,7 @@ class _McpChatDialogState extends State<_McpChatDialog>
     _input.dispose();
     _scroll.dispose();
     _capScroll.dispose();
+    _cliTabBarScroll.dispose();
     super.dispose();
   }
 

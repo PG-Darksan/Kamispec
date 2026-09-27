@@ -15,6 +15,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
+import 'package:excel/excel.dart' as xls;
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:syncfusion_flutter_pdf/pdf.dart' as sfpdf;
@@ -501,7 +502,28 @@ class TalkReference {
         return _clip(buf.toString().trim(), maxChars);
       }
       if (ext == 'xlsx') {
-        // 表の中身はほぼ共有文字列に入るので、 そこだけ拾えば足りる。
+        // ★ = 動作検証の不具合「XLSX の数値セルが読み取りとフォルダー内検索
+        //   から欠落する」。 共有文字列 (xl/sharedStrings.xml) には**文字の
+        //   セルだけ**が入るので、 1・3・4 のような数値は 1 つも出て来ず、
+        //   本文としても検索対象としても消えていた。 表として開いて全セルを
+        //   歩く (読めない時だけ従来の道へ落とす)。
+        try {
+          final book = xls.Excel.decodeBytes(bytes);
+          final buf = StringBuffer();
+          for (final e in book.tables.entries) {
+            buf.writeln('[${e.key}]');
+            for (final row in e.value.rows) {
+              final cells = [for (final c in row) xlsxCellToPlain(c?.value)];
+              if (cells.any((c) => c.trim().isNotEmpty)) {
+                buf.writeln(cells.join('\t'));
+              }
+            }
+          }
+          final t = buf.toString().trim();
+          if (t.isNotEmpty) return _clip(t, maxChars);
+        } catch (_) {
+          // 壊れた xlsx / excel が開けない形 → 下の従来路へ。
+        }
         return _clip(
             _ooxmlPartText(bytes, 'xl/sharedStrings.xml'), maxChars);
       }
@@ -521,6 +543,63 @@ class TalkReference {
     'txt', 'md', 'csv', 'tsv', 'json', 'log',
     'pdf', 'docx', 'pptx', 'xlsx', 'html', 'htm',
   ];
+
+  /// 表のセル 1 つを素の文字にする。
+  ///
+  /// ★ 数値・日付・真偽・数式まで面倒を見る (= 動作検証の不具合「数値セルが
+  ///   読み取りと検索から欠落する」)。 同じ物差しを画面側の読み取りでも使う
+  ///   ので、 ここに 1 つだけ置く (双子を作らない)。
+  /// ★ 小数は整数なら整数の形にする (= 3.0 を「3」 で探せるように)。
+  static String xlsxCellToPlain(xls.CellValue? v) {
+    if (v == null) return '';
+    if (v is xls.TextCellValue) {
+      // excel 4.x の TextCellValue.value は独自 TextSpan 型 → dynamic で走査。
+      final buf = StringBuffer();
+      void walk(dynamic span) {
+        if (span == null) return;
+        try {
+          final t = span.text;
+          if (t is String) buf.write(t);
+        } catch (_) {}
+        try {
+          final children = span.children;
+          if (children is Iterable) {
+            for (final c in children) {
+              walk(c);
+            }
+          }
+        } catch (_) {}
+      }
+
+      walk(v.value);
+      final r = buf.toString();
+      return r.isEmpty ? v.value.toString() : r;
+    }
+    if (v is xls.IntCellValue) return v.value.toString();
+    if (v is xls.DoubleCellValue) {
+      final d = v.value;
+      return d == d.truncateToDouble() ? d.toInt().toString() : d.toString();
+    }
+    if (v is xls.BoolCellValue) return v.value ? 'TRUE' : 'FALSE';
+    if (v is xls.DateCellValue) {
+      return '${v.year.toString().padLeft(4, '0')}-'
+          '${v.month.toString().padLeft(2, '0')}-'
+          '${v.day.toString().padLeft(2, '0')}';
+    }
+    if (v is xls.DateTimeCellValue) {
+      return '${v.year.toString().padLeft(4, '0')}-'
+          '${v.month.toString().padLeft(2, '0')}-'
+          '${v.day.toString().padLeft(2, '0')} '
+          '${v.hour.toString().padLeft(2, '0')}:'
+          '${v.minute.toString().padLeft(2, '0')}';
+    }
+    if (v is xls.TimeCellValue) {
+      return '${v.hour.toString().padLeft(2, '0')}:'
+          '${v.minute.toString().padLeft(2, '0')}';
+    }
+    if (v is xls.FormulaCellValue) return '=${v.formula}';
+    return v.toString();
+  }
 
   static String _ooxmlPartText(List<int> bytes, String partPath) {
     try {

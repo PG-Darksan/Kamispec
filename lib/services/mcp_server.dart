@@ -1,11 +1,17 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:path_provider/path_provider.dart';
 
 // 自動操作へ渡す合図 (= ユーザー要望: アシスタントから PC を操作)。
-import '../main.dart' show automationRequestFromAssistant;
+import '../main.dart'
+    show
+        automationRequestFromAssistant,
+        automationRunForAssistant,
+        automationCancelRequest,
+        AutomationRunState;
 import '../providers/mind_map_provider.dart';
 import '../utils/build_flags.dart';
 // ★ 絵の拡張子の共通一覧 (jpe / jfif 対応)。
@@ -322,6 +328,9 @@ class McpServer {
   ///   安全側に倒して「壊す道具」と見なし、 承認を求める。
   ///   読むだけだと名乗っておけば、 どの相手でもそのまま通る。
   static const Set<String> _readOnlyTools = {
+    // 探すだけ (何も書き換えない)。
+    'search_pages',
+    'search_folder_files',
     'list_pages',
     'read_page',
     'list_folders',
@@ -334,6 +343,7 @@ class McpServer {
     'read_markdown',
     'read_document',
     'read_paint_items',
+    'get_automation_status',
     'list_video_editor_items',
     'list_orphan_files',
     'get_dev_limits',
@@ -376,8 +386,11 @@ class McpServer {
         'panel opens, the AI there plans the steps and runs them while the '
         'user watches. It obeys the user\'s permission setting (off / ask '
         'every time / allow all), so it may pause for confirmation or refuse. '
-        'Desktop only. Returns immediately after handing it over - watch the '
-        'panel for the result.',
+        'Desktop only. Returns a "runId" straight away, BEFORE the task has '
+        'run: poll get_automation_status with that runId to learn whether it '
+        'is still going, waiting for the user, finished or failed, and use '
+        'cancel_automation to stop it. NEVER tell the user the task is done '
+        'from this reply alone.',
         {
           'instruction': {
             'type': 'string',
@@ -387,6 +400,34 @@ class McpServer {
           }
         },
         ['instruction']),
+    // ★ = 動作検証の機能修正案「自動操作の完了状態を MCP から確認・中止できる
+    //   ようにする」。 run_automation は受け付けた所で返るので、 呼んだ側は
+    //   終わったのか / 確認待ちなのかを知る道が無かった。
+    _tool(
+        'get_automation_status',
+        'Check how the PC automation started by run_automation is going. '
+        'Pass the "runId" it returned, or nothing for the latest run. '
+        'Returns {runId, state, finished, awaitingUser, status, steps, '
+        'startedAt, finishedAt, error}. state is one of: "accepted" (handed '
+        'over, the panel has not picked it up yet), "running", '
+        '"awaitingUser" (it is waiting for the user to confirm or to sign in '
+        '- tell them to look at the panel), "done", "failed", "cancelled", '
+        '"refused" (another run was still going, so nothing started). '
+        'Poll this every few seconds rather than assuming success, and report '
+        'the state you actually read.',
+        {
+          'runId': {'type': 'string'},
+        }),
+    _tool(
+        'cancel_automation',
+        'Stop the PC automation started by run_automation. Pass the "runId" '
+        'it returned, or nothing for the latest run. This is the same stop '
+        'the user can press in the panel. Returns {cancelled, state}: '
+        'cancelled is false when the run had already finished (state says '
+        'which) - say so instead of claiming you stopped it.',
+        {
+          'runId': {'type': 'string'},
+        }),
     // ★ isCurrent を必ず説明に書く (= ユーザー報告: 「このページ消して」 で
     //   全ページを消しにいった)。 どれが「今のページ」 かを知る手立てが
     //   説明に無いと、 AI は当てずっぽうで全部に手を出す。
@@ -437,13 +478,56 @@ class McpServer {
         }),
     _tool('list_pages',
         'List all pages (id, name, type: normal/bookshelf/paint/..., node '
-        'count, isCurrent, lastModified). isCurrent is true for the one page '
-        'the user is looking at right now: "this page" / "the page I am on" '
-        'always means that one - never guess from the name, and never act on '
-        'other pages. lastModified is the last EDIT time, NOT the creation '
+        'count, isCurrent, lastModified), plus foregroundContext. '
+        'ALWAYS read foregroundContext first: it is the single answer to '
+        '"what does an instruction with no named target mean". '
+        'kind:"file" means a FILE is open on top of the map and THAT file is '
+        'the target (its pageId is only the map behind it); kind:"page" means '
+        'the page named there is the target. isCurrent in the page list says '
+        'only which MAP is current - it does NOT mean the user is looking at '
+        'that page rather than a file on top of it. The FIRST page entry is '
+        'the current map. Never guess a target from a page name, and never '
+        'act on other pages. Do NOT call this tool just to find out where to '
+        'work: start from the open page (read_page with no pageId) and only '
+        'list pages when the user names a different one. lastModified is the last EDIT time, NOT the creation '
         'time, so it cannot decide which of two same-named pages is "the old '
         'one" - show the times and let the user pick.',
         {}),
+    // ── 探す道具 (= ユーザー要望: フォルダー内検索でトークンを抑える) ──
+    //    ★ 説明文は毎回の会話に載るので短く。 「一覧 + 丸読み」 より
+    //      こちらを先に使わせるのが目的。
+    _tool(
+        'search_pages',
+        'Search node titles, memos, captions and table cells across pages. '
+        'Use this INSTEAD OF list_pages + read_page when you are looking for '
+        'something: it returns only short snippets (pageId, pageName, nodeId, '
+        'title, snippet, matchCount), never whole pages, so it costs a '
+        'fraction of the tokens. scope: "all" (default), "folder" (the open '
+        'page folder) or "page" (the open page). verdict tells you whether '
+        'the answer looks present ("found"), partly ("partial"), absent '
+        '("absent") or unknown - when it says absent, do NOT start reading '
+        'pages one by one; say you could not find it.',
+        {
+          'query': {'type': 'string'},
+          'scope': {'type': 'string'},
+          'maxHits': {'type': 'integer'},
+        },
+        ['query']),
+    _tool(
+        'search_folder_files',
+        'Search INSIDE the files attached to pages (pdf, docx, xlsx, txt, '
+        'csv...) and in the folder linked directory. Returns only short '
+        'snippets (fileName, filePath, pageId, nodeId, snippet, matchCount) '
+        'plus a verdict, never whole documents - read_device_file only after '
+        'this points at a file. folderId may be omitted for every folder. '
+        'This reads files from disk, so it is slower than search_pages: try '
+        'search_pages first.',
+        {
+          'query': {'type': 'string'},
+          'folderId': {'type': 'string'},
+          'maxHits': {'type': 'integer'},
+        },
+        ['query']),
     _tool(
         'read_page',
         'Read one page. Returns nodeCount and connectionCount FIRST (they '
@@ -454,9 +538,25 @@ class McpServer {
         'DRAWN at. Use visualHeight, never "height", when you work out where '
         'to put the next node - a table or chart node stores height:14 (just '
         'its drag strip at the top) while its visualHeight is the whole '
-        'table. The same applies to image, video and long-memo nodes.',
-        {'pageId': {'type': 'string'}},
-        ['pageId']),
+        'table. The same applies to image, video and long-memo nodes. '
+        'pageId may be omitted: it then reads the page the user has open '
+        '(start there for any instruction that does not name a page).',
+        {'pageId': {'type': 'string'}}),
+    _tool(
+        'undo_page',
+        'Undo ONE step of edits on a map page, and wait until it is saved '
+        'before answering. Use this instead of run_app_command(id:"undo"): '
+        'that one only presses the app button, so it may cancel an AI run, '
+        'restore a deleted page or undo calendar events instead, it targets '
+        'whatever page the user has on screen, and it saves 350ms LATER - so '
+        'the undo can land on top of whatever you did next. '
+        'pageId may be omitted (the open page). The answer says what was '
+        'undone and whether more steps remain (canUndoMore), and by then '
+        'read_page already shows the restored state. '
+        'Only normal / bookshelf pages have this history: for paint, '
+        'document and videoEditor pages the history lives in the editor '
+        'window, so this reports no_history instead of pretending.',
+        {'pageId': {'type': 'string'}}),
     _tool(
         'delete_page',
         'Delete a page permanently. Use this when the user explicitly asks to '
@@ -1176,8 +1276,10 @@ class McpServer {
         'lands as one long paragraph with "\\n" printed all through it. '
         'By default the '
         'text REPLACES the body; pass "append":true to add to the end of '
-        'what is already there. The page is opened and shown after writing, '
-        'so the user sees the result immediately. '
+        'what is already there. Writing switches the current MAP to this '
+        'page, but a FILE that is open on top of the map stays on top - so '
+        'the user may not see it yet. Check foregroundContext in list_pages '
+        'before you report that the page is on screen. '
         'A markdown page holds several TABS, and a long document should be '
         'laid out over several of them: start each part with a line '
         '"<<<PAGE: tab name>>>" and everything after that line becomes that '
@@ -1203,6 +1305,11 @@ class McpServer {
         'Append text to the end of a free note used as a notepad '
         '(pageType "paint", or an existing "document" page). '
         'Plain text only (no markup). '
+        'ON A FREE NOTE ("paint") the text goes into the document layer of '
+        'the tab that is OPEN RIGHT NOW - each tab keeps its own text. Call '
+        'list_paint_tabs / select_paint_tab first to choose the tab, and '
+        'read_document to read every tab back. The reply says which binder / '
+        'tab it landed in. '
         'IMPORTANT: to write several paragraphs, pass them ALL AT ONCE in '
         '"texts" (array of strings) in a SINGLE call. Blank or whitespace-only '
         'strings are discarded - empty lines cannot be written with this '
@@ -1232,12 +1339,11 @@ class McpServer {
         'IMPORTANT: to add several captions, pass them ALL AT ONCE in '
         '"texts" (array of strings) in a SINGLE call - do not call this '
         'tool once per caption. Returns itemId(s). '
-        'This tool can only ADD. There is no tool to move, re-layer, re-time, '
-        're-word or delete an item already on the timeline, and read_page '
-        'cannot show the timeline (it lives outside the page JSON). If the '
-        'user asks to change something already placed, say so and tell them '
-        'to click the block in the video editor - do NOT add a second copy on '
-        'another layer and call it moved.',
+        'To CHANGE or DELETE something already on the timeline use '
+        'update_video_editor_item (it can move, re-layer, re-time, re-word '
+        'and delete) - never add a second copy on another layer and call it '
+        'moved. read_page cannot show the timeline (it lives outside the page '
+        'JSON); use list_video_editor_items to see what is there.',
         {
           'pageId': {'type': 'string'},
           'texts': {
@@ -1463,9 +1569,12 @@ class McpServer {
         'read_document',
         'Read back a notepad ("document") page, or the document layer of a '
         'free note ("paint"). read_page does NOT return the body. Returns '
-        '{papers:[{index, text}], appendsTo}. append_document_text always '
-        'adds to the LAST paper ("appendsTo"), so read this first to see what '
-        'is already written instead of repeating it.',
+        '{scope, papers:[{index, name, text}], appendsTo}. For a "document" '
+        'page scope is "document", there is one paper per sheet and '
+        'append_document_text adds to the LAST paper. For a "paint" page '
+        'scope is "sheet": there is one paper PER TAB and append_document_text '
+        'adds to the tab named by "appendsTo" (the open one). Read this first '
+        'to see what is already written instead of repeating it.',
         {
           'pageId': {'type': 'string'},
         },
@@ -1478,7 +1587,9 @@ class McpServer {
         'are on the sheet and whether it has a background picture. Use it to '
         'check what you already placed before adding more, so captions do '
         'not pile up on top of each other. To see the other sheets call '
-        'list_paint_tabs, and select_paint_tab to move between them.',
+        'list_paint_tabs, and select_paint_tab to move between them. '
+        '"documentLayerScope" is "sheet" when this tab has text written by '
+        'append_document_text (read it with read_document), or "none".',
         {
           'pageId': {'type': 'string'},
         },
@@ -1556,11 +1667,28 @@ class McpServer {
         'without a window, use cloud_sync. '
         'This only OPENS features; it never edits data: deleting a page is '
         'delete_page, changing a page kind is set_page_type, and header '
-        'buttons are set_header_buttons.',
+        'buttons are set_header_buttons. '
+        'The reply carries "screenId" and "closeable" - pass that screenId to '
+        'close_app_command to close it again.',
         {
           'id': {'type': 'string'},
         },
         ['id']),
+    // ★ = 動作検証の機能修正案「MCP から開いた機能画面を閉じる操作」。
+    //   開きっぱなしだと、 続けて検証した時に画面が積み上がっていった。
+    _tool(
+        'close_app_command',
+        'Close a feature screen that run_app_command opened. Pass the '
+        '"screenId" it returned; pass nothing to close everything opened from '
+        'here and put the view back as it was. '
+        'Returns {closed:[ids], notOpen:[{id, reason}]}. Only floating '
+        'windows and tools embedded in a split pane can be closed this way; a '
+        'feature that opens as a FULL-SCREEN DIALOG is reported in notOpen '
+        'with reason "fullScreenDialog" because only the user can close it - '
+        'say so rather than claiming it is closed.',
+        {
+          'id': {'type': 'string'},
+        }),
     // ─── 画面分割 (= ユーザー報告: 「4 画面分割にして」 と頼んだのに
     //     「2 画面分割しかできない」 と断られた。 2x2 は前からある) ───────
     _tool(
@@ -1578,11 +1706,20 @@ class McpServer {
         'fills the window. DO IT - do not explain how the user could do it '
         'by hand. '
         'Optionally pass pageIds to fill the cells, in the order '
-        '0 = top-left, 1 = top-right, 2 = bottom-left, 3 = bottom-right '
-        '(ids come from list_pages; document and video-editor pages cannot '
-        'go in a pane). Cells you leave out are filled with other pages '
-        'automatically. Calling it twice with the same layout is safe - it '
-        'does not toggle the split back off; use "off" to close it. '
+        '0 = top-left, 1 = top-right, 2 = bottom-left, 3 = bottom-right. '
+        'Each entry may be an id from list_pages OR a page name, as long as '
+        'only one page has that name. A page can fill only ONE cell, '
+        'document / videoEditor / automation pages cannot go in a pane, and '
+        'a page the plan cannot open is refused. Cells you leave out are '
+        'filled with other pages automatically. Calling it twice with the '
+        'same layout is safe - it does not toggle the split back off; use '
+        '"off" to close it. '
+        'CHECK "couldNotPlace": every entry carries a "reason" (notFound / '
+        'ambiguousName / pageType / lockedByPlan / duplicateRequest / '
+        'noCell / couldNotOpen / substituted). "substituted" means the app '
+        'put a DIFFERENT page in that cell - report that instead of claiming '
+        'the requested page is open. The reply also returns "pageIds" (what '
+        'each visible cell really shows) and "editorCell". '
         'ALWAYS read the returned "layout" / "cells" and report THAT, not '
         'what you asked for.',
         {
@@ -1627,9 +1764,16 @@ class McpServer {
     _tool(
         'text_file_status',
         'Check the text file currently open in the app TEXT EDITOR window. '
-        'Returns {open, fileName, lineCount}. The other text_file_* tools '
-        'work ONLY on that one open file - they cannot touch a file that is '
-        'merely attached to a page. If "open" is false, nothing is open: do '
+        'Returns {textEditorOpen, fileName, lineCount, foregroundFile?}. '
+        'textEditorOpen tells you whether the TEXT EDITOR has a file - it is '
+        'NOT "is anything on screen": foregroundFile (fileName, path, '
+        'editorKind) is present whenever some file is on top, editor or '
+        'viewer. So textEditorOpen:false + foregroundFile:{editorKind:"pptx"} '
+        'means a PPTX is on screen that these tools cannot touch. '
+        '("open" is kept as the old name for textEditorOpen.) '
+        'The other text_file_* tools work ONLY on the text editor file - they '
+        'cannot touch a file that is merely attached to a page. If '
+        'textEditorOpen is false, do '
         'NOT create a new file, and do NOT ask the user to open something '
         'just so you can edit a document that is attached to a page. '
         'Instead find it with read_page (attachmentName / attachmentPath), '
@@ -1935,12 +2079,48 @@ class McpServer {
         'isError': false,
       };
 
+  /// 「そんな id は無い」 と「プランで開けない」 を言い分ける文。
+  ///
+  /// ★ = 点検で判明 (動作検証の「本当の理由だけを言う」 の続き)。
+  ///   [MindMapProvider.mcpPageById] は**開けないページにも null を返す**ので、
+  ///   そのまま「そんなページは無い」 と答えると、 実在するページについて
+  ///   嘘を言う事になる。 利用者は一覧でそのページを見ているので話が合わない。
+  String _noPageMsg(String pageId, {String did = 'Nothing was changed.'}) =>
+      _provider.isPageLockedByPlan(pageId)
+          ? '"$pageId" is a real page, but it is locked on this plan (only '
+              'the first ${MindMapProvider.kFreeOpenPageLimit} pages can be '
+              'opened). $did'
+          : 'no page has the id "$pageId" - call list_pages. $did';
+
   Map<String, dynamic> _err(String message) => {
         'content': [
           {'type': 'text', 'text': message}
         ],
         'isError': true,
       };
+
+  /// 返す JSON の中の `attachmentPath` を Windows の正規形へ揃える。
+  ///
+  /// = 動作検証レポート 2026-09-25 不具合 6。 `list_pages` /
+  /// `list_orphan_files` / `text_file_status` は provider 側で揃えたが、
+  /// `read_page` はページ JSON をそのまま返すので、 ここで通す。
+  /// **保存側は触らない** (prefs とクラウドへ書かれる本物のデータなので、
+  /// 書き換えると差分や容量の勘定まで揺れる)。
+  void _normalizeAttachmentPaths(Object? node) {
+    if (node is Map) {
+      final p = node['attachmentPath'];
+      if (p is String && p.isNotEmpty) {
+        node['attachmentPath'] = MindMapProvider.mcpNormalizePath(p);
+      }
+      for (final v in node.values) {
+        _normalizeAttachmentPaths(v);
+      }
+    } else if (node is List) {
+      for (final v in node) {
+        _normalizeAttachmentPaths(v);
+      }
+    }
+  }
 
   /// 渡された pageId。 空なら「今開いているページ」。
   ///
@@ -1977,7 +2157,7 @@ class McpServer {
   }) async {
     final page = _provider.mcpPageById(pageId);
     if (page == null) {
-      return _err('no page has the id "$pageId" - call list_pages.');
+      return _err(_noPageMsg(pageId, did: 'Nothing was made.'));
     }
     final type = page.pageType;
     // 背景ではなく「絵」 なので薄く描かせない。 文字は入れさせない。
@@ -2412,11 +2592,75 @@ class McpServer {
               Platform.isLinux)) {
             return _err('PC の操作はパソコン版だけです');
           }
+          // ★ = 動作検証の機能修正案。 走りに番号を付けてから渡す。
+          //   番号を**先に**置くのが大事: 画面側は拾った直後に
+          //   automationRunForAssistant を読んで走りを名乗る。 また、 パネルが
+          //   まだ開いていない時は画面側が同じ文を何度も出し直すので
+          //   (mind_map_screen の _onAssistantAutomationRequested)、 番号は
+          //   その間も**同じまま**でなければならない。
+          final runId = 'auto-'
+              '${DateTime.now().millisecondsSinceEpoch.toRadixString(36)}';
+          automationRunForAssistant.value = AutomationRunState(
+            runId: runId,
+            phase: 'accepted',
+            instruction: text,
+          );
           // 画面側 (自動操作パネル) がこの合図を拾って動かす。
           automationRequestFromAssistant.value = text;
-          return _ok('自動操作に渡しました: $text\n'
-              '実行の様子と結果は自動操作の画面に出ます。 '
-              '利用者の許可設定によっては確認を求めるか、 断ることがあります。');
+          return _ok({
+            'runId': runId,
+            'state': 'accepted',
+            'handedOver': text,
+            'note': 'It has NOT run yet. Poll get_automation_status with this '
+                'runId until "finished" is true, then report the real state. '
+                'cancel_automation stops it. The panel obeys the user\'s '
+                'permission setting, so it may ask for confirmation '
+                '(state "awaitingUser") or refuse (state "refused").',
+          });
+        }
+      // ── 自動操作の様子を訊く / 止める (= 動作検証の機能修正案) ──
+      case 'get_automation_status':
+        {
+          final want = (a['runId'] as String? ?? '').trim();
+          final cur = automationRunForAssistant.value;
+          if (cur == null) {
+            return _err('no PC automation has been started from here yet - '
+                'call run_automation first.');
+          }
+          if (want.isNotEmpty && want != cur.runId) {
+            return _err('runId "$want" is not the run this app knows about '
+                '(only the latest run is kept; it is "${cur.runId}", state '
+                '"${cur.phase}"). Ask for that one, or start a new run.');
+          }
+          return _ok(cur.toJson());
+        }
+      case 'cancel_automation':
+        {
+          final want = (a['runId'] as String? ?? '').trim();
+          final cur = automationRunForAssistant.value;
+          if (cur == null) return _err('there is no PC automation to stop.');
+          if (want.isNotEmpty && want != cur.runId) {
+            return _err('runId "$want" is not the run this app knows about '
+                '(the latest is "${cur.runId}", state "${cur.phase}").');
+          }
+          if (cur.isFinished) {
+            return _ok({
+              'cancelled': false,
+              'runId': cur.runId,
+              'state': cur.phase,
+              'note': 'it had already finished - nothing was stopped.',
+            });
+          }
+          // 止めるのは自動操作の画面。 ここから直に OS を触らない
+          //   (許可の仕組みを 1 箇所に集める = main.dart の注記のとおり)。
+          automationCancelRequest.value = cur.runId;
+          return _ok({
+            'cancelled': true,
+            'runId': cur.runId,
+            'state': 'cancelling',
+            'note': 'the stop was handed to the automation panel. Poll '
+                'get_automation_status to see it reach "cancelled".',
+          });
         }
       // ── 開発者モードの上限いじり (= ユーザー要望) ──
       case 'get_dev_limits':
@@ -2459,6 +2703,10 @@ class McpServer {
           }
           return _ok({
             'pages': pages,
+            // ★ = 動作検証レポート 2026-09-25 不具合 1。 「無指定の指示は
+            //   何が相手か」 を 1 か所で返す。 openFileOnTop は互換のため
+            //   残してある (中身は同じ判断から作られる)。
+            'foregroundContext': _provider.mcpForegroundContext(),
             if (fd != null)
               'openFileOnTop': {
                 'name': fd.name,
@@ -2473,13 +2721,114 @@ class McpServer {
               },
           });
         }
+      case 'undo_page':
+        {
+          // ★ = 動作検証レポート 2026-09-25 不具合 11「Undo が非同期・
+          //   対象不明確で応答後の状態を保証しない」。 ページを決めて、
+          //   保存まで待ってから返す。
+          final upid = _pageIdOrCurrent(a['pageId']);
+          final upage = _provider.mcpPageById(upid);
+          if (upage == null) {
+            return _err(_noPageMsg(upid));
+          }
+          if (!_provider.canUndoPage(upid)) {
+            return _err('no_history: ' +
+                jsonEncode({
+                  'code': 'no_history',
+                  'pageId': upid,
+                  'pageType': upage.pageType,
+                  'note': 'nothing to undo for this page. paint / document / '
+                      'videoEditor pages keep their history inside the editor '
+                      'window, so it cannot be undone from here - ask the '
+                      'user to press Ctrl+Z in that editor.',
+                }));
+          }
+          final undone = await _provider.mcpUndoPage(upid);
+          if (!undone) {
+            return _err('no_history: ' +
+                jsonEncode({'code': 'no_history', 'pageId': upid}));
+          }
+          return _ok({
+            'undone': true,
+            'pageId': upid,
+            'pageName': upage.name,
+            'nodeCount': upage.nodes.length,
+            'connectionCount': upage.connections.length,
+            'canUndoMore': _provider.canUndoPage(upid),
+          });
+        }
+      case 'search_pages':
+        {
+          final q = '${a['query'] ?? ''}'.trim();
+          if (q.isEmpty) return _err('query is required');
+          final scope = const {'all', 'folder', 'page'}
+                  .contains('${a['scope'] ?? ''}')
+              ? '${a['scope']}'
+              : 'all';
+          final maxHits =
+              ((a['maxHits'] as num?)?.toInt() ?? 12).clamp(1, 40);
+          final r = await _provider.mcpSearchNodes(
+            q,
+            scope: scope,
+            maxHits: maxHits,
+          );
+          return _ok({
+            'query': q,
+            'scope': scope,
+            'verdict': r.verdict,
+            'hits': r.hits,
+            if (r.unsearched.isNotEmpty) 'unsearchedPages': r.unsearched,
+            // ★ = 点検で判明 (動作検証の不具合「見つかったのに見つからない
+            //   寄りの返事になる」 の残り)。 「探したけど無い (absent)」 と
+            //   「見られなかった所がある (unknown)」 を同じ文で済ませると、
+            //   読めていないページがあるのに AI が探すのをやめてしまう。
+            if (r.hits.isEmpty && r.verdict == 'absent')
+              'note': 'nothing matched. Do NOT fall back to reading pages one '
+                  'by one - tell the user it was not found, or ask for a '
+                  'different word.',
+            if (r.hits.isEmpty && r.verdict != 'absent')
+              'note': 'NOT found is not proven: the pages in '
+                  '"unsearchedPages" keep their body outside the page data '
+                  'and could not be searched here. Open them with '
+                  'read_markdown / read_document / read_paint_items / '
+                  'list_video_editor_items, or ask the user.',
+          });
+        }
+      case 'search_folder_files':
+        {
+          final q = '${a['query'] ?? ''}'.trim();
+          if (q.isEmpty) return _err('query is required');
+          final fid = '${a['folderId'] ?? ''}'.trim();
+          final maxHits =
+              ((a['maxHits'] as num?)?.toInt() ?? 8).clamp(1, 20);
+          final r = await _provider.mcpSearchFolderFiles(
+            q,
+            folderId: fid.isEmpty ? null : fid,
+            maxHits: maxHits,
+          );
+          return _ok({
+            'query': q,
+            if (fid.isNotEmpty) 'folderId': fid,
+            'verdict': r.verdict,
+            'hits': r.hits,
+            if (r.hits.isEmpty)
+              'note': 'nothing matched in the files. Read a file with '
+                  'read_device_file only if you have a concrete path.',
+          });
+        }
       case 'read_page':
         {
-          final pid = a['pageId'] as String? ?? '';
+          // pageId を省いたら今開いているページ (= ユーザー要望: 開いた
+          // ページの中から探すのに、 一覧を引く 1 手を挟ませない)。
+          final pid = _pageIdOrCurrent(a['pageId']);
           final json = _provider.mcpReadPage(pid);
           if (json == null) {
-            return _err('no page has the id "$pid" - call list_pages.');
+            return _err(_noPageMsg(pid));
           }
+          // ★ = 動作検証レポート 2026-09-25 不具合 6。 添付の道筋だけは
+          //   保存された文字がそのまま入っているので、 返す時に区切りを
+          //   揃える (保存側は触らない。 あちらは本物のデータ)。
+          _normalizeAttachmentPaths(json);
           // ★ 件数を先頭に置く (= 動作確認で判明: ページの JSON は 5 ノード
           //   でも 3000 文字を超えるので、 長い時に途中で切られると
           //   connections まで届かない。 数だけでも必ず届くようにする)。
@@ -2595,6 +2944,21 @@ class McpServer {
           if (addEmpty != null) return addEmpty;
           final batch = a['nodes'];
           if (batch is List && batch.isNotEmpty) {
+            // ★ = 動作検証の不具合「一括追加した要素を直後に取り消せない」。
+            //   控えを 1 枚だけ積んで、 中の 1 件ずつの push は止める
+            //   (止めないと 200 件で 200 回の取り消しが必要になる)。
+            // ★ 点検で判明: 何も作れない呼び出し (全部空の配列など) でも
+            //   控えを積んでいたため、 「消したページを戻す」 の 1 発枠と
+            //   やり直し (redo) が消えていた。 **最初に本当に作る時**だけ積む。
+            var undoPushed = false;
+            void pushUndoOnce() {
+              if (undoPushed) return;
+              undoPushed = true;
+              _provider.mcpPushUndo(pageId);
+              _provider.beginUndoBatch(snapshot: false);
+            }
+
+            try {
             final ids = <String>[];
             // 入力の並びと 1 対 1 で対応させる控え。 ★ 使えない要素を飛ばすと
             //   ids がずれ、 以降の parentIndex が 1 つ手前のノードに繋がって
@@ -2604,6 +2968,8 @@ class McpServer {
             // 親に繋げなかった物 (= 繋がっていないのに「親子で作った」 と
             //   報告してしまうのを防ぐ)。
             final unlinked = <String>[];
+            // 座標を言われていない物 (= 自動で並べる相手)。
+            final auto = <String>[];
             for (final e in batch) {
               final Map<String, dynamic> m;
               if (e is Map) {
@@ -2627,6 +2993,7 @@ class McpServer {
                 slots.add('');
                 continue;
               }
+              pushUndoOnce();
               final id = _provider.mcpAddNode(
                 pageId,
                 // ★ 題名は説明文で「\n で 2 行目になる」 と案内しているので、
@@ -2651,6 +3018,10 @@ class McpServer {
               }
               ids.add(id);
               slots.add(id);
+              // 座標を言われていない物だけ、 後でまとめて並べる。
+              if (_numOf(m['x']) == null && _numOf(m['y']) == null) {
+                auto.add(id);
+              }
               // 親が指定されていればその場で繋ぐ。 parentIndex はこの呼び出しの
               // 中で先に作ったノードの番号 (0 始まり)。
               var parent = '${m['parentId'] ?? ''}'.trim();
@@ -2686,9 +3057,12 @@ class McpServer {
             //   (= ユーザー報告: 新規ページで全部が一か所に出る)、
             //   **足したノードだけ**その場で並べる。 ページ全体は触らない
             //   ので、 利用者が手で組んだ配置は崩れない。
-            final placed =
-                batch.any((e) => e is Map && (e['x'] != null || e['y'] != null));
-            if (!placed) _provider.mcpArrangeNewNodes(pageId, ids);
+            // ★ = 動作検証の不具合「一括追加した子要素が同じ位置に重なる」。
+            //   以前は「1 件でも座標が書いてあれば、 **全部**自動配置しない」
+            //   としていたので、 座標を書いていない兄弟が既定の 1 点に
+            //   固まっていた。 座標を書いていない物**だけ**並べる。
+            final placed = auto.isEmpty;
+            if (auto.isNotEmpty) _provider.mcpArrangeNewNodes(pageId, auto);
             return _ok({
               // id と題名を組で返す (= 続けて connect_nodes を呼ぶ時に、
               //   どの id がどのノードか迷わないように)。
@@ -2697,11 +3071,15 @@ class McpServer {
               'nodeIds': ids,
               if (failed.isNotEmpty) 'failed': failed,
               if (unlinked.isNotEmpty) 'unlinked': unlinked,
-              if (!placed && ids.length > 1)
-                'note': 'the ${ids.length} new nodes were laid out next to '
-                    'their parents automatically. Call tidy_page only if you '
-                    'want the whole page rearranged.',
+              if (auto.length > 1)
+                'note': 'the ${auto.length} new nodes without x/y were laid '
+                    'out next to their parents (new roots are placed clear of '
+                    'what is already on the page). Call tidy_page only if you '
+                    'want the WHOLE page rearranged.',
             });
+            } finally {
+              if (undoPushed) _provider.endUndoBatch();
+            }
           }
           // 題名も memo も url も無い呼び出しでは何も作らない。
           // ★ 鍵が有るかどうかではなく、 中身が有るかどうかで見る
@@ -2756,9 +3134,29 @@ class McpServer {
             clearUrl: clearUrl,
           );
           if (!ok) {
-            return _err('no node "$key" on that page. Available nodes (use '
-                'the "title" value as "node"): '
-                '${jsonEncode(_provider.mcpNodeIndex(pageId))}');
+            // ★ = 動作検証の不具合「存在する ID を『見つからない』 と返す」。
+            //   書き換えを断られた時も同じ文面だったので、 AI が id を
+            //   探し直す方へ行ってしまっていた。 本当に引けないのか、
+            //   引けたが書けなかったのかを分けて言う。
+            // ★ 書き換える側は部分一致を使わない ので、 こちらも同じ
+            //   物差し (fuzzy: false) で「居るか」 を見る。
+            final exact = _provider.mcpResolveNodeId(pageId, key, fuzzy: false);
+            if (exact == null) {
+              final near = _provider.mcpResolveNodeId(pageId, key);
+              if (near != null) {
+                return _err('"$key" only partially matches a node title, and '
+                    'the update path does not accept partial matches (it '
+                    'would risk changing the wrong node). Pass the exact '
+                    'title or the id. Available nodes: '
+                    '${jsonEncode(_provider.mcpNodeIndex(pageId))}');
+              }
+              return _err('no node "$key" on that page. Available nodes (use '
+                  'the "title" value as "node"): '
+                  '${jsonEncode(_provider.mcpNodeIndex(pageId))}');
+            }
+            return _err('"$key" exists on "$pageId" but the update was not '
+                'applied (the page may be locked, or nothing to change was '
+                'passed). The node was left as it was.');
           }
           // どのノードを書き換えたかを返す (= 題名で指した時に、 思った物と
           //   違うノードを直していないか AI が確かめられるように)。
@@ -2766,15 +3164,38 @@ class McpServer {
           final hit = _provider.mcpNodeIndex(pageId).firstWhere(
               (e) => e['id'] == rid,
               orElse: () => const <String, String>{});
+          // ★ = 動作検証レポート 2026-09-25 不具合 4「応答が公開契約どおり
+          //   適用値を返さない」。 updated:true と color しか返さないので、
+          //   確かめるのに read_page がもう 1 回必要だった。
+          //   applied = 実際に当てた値、 ignored = 渡されなかった項目。
+          final applied = <String, Object?>{
+            if (rid != null) 'id': rid,
+            if (a['title'] != null)
+              'title': _unescapeLiteralNewlines(a['title'] as String,
+                  minHits: 1),
+            if (a['memo'] != null)
+              'memo': _unescapeLiteralNewlines(a['memo'] as String),
+            if (numOf('x') != null) 'x': numOf('x'),
+            if (numOf('y') != null) 'y': numOf('y'),
+            if (color != null) 'color': color,
+            if (!clearUrl && url != null && url.trim().isNotEmpty)
+              'url': url.trim(),
+            if (clearUrl) 'url': null,
+          };
+          final ignored = <String>[
+            for (final f in const ['title', 'memo', 'x', 'y', 'color', 'url'])
+              if (!applied.containsKey(f)) f
+          ];
           return _ok({
             'updated': true,
             if (rid != null) 'nodeId': rid,
             if (hit['title'] != null) 'title': hit['title'],
-            // 実際に効いた分だけを返す (色が範囲外なら黙って落ちるため)。
             if (color != null) 'color': color,
             if (!clearUrl && url != null && url.trim().isNotEmpty)
               'url': url.trim(),
             if (clearUrl) 'urlCleared': true,
+            'applied': applied,
+            if (ignored.isNotEmpty) 'ignored': ignored,
           });
         }
       case 'delete_node':
@@ -2799,6 +3220,12 @@ class McpServer {
             // 何を消したかを題名で返す (= 数だけだと、 頼まれた物と違う
             //   ノードが消えていても AI が気付けない)。
             final removed = <String>[];
+            // ★ = 動作検証レポート 2026-09-25 不具合 7「無題の表ノードを
+            //   識別できない」。 題名だけだと caption 付き・title 空の表は
+            //   空文字で返り、 どれを消したのか後から分からない。
+            //   id / caption / 種別を添えた deletedItems も返す
+            //   (deleted は互換のため残す)。
+            final removedItems = <Map<String, Object?>>[];
             final missed = <String>[];
             final files = <Map<String, Object?>>[];
             for (final e in batch) {
@@ -2807,6 +3234,8 @@ class McpServer {
               final was = disposeMode == 'no'
                   ? ''
                   : _provider.mcpAttachmentPathOf(pageId, k);
+              // 消す前に見出しを控える (消した後では引けない)。
+              final brief = _provider.mcpNodeSummary(pageId, k);
               final title = _provider.mcpDeleteNode(pageId, k);
               if (title != null && was.isNotEmpty) {
                 files.add({
@@ -2819,6 +3248,7 @@ class McpServer {
                 missed.add(k);
               } else {
                 removed.add(title);
+                removedItems.add(brief ?? {'title': title});
               }
             }
             return removed.isEmpty
@@ -2826,6 +3256,7 @@ class McpServer {
                     '${jsonEncode(_provider.mcpNodeIndex(pageId))}')
                 : _ok({
                     'deleted': removed,
+                    'deletedItems': removedItems,
                     if (missed.isNotEmpty) 'failed': missed,
                     // 実ファイルをどうしたか (= 「消した」 と言い切らせない)。
                     if (files.isNotEmpty) 'files': files,
@@ -2839,6 +3270,7 @@ class McpServer {
           final wasOne = disposeMode == 'no'
               ? ''
               : _provider.mcpAttachmentPathOf(pageId, key);
+          final briefOne = _provider.mcpNodeSummary(pageId, key);
           final removedTitle = _provider.mcpDeleteNode(pageId, key);
           if (removedTitle == null) {
             return _err('no node "$key" on that page. Available nodes (use '
@@ -2847,6 +3279,7 @@ class McpServer {
           }
           return _ok({
             'deleted': removedTitle,
+            'deletedItems': [briefOne ?? {'title': removedTitle}],
             if (wasOne.isNotEmpty)
               'file': {
                 'path': wasOne,
@@ -2925,7 +3358,7 @@ class McpServer {
           final pageId = a['pageId'] as String? ?? '';
           final page = _provider.mcpPageById(pageId);
           if (page == null) {
-            return _err('no page has the id "$pageId" - call list_pages.');
+            return _err(_noPageMsg(pageId));
           }
           final type = page.pageType ?? 'normal';
           // ギャラリーは「セルを左上から詰め直す」 整列で応える
@@ -2973,11 +3406,17 @@ class McpServer {
                 'and gallery pages. On a free note / notepad page, pass '
                 'imagePath, or use generate_page_background to draw one.');
           }
-          if (a['clear'] != true &&
-              bgTpl.isEmpty &&
-              bgImg.isNotEmpty &&
-              !File(bgImg).existsSync()) {
-            return _err('background image file not found: $bgImg');
+          // ★ = 動作検証の不具合「画像ではないファイルを背景として
+          //   受け付ける」。 在るかどうかだけ見ていたので、 中身が文字の
+          //   `壊れた背景.png` でも通り、 背景が黙って出ないままになっていた。
+          //   絵を受ける他の道具 (add_image_node / add_gallery_item) と
+          //   同じ物差し ([_imagePathRejection]) で確かめる。
+          if (a['clear'] != true && bgTpl.isEmpty && bgImg.isNotEmpty) {
+            final why = await _imagePathRejection(bgImg);
+            if (why != null) {
+              return _err('imagePath rejected: $why: $bgImg '
+                  '- the background was not changed.');
+            }
           }
           // ★ 濃さ / 色味は provider が範囲に丸める。 道具の説明も
           //   「はみ出した値は丸める。 断らない」 と約束しているので、
@@ -3027,6 +3466,16 @@ class McpServer {
       case 'connect_nodes':
         {
           final pageId = a['pageId'] as String? ?? '';
+          // ★ = 動作検証の不具合「ギャラリーに MCP から接続線を追加できる」。
+          //   画面からは引けないので、 道具からも引かせない (add_node の
+          //   ギャラリー判定と同じ形)。
+          final connTarget = _provider.mcpPageById(pageId);
+          if (connTarget != null && connTarget.pageType == 'bookshelf') {
+            return _err('"$pageId" is a gallery (bookshelf) page: a gallery '
+                'has no connection lines, so nothing was connected. If the '
+                'user wants them linked, offer to convert the page with '
+                'set_page_type "normal" first.');
+          }
           // id でも題名でもよい (= ユーザー報告: AI が id の特定に手こずって
           //   接続できなかった)。 どちらの書き方も受ける。
           String key(Map<String, dynamic> m, String a1, String a2) {
@@ -3123,6 +3572,18 @@ class McpServer {
       case 'add_table_node':
         {
           final pageId = a['pageId'] as String? ?? '';
+          // ★ = 動作検証の不具合「ギャラリーへ表要素を追加でき、 既存の
+          //   格子配置まで崩れる」。 ギャラリーは画像タイルを並べる場所で、
+          //   画面には表を挿す口が無い。 入れると整列が表を巻き込んで
+          //   既にあるタイルまで 1 列に並び直してしまうので、 ここで断る
+          //   (connect_nodes / add_decoration のギャラリー判定と同じ形)。
+          final tblTarget = _provider.mcpPageById(pageId);
+          if (tblTarget != null && tblTarget.pageType == 'bookshelf') {
+            return _err('"$pageId" is a gallery (bookshelf) page: a gallery '
+                'holds tiles, not tables, so nothing was added. Use '
+                'add_gallery_item for tiles, or make a mind map page with '
+                'create_page type:"normal" and put the table there.');
+          }
           final raw = a['rows'];
           if (raw is! List || raw.isEmpty) {
             return _err('rows must be a non-empty array of arrays');
@@ -3134,6 +3595,19 @@ class McpServer {
             } else {
               rows.add(['${r ?? ''}']);
             }
+          }
+          // ★ = 動作検証の不具合「表の 100 行・30 列上限を MCP から
+          //   超えられる」。 画面の表作成ダイアログと同じ上限で断る
+          //   (画面は黙って丸めるが、 道具は理由を返す方が親切)。
+          final tblCols = rows.fold<int>(0, (m, r) => math.max(m, r.length));
+          if (rows.length > MindMapProvider.kTableMaxRows ||
+              tblCols > MindMapProvider.kTableMaxCols) {
+            return _err('table too big: got ${rows.length} rows x $tblCols '
+                'columns. A table holds at most '
+                '${MindMapProvider.kTableMaxRows} rows x '
+                '${MindMapProvider.kTableMaxCols} columns (the same limit as '
+                'the app\'s table dialog). No table was created - split the '
+                'data across several tables, or drop columns.');
           }
           final id = _provider.mcpAddTableNode(
             pageId,
@@ -3253,6 +3727,27 @@ class McpServer {
               '"imagePath" for a tile without a title.',
               usable: many.length);
           if (galEmpty != null) return galEmpty;
+          // ★ = 動作検証の不具合「ギャラリーの 1000 件上限を MCP から
+          //   超えられる」。 画面と同じ上限で、 入る分だけ入れて残りは
+          //   理由付きで返す (黙って積み上げない)。
+          final galPage = _provider.mcpPageById(pageId);
+          final galRoom = (galPage != null && galPage.pageType == 'bookshelf')
+              ? _provider.shelfRemainingItemCapacity(galPage)
+              : -1;
+          // ★ 点検で判明: ギャラリーでないページは、 控えを積む**前**に
+          //   断る (積んでしまうと、 何も作れなかったのに「消したページを
+          //   戻す」 の 1 発枠とやり直しが消える)。
+          if (galRoom < 0) {
+            return _err('not a gallery page (or page not found): "$pageId" '
+                '- use list_pages and pick a page whose type is "bookshelf", '
+                'or create one with create_page. Nothing was added.');
+          }
+          if (galRoom == 0) {
+            return _err('gallery_full: "$pageId" already holds '
+                '${_provider.shelfVisibleCount(galPage)} of '
+                '${MindMapProvider.kShelfMaxVisibleItems} items. Nothing was '
+                'added - tell the user instead of retrying.');
+          }
           if (many.isNotEmpty) {
             // ★ 落ちた分を黙って捨てない (= これまでは titles に頼んだ分を
             //   全部並べつつ added だけ減っていたので、 何が出来なかったのか
@@ -3264,19 +3759,39 @@ class McpServer {
             //   重なった分は必ず知らせる。
             final seen = <String>{};
             final dup = <String>[];
+            // 控えは 1 枚だけ (= 1 回の依頼を 1 回の取り消しで戻せる)。
+            _provider.mcpPushUndo(pageId);
+            _provider.beginUndoBatch(snapshot: false);
+            try {
             for (var i = 0; i < many.length; i++) {
               final t = many[i];
               if (!seen.add(t.toLowerCase())) dup.add(t);
+              // 入る枠を超えた分は作らずに理由を返す。
+              if (galRoom > 0 && created.length >= galRoom) {
+                failed.add({
+                  'index': i,
+                  'text': t,
+                  'reason': 'gallery is full (at most '
+                      '${MindMapProvider.kShelfMaxVisibleItems} items)',
+                });
+                continue;
+              }
               final id = _provider.mcpAddGalleryItem(pageId, text: t);
               if (id == null) {
                 failed.add({
                   'index': i,
                   'text': t,
-                  'reason': 'not a gallery page (or page not found)',
+                  'reason': galRoom >= 0
+                      ? 'gallery is full (at most '
+                          '${MindMapProvider.kShelfMaxVisibleItems} items)'
+                      : 'not a gallery page (or page not found)',
                 });
                 continue;
               }
               created.add({'index': i, 'nodeId': id, 'title': t});
+            }
+            } finally {
+              _provider.endUndoBatch();
             }
             if (created.isEmpty) {
               return _err('not a gallery page (or page not found): $pageId '
@@ -3366,9 +3881,12 @@ class McpServer {
           final wrote = await _provider.mcpAddPaintTexts(
             pageId,
             lines,
-            // まとめ書きの時は自動で縦に積ませる。
-            x: many.isNotEmpty ? null : numOf('x'),
-            y: many.isNotEmpty ? null : numOf('y'),
+            // ★ = 動作検証の不具合「複数文章を一括追加すると指定座標が
+            //   無視される」。 以前はまとめ書きの時だけ捨てていた。 provider は
+            //   どちらでも正しく扱う (省けば既存の下へ、 渡せばそこから
+            //   1 行ずつ下へ) ので、 そのまま通す。
+            x: numOf('x'),
+            y: numOf('y'),
             size: numOf('size'),
             // ★ add_node と同じ正し方を通す (= 動作確認で判明: 「赤」 の
             //   つもりの 0xFF0000 は α=0 で透明になり、 文字が見えない
@@ -3573,20 +4091,61 @@ class McpServer {
           //   先に書いた段落が無かった事になり、 作り直しで消えていた。
           //   provider 側で **1 回の読み書き**にまとめる
           //   (add_paint_text と同じ直し方)。
-          final wrote = await _provider.mcpAppendDocumentTexts(pageId, paras);
+          // ★ = 動作検証の不具合「フリーノートの文書追記がタブごとに
+          //   分かれない」。 フリーノートは**今開いているタブの**文書の層へ
+          //   入るようになったので、 どのタブへ入れたかをそのまま返す。
+          final paintPage =
+              _provider.mcpPageById(pageId)?.pageType == 'paint';
+          ({int wrote, int binder, int tab, String tabName})? paint;
+          int wrote;
+          if (paintPage) {
+            paint = await _provider.mcpAppendPaintDocTexts(pageId, paras);
+            wrote = paint?.wrote ?? 0;
+          } else {
+            wrote = await _provider.mcpAppendDocumentTexts(pageId, paras);
+          }
           final asked = paras.where((p) => p.trim().isNotEmpty).length;
           return wrote > 0
               ? _ok({
                   'appended': wrote,
                   'asked': asked,
+                  // ★ どこへ書いたかを必ず言う。 フリーノートの文書の層は
+                  //   **紙 (タブ) ごと**なので、 別のタブへ置きたい時は
+                  //   select_paint_tab で先に選んでから呼ぶ。
+                  'scope': paintPage ? 'sheet' : 'document',
+                  if (paint != null) 'binder': paint.binder,
+                  if (paint != null) 'tab': paint.tab,
+                  if (paint != null && paint.tabName.isNotEmpty)
+                    'tabName': paint.tabName,
+                  if (paintPage)
+                    'scopeNote': 'it went into the document layer of the tab '
+                        'that is open right now. Call list_paint_tabs / '
+                        'select_paint_tab first to append to another tab, and '
+                        'read_document to read every tab back.',
                   if (wrote != asked)
                     'note': 'Only $wrote of $asked paragraphs were appended. '
                         'Tell the user the real number.',
                 })
-              : _err('could not append to "$pageId": append_document_text '
-                  'works only on pages whose type is '
-                  '"paint" (free note) or "document" (notepad). For a '
-                  '"markdown" page use write_markdown instead.');
+              // ★ = 動作検証の不具合「追記が成功しているのに失敗として
+              //   返る / 文書ページなのに種類違いと案内される」。 ページを
+              //   引き直して、 本当の理由だけを言う。
+              : _err(() {
+                  final p = _provider.mcpPageById(pageId);
+                  if (p == null) {
+                    return _noPageMsg(pageId,
+                        did: 'Nothing was appended.');
+                  }
+                  final ty = p.pageType ?? 'normal';
+                  if (ty != 'document' && ty != 'paint') {
+                    return '"$pageId" is a "$ty" page: append_document_text '
+                        'works only on "paint" (free note) or "document" '
+                        '(notepad) pages. For a "markdown" page use '
+                        'write_markdown instead.';
+                  }
+                  return '"$pageId" is a "$ty" page but the text could not be '
+                      'saved. Do NOT retry in a loop - call read_document '
+                      'first: the text may already be there.';
+                }());
         }
       case 'add_video_editor_item':
         {
@@ -3619,31 +4178,57 @@ class McpServer {
           // まとめて字幕を置ける形 (= 1 件ずつだと AI が取りこぼす)。
           final batch = a['texts'];
           if (batch is List && batch.isNotEmpty) {
-            final ids = <String>[];
-            // ★ startMs を捨てない (= 動作検証レポート: まとめて字幕を置くと
-            //   開始時刻が無視され、 全部が勝手な位置に並んでいた)。
-            //   1 枚目は言われた時刻から、 2 枚目からはその後ろへ続ける
-            //   (時刻を渡されていない時は今までどおりアプリ任せ)。
-            var nextStart = veStart;
-            for (final e in batch) {
-              final t = '${e ?? ''}'.trim();
-              if (t.isEmpty) continue;
-              final one = await _provider.mcpAddVideoEditorItem(
-                pageId,
-                kind: 'text',
-                text: t,
-                startMs: nextStart,
-                layer: veLayer ?? 1,
-                durationMs: veDuration,
-                fontSize: numOf('fontSize'),
-                colorValue: veColor,
-              );
-              if (one != null) ids.add(one);
-              if (nextStart != null) nextStart += veDuration ?? 4000;
+            // ★ = 動作検証レポート 2026-09-25 不具合 9「返却数と保存数が
+            //   一致しない」。 1 件ずつ回すと、 読み書きの間に挟む
+            //   prefs.reload() で直前の分が控えから消え、 末尾だけが
+            //   残って先の分が上書きで消えていた。 まとめて 1 回で書く。
+            final wanted = <String>[
+              for (final e in batch)
+                if ('${e ?? ''}'.trim().isNotEmpty) '${e ?? ''}'.trim()
+            ];
+            final ids = await _provider.mcpAddVideoEditorItems(
+              pageId,
+              kind: 'text',
+              texts: wanted,
+              startMs: veStart,
+              layer: veLayer ?? 1,
+              durationMs: veDuration,
+              fontSize: numOf('fontSize'),
+              colorValue: veColor,
+            );
+            if (ids.isEmpty) {
+              // ★ = 動作検証の気になった点「素材不足がページ種類の誤りとして
+              //   案内される」 の残り。 1 件形は理由を言い分けていたのに、
+              //   まとめ形だけが四つの原因を同じ文面で返していた。
+              return _err(() {
+                final p = _provider.mcpPageById(pageId);
+                if (p == null) {
+                  return _noPageMsg(pageId, did: 'Nothing was added.');
+                }
+                if ((p.pageType ?? '') != 'videoEditor') {
+                  return '"$pageId" is a "${p.pageType ?? 'normal'}" page, '
+                      'not a "videoEditor" one. Nothing was added.';
+                }
+                if (wanted.isEmpty) {
+                  return 'every caption was blank - a caption needs real '
+                      'characters. Nothing was added.';
+                }
+                if (kStoreBuild) {
+                  return 'the video editor is not available in this build of '
+                      'the app. Nothing was added.';
+                }
+                return 'the page is a videoEditor but nothing could be saved. '
+                    'Call list_video_editor_items before retrying.';
+              }());
             }
-            return ids.isEmpty
-                ? _err('not a video editor page: $pageId')
-                : _ok({'itemIds': ids});
+            // 保存し終えた件数だけを返す (要求と食い違ったらそれも返す)。
+            return _ok({
+              'itemIds': ids,
+              'requested': wanted.length,
+              'persisted': ids.length,
+              if (ids.length != wanted.length)
+                'failed': wanted.length - ids.length,
+            });
           }
           final id = await _provider.mcpAddVideoEditorItem(
             pageId,
@@ -3657,9 +4242,38 @@ class McpServer {
             colorValue: veColor,
           );
           return id == null
-              ? _err('not a video editor page, or kind/text/path missing: '
-                  '$pageId - add_video_editor_item only works on pages '
-                  'whose type is "videoEditor"')
+              // ★ = 動作検証の気になった点「素材不足がページ種類の誤りとして
+              //   案内される」。 4 つの原因が同じ文面だったので、 足りない物を
+              //   名指しする。
+              ? _err(() {
+                  final p = _provider.mcpPageById(pageId);
+                  if (p == null) {
+                    return _noPageMsg(pageId, did: 'Nothing was added.');
+                  }
+                  if ((p.pageType ?? '') != 'videoEditor') {
+                    return '"$pageId" is a "${p.pageType ?? 'normal'}" page, '
+                        'not a "videoEditor" one. Nothing was added.';
+                  }
+                  // ★ 大小文字や前後の空白を**均さずに**見る (= 置く側は
+                  //   生の文字で引き当てるので、 ここで均すと 'Text' の時に
+                  //   「保存できなかった」 と言ってしまう)。
+                  final k = a['kind'] as String? ?? '';
+                  if (!const {'video', 'text', 'image'}.contains(k)) {
+                    return '"kind" must be exactly "text", "video" or "image" '
+                        '- lower case, no spaces (got "${a['kind']}"). '
+                        'Nothing was added.';
+                  }
+                  if (k == 'text' && '${a['text'] ?? ''}'.trim().isEmpty) {
+                    return '"text" is empty: a caption needs real characters '
+                        '(blank text is discarded). Nothing was added.';
+                  }
+                  if (k != 'text' && '${a['path'] ?? ''}'.trim().isEmpty) {
+                    return '"path" is required for kind "$k" - pass the file '
+                        'path. Nothing was added.';
+                  }
+                  return 'the page is a videoEditor but the item could not be '
+                      'saved. Call list_video_editor_items before retrying.';
+                }())
               : _ok({'itemId': id});
         }
       case 'create_document_file':
@@ -3767,6 +4381,16 @@ class McpServer {
           final pageId = a['pageId'] as String? ?? '';
           final did = '${a['decorationId'] ?? ''}'.trim();
           if (did.isEmpty) return _err('"decorationId" is required');
+          // ★ 足せないなら直せてもいけない (= 点検で判明: add_decoration だけ
+          //   ギャラリーを断っていたので、 種類を normal → bookshelf へ変えた
+          //   ページに残った図形を、 ここから動かし放題だった)。
+          final updTarget = _provider.mcpPageById(pageId);
+          if (updTarget != null && updTarget.pageType == 'bookshelf') {
+            return _err('"$pageId" is a gallery (bookshelf) page: shapes are '
+                'not used there, so they cannot be changed either. Nothing '
+                'was changed. Offer set_page_type "normal" first if the user '
+                'really wants shapes on that page.');
+          }
           final dLayer = intOf('layer', min: -1 << 31);
           if (intErr != null) return _err(intErr!);
           final argb = _argbOf(a['color']);
@@ -3884,12 +4508,29 @@ class McpServer {
             //   (= 動作検証レポート 2026-09-15)。 起きた事を分けて返す。
             final needsUser = _provider.mcpCommands
                 .any((c) => c['id'] == id && c['needsUser'] == 'true');
-            return _ok(needsUser
-                ? 'opened: $id - a window is now on screen and the user has '
-                    'to finish it there (and a plan upgrade prompt may have '
-                    'appeared instead). Say the window is open; do not claim '
-                    'the action itself is done.'
-                : 'launched: $id');
+            // ★ = 動作検証の機能修正案「MCP から開いた機能画面を閉じる操作」。
+            //   開いた物を後で閉じられるように、 画面の名前と「閉じられるか」
+            //   を返す。 判定は画面側へ訊く (probe = 閉じずに見るだけ)。
+            final probe = await _provider.mcpCloseCommand(id, probe: true);
+            final closeable =
+                ((probe['closed'] as List?) ?? const []).contains(id);
+            return _ok({
+              'screenId': id,
+              'opened': true,
+              'closeable': closeable,
+              'note': needsUser
+                  ? 'opened: $id - a window is now on screen and the user has '
+                      'to finish it there (and a plan upgrade prompt may have '
+                      'appeared instead). Say the window is open; do not claim '
+                      'the action itself is done.'
+                  : 'launched: $id',
+              if (closeable)
+                'closeHint': 'call close_app_command with this screenId to '
+                    'close it again.'
+              else
+                'closeHint': 'this one opens as a full-screen dialog, so only '
+                    'the user can close it.',
+            });
           }
           // ★ 「知らない id」 と「利用者しか始められない機能」 を区別する。
           //   以前はどちらも同じ文面だったため、 存在しない id を投げた時にも
@@ -3906,6 +4547,13 @@ class McpServer {
               'Note: deleting a page is delete_page, changing a page kind is '
               'set_page_type, and putting buttons on the header is '
               'set_header_buttons - those are tools, not commands.');
+        }
+      case 'close_app_command':
+        {
+          final res = await _provider.mcpCloseCommand(a['id'] as String? ?? '');
+          final err = res['error'];
+          if (err != null) return _err('$err');
+          return _ok(res);
         }
       case 'set_split_view':
         {
@@ -3943,10 +4591,35 @@ class McpServer {
             startLine: tfStart,
             endLine: tfEnd,
           );
-          return r == null
-              ? _err('no text file is open in the app text editor - '
-                  'ask the user to open one first')
-              : _ok(r);
+          if (r != null) return _ok(r);
+          // ★ = 動作検証レポート 2026-09-25 不具合 3「エラー案内が運用
+          //   ルールと逆」。 前面に非 TXT が出ている時に「TXT を開いて」 と
+          //   頼ませていた。 種別と次の一手を機械が読める形で返す。
+          final fd = _provider.frontDocument;
+          if (fd != null) {
+            final st = _provider.mcpFileState(fd.path);
+            return _err('unsupported_editor_kind: ' +
+                jsonEncode({
+                  'code': 'unsupported_editor_kind',
+                  'editorKind': st['editorKind'],
+                  'fileName': fd.name,
+                  'path': MindMapProvider.mcpNormalizePath(fd.path),
+                  'recommended': 'this file is on screen but NOT in the text '
+                      'editor, so text_file_* cannot touch it. Do NOT ask the '
+                      'user to open it as text. Read it with read_device_file '
+                      'on this path (or read_page for the page attachment), '
+                      'and for pptx / xlsx / docx tell the user to use the AI '
+                      'button inside that editor.',
+                }));
+          }
+          return _err('no_file_open: ' +
+              jsonEncode({
+                'code': 'no_file_open',
+                'recommended': 'nothing is on screen. Find the document with '
+                    'read_page (attachmentName / attachmentPath) and read it '
+                    'with read_device_file. Do NOT ask the user to open a '
+                    'file just so you can edit it.',
+              }));
         }
       case 'text_file_edit':
         {
@@ -4167,10 +4840,35 @@ class McpServer {
             }
           }
           if (done == 0) {
-            return _err('no line was removed for ${missed.join(', ')} '
-                '(either the node was not found, or those two were not '
-                'connected). Nodes on this page: '
-                '${jsonEncode(_provider.mcpNodeIndex(pageId))}');
+            // ★ = 動作検証レポート 2026-09-25 不具合 8「ノード不存在と
+            //   未接続を区別しない」。 両端を先に引き当てて、 打ち間違いと
+            //   「もう切れている (= 何度呼んでも同じ)」 を別の札で返す。
+            final unknown = <String>[];
+            for (final m in missed) {
+              for (final part in m.split(RegExp(r'\s*(?:-|->|,)\s*'))) {
+                final k = part.trim();
+                if (k.isEmpty) continue;
+                if (_provider.mcpResolveNodeId(pageId, k) == null) {
+                  unknown.add(k);
+                }
+              }
+            }
+            if (unknown.isNotEmpty) {
+              return _err('node_not_found: ' +
+                  jsonEncode({
+                    'code': 'node_not_found',
+                    'unknown': unknown,
+                    'nodes': _provider.mcpNodeIndex(pageId),
+                  }));
+            }
+            return _err('not_connected: ' +
+                jsonEncode({
+                  'code': 'not_connected',
+                  'pairs': missed,
+                  'note': 'both nodes exist but there is no line between '
+                      'them (it may already be gone). Calling this again is '
+                      'safe and will report not_connected the same way.',
+                }));
           }
           return _ok({
             'disconnected': done,
@@ -4181,6 +4879,16 @@ class McpServer {
       case 'add_decoration':
         {
           final pageId = a['pageId'] as String? ?? '';
+          // ★ = 動作検証の不具合「ギャラリーに MCP から図形を挿入できる」。
+          //   画面側 (_showMapShapePicker) が 'gallery.noShapeInsert' で
+          //   断っているのと同じ線引きにする。
+          final decoTarget = _provider.mcpPageById(pageId);
+          if (decoTarget != null && decoTarget.pageType == 'bookshelf') {
+            return _err('"$pageId" is a gallery (bookshelf) page: shapes '
+                'cannot be inserted in a gallery (the app refuses the same '
+                'way). No shape was drawn. Offer set_page_type "normal" if '
+                'the user really wants shapes there.');
+          }
           // ★ = 動作検証レポート 不具合 2「空・不正な入力が、 既定座標の
           //   四角を成功扱いで作る」。 kind を 'rectangle' で埋め、 場所の
           //   指定が無ければページの基準位置に 240x160 の四角を置いていたので、

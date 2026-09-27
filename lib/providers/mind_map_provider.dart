@@ -19,6 +19,10 @@ import '../services/billing_service.dart';
 import '../services/cursor_wrap.dart';
 import '../services/mouse_remap.dart';
 import '../services/cursor_style.dart';
+import '../services/os_quick_toggles.dart';
+import '../services/book_search.dart';
+import '../services/jev.dart';
+import '../services/page_extract_js.dart';
 import '../services/pc_settings.dart';
 import '../services/wheel_scroll_scale.dart';
 import '../services/display_light.dart';
@@ -872,15 +876,25 @@ class _PageSnapshot {
   // 装飾図形も undo/redo の対象にする (= 図形作成/編集/削除を Ctrl+Z で戻す)。
   final List<MapDecoration> decorations;
 
+  /// ギャラリーのマス目 (要素 id → [列, 行])。
+  ///
+  /// ★ = 動作検証の不具合「ギャラリー整列を取り消しても整列前の座標へ戻らない」。
+  ///   ギャラリーの位置は座標そのものではなく**マス目から毎回作り直す**
+  ///   ([_arrangeAsBookshelfBody])。 控えに座標だけ入れても、 書き戻した直後に
+  ///   整列後のマス目からまた同じ座標が作られて元に戻らない。 マス目も一緒に
+  ///   覚えておく (このページの要素の分だけ)。
+  final Map<String, List<int>> shelfCells;
+
   _PageSnapshot({
     required this.nodes,
     required this.connections,
     required this.namedGroups,
     this.decorations = const [],
+    this.shelfCells = const {},
   });
 
-  factory _PageSnapshot.from(
-          MindMapPage page, Map<String, Set<String>> groups) =>
+  factory _PageSnapshot.from(MindMapPage page, Map<String, Set<String>> groups,
+          {Map<String, List<int>> cells = const {}}) =>
       _PageSnapshot(
         // ── 重要: ノードは copyWith() で **新しいインスタンス** にコピーする ──
         //
@@ -904,6 +918,11 @@ class _PageSnapshot {
         // 図形は copyWith() で別インスタンス化して、 以降の直接書き換えが
         // スナップショットに波及しないようにする (ノードと同じ理由)。
         decorations: page.decorations.map((d) => d.copyWith()).toList(),
+        // ★ このページの要素の分だけ写す (他のギャラリーには触らない)。
+        shelfCells: {
+          for (final id in page.nodes.keys)
+            if (cells[id] != null) id: List<int>.of(cells[id]!),
+        },
       );
 }
 
@@ -5173,13 +5192,21 @@ class MindMapProvider extends ChangeNotifier {
   void _pushUndoForPage(String pageId, {String? coalesceKey}) {
     final page = mcpPageById(pageId);
     if (page == null) return;
+    // ★ = 動作検証の不具合「直したのに取り消しが no_history になる / 戻る物が
+    //   おかしい」 の残りの原因。 まとめ (バッチ) の最中は**何も触らずに**
+    //   帰る。 以前はここより先に合言葉と時刻を書いていたので、 積まないのに
+    //   「たった今積んだ」 印が残り、 直後の本物の push が「続き」 と見なされて
+    //   消えていた。
+    if (_undoBatchDepth > 0) return;
     if (coalesceKey != null) {
       final now = DateTime.now();
       final last = _undoCoalesceAt;
       if (_undoCoalesceKey == coalesceKey &&
           last != null &&
           now.difference(last) < _kUndoCoalesceWindow) {
-        _undoCoalesceAt = now;
+        // ★ 時刻は**進めない**。 進めると、 立て続けに来る呼び出しが窓を
+        //   際限なく延ばし、 何十回分の変更が控え 1 枚に潰れていた
+        //   (= MCP / AI は指示を数ミリ秒おきに出すので特に起きやすい)。
         return;
       }
       _undoCoalesceKey = coalesceKey;
@@ -5188,14 +5215,17 @@ class MindMapProvider extends ChangeNotifier {
       _undoCoalesceKey = null;
       _undoCoalesceAt = null;
     }
-    if (_undoBatchDepth > 0) return;
     // 裏のページを書き換えた時も、 古い「転送を戻す」 枠は捨てる
     //   (時系列が逆転しないように。 _pushUndo と揃える)。
     _lastCrossPageMoveUndo = null;
+    // ★ 消したページを戻す枠も捨てる (捨てないと、 裏のページを直した後の
+    //   Ctrl+Z が「消したページの復活」 を先に拾ってしまう。 _pushUndo と揃える)。
+    _lastDeletedPageUndo = null;
     _undoStacks.putIfAbsent(pageId, () => []);
     _redoStacks.putIfAbsent(pageId, () => []);
     final groups = _namedGroups[pageId] ?? {};
-    _undoStacks[pageId]!.add(_PageSnapshot.from(page, groups));
+    _undoStacks[pageId]!
+        .add(_PageSnapshot.from(page, groups, cells: _shelfCells));
     if (_undoStacks[pageId]!.length > _maxHistory) {
       _undoStacks[pageId]!.removeAt(0);
     }
@@ -5203,7 +5233,18 @@ class MindMapProvider extends ChangeNotifier {
     _pageLastEditedAt[pageId] = DateTime.now();
   }
 
+  /// ページを指して控えを 1 枚積む (= MCP / AI からの操作を Ctrl+Z で戻せる
+  /// ようにするための入口)。
+  ///
+  /// ★ 一括の操作は**呼ぶ側が 1 回だけ**ここを叩き、 続けて
+  ///   [beginUndoBatch] (`snapshot: false`) で中の個々の push を止める。
+  ///   そうしないと 1 回の依頼が何枚もの控えになり、 取り消しが何度も要る。
+  void mcpPushUndo(String pageId) => _pushUndoForPage(pageId);
+
   void _pushUndo({String? coalesceKey}) {
+    // ★ バッチ中は何も触らずに帰る (= _pushUndoForPage と同じ直し。 合言葉を
+    //   書いてしまうと、 バッチを閉じた直後の push が消える)。
+    if (_undoBatchDepth > 0) return; // バッチ中: 開始時のスナップショットに集約
     if (coalesceKey != null) {
       final now = DateTime.now();
       final last = _undoCoalesceAt;
@@ -5211,7 +5252,7 @@ class MindMapProvider extends ChangeNotifier {
           last != null &&
           now.difference(last) < _kUndoCoalesceWindow) {
         // 直前と同じ編集の続き → 既存のスナップショットで戻せるので積まない。
-        _undoCoalesceAt = now;
+        // ★ 時刻は進めない (窓が際限なく延びるのを防ぐ)。
         return;
       }
       _undoCoalesceKey = coalesceKey;
@@ -5220,7 +5261,6 @@ class MindMapProvider extends ChangeNotifier {
       _undoCoalesceKey = null;
       _undoCoalesceAt = null;
     }
-    if (_undoBatchDepth > 0) return; // バッチ中: 開始時のスナップショットに集約
     // ページ削除後に別の編集を始めた場合、その編集が最新の Undo 対象になる。
     // 削除復元をいつまでも最優先にすると Ctrl+Z の時系列が逆転するため破棄する。
     _lastDeletedPageUndo = null;
@@ -5232,7 +5272,8 @@ class MindMapProvider extends ChangeNotifier {
     _undoStacks.putIfAbsent(id, () => []);
     _redoStacks.putIfAbsent(id, () => []);
     final groups = _namedGroups[id] ?? {};
-    _undoStacks[id]!.add(_PageSnapshot.from(currentPage, groups));
+    _undoStacks[id]!
+        .add(_PageSnapshot.from(currentPage, groups, cells: _shelfCells));
     if (_undoStacks[id]!.length > _maxHistory) {
       _undoStacks[id]!.removeAt(0);
     }
@@ -5250,24 +5291,75 @@ class MindMapProvider extends ChangeNotifier {
     final id = _pageId;
     final stack = _undoStacks[id];
     if (stack == null || stack.isEmpty) return;
+    // ★ 戻したら「続き」 の印を捨てる (= _pushUndoForPage と同じ直し)。
+    _undoCoalesceKey = null;
+    _undoCoalesceAt = null;
     final snap = stack.removeLast();
     _redoStacks.putIfAbsent(id, () => []);
     final groups = _namedGroups[id] ?? {};
-    _redoStacks[id]!.add(_PageSnapshot.from(currentPage, groups));
+    _redoStacks[id]!
+        .add(_PageSnapshot.from(currentPage, groups, cells: _shelfCells));
     _applySnapshot(snap, id);
     _saveToStorage();
     _saveNamedGroups(); // 付箋状態も永続化
     notifyListeners();
   }
 
+  /// そのページに戻せる履歴があるか (画面のページとは無関係)。
+  bool canUndoPage(String pageId) =>
+      (_undoStacks[pageId]?.length ?? 0) > 0;
+
+  /// **ページを指定して**1 手戻す。 保存まで待ってから返る。
+  ///
+  /// = 動作検証レポート 2026-09-25 不具合 11「Undo が非同期・対象不明確で
+  ///   応答後の状態を保証しない」。 MCP の run_app_command('undo') は
+  ///   画面のボタンを押すだけなので、 (a) 相手が画面のページになる
+  ///   (b) カレンダー / ページ削除復元 / AI 中断が先に走る
+  ///   (c) 保存が 350ms 遅れて後の操作へ被さる — の 3 つが起きていた。
+  ///
+  /// ★ ここは**ページ 1 枚の履歴だけ**を戻す。 ページ削除の復元や
+  ///   ページまたぎの転送は別枠なので触らない (戻したい物が違う)。
+  /// ★ 本文が prefs にある種別 (paint / document / videoEditor) の履歴は
+  ///   画面側の widget が持っているので、 ここでは戻せない。 呼ぶ側が
+  ///   [canUndoPage] を見て断る。
+  Future<bool> mcpUndoPage(String pageId) async {
+    final page = mcpPageById(pageId);
+    if (page == null) return false;
+    final stack = _undoStacks[pageId];
+    if (stack == null || stack.isEmpty) return false;
+    // ★ 戻したら「続き」 の印を捨てる (= 動作検証の不具合の残り。 捨てないと、
+    //   取り消した直後に同じ種類の操作をした分が「続き」 扱いで積まれず、
+    //   もう一度の取り消しが効かなかった)。
+    _undoCoalesceKey = null;
+    _undoCoalesceAt = null;
+    final snap = stack.removeLast();
+    _redoStacks.putIfAbsent(pageId, () => []);
+    _redoStacks[pageId]!
+        .add(_PageSnapshot.from(page, _namedGroups[pageId] ?? {},
+            cells: _shelfCells));
+    _applySnapshotToPage(snap, page, pageId);
+    _saveNamedGroups();
+    // ★ 遅れて保存させない。 応答を返した後に書き込みが走ると、 続けて
+    //   出した指示の結果へ被さる (レポートの「予測困難な状態」)。
+    await flushSaveToStorage();
+    _bumpPageTick(pageId);
+    _mcpContentTick++;
+    notifyListeners();
+    return true;
+  }
+
   void redo() {
     final id = _pageId;
     final stack = _redoStacks[id];
     if (stack == null || stack.isEmpty) return;
+    // ★ 戻したら「続き」 の印を捨てる (= _pushUndoForPage と同じ直し)。
+    _undoCoalesceKey = null;
+    _undoCoalesceAt = null;
     final snap = stack.removeLast();
     _undoStacks.putIfAbsent(id, () => []);
     final groups = _namedGroups[id] ?? {};
-    _undoStacks[id]!.add(_PageSnapshot.from(currentPage, groups));
+    _undoStacks[id]!
+        .add(_PageSnapshot.from(currentPage, groups, cells: _shelfCells));
     _applySnapshot(snap, id);
     _saveToStorage();
     _saveNamedGroups(); // 付箋状態も永続化
@@ -5305,6 +5397,19 @@ class MindMapProvider extends ChangeNotifier {
     //   _arrangeAsBookshelfBody が中でマス目を割り当て直し、 位置も格子も
     //   同時に整える (この関数は保存も通知もしないので、 呼び元に任せる)。
     if (page.pageType == 'bookshelf') {
+      // ★ 並べ直す**前に**マス目を戻す (= 動作検証の不具合: 整列の取り消しで
+      //   座標が戻らない)。 位置はマス目から作り直されるので、 マス目が
+      //   整列後のままだと同じ座標がまた書かれてしまう。 控えに無い要素の
+      //   マス目は手放す (他のギャラリーの分は触らない)。
+      for (final id in {...page.nodes.keys, ...snap.shelfCells.keys}) {
+        final before = snap.shelfCells[id];
+        if (before == null) {
+          _shelfCells.remove(id);
+        } else {
+          _shelfCells[id] = List<int>.of(before);
+        }
+      }
+      unawaited(_saveShelfCells());
       _shelfGridCache.remove(page.id);
       _arrangeAsBookshelfBody(page);
     }
@@ -15083,6 +15188,211 @@ class MindMapProvider extends ChangeNotifier {
     },
     // ★ = ユーザー要望「電源モード、 ディスプレイの消灯時間や
     //   スクリーンセーバーの時間設定は項目としてまとめて欲しい」。
+    // ── PC 設定を「選択肢」 に分けた時の見出し (= ユーザー要望:
+    //    ディスプレイ設定の項目が長いので、 bluetooth やオーディオ設定
+    //    などの選択肢に分けて、 押すと中の項目が出るように) ──
+    'pc.catPower': {
+      'ja': '電源とバッテリー',
+      'en': 'Power & battery',
+      'zh': '电源与电池',
+      'ko': '전원 및 배터리',
+      'es': 'Energía y batería',
+      'fr': 'Énergie et batterie',
+      'de': 'Energie und Akku',
+      'pt': 'Energia e bateria',
+      'ru': 'Питание и батарея',
+    },
+    'pc.catBluetooth': {
+      'ja': 'Bluetooth',
+      'en': 'Bluetooth',
+      'zh': '蓝牙',
+      'ko': '블루투스',
+      'es': 'Bluetooth',
+      'fr': 'Bluetooth',
+      'de': 'Bluetooth',
+      'pt': 'Bluetooth',
+      'ru': 'Bluetooth',
+    },
+    'pc.back': {
+      'ja': '戻る',
+      'en': 'Back',
+      'zh': '返回',
+      'ko': '뒤로',
+      'es': 'Atrás',
+      'fr': 'Retour',
+      'de': 'Zurück',
+      'pt': 'Voltar',
+      'ru': 'Назад',
+    },
+    'pc.catHint': {
+      'ja': '押すと中の項目が出ます。',
+      'en': 'Tap a category to see its settings.',
+      'zh': '点按类别即可展开其中的设置。',
+      'ko': '항목을 누르면 설정이 열립니다.',
+      'es': 'Pulsa una categoría para ver sus ajustes.',
+      'fr': 'Touchez une catégorie pour voir ses réglages.',
+      'de': 'Kategorie antippen, um die Einstellungen zu sehen.',
+      'pt': 'Toque numa categoria para ver as opções.',
+      'ru': 'Нажмите категорию, чтобы открыть настройки.',
+    },
+    // ── 電池が減ったら省電力へ (= ユーザー要望) ──
+    'battery.autoSaver': {
+      'ja': '残量が少なくなったら省電力モードにする',
+      'en': 'Switch to power saver on low battery',
+      'zh': '电量低时切换到节能模式',
+      'ko': '배터리가 적으면 절전 모드로 전환',
+      'es': 'Cambiar a ahorro de energía con batería baja',
+      'fr': 'Passer en mode économie quand la batterie est faible',
+      'de': 'Bei niedrigem Akku auf Energiesparmodus umschalten',
+      'pt': 'Mudar para economia de energia com bateria baixa',
+      'ru': 'Переключаться в режим энергосбережения при низком заряде',
+    },
+    'battery.autoSaverHelp': {
+      'ja': '電源につないでいない時に残量がこの割合を下回ったら、 Windows の '
+          '電源モードを「省電力」 に切り替えます。 充電を始めるか、 残量が '
+          '5% ぶん戻ったら「バランス」 へ戻します。',
+      'en': 'When running on battery and the charge drops below this level, '
+          'the Windows power mode is switched to "Best power efficiency". '
+          'It returns to "Balanced" once you plug in or the charge recovers '
+          'by 5 points.',
+      'zh': '未接电源且电量低于该比例时，将 Windows 电源模式切换为节能；'
+          '接通电源或电量回升 5 个百分点后恢复为平衡。',
+      'ko': '전원에 연결하지 않은 상태에서 잔량이 이 비율 아래로 내려가면 '
+          'Windows 전원 모드를 절전으로 바꿉니다. 충전을 시작하거나 잔량이 '
+          '5%p 회복되면 균형으로 돌아갑니다.',
+      'es': 'Con la batería por debajo de este nivel y sin cargador, el modo '
+          'de energía de Windows cambia a máxima eficiencia. Vuelve a '
+          'equilibrado al conectar o al recuperar 5 puntos.',
+      'fr': 'Sur batterie, sous ce niveau, le mode d alimentation de Windows '
+          'passe en efficacité maximale. Il revient à équilibré dès que vous '
+          'branchez ou que la charge remonte de 5 points.',
+      'de': 'Im Akkubetrieb wird unter diesem Wert der Windows-Energiemodus '
+          'auf beste Energieeffizienz gestellt und bei Netzbetrieb oder '
+          '5 Punkten mehr wieder auf ausbalanciert.',
+      'pt': 'Na bateria e abaixo deste nível, o modo de energia do Windows '
+          'muda para melhor eficiência. Volta a equilibrado ao ligar à '
+          'tomada ou ao recuperar 5 pontos.',
+      'ru': 'При питании от батареи и заряде ниже этого уровня режим питания '
+          'Windows переключается на максимальную энергоэффективность и '
+          'возвращается к сбалансированному после подключения к сети.',
+    },
+    'battery.threshold': {
+      'ja': '切り替える残量',
+      'en': 'Switch at',
+      'zh': '切换阈值',
+      'ko': '전환 기준',
+      'es': 'Cambiar al',
+      'fr': 'Basculer à',
+      'de': 'Umschalten bei',
+      'pt': 'Mudar em',
+      'ru': 'Переключать при',
+    },
+    'battery.now': {
+      'ja': '今の残量',
+      'en': 'Current charge',
+      'zh': '当前电量',
+      'ko': '현재 잔량',
+      'es': 'Carga actual',
+      'fr': 'Charge actuelle',
+      'de': 'Aktueller Ladestand',
+      'pt': 'Carga atual',
+      'ru': 'Текущий заряд',
+    },
+    'battery.none': {
+      'ja': 'この PC には電池がありません。',
+      'en': 'This PC has no battery.',
+      'zh': '此电脑没有电池。',
+      'ko': '이 PC에는 배터리가 없습니다.',
+      'es': 'Este PC no tiene batería.',
+      'fr': 'Ce PC n a pas de batterie.',
+      'de': 'Dieser PC hat keinen Akku.',
+      'pt': 'Este PC não tem bateria.',
+      'ru': 'В этом ПК нет батареи.',
+    },
+    // ── Bluetooth (読むだけ。 入 / 切と登録は Windows に任せる) ──
+    'bt.noRadio': {
+      'ja': 'Bluetooth アダプターが見付かりません。',
+      'en': 'No Bluetooth adapter found.',
+      'zh': '未找到蓝牙适配器。',
+      'ko': '블루투스 어댑터를 찾을 수 없습니다.',
+      'es': 'No se encontró adaptador Bluetooth.',
+      'fr': 'Aucun adaptateur Bluetooth trouvé.',
+      'de': 'Kein Bluetooth-Adapter gefunden.',
+      'pt': 'Nenhum adaptador Bluetooth encontrado.',
+      'ru': 'Адаптер Bluetooth не найден.',
+    },
+    'bt.devices': {
+      'ja': '登録済みの機器',
+      'en': 'Paired devices',
+      'zh': '已配对设备',
+      'ko': '등록된 장치',
+      'es': 'Dispositivos emparejados',
+      'fr': 'Appareils associés',
+      'de': 'Gekoppelte Geräte',
+      'pt': 'Dispositivos emparelhados',
+      'ru': 'Сопряжённые устройства',
+    },
+    'bt.connected': {
+      'ja': '接続中',
+      'en': 'Connected',
+      'zh': '已连接',
+      'ko': '연결됨',
+      'es': 'Conectado',
+      'fr': 'Connecté',
+      'de': 'Verbunden',
+      'pt': 'Conectado',
+      'ru': 'Подключено',
+    },
+    'bt.noDevices': {
+      'ja': '登録された機器がありません。',
+      'en': 'No paired devices.',
+      'zh': '没有已配对的设备。',
+      'ko': '등록된 장치가 없습니다.',
+      'es': 'Sin dispositivos emparejados.',
+      'fr': 'Aucun appareil associé.',
+      'de': 'Keine gekoppelten Geräte.',
+      'pt': 'Sem dispositivos emparelhados.',
+      'ru': 'Нет сопряжённых устройств.',
+    },
+    'bt.openWindows': {
+      'ja': 'Windows の Bluetooth 設定を開く',
+      'en': 'Open Windows Bluetooth settings',
+      'zh': '打开 Windows 蓝牙设置',
+      'ko': 'Windows 블루투스 설정 열기',
+      'es': 'Abrir ajustes Bluetooth de Windows',
+      'fr': 'Ouvrir les réglages Bluetooth de Windows',
+      'de': 'Windows-Bluetooth-Einstellungen öffnen',
+      'pt': 'Abrir configurações Bluetooth do Windows',
+      'ru': 'Открыть настройки Bluetooth в Windows',
+    },
+    'bt.reload': {
+      'ja': '読み直す',
+      'en': 'Reload',
+      'zh': '重新读取',
+      'ko': '다시 읽기',
+      'es': 'Recargar',
+      'fr': 'Recharger',
+      'de': 'Neu laden',
+      'pt': 'Recarregar',
+      'ru': 'Обновить',
+    },
+    'bt.note': {
+      'ja': '入 / 切と機器の登録は Windows の設定で行います。',
+      'en': 'Turning Bluetooth on or off and pairing are done in Windows '
+          'settings.',
+      'zh': '蓝牙的开关与配对请在 Windows 设置中进行。',
+      'ko': '블루투스 켜기/끄기와 등록은 Windows 설정에서 합니다.',
+      'es': 'Activar o desactivar Bluetooth y emparejar se hace en los '
+          'ajustes de Windows.',
+      'fr': 'L activation du Bluetooth et l association se font dans les '
+          'réglages de Windows.',
+      'de': 'Ein- und Ausschalten sowie das Koppeln erfolgen in den '
+          'Windows-Einstellungen.',
+      'pt': 'Ligar ou desligar o Bluetooth e emparelhar faz-se nas '
+          'configurações do Windows.',
+      'ru': 'Включение Bluetooth и сопряжение выполняются в настройках '
+          'Windows.',
+    },
     'pcPower.groupTitle': {
       'ja': '電源と画面',
       'en': 'Power & screen',
@@ -27515,16 +27825,97 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Desafixar',
       'ru': 'Открепить',
     },
+    // ── 枠の入れ替えと枚数 (= ユーザー要望「右クリックした際に分割画面の
+    //    左右を入れ替える項目が欲しい」「3 画面や 2×2 表示もできるように」) ──
+    'gs.swapPanesLR': {
+      'ja': '左右を入れ替える',
+      'en': 'Swap left and right',
+      'zh': '左右互换',
+      'ko': '좌우 바꾸기',
+      'es': 'Intercambiar izquierda y derecha',
+      'fr': 'Échanger gauche et droite',
+      'de': 'Links und rechts tauschen',
+      'pt': 'Trocar esquerda e direita',
+      'ru': 'Поменять левое и правое',
+    },
+    'gs.swapPanesTB': {
+      'ja': '上下を入れ替える',
+      'en': 'Swap top and bottom',
+      'zh': '上下互换',
+      'ko': '위아래 바꾸기',
+      'es': 'Intercambiar arriba y abajo',
+      'fr': 'Échanger haut et bas',
+      'de': 'Oben und unten tauschen',
+      'pt': 'Trocar cima e baixo',
+      'ru': 'Поменять верх и низ',
+    },
+    'gs.swapPaneNext': {
+      'ja': 'この枠を次の枠と入れ替える',
+      'en': 'Swap with the next pane',
+      'zh': '与下一个窗格互换',
+      'ko': '다음 창과 바꾸기',
+      'es': 'Intercambiar con el panel siguiente',
+      'fr': 'Échanger avec le volet suivant',
+      'de': 'Mit dem nächsten Bereich tauschen',
+      'pt': 'Trocar com o próximo painel',
+      'ru': 'Поменять со следующей панелью',
+    },
+    'gs.split2Panes': {
+      'ja': '2 画面に戻す',
+      'en': 'Back to two panes',
+      'zh': '恢复为 2 个窗格',
+      'ko': '2 화면으로',
+      'es': 'Volver a dos paneles',
+      'fr': 'Revenir à deux volets',
+      'de': 'Zurück zu zwei Bereichen',
+      'pt': 'Voltar a dois painéis',
+      'ru': 'Вернуться к двум панелям',
+    },
+    'gs.split3Panes': {
+      'ja': '3 画面にする',
+      'en': 'Use three panes',
+      'zh': '改为 3 个窗格',
+      'ko': '3 화면으로',
+      'es': 'Usar tres paneles',
+      'fr': 'Utiliser trois volets',
+      'de': 'Drei Bereiche verwenden',
+      'pt': 'Usar três painéis',
+      'ru': 'Три панели',
+    },
+    'gs.split4Panes': {
+      'ja': '4 画面 (2×2) にする',
+      'en': 'Use four panes (2×2)',
+      'zh': '改为 4 个窗格 (2×2)',
+      'ko': '4 화면 (2×2)',
+      'es': 'Usar cuatro paneles (2×2)',
+      'fr': 'Utiliser quatre volets (2×2)',
+      'de': 'Vier Bereiche (2×2)',
+      'pt': 'Usar quatro painéis (2×2)',
+      'ru': 'Четыре панели (2×2)',
+    },
+    'gs.splitAddTab': {
+      'ja': 'このタブを枠に足す',
+      'en': 'Add this tab as a pane',
+      'zh': '将此标签页加为窗格',
+      'ko': '이 탭을 창으로 추가',
+      'es': 'Añadir esta pestaña como panel',
+      'fr': 'Ajouter cet onglet comme volet',
+      'de': 'Diesen Tab als Bereich hinzufügen',
+      'pt': 'Adicionar esta aba como painel',
+      'ru': 'Добавить эту вкладку как панель',
+    },
+    // ★ = ユーザー要望「並べるのをやめる → 全画面表示に戻す に変更して」。
+    //   何が起きるか (= 1 枚に戻って画面いっぱいになる) が分かる名札にする。
     'gs.splitStop': {
-      'ja': '並べるのをやめる',
-      'en': 'Stop showing side by side',
-      'zh': '停止并排',
-      'ko': '나란히 보기 해제',
-      'es': 'Dejar de mostrar en paralelo',
-      'fr': 'Arrêter l’affichage côte à côte',
-      'de': 'Nebeneinander beenden',
-      'pt': 'Parar de mostrar lado a lado',
-      'ru': 'Перестать показывать рядом',
+      'ja': '全画面表示に戻す',
+      'en': 'Back to full screen',
+      'zh': '返回全屏显示',
+      'ko': '전체 화면으로 되돌리기',
+      'es': 'Volver a pantalla completa',
+      'fr': 'Revenir au plein écran',
+      'de': 'Zurück zur Vollansicht',
+      'pt': 'Voltar para tela cheia',
+      'ru': 'Вернуться к полному экрану',
     },
     'gs.saveToFolder': {
       'ja': 'フォルダーに保存',
@@ -33121,6 +33512,345 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'SCHALTER',
       'pt': 'ALTERNADORES',
       'ru': 'ПЕРЕКЛЮЧАТЕЛИ',
+    },
+    // ── Jev 判断補助 / 広告ブロック / 書籍検索 (= ユーザー要望 4 件) ──
+    'settings.groupJev': {
+      'ja': 'JEV 判断補助 (ベータ)',
+      'en': 'JEV DECISION ASSIST (BETA)',
+      'zh': 'JEV 判断辅助（测试版）',
+      'ko': 'JEV 판단 보조 (베타)',
+      'es': 'ASISTENCIA DE DECISIÓN JEV (BETA)',
+      'fr': 'AIDE À LA DÉCISION JEV (BÊTA)',
+      'de': 'JEV-ENTSCHEIDUNGSHILFE (BETA)',
+      'pt': 'ASSISTÊNCIA DE DECISÃO JEV (BETA)',
+      'ru': 'ПОМОЩЬ В РЕШЕНИЯХ JEV (БЕТА)',
+    },
+    'jev.enabled': {
+      'ja': 'Jev に判断を手伝わせる',
+      'en': 'Let Jev help with decisions',
+      'zh': '让 Jev 协助判断',
+      'ko': 'Jev가 판단을 돕게 하기',
+      'es': 'Permitir que Jev ayude a decidir',
+      'fr': 'Laisser Jev aider aux décisions',
+      'de': 'Jev bei Entscheidungen helfen lassen',
+      'pt': 'Deixar o Jev ajudar nas decisões',
+      'ru': 'Разрешить Jev помогать с решениями',
+    },
+    'jev.enabledHelp': {
+      'ja': 'Jev は文章を作らず、 「どれを選ぶか」「どれくらいか」「はい '
+          'の確率」 だけを返す判断の道具です。 入れると、 下の機能が判断の '
+          'ために**短い抜粋**を外へ送ります (ページ全体は送りません)。 '
+          '判断が取れない時は、 いつもどおりの動きに戻ります。 費用は 1 回 '
+          '\$0.001 未満です。',
+      'en': 'Jev does not write text. It only returns a choice, a level, or a '
+          'yes-probability. Turning this on lets the features below send a '
+          'SHORT EXCERPT out for that decision (never a whole page). If the '
+          'decision cannot be fetched, everything falls back to the normal '
+          'behaviour. A decision costs under \$0.001.',
+      'zh': 'Jev 不生成文本，只返回选择、等级或“是”的概率。开启后，下列功能会'
+          '把简短摘录发送出去用于判断（不会发送整页）。取不到判断时会退回'
+          '原有行为。每次费用低于 \$0.001。',
+      'ko': 'Jev는 문장을 만들지 않고 선택·단계·예 확률만 돌려줍니다. 켜면 '
+          '아래 기능이 판단을 위해 짧은 발췌만 외부로 보냅니다(페이지 전체는 '
+          '보내지 않음). 판단을 받지 못하면 기존 동작으로 되돌아갑니다.',
+      'es': 'Jev no escribe texto: solo devuelve una opción, un nivel o una '
+          'probabilidad de sí. Al activarlo, las funciones de abajo envían un '
+          'extracto corto para esa decisión (nunca una página completa).',
+      'fr': 'Jev ne rédige pas de texte : il renvoie seulement un choix, un '
+          'niveau ou une probabilité de oui. Activé, les fonctions ci-dessous '
+          'envoient un court extrait pour cette décision (jamais une page '
+          'entière).',
+      'de': 'Jev schreibt keinen Text, sondern liefert nur eine Auswahl, eine '
+          'Stufe oder eine Ja-Wahrscheinlichkeit. Aktiviert senden die '
+          'Funktionen unten nur einen kurzen Auszug dafür (niemals eine ganze '
+          'Seite).',
+      'pt': 'O Jev não escreve texto: devolve apenas uma escolha, um nível ou '
+          'uma probabilidade de sim. Ativado, as funções abaixo enviam um '
+          'trecho curto para essa decisão (nunca uma página inteira).',
+      'ru': 'Jev не создаёт текст, а возвращает только выбор, уровень или '
+          'вероятность «да». Включив это, функции ниже отправляют короткий '
+          'фрагмент для такого решения (никогда всю страницу).',
+    },
+    'jev.route': {
+      'ja': 'モデルと考える深さをまかせる',
+      'en': 'Let Jev pick the model and effort',
+      'zh': '由 Jev 选择模型与思考深度',
+      'ko': '모델과 추론 깊이를 맡기기',
+      'es': 'Que Jev elija el modelo y el esfuerzo',
+      'fr': 'Laisser Jev choisir le modèle et l effort',
+      'de': 'Jev Modell und Denktiefe wählen lassen',
+      'pt': 'Deixar o Jev escolher o modelo e o esforço',
+      'ru': 'Пусть Jev выбирает модель и глубину',
+    },
+    'jev.routeHelp': {
+      'ja': '投げた依頼の中身を見て、 軽い物は安いモデル・浅い推論へ、 '
+          '難しい物は高性能モデル・深い推論へ回します。 確信が低い時は '
+          '選び直さず、 画面で選んでいる設定のままにします。 CLI へ投げる '
+          '時は考える深さだけを合わせます (CLI ごとに段の呼び名が違うため)。',
+      'en': 'Looks at what you asked and sends light work to a cheap model '
+          'with shallow reasoning, and hard work to a stronger model with '
+          'deeper reasoning. When it is not confident it leaves your own '
+          'choice alone. For the CLI only the effort is adjusted (each CLI '
+          'names its levels differently).',
+      'zh': '根据请求内容，把轻任务交给便宜模型与浅推理，难任务交给更强模型与'
+          '深推理。判断不确定时保持你自己的设置。',
+      'ko': '요청 내용을 보고 가벼운 일은 저렴한 모델·얕은 추론으로, 어려운 '
+          '일은 강한 모델·깊은 추론으로 보냅니다. 확신이 낮으면 사용자의 '
+          '설정을 그대로 둡니다.',
+      'es': 'Mira lo que pediste y manda lo ligero a un modelo barato con '
+          'razonamiento superficial, y lo difícil a uno más fuerte. Si no '
+          'tiene confianza, deja tu propia elección.',
+      'fr': 'Analyse la demande et envoie le travail léger vers un modèle peu '
+          'coûteux, le travail difficile vers un modèle plus puissant. Sans '
+          'confiance suffisante, votre choix est conservé.',
+      'de': 'Prüft die Anfrage und schickt leichte Arbeit an ein günstiges '
+          'Modell, schwere an ein stärkeres. Bei geringer Sicherheit bleibt '
+          'Ihre eigene Wahl unverändert.',
+      'pt': 'Avalia o pedido e envia o trabalho leve para um modelo barato e o '
+          'difícil para um mais forte. Sem confiança, mantém a sua escolha.',
+      'ru': 'Смотрит на запрос и отправляет простое к дешёвой модели, сложное — '
+          'к более сильной. При низкой уверенности сохраняет ваш выбор.',
+    },
+    'jev.search': {
+      'ja': '検索結果を絞ってから AI へ渡す',
+      'en': 'Narrow search hits before the AI sees them',
+      'zh': '先筛选搜索结果再交给 AI',
+      'ko': '검색 결과를 좁힌 뒤 AI에 전달',
+      'es': 'Filtrar resultados antes de pasarlos a la IA',
+      'fr': 'Filtrer les résultats avant de les donner à l IA',
+      'de': 'Treffer filtern, bevor die KI sie sieht',
+      'pt': 'Filtrar resultados antes de passar para a IA',
+      'ru': 'Отфильтровать результаты перед передачей ИИ',
+    },
+    'jev.searchHelp': {
+      'ja': 'エージェントの「フォルダー内検索」 で当たった所を、 依頼に '
+          '近い順へ並べ替えて上だけを渡します。 「どこにも無さそう」 と '
+          '判定された時は、 ページを 1 枚ずつ読ませずに打ち切ります。 '
+          'これで AI へ送る量が大きく減ります。',
+      'en': 'Reorders what the agent search found so the closest hits go '
+          'first, and passes only those. When it judges the answer is not '
+          'there, it stops instead of letting the agent read page after page. '
+          'This is where most of the token saving comes from.',
+      'zh': '把智能体搜索命中的结果按相关度重排，只传递靠前的部分；判定“可能'
+          '不存在”时直接收束，不再逐页阅读。',
+      'ko': '에이전트 검색 결과를 관련도 순으로 재정렬해 상위만 전달하고, '
+          '"없는 것 같다"고 판단되면 페이지를 하나씩 읽지 않고 멈춥니다.',
+      'es': 'Reordena lo que encontró la búsqueda del agente y pasa solo los '
+          'primeros. Si juzga que la respuesta no está, se detiene.',
+      'fr': 'Réordonne ce que la recherche de l agent a trouvé et ne transmet '
+          'que les premiers. S il juge la réponse absente, il s arrête.',
+      'de': 'Sortiert die Suchtreffer nach Nähe und übergibt nur die obersten. '
+          'Hält an, wenn die Antwort offenbar fehlt.',
+      'pt': 'Reordena o que a busca do agente achou e passa só os primeiros. '
+          'Se julgar que a resposta não está lá, para.',
+      'ru': 'Переупорядочивает найденное поиском агента и передаёт только '
+          'верхние результаты, а при отсутствии ответа останавливается.',
+    },
+    'jev.book': {
+      'ja': '書籍検索の並びを直す',
+      'en': 'Reorder book search results',
+      'zh': '优化书籍搜索排序',
+      'ko': '도서 검색 순서 정리',
+      'es': 'Reordenar los resultados de libros',
+      'fr': 'Réordonner les résultats de livres',
+      'de': 'Buchtreffer neu sortieren',
+      'pt': 'Reordenar os resultados de livros',
+      'ru': 'Переупорядочить результаты по книгам',
+    },
+    'jev.bookHelp': {
+      'ja': 'Kindle ボタンの書籍検索で、 探している本に近い順へ並べ替え '
+          'ます。 候補の中に無さそうな時はその旨を出します。',
+      'en': 'In the Kindle button book search, puts the closest match first '
+          'and says so when the book you want does not look to be among the '
+          'candidates.',
+      'zh': '在 Kindle 按钮的书籍搜索里把最接近的排在前面，并在候选中似乎没有'
+          '目标书时提示。',
+      'ko': 'Kindle 버튼의 도서 검색에서 가장 가까운 책을 앞에 두고, 후보에 '
+          '없어 보이면 알려 줍니다.',
+      'es': 'En la búsqueda de libros del botón Kindle, pone primero la mejor '
+          'coincidencia y avisa si el libro no parece estar.',
+      'fr': 'Dans la recherche de livres du bouton Kindle, place la meilleure '
+          'correspondance en tête et signale si le livre semble absent.',
+      'de': 'Setzt in der Buchsuche der Kindle-Schaltfläche den besten Treffer '
+          'nach vorn und weist darauf hin, wenn das Buch zu fehlen scheint.',
+      'pt': 'Na busca de livros do botão Kindle, coloca a melhor combinação '
+          'primeiro e avisa se o livro parece ausente.',
+      'ru': 'В поиске книг по кнопке Kindle ставит лучшее совпадение первым и '
+          'предупреждает, если книги, похоже, нет.',
+    },
+    'jev.adBlock': {
+      'ja': 'Google 検索の広告を隠す',
+      'en': 'Hide ads in Google search',
+      'zh': '隐藏 Google 搜索广告',
+      'ko': 'Google 검색 광고 숨기기',
+      'es': 'Ocultar anuncios en la búsqueda de Google',
+      'fr': 'Masquer les publicités dans Google',
+      'de': 'Werbung in der Google-Suche verbergen',
+      'pt': 'Ocultar anúncios na busca do Google',
+      'ru': 'Скрывать рекламу в поиске Google',
+    },
+    'jev.adBlockHelp': {
+      'ja': '名前で分かる広告の枠 (スポンサー / 広告 の札が付いた塊、 '
+          '買い物の帯など) をアプリ内のブラウザで隠します。 これは判断も '
+          '通信も要らないので、 Jev を切っていても効きます。 '
+          '★ Windows では**見えなくするだけ**で、 広告の通信そのものは '
+          '止められません (使っている WebView に止める口が無いため)。',
+      'en': 'Hides ad blocks that can be recognised by name (units labelled '
+          'Sponsored / 広告, shopping carousels) inside the in-app browser. '
+          'This needs no decision and no network, so it works with Jev off. '
+          'NOTE: on Windows the ads are only HIDDEN - the requests still go '
+          'out, because the WebView there has no request filter.',
+      'zh': '在应用内浏览器隐藏可按名称识别的广告块（带“赞助商/广告”标记的'
+          '内容、购物横幅等）。无需判断与联网。注意：Windows 上仅隐藏，'
+          '广告请求仍会发出。',
+      'ko': '앱 내 브라우저에서 이름으로 알 수 있는 광고 영역(스폰서/광고 '
+          '표시, 쇼핑 띠 등)을 숨깁니다. 판단도 통신도 필요 없습니다. '
+          '참고: Windows에서는 숨기기만 가능하고 요청은 그대로 나갑니다.',
+      'es': 'Oculta bloques de anuncios reconocibles por nombre en el '
+          'navegador de la app. No necesita decisión ni red. En Windows solo '
+          'se ocultan: las peticiones siguen saliendo.',
+      'fr': 'Masque les blocs publicitaires reconnaissables par leur nom dans '
+          'le navigateur intégré. Sans décision ni réseau. Sous Windows, ils '
+          'sont seulement masqués : les requêtes partent toujours.',
+      'de': 'Verbirgt Werbeblöcke, die am Namen erkennbar sind, im '
+          'App-Browser. Ohne Entscheidung und ohne Netz. Unter Windows wird '
+          'nur verborgen - die Anfragen gehen weiter hinaus.',
+      'pt': 'Oculta blocos de anúncios reconhecíveis pelo nome no navegador da '
+          'app. Não precisa de decisão nem de rede. No Windows apenas oculta: '
+          'os pedidos continuam a sair.',
+      'ru': 'Скрывает рекламные блоки, узнаваемые по названию, во встроенном '
+          'браузере. Не требует ни решения, ни сети. В Windows только '
+          'скрывает — запросы всё равно уходят.',
+    },
+    'jev.adBlockDeep': {
+      'ja': '判別が付かない枠も Jev に聞く',
+      'en': 'Ask Jev about blocks it cannot name',
+      'zh': '无法识别的区块交由 Jev 判断',
+      'ko': '판별이 안 되는 영역은 Jev에 묻기',
+      'es': 'Preguntar a Jev por los bloques dudosos',
+      'fr': 'Demander à Jev pour les blocs ambigus',
+      'de': 'Jev zu unklaren Blöcken befragen',
+      'pt': 'Perguntar ao Jev sobre blocos ambíguos',
+      'ru': 'Спрашивать Jev о неоднозначных блоках',
+    },
+    'jev.adBlockDeepHelp': {
+      'ja': '名前では広告と分からなかった塊だけ、 短い抜粋 (最大 12 件 x '
+          '200 字) を送って「広告か」 を聞きます。 広告の確率が 75% 以上の '
+          '塊だけ隠します (通常の結果を誤って消さないよう高めにしてあります)。 '
+          '検索結果のページでだけ聞きます。',
+      'en': 'For blocks that could not be recognised by name, sends a short '
+          'excerpt (at most 12 blocks x 200 chars) and asks whether it is an '
+          'ad. Only blocks at 75% or more are hidden - deliberately high so '
+          'ordinary results are not removed by mistake. Asked only on search '
+          'result pages.',
+      'zh': '仅对无法按名称识别的区块发送简短摘录（最多 12 个 x 200 字）询问'
+          '是否为广告，概率 ≥75% 才隐藏，仅在搜索结果页询问。',
+      'ko': '이름으로 판별되지 않은 영역만 짧은 발췌(최대 12건 x 200자)를 '
+          '보내 광고인지 묻고, 75% 이상일 때만 숨깁니다.',
+      'es': 'Para los bloques no reconocibles por nombre, envía un extracto '
+          'corto (máx. 12 x 200 caracteres) y pregunta si es anuncio. Solo se '
+          'ocultan los de 75% o más.',
+      'fr': 'Pour les blocs non reconnus par leur nom, envoie un court extrait '
+          '(12 blocs x 200 caractères au plus) et demande s il s agit d une '
+          'publicité. Seuls ceux à 75% ou plus sont masqués.',
+      'de': 'Sendet für nicht am Namen erkennbare Blöcke einen kurzen Auszug '
+          '(max. 12 x 200 Zeichen) und fragt, ob es Werbung ist. Nur ab 75% '
+          'wird verborgen.',
+      'pt': 'Para blocos não reconhecíveis pelo nome, envia um trecho curto '
+          '(máx. 12 x 200 caracteres) e pergunta se é anúncio. Só oculta a '
+          'partir de 75%.',
+      'ru': 'Для блоков, не узнаваемых по названию, отправляет короткий '
+          'фрагмент (не более 12 по 200 символов) и спрашивает, реклама ли '
+          'это. Скрывает только при 75% и выше.',
+    },
+    'jev.usage': {
+      'ja': 'Jev に聞いた回数',
+      'en': 'Jev decisions used',
+      'zh': 'Jev 判断次数',
+      'ko': 'Jev 판단 횟수',
+      'es': 'Decisiones de Jev usadas',
+      'fr': 'Décisions Jev utilisées',
+      'de': 'Genutzte Jev-Entscheidungen',
+      'pt': 'Decisões do Jev usadas',
+      'ru': 'Использовано решений Jev',
+    },
+    // ── 書籍検索の画面 ──
+    'book.title': {
+      'ja': '書籍をさがす',
+      'en': 'Find a book',
+      'zh': '查找书籍',
+      'ko': '도서 찾기',
+      'es': 'Buscar un libro',
+      'fr': 'Trouver un livre',
+      'de': 'Buch suchen',
+      'pt': 'Procurar um livro',
+      'ru': 'Найти книгу',
+    },
+    'book.hint': {
+      'ja': '題名・著者・ISBN で探せます',
+      'en': 'Search by title, author or ISBN',
+      'zh': '可按书名、作者或 ISBN 搜索',
+      'ko': '제목·저자·ISBN으로 검색',
+      'es': 'Busca por título, autor o ISBN',
+      'fr': 'Rechercher par titre, auteur ou ISBN',
+      'de': 'Nach Titel, Autor oder ISBN suchen',
+      'pt': 'Procure por título, autor ou ISBN',
+      'ru': 'Поиск по названию, автору или ISBN',
+    },
+    'book.library': {
+      'ja': '本棚を開く',
+      'en': 'Open library',
+      'zh': '打开书架',
+      'ko': '서재 열기',
+      'es': 'Abrir biblioteca',
+      'fr': 'Ouvrir la bibliothèque',
+      'de': 'Bibliothek öffnen',
+      'pt': 'Abrir biblioteca',
+      'ru': 'Открыть библиотеку',
+    },
+    'book.search': {
+      'ja': 'さがす',
+      'en': 'Search',
+      'zh': '搜索',
+      'ko': '검색',
+      'es': 'Buscar',
+      'fr': 'Rechercher',
+      'de': 'Suchen',
+      'pt': 'Procurar',
+      'ru': 'Искать',
+    },
+    'book.none': {
+      'ja': '見付かりませんでした。 言葉を変えてお試しください。',
+      'en': 'Nothing found. Try different words.',
+      'zh': '未找到。请换个说法再试。',
+      'ko': '찾지 못했습니다. 다른 단어로 시도해 보세요.',
+      'es': 'Sin resultados. Prueba con otras palabras.',
+      'fr': 'Aucun résultat. Essayez d autres mots.',
+      'de': 'Nichts gefunden. Versuchen Sie andere Wörter.',
+      'pt': 'Nada encontrado. Tente outras palavras.',
+      'ru': 'Ничего не найдено. Попробуйте другие слова.',
+    },
+    'book.failed': {
+      'ja': '書籍の検索に失敗しました。',
+      'en': 'The book search failed.',
+      'zh': '书籍搜索失败。',
+      'ko': '도서 검색에 실패했습니다.',
+      'es': 'La búsqueda de libros falló.',
+      'fr': 'La recherche de livres a échoué.',
+      'de': 'Die Buchsuche ist fehlgeschlagen.',
+      'pt': 'A busca de livros falhou.',
+      'ru': 'Поиск книг не удался.',
+    },
+    'book.maybeAbsent': {
+      'ja': '探している本は、 この候補の中には無さそうです。',
+      'en': 'The book you want does not look to be among these candidates.',
+      'zh': '你要找的书似乎不在这些候选中。',
+      'ko': '찾는 책은 이 후보에 없어 보입니다.',
+      'es': 'El libro que buscas no parece estar entre estos candidatos.',
+      'fr': 'Le livre recherché ne semble pas figurer parmi ces candidats.',
+      'de': 'Das gesuchte Buch scheint nicht unter diesen Treffern zu sein.',
+      'pt': 'O livro que procura parece não estar entre estes candidatos.',
+      'ru': 'Нужной книги, похоже, нет среди этих кандидатов.',
     },
     'settings.groupDialogs': {
       'ja': '押して設定する項目',
@@ -66606,6 +67336,48 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Não',
       'ru': 'Выкл.',
     },
+    // ── 撮った動画の置き場 (= ユーザー要望: 「自動操作で撮った動画を保存して
+    //    置く場所がないのじゃない?」) ──
+    'auto.videos': {
+      'ja': '撮った動画',
+      'en': 'Recorded videos',
+      'zh': '录制的视频',
+      'ko': '녹화한 영상',
+      'es': 'Vídeos grabados',
+      'fr': 'Vidéos enregistrées',
+      'de': 'Aufgezeichnete Videos',
+      'pt': 'Vídeos gravados',
+      'ru': 'Записанные видео',
+    },
+    'auto.videosEmpty': {
+      'ja': 'まだ録画はありません。「実行を録画」を「録る」にして実行すると、'
+          'ここに溜まります。',
+      'en': 'No recordings yet. Set "Record the run" to On and the videos will '
+          'collect here.',
+      'zh': '还没有录像。把「录制本次执行」设为「开」后，视频会保存在这里。',
+      'ko': '아직 녹화가 없습니다. 「실행 녹화」를 「켬」으로 하면 여기에 쌓입니다.',
+      'es': 'Aún no hay grabaciones. Activa «Grabar la ejecución» y se '
+          'guardarán aquí.',
+      'fr': 'Aucun enregistrement. Activez « Enregistrer l’exécution » et les '
+          'vidéos arriveront ici.',
+      'de': 'Noch keine Aufnahmen. Stelle „Lauf aufzeichnen“ auf An, dann '
+          'sammeln sie sich hier.',
+      'pt': 'Ainda não há gravações. Ative "Gravar a execução" e elas ficarão '
+          'aqui.',
+      'ru': 'Записей пока нет. Включите «Записывать запуск» — видео появятся '
+          'здесь.',
+    },
+    'auto.videoPlay': {
+      'ja': '開く',
+      'en': 'Open',
+      'zh': '打开',
+      'ko': '열기',
+      'es': 'Abrir',
+      'fr': 'Ouvrir',
+      'de': 'Öffnen',
+      'pt': 'Abrir',
+      'ru': 'Открыть',
+    },
     'auto.logStarted': {
       'ja': 'ページのログを集め始めました',
       'en': 'Started collecting the page log',
@@ -70309,6 +71081,29 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Voltar ao padrao (pasta da pagina)',
       'ru': 'Vernut po umolchaniyu (papka stranitsy)',
     },
+    // ★ = ユーザー要望「CLI などのタブの名前を変えられるようにして欲しい」。
+    'cli.renameTab': {
+      'ja': 'タブの名前を変える',
+      'en': 'Rename this tab',
+      'zh': '重命名此标签页',
+      'ko': '이 탭 이름 바꾸기',
+      'es': 'Renombrar esta pestaña',
+      'fr': 'Renommer cet onglet',
+      'de': 'Diesen Tab umbenennen',
+      'pt': 'Renomear esta aba',
+      'ru': 'Переименовать вкладку',
+    },
+    'cli.renameTabHint': {
+      'ja': '空にすると元の名前に戻ります',
+      'en': 'Leave it empty to restore the original name',
+      'zh': '留空则恢复原名',
+      'ko': '비워 두면 원래 이름으로 돌아갑니다',
+      'es': 'Déjalo vacío para restaurar el nombre original',
+      'fr': 'Laissez vide pour rétablir le nom d’origine',
+      'de': 'Leer lassen, um den ursprünglichen Namen wiederherzustellen',
+      'pt': 'Deixe vazio para voltar ao nome original',
+      'ru': 'Оставьте пустым, чтобы вернуть исходное имя',
+    },
     'cli.closeTab': {
       'ja': 'このタブを閉じる',
       'en': 'Close this tab',
@@ -72825,6 +73620,20 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Abrir submapa',
       'ru': 'Открыть вложенную карту',
     },
+    // ★ = ユーザー要望「マークダウンなどのファイル要素を単体で選択して
+    //   その他の所にダウンロードする項目を追加して欲しい」。 まとめて落とす
+    //   ['ctx.bulkDownloadAttachments'] の単数版。
+    'ctx.saveFileAs': {
+      'ja': 'ファイルを別の場所に保存',
+      'en': 'Save file to…',
+      'zh': '将文件另存到…',
+      'ko': '다른 위치에 파일 저장',
+      'es': 'Guardar archivo en…',
+      'fr': 'Enregistrer le fichier sous…',
+      'de': 'Datei speichern unter…',
+      'pt': 'Salvar arquivo em…',
+      'ru': 'Сохранить файл как…',
+    },
     'attach.bulkDownload.dialogTitle': {
       'ja': '添付ファイルの保存先を選択',
       'en': 'Choose attachment download location',
@@ -75148,11 +75957,13 @@ class MindMapProvider extends ChangeNotifier {
       'ja': '別の窓で開いています。',
       'en': 'Opening in a separate window.',
     },
+    // ★ = ユーザー要望「ショートカットを作成は『デスクトップにショートカット
+    //   作成』 に表記変更しておいて」。 どこに出来るのかが名札で分かるように。
     'cli.makeShortcut': {
-      'ja': 'ショートカットを作る',
-      'en': 'Create a shortcut',
-      'zh': '创建快捷方式',
-      'ko': '바로 가기 만들기',
+      'ja': 'デスクトップにショートカット作成',
+      'en': 'Create a desktop shortcut',
+      'zh': '在桌面创建快捷方式',
+      'ko': '바탕 화면에 바로 가기 만들기',
     },
     'cli.shortcutDone': {
       'ja': 'デスクトップにショートカットを作りました。ここから始めると'
@@ -76869,6 +77680,8 @@ class MindMapProvider extends ChangeNotifier {
 
   Future<void> _loadAiSettings() async {
     final prefs = await _prefsWithRetry();
+    // Jev (判断補助) の入切。 既定は全部切。
+    _loadJevSettings(prefs);
     aiDepth = prefs.getInt('aiDepth') ?? 1;
     aiChildMin = prefs.getInt('aiChildMin') ?? 5;
     aiChildMax = prefs.getInt('aiChildMax') ?? 8;
@@ -78134,6 +78947,129 @@ class MindMapProvider extends ChangeNotifier {
   /// 動画再生中に高リフレッシュレートへ合わせるか (確認の結果を保持)。
   bool _matchRefreshOnVideo = true;
   bool get matchRefreshOnVideo => _matchRefreshOnVideo;
+
+  // ── 電池が減ったら省電力モードへ ─────────────────────────────
+  //
+  // = ユーザー要望「バッテリーが％以下になったら省電力モードに切り替える
+  //   設定項目を追加して欲しい」。
+  //
+  // ★ 切り替えるのは Windows の**電源モード** (タスクバーのスライダーと
+  //   同じ 3 段)。 電源プランではない。 実行は [OsQuickToggles.setPowerMode]、
+  //   残量の読み取りは [PcSettings.readBattery]。 どちらも Windows 専用で、
+  //   他の OS では何もしない。
+  // ★ 1 分ごとに見る。 画面は書き換えないので notifyListeners は呼ばない
+  //   (設定の画面は自分で読み直す)。 毎分アプリ全体を組み直さないため。
+  bool _batterySaverEnabled = false;
+  bool get batterySaverEnabled => _batterySaverEnabled;
+
+  /// この割合を下回ったら省電力へ (5〜90)。
+  int _batterySaverThreshold = 20;
+  int get batterySaverThreshold => _batterySaverThreshold;
+
+  /// **こちらが**省電力へ落とした状態か。 利用者が手で変えた時に
+  /// 勝手に戻さないための目印 (アプリを閉じても覚えておく)。
+  bool _batterySaverApplied = false;
+  bool get batterySaverApplied => _batterySaverApplied;
+
+  Timer? _batteryWatchTimer;
+
+  /// この機械に電池があるか (無ければ設定の行そのものを出さない)。
+  bool get hasBattery => PcSettings.hasBattery();
+
+  /// 今の電池の様子。 画面から読むだけの入口 (I/O は軽い)。
+  PcBatteryState readBatteryState() => PcSettings.readBattery();
+
+  Future<void> _loadBatterySaverSettings() async {
+    try {
+      final prefs = await _prefsWithRetry();
+      _batterySaverEnabled = prefs.getBool('batterySaverEnabled') ?? false;
+      _batterySaverThreshold =
+          (prefs.getInt('batterySaverThresholdPercent') ?? 20).clamp(5, 90);
+      _batterySaverApplied = prefs.getBool('batterySaverApplied') ?? false;
+    } catch (_) {
+      // 読めなくても既定で動く。
+    }
+    _startBatteryWatch();
+  }
+
+  void _startBatteryWatch() {
+    if (kIsWeb || !Platform.isWindows) return;
+    _batteryWatchTimer?.cancel();
+    if (!_batterySaverEnabled && !_batterySaverApplied) return;
+    // 設定を入れた / 前回省電力へ落としたまま終わった時だけ回す。
+    _checkBatterySaver();
+    _batteryWatchTimer =
+        Timer.periodic(const Duration(minutes: 1), (_) => _checkBatterySaver());
+  }
+
+  Future<void> setBatterySaverEnabled(bool v) async {
+    if (_batterySaverEnabled == v) return;
+    _batterySaverEnabled = v;
+    final prefs = await _prefsWithRetry();
+    await prefs.setBool('batterySaverEnabled', v);
+    if (!v) {
+      // 切った時は、 こちらが落とした分だけ元へ戻す。
+      await _releaseBatterySaver();
+    }
+    _startBatteryWatch();
+    notifyListeners();
+  }
+
+  Future<void> setBatterySaverThreshold(int percent) async {
+    final v = percent.clamp(5, 90);
+    if (_batterySaverThreshold == v) return;
+    _batterySaverThreshold = v;
+    final prefs = await _prefsWithRetry();
+    await prefs.setInt('batterySaverThresholdPercent', v);
+    _checkBatterySaver();
+    notifyListeners();
+  }
+
+  Future<void> _markBatterySaverApplied(bool v) async {
+    if (_batterySaverApplied == v) return;
+    _batterySaverApplied = v;
+    try {
+      final prefs = await _prefsWithRetry();
+      await prefs.setBool('batterySaverApplied', v);
+    } catch (_) {}
+  }
+
+  /// こちらが落とした省電力を元へ戻す (利用者が手で変えていたら触らない)。
+  Future<void> _releaseBatterySaver() async {
+    if (!_batterySaverApplied) return;
+    if (OsQuickToggles.currentPowerMode() == PowerMode.saver) {
+      OsQuickToggles.setPowerMode(PowerMode.balanced);
+    }
+    await _markBatterySaverApplied(false);
+  }
+
+  /// 残量を見て、 必要なら電源モードを入れ替える。
+  ///
+  /// 戻す条件に **+5% の幅**を持たせてある。 閾値ぴったりで戻すと、
+  /// 残量が 1% を行き来するたびに省電力とバランスを往復する。
+  void _checkBatterySaver() {
+    if (kIsWeb || !Platform.isWindows) return;
+    final st = PcSettings.readBattery();
+    if (!st.hasBattery || st.percent < 0) return;
+    final low = !st.onAc && st.percent <= _batterySaverThreshold;
+    if (_batterySaverEnabled && low) {
+      if (_batterySaverApplied) return;
+      if (OsQuickToggles.currentPowerMode() == PowerMode.saver) {
+        // 既に省電力。 こちらが落としたものとして覚えておく
+        // (次に充電しても、 勝手にバランスへ動かさないため false のまま)。
+        return;
+      }
+      if (OsQuickToggles.setPowerMode(PowerMode.saver)) {
+        unawaited(_markBatterySaverApplied(true));
+      }
+      return;
+    }
+    // 戻す側: 充電を始めた / 閾値より 5% 以上戻った。
+    if (_batterySaverApplied &&
+        (st.onAc || st.percent >= _batterySaverThreshold + 5)) {
+      unawaited(_releaseBatterySaver());
+    }
+  }
 
   Future<void> setHighRefreshRate(bool v) async {
     if (_highRefreshRate == v) return;
@@ -86849,8 +87785,775 @@ class MindMapProvider extends ChangeNotifier {
   /// Worker 経由で生成する。 戻り値は本文。 使用量は Worker が計上する。
   /// [images] を渡すと写真も一緒に見せる (= ユーザー要望: カメラで撮った物を
   /// そのまま AI に渡したい)。 対応していないモデルではサーバー側が無視する。
+
+  // ═══ Jev (TypeSafe System One) — 判断だけを頼む所 ═════════════════
+  //
+  // = ユーザー要望:
+  //   ・CLI / AI(API) 欄のプロンプトを適切なモデル・推論レベルで処理する
+  //   ・Google 検索の広告を落とす
+  //   ・エージェントのフォルダー内検索でトークンを抑える
+  //   ・書籍検索の並びを良くする
+  //
+  // ★ Jev は文章を作らない。 候補選び (choice) / 段階 (score) /
+  //   Yes 確率 (noul) を返すだけ。 質問文と閾値は [JevTemplates] に
+  //   集めてある (機能ごとに条件分岐を散らさないため)。
+  // ★ 既定は**全部切**。 外へ文章の断片を送る機能なので、 利用者が
+  //   自分で入れるまで一切通信しない (提案書の「初期値は無効」)。
+  // ★ 取れなかった時は必ず従来処理へ戻す。 判断が無いと止まる作りには
+  //   しない。
+
+  /// 親スイッチ。 これが切なら下の 4 つも効かない。
+  bool _jevEnabled = false;
+  bool get jevEnabled => _jevEnabled;
+
+  /// プロンプトの振り分け (モデル + 考える深さ)。
+  bool _jevRouteEnabled = false;
+  bool get jevRouteEnabled => _jevEnabled && _jevRouteEnabled;
+
+  /// Google 検索の広告落とし。
+  bool _jevAdBlockEnabled = false;
+  bool get jevAdBlockEnabled => _jevEnabled && _jevAdBlockEnabled;
+
+  /// フォルダー内検索の絞り込み。
+  bool _jevSearchEnabled = false;
+  bool get jevSearchEnabled => _jevEnabled && _jevSearchEnabled;
+
+  /// 書籍検索の並べ替え。
+  bool _jevBookEnabled = false;
+  bool get jevBookEnabled => _jevEnabled && _jevBookEnabled;
+
+  /// Google 検索の広告落とし。
+  ///
+  /// ★ これは **Jev の親スイッチとは独立**。 1 段目 (名前で分かる広告を
+  ///   CSS で隠す) は通信も判断も要らないので、 外へ何も送りたくない人でも
+  ///   使えるようにしてある。 判別が付かない塊を Jev に聞く 2 段目だけが
+  ///   [jevAdBlockEnabled] を要る。
+  bool _adBlockEnabled = false;
+  bool get adBlockEnabled => _adBlockEnabled;
+
+  Future<void> setAdBlockEnabled(bool v) async {
+    if (_adBlockEnabled == v) return;
+    _adBlockEnabled = v;
+    notifyListeners();
+    try {
+      final p = await _prefsWithRetry();
+      await p.setBool('adBlockEnabled', v);
+    } catch (_) {}
+  }
+
+  /// 広告落としの差し込み用 JS (切っている時は null)。
+  String? adBlockInstallJsOrNull() =>
+      _adBlockEnabled ? googleAdBlockInstallJs() : null;
+
+  /// 判別が付かなかった塊を Jev に聞き、 広告だと言われた id を返す。
+  ///
+  /// [blocks] は `[{id, text}]`。 空 / 切っている時は空を返す。
+  Future<List<String>> jevPickAdBlocks(List<Map<String, String>> blocks) async {
+    if (!jevAdBlockEnabled || blocks.isEmpty) return const [];
+    // 1 回に聞く数は抑える (質問 1 本 = 塊 1 つ。 上限 12)。
+    final use = blocks.length > 12 ? blocks.sublist(0, 12) : blocks;
+    final ids = [for (final b in use) '${b['id']}'];
+    final sb = StringBuffer();
+    sb.writeln('Google search result blocks:');
+    for (final b in use) {
+      sb.writeln('[[${b['id']}]] ${b['text']}');
+    }
+    final d = await jevDecide(
+      feature: 'google_adblock',
+      state: sb.toString(),
+      questions: JevTemplates.adBlocks(ids),
+    );
+    if (d == null) return const [];
+    final out = <String>[];
+    for (final id in ids) {
+      final a = d['ad_$id'];
+      if (a?.noul != null && a!.noul! >= kJevAdNoulMin) out.add(id);
+    }
+    return out;
+  }
+
+  // ═══ エージェント向けの検索 (トークンを抑える) ═════════════════
+  //
+  // = ユーザー要望「AI エージェントのフォルダー内検索に Jev を実装して
+  //   トークンを抑える仕組み」。
+  //
+  // ★ 今まで AI は「一覧を引く → ページを丸ごと読む」 しか出来なかった。
+  //   ページ 1 枚の JSON は 5 要素でも 3000 文字を超えるので、 探し物を
+  //   見付けるまでに何枚も読み、 その全部が毎回の会話へ積み上がっていた。
+  // ★ ここで返すのは**当たった所の短い抜粋だけ**。 本文は返さない。
+  //   さらに Jev が入っていれば、 抜粋を関連の高い順へ並べ替えて
+  //   上から [maxHits] 件だけにし、 「そもそも答えが無い」 も伝える
+  //   (無駄にページを読ませない)。
+  // ★ 件数と抜粋の長さは**ここで**上限を掛ける。 MCP 側の打ち切り
+  //   (_capToolResult) は JSON の途中で切るので、 それに頼ると壊れた
+  //   JSON が AI へ渡る。
+
+  /// 要素の題名・メモから探す (ページをまたぐ)。
+  ///
+  /// [scope] は 'all' / 'folder' / 'page'。 'folder' は今のページと同じ
+  /// フォルダーだけ、 'page' は今のページだけ。
+  Future<
+      ({
+        List<Map<String, Object?>> hits,
+        String verdict,
+        List<String> unsearched
+      })> mcpSearchNodes(
+    String query, {
+    String scope = 'all',
+    int maxHits = 12,
+    int snippetChars = 200,
+  }) async {
+    final q = query.trim();
+    if (q.isEmpty || _pages.isEmpty) {
+      return (
+        hits: const <Map<String, Object?>>[],
+        verdict: 'absent',
+        unsearched: const <String>[],
+      );
+    }
+    final needle = q.toLowerCase();
+    final cur = currentPage;
+    final raw = <Map<String, Object?>>[];
+    // 本文がページ JSON の外にある種別。 読むのは prefs なので数を抑える。
+    final bodyPages = <MindMapPage>[];
+    final unsearched = <String>[];
+    const kMaxBodyReads = 60;
+    for (final p in _pages) {
+      if (scope == 'page' && p.id != cur.id) continue;
+      if (scope == 'folder' && p.folderId != cur.folderId) continue;
+      if (p.pageType == 'markdown' ||
+          p.pageType == 'document' ||
+          p.pageType == 'paint') {
+        if (bodyPages.length < kMaxBodyReads) {
+          bodyPages.add(p);
+        } else {
+          unsearched.add(p.name);
+        }
+      } else if (p.pageType == 'videoEditor') {
+        // 字幕は list_video_editor_items で読む物なので、 ここでは見ない。
+        unsearched.add(p.name);
+      }
+      for (final n in p.nodes.values) {
+        // ★ 題名・メモ・注釈・表の見出しまで見る (= 画面の検索は題名と
+        //   メモしか見ておらず、 表や注釈が「無い」 ことになっていた)。
+        final fields = <String>[
+          n.title,
+          n.memoText ?? '',
+          n.caption ?? '',
+          n.tableData?.cells
+                  .map((r) => r.join(' '))
+                  .join(' ') ??
+              '',
+          // ★ PDF のページに付けたメモも本文 (= 点検で判明: ここだけ抜けて
+          //   いたので、 PDF のメモに書いた言葉は必ず「見つからない」 と
+          //   返っていた)。
+          for (final m in (n.pdfMemos ?? const <PdfMemo>[])) m.text,
+        ];
+        var count = 0;
+        var where = '';
+        for (final f in fields) {
+          if (f.isEmpty) continue;
+          final lower = f.toLowerCase();
+          var at = lower.indexOf(needle);
+          while (at >= 0) {
+            count++;
+            if (where.isEmpty) {
+              final from = (at - 40) < 0 ? 0 : at - 40;
+              final to = (at + snippetChars) > f.length
+                  ? f.length
+                  : at + snippetChars;
+              where = f
+                  .substring(from, to)
+                  .replaceAll(RegExp(r'\s+'), ' ')
+                  .trim();
+            }
+            at = lower.indexOf(needle, at + needle.length);
+            if (count > 50) break;
+          }
+        }
+        if (count == 0) continue;
+        raw.add({
+          'pageId': p.id,
+          'pageName': p.name,
+          'nodeId': n.id,
+          'title': n.title,
+          'snippet': where,
+          'matchCount': count,
+        });
+      }
+    }
+    // ★ = 点検で判明した穴 (= 動作検証の不具合「探して見つかったのに
+    //   見つからない寄りの返事になる」 の残り)。 マークダウン / 文書 /
+    //   フリーノートの本文は**ページ JSON の外** (prefs) にあるので、
+    //   要素だけを見ていた今までは、 そこに書いた言葉が必ず absent に
+    //   なっていた ('見つかりません。 これ以上探さないで' と案内するので、
+    //   AI は本当に無いと信じて探すのをやめる)。 読んで、 同じように数える。
+    for (final p in bodyPages) {
+      List<({String label, String text})> parts;
+      try {
+        parts = await _mcpBodyTextsOf(p);
+      } catch (_) {
+        unsearched.add(p.name);
+        continue;
+      }
+      if (parts.isEmpty) continue;
+      for (final part in parts) {
+        final f = part.text;
+        if (f.isEmpty) continue;
+        final lower = f.toLowerCase();
+        var count = 0;
+        var where = '';
+        var at = lower.indexOf(needle);
+        while (at >= 0) {
+          count++;
+          if (where.isEmpty) {
+            final from = (at - 40) < 0 ? 0 : at - 40;
+            final to =
+                (at + snippetChars) > f.length ? f.length : at + snippetChars;
+            where =
+                f.substring(from, to).replaceAll(RegExp(r'\s+'), ' ').trim();
+          }
+          at = lower.indexOf(needle, at + needle.length);
+          if (count > 50) break;
+        }
+        if (count == 0) continue;
+        raw.add({
+          'pageId': p.id,
+          'pageName': p.name,
+          'nodeId': '',
+          'title': part.label,
+          'snippet': where,
+          'matchCount': count,
+        });
+      }
+    }
+    if (raw.isEmpty) {
+      // ★ 探せなかったページが在るなら absent ではなく unknown。 「無い」 と
+      //   「見られなかった」 を言い分けないと、 AI が早々に諦める。
+      return (
+        hits: const <Map<String, Object?>>[],
+        verdict: unsearched.isEmpty ? 'absent' : 'unknown',
+        unsearched: unsearched,
+      );
+    }
+    // 素の並びは「今のページを先に、 次に当たった数の多い順」。
+    raw.sort((a, b) {
+      final ac = a['pageId'] == cur.id ? 0 : 1;
+      final bc = b['pageId'] == cur.id ? 0 : 1;
+      if (ac != bc) return ac - bc;
+      return (b['matchCount'] as int).compareTo(a['matchCount'] as int);
+    });
+    final narrowed = await _jevNarrow(
+      feature: 'agent_search_nodes',
+      query: q,
+      rows: raw,
+      digest: (r) => '${r['pageName']} / ${r['title']} : ${r['snippet']}',
+      maxHits: maxHits,
+    );
+    return (
+      hits: narrowed.hits,
+      verdict: narrowed.verdict,
+      unsearched: unsearched,
+    );
+  }
+
+  /// 本文がページ JSON の外にある種別の本文を、 探せる形で返す。
+  ///
+  /// ★ 読み手は既にある道具を使い回す (同じ読み方を 2 本にしない)。
+  ///   フリーノートは**紙の文字**と**文書の層**の両方を見る。
+  Future<List<({String label, String text})>> _mcpBodyTextsOf(
+      MindMapPage p) async {
+    final out = <({String label, String text})>[];
+    switch (p.pageType) {
+      case 'markdown':
+        final md = await mcpReadMarkdown(p.id);
+        final tabs = (md?['tabs'] as List?) ?? const [];
+        for (var i = 0; i < tabs.length; i++) {
+          final t = tabs[i];
+          if (t is! Map) continue;
+          out.add((
+            label: '${t['name'] ?? 'tab ${i + 1}'}',
+            text: '${t['text'] ?? ''}',
+          ));
+        }
+        break;
+      case 'document':
+      case 'paint':
+        final doc = await mcpReadDocument(p.id);
+        final papers = (doc?['papers'] as List?) ?? const [];
+        for (var i = 0; i < papers.length; i++) {
+          final t = papers[i];
+          if (t is! Map) continue;
+          out.add((
+            label: '${t['name'] ?? 'paper ${i + 1}'}',
+            text: '${t['text'] ?? ''}',
+          ));
+        }
+        if (p.pageType == 'paint') {
+          final side = '${doc?['pageSideNote'] ?? ''}';
+          if (side.trim().isNotEmpty) {
+            out.add((label: 'side note', text: side));
+          }
+          final pt = await mcpReadPaintItems(p.id);
+          final texts = (pt?['texts'] as List?) ?? const [];
+          final b = StringBuffer();
+          for (final t in texts) {
+            if (t is Map) b.writeln('${t['text'] ?? ''}');
+          }
+          if (b.isNotEmpty) out.add((label: 'sheet text', text: b.toString()));
+        }
+        break;
+      default:
+        break;
+    }
+    return out;
+  }
+
+  /// フォルダーの中のファイルから探す (PDF / docx / txt など)。
+  ///
+  /// ★ 元の [searchFilesInFolder] は最大 400 ファイル × 40 万字を
+  ///   1 つずつ読む作りで、 MCP から呼ぶと 1 手が数十秒止まる。 ここでは
+  ///   件数と読む量を絞り、 Jev で上位だけに削って返す。
+  Future<({List<Map<String, Object?>> hits, String verdict})> mcpSearchFolderFiles(
+    String query, {
+    String? folderId,
+    int maxHits = 8,
+    int snippetChars = 240,
+    int maxFiles = 120,
+    Duration timeout = const Duration(seconds: 25),
+  }) async {
+    final q = query.trim();
+    if (q.isEmpty) {
+      return (hits: const <Map<String, Object?>>[], verdict: 'absent');
+    }
+    List<FolderFileHit> found;
+    try {
+      found = await searchFilesInFolder(
+        folderId,
+        q,
+        maxFiles: maxFiles,
+        // 1 ファイルあたりの読む量も抑える (抜粋を出すには足りる)。
+        maxCharsPerFile: 120000,
+      ).timeout(timeout);
+    } catch (_) {
+      // 時間切れ / 抽出の失敗は「分からない」 として返す (止めない)。
+      return (hits: const <Map<String, Object?>>[], verdict: 'unknown');
+    }
+    if (found.isEmpty) {
+      return (hits: const <Map<String, Object?>>[], verdict: 'absent');
+    }
+    final rows = <Map<String, Object?>>[
+      for (final h in found)
+        {
+          'fileName': h.fileName,
+          'filePath': mcpNormalizePath(h.filePath),
+          if (h.pageId.isNotEmpty) 'pageId': h.pageId,
+          if (h.pageName.isNotEmpty) 'pageName': h.pageName,
+          if (h.nodeId.isNotEmpty) 'nodeId': h.nodeId,
+          'snippet': h.snippet.length > snippetChars
+              ? h.snippet.substring(0, snippetChars)
+              : h.snippet,
+          'matchCount': h.matchCount,
+        }
+    ];
+    return _jevNarrow(
+      feature: 'agent_search_files',
+      query: q,
+      rows: rows,
+      digest: (r) => '${r['fileName']} : ${r['snippet']}',
+      maxHits: maxHits,
+    );
+  }
+
+  /// 当たりを Jev で並べ替えて上から [maxHits] 件にする。
+  ///
+  /// Jev が使えない時は、 素の並びの上から [maxHits] 件 (= 今までどおり)。
+  Future<({List<Map<String, Object?>> hits, String verdict})> _jevNarrow({
+    required String feature,
+    required String query,
+    required List<Map<String, Object?>> rows,
+    required String Function(Map<String, Object?>) digest,
+    required int maxHits,
+  }) async {
+    List<Map<String, Object?>> cut(List<Map<String, Object?>> src) =>
+        src.length > maxHits ? src.sublist(0, maxHits) : src;
+    // ★ = 動作検証の不具合「完全一致が見つかっても判定が unknown になる」。
+    //   ここへ来る時点で [rows] は**文字が実際に一致した行**なので、
+    //   1 件でもあれば 'found' と言い切ってよい (0 件は呼ぶ側が 'absent' を
+    //   返してここへは来ない)。 Jev の判断は順番付けに使うだけで、
+    //   'found' を下げる事はしない。
+    final localVerdict = rows.isEmpty ? 'absent' : 'found';
+    if (!jevSearchEnabled || rows.length <= 1) {
+      return (hits: cut(rows), verdict: localVerdict);
+    }
+    final r = await jevRankCandidates(
+      feature: feature,
+      query: query,
+      candidates: [for (final row in rows) digest(row)],
+      snippetChars: 320,
+    );
+    // 「どこにも無い」 と言われたら、 上位だけ残して短く返す
+    // (= 無駄にページを読ませない。 0 件にはしない: 判断は保証ではない)。
+    final limit = r.verdict == 'absent' ? 3 : maxHits;
+    final ordered = <Map<String, Object?>>[];
+    for (final i in r.order) {
+      if (i >= 0 && i < rows.length) ordered.add(rows[i]);
+      if (ordered.length >= limit) break;
+    }
+    // ★ 実際に一致している物があるのに 'found' より下へ落とさない。
+    //   Jev は 'partial' とも言うので、 上の 2 つだけを除いていた頃は
+    //   完全一致が 'partial' で返る事があった (= 同じ不具合の残り)。
+    //   絞り込みに使えるのは「確かにある (found)」 という後押しだけ。
+    final verdict = r.verdict == 'found' ? 'found' : localVerdict;
+    if (ordered.isEmpty) return (hits: cut(rows), verdict: verdict);
+    // 関連確率を添える (AI がどこから読むかを決められるように)。
+    return (hits: ordered, verdict: verdict);
+  }
+
+  // ── 書籍検索 (= ユーザー要望: Kindle の検索結果がイマイチ) ──
+  //
+  // ★ Amazon は自動取得を弾くので、 書誌は鍵の要らない API から取り、
+  //   Amazon は「選んだ本を開く行き先」 としてだけ使う ([BookSearch] の
+  //   覚書を参照)。
+  // ★ 並べ替えだけ Jev に任せる。 取れなければ API が返した順のまま。
+
+  /// 本をさがす。 戻りは並べ替え済みの一覧と、 「候補の中に有るか」。
+  ///
+  /// verdict: 'found' / 'partial' / 'absent' / 'unknown'
+  Future<({List<BookHit> hits, String verdict})> searchBooks(
+    String query, {
+    int limit = 20,
+  }) async {
+    final lang = _bookSearchLang();
+    var hits = await BookSearch.search(query, limit: limit, langRestrict: lang);
+    if (hits.isEmpty) {
+      return (hits: const <BookHit>[], verdict: 'absent');
+    }
+    // 出版社や表紙が空の物を補う (日本の本に効く)。
+    hits = await BookSearch.enrichWithOpenBd(hits);
+    if (!jevBookEnabled) return (hits: hits, verdict: 'unknown');
+    final r = await jevRankCandidates(
+      feature: 'book_pick',
+      query: query,
+      candidates: [for (final h in hits) h.digest],
+      snippetChars: 220,
+    );
+    final ordered = <BookHit>[];
+    for (final i in r.order) {
+      if (i >= 0 && i < hits.length) ordered.add(hits[i]);
+    }
+    // 取りこぼしが無いか確かめる (並べ替えで落とさない)。
+    if (ordered.length != hits.length) return (hits: hits, verdict: r.verdict);
+    return (hits: ordered, verdict: r.verdict);
+  }
+
+  /// 書籍検索で優先する言語 (Google Books の langRestrict)。
+  String _bookSearchLang() {
+    const known = {'ja', 'en', 'zh', 'ko', 'es', 'fr', 'de', 'pt', 'ru', 'it'};
+    final l = appLanguage;
+    return known.contains(l) ? l : '';
+  }
+
+  /// 使った回数と金額 (画面に出すだけ。 生成の集計とは混ぜない)。
+  int _jevCalls = 0;
+  double _jevSpentUsd = 0.0;
+  int get jevCalls => _jevCalls;
+  double get jevSpentUsd => _jevSpentUsd;
+
+  /// 最後に実際に使われたモデル版 (提案書: 応答に実際の版を記録する)。
+  String _jevLastModel = '';
+  String get jevLastModel => _jevLastModel;
+
+  /// 直近の判断の控え。 同じ物を短い間に買い直さない。
+  final Map<String, ({DateTime at, JevDecision d})> _jevCache = {};
+  static const Duration _kJevCacheTtl = Duration(minutes: 30);
+  static const int _kJevCacheMax = 64;
+
+  JevClient? _jevClientCache;
+  JevClient get _jevClient => _jevClientCache ??= JevClient(
+        baseUrl: relayApiBase,
+        headers: () => _relayHeaders(json: true),
+      );
+
+  Future<void> setJevEnabled(bool v) => _setJevFlag('jevEnabled', v);
+  Future<void> setJevRouteEnabled(bool v) => _setJevFlag('jevRoute', v);
+  Future<void> setJevAdBlockEnabled(bool v) => _setJevFlag('jevAdBlock', v);
+  Future<void> setJevSearchEnabled(bool v) => _setJevFlag('jevSearch', v);
+  Future<void> setJevBookEnabled(bool v) => _setJevFlag('jevBook', v);
+
+  Future<void> _setJevFlag(String key, bool v) async {
+    switch (key) {
+      case 'jevEnabled':
+        if (_jevEnabled == v) return;
+        _jevEnabled = v;
+        break;
+      case 'jevRoute':
+        if (_jevRouteEnabled == v) return;
+        _jevRouteEnabled = v;
+        break;
+      case 'jevAdBlock':
+        if (_jevAdBlockEnabled == v) return;
+        _jevAdBlockEnabled = v;
+        break;
+      case 'jevSearch':
+        if (_jevSearchEnabled == v) return;
+        _jevSearchEnabled = v;
+        break;
+      case 'jevBook':
+        if (_jevBookEnabled == v) return;
+        _jevBookEnabled = v;
+        break;
+      default:
+        return;
+    }
+    notifyListeners();
+    try {
+      final p = await _prefsWithRetry();
+      await p.setBool(key, v);
+    } catch (_) {}
+  }
+
+  void _loadJevSettings(SharedPreferences prefs) {
+    _jevEnabled = prefs.getBool('jevEnabled') ?? false;
+    _jevRouteEnabled = prefs.getBool('jevRoute') ?? false;
+    _jevAdBlockEnabled = prefs.getBool('jevAdBlock') ?? false;
+    _jevSearchEnabled = prefs.getBool('jevSearch') ?? false;
+    _jevBookEnabled = prefs.getBool('jevBook') ?? false;
+    _adBlockEnabled = prefs.getBool('adBlockEnabled') ?? false;
+    _jevCalls = prefs.getInt('jevCalls') ?? 0;
+    _jevSpentUsd = prefs.getDouble('jevSpentUsd') ?? 0.0;
+  }
+
+  /// 判断を 1 回頼む。 使えない / 取れない時は null。
+  ///
+  /// [feature] は機能 ID (監査と控えの鍵に使う)。
+  Future<JevDecision?> jevDecide({
+    required String feature,
+    required String state,
+    required Map<String, JevQuestion> questions,
+  }) async {
+    if (!_jevEnabled) return null;
+    if (relayApiBase.isEmpty) return null;
+    if (state.trim().isEmpty || questions.isEmpty) return null;
+    final key = jevCacheKey(
+        featureId: feature, state: state, questions: questions);
+    final hit = _jevCache[key];
+    if (hit != null && DateTime.now().difference(hit.at) < _kJevCacheTtl) {
+      return hit.d;
+    }
+    // Dev 枠の自己上限は判断でも見る (暴走で持ち出しにならないように)。
+    //   判断 1 回は入力だけの課金で、 だいたい $0.0005 未満。
+    _guardDevSelfCap(estimatedUsd: 0.001);
+    try {
+      await _ensureFreshToken();
+    } catch (_) {
+      // トークンが取れなければ判断はあきらめる (従来処理へ戻す)。
+      return null;
+    }
+    final d = await _jevClient.decide(
+      featureId: feature,
+      state: state,
+      questions: questions,
+    );
+    if (d == null) return null;
+    _jevLastModel = d.model;
+    if (!d.cached) {
+      _jevCalls += 1;
+      _jevSpentUsd += d.billedUsd;
+      try {
+        final p = await _prefsWithRetry();
+        await p.setInt('jevCalls', _jevCalls);
+        await p.setDouble('jevSpentUsd', _jevSpentUsd);
+      } catch (_) {}
+    }
+    if (_jevCache.length >= _kJevCacheMax) {
+      // 一番古い物から落とす。
+      final oldest = _jevCache.entries
+          .reduce((a, b) => a.value.at.isBefore(b.value.at) ? a : b);
+      _jevCache.remove(oldest.key);
+    }
+    _jevCache[key] = (at: DateTime.now(), d: d);
+    return d;
+  }
+
+  // ── 1. プロンプトの振り分け ────────────────────────────────
+  //
+  // ★ モデル id を Jev に直接選ばせない。 Worker は知らない id を黙って
+  //   既定モデルへ落とすので、 「振り分けたのに効いていない」 に化ける。
+  //   代わりに**階層**を選ばせ、 階層 → 実 id の割り当てはこちらで
+  //   /ai/models が返した一覧から確定的に決める。
+
+  /// 今出せるモデルを、 請求単価の安い順に並べた id の列。
+  List<String> get _relayModelIdsByPrice {
+    final rows = <({String id, double price})>[];
+    for (final m in relayModelsVisible) {
+      if (m is! Map) continue;
+      final id = '${m['id'] ?? ''}';
+      if (id.isEmpty) continue;
+      final inP = (m['billedInputPerMTok'] as num?)?.toDouble() ?? 0;
+      final outP = (m['billedOutputPerMTok'] as num?)?.toDouble() ?? 0;
+      // 出力の方が高いので重みを付ける (実際の請求に近い並びにする)。
+      rows.add((id: id, price: inP + outP * 3));
+    }
+    rows.sort((a, b) => a.price.compareTo(b.price));
+    return [for (final r in rows) r.id];
+  }
+
+  /// 階層 → 実際に使うモデル id。 一覧が無い時は空 (= 振り分けない)。
+  Map<String, String> get jevTierModels {
+    final ids = _relayModelIdsByPrice;
+    if (ids.isEmpty) return const {};
+    return {
+      'fast': ids.first,
+      'balanced': ids[ids.length ~/ 2],
+      'deep': ids.last,
+    };
+  }
+
+  /// この 1 回に使うモデルと考える深さを決める。
+  ///
+  /// 返り値の model / reasoning が空なら「いつもの設定のまま」。
+  /// 判断が取れない・確信が低い時は必ず空を返す (無理に選ばせない)。
+  Future<({String model, String reasoning, String why})> jevRoutePrompt(
+      String prompt) async {
+    const none = (model: '', reasoning: '', why: '');
+    if (!jevRouteEnabled) return none;
+    final tiers = jevTierModels;
+    if (tiers.length < 3) return none;
+    // 長すぎる依頼はそのまま送らない (判断用に頭と尾だけ見せる)。
+    final state = _jevClip(prompt, 6000);
+    final d = await jevDecide(
+      feature: 'prompt_route',
+      state: state,
+      questions: JevTemplates.promptRoute(tiers: {
+        'fast': 'A short factual answer, a rewrite, a translation, a small '
+            'edit, or a simple lookup',
+        'balanced': 'Ordinary work: summarising, drafting, explaining, or a '
+            'few steps of judgement',
+        'deep': 'Hard reasoning: planning, debugging, maths, comparing '
+            'trade-offs, or writing code that must be correct',
+      }),
+    );
+    if (d == null) return none;
+    final tier = d['tier'];
+    if (tier == null) return none;
+    // 確信が低ければ手を出さない (提案書: 候補から無理に選ばせない)。
+    if ((tier.confidence ?? 0) < kJevRouteConfidenceFloor) {
+      return (model: '', reasoning: '', why: 'low confidence');
+    }
+    final picked = tier.topOption ?? '';
+    final model = tiers[picked] ?? '';
+    if (model.isEmpty) return none;
+    // 考える深さは「難しさ」 の段 (0〜2) から決める。
+    final sc = d['complexity']?.score ?? 1.0;
+    final long = d['needs_long_output']?.noul ?? 0.0;
+    var reasoning = sc < 0.7 ? 'low' : (sc < 1.4 ? 'medium' : 'high');
+    // 長い出力が要る時は浅くしない (途中で切れて作り直す方が高くつく)。
+    if (long > 0.6 && reasoning == 'low') reasoning = 'medium';
+    return (
+      model: model,
+      reasoning: reasoning,
+      why: '$picked / complexity ${sc.toStringAsFixed(2)}'
+          ' / conf ${(tier.confidence ?? 0).toStringAsFixed(2)}',
+    );
+  }
+
+  /// 代行 API の 3 段 (low/medium/high) を CLI の段へ訳す。
+  ///
+  /// ★ CLI は low/medium/high/xhigh/max を取るが、 Gemini CLI は段を
+  ///   持たない (空)。 知らない語をそのまま渡すと CLI が引数エラーで
+  ///   落ちるので、 ここで必ず通す。
+  String _cliEffortFromRelay(String relayLevel) {
+    switch (relayLevel) {
+      case 'low':
+        return 'low';
+      case 'medium':
+        return 'medium';
+      case 'high':
+        return 'high';
+      default:
+        return '';
+    }
+  }
+
+  /// 長い文章を、 頭と尾を残して縮める (判断は全文を要さない)。
+  String _jevClip(String src, int max) {
+    final t = src.trim();
+    if (t.length <= max) return t;
+    final head = (max * 0.7).round();
+    final tail = max - head;
+    return '${t.substring(0, head)}\n…(中略)…\n${t.substring(t.length - tail)}';
+  }
+
+  // ── 3. 候補の絞り込み (フォルダー内検索 / 書籍検索の共通部品) ──
+  //
+  // 公式レシピ (cookbooks/semantic_find) と同じ形: 1 回の choice に候補を
+  // まとめて入れ (最大 255)、 同時に noul で「そもそも答えが有るか」 を聞く。
+  // 戻りは「関連の高い順に並べ替えた添字」 と「有るか」 の 2 つ。
+
+  /// [candidates] は候補の短い抜粋。 戻りは並べ替えた添字と判定。
+  ///
+  /// verdict: 'found' / 'partial' / 'absent' / 'unknown'
+  Future<({List<int> order, String verdict})> jevRankCandidates({
+    required String feature,
+    required String query,
+    required List<String> candidates,
+    int snippetChars = 400,
+  }) async {
+    final fallback = (
+      order: [for (var i = 0; i < candidates.length; i++) i],
+      verdict: 'unknown',
+    );
+    if (!_jevEnabled || candidates.isEmpty) return fallback;
+    final n = candidates.length > kJevMaxChoiceOptions
+        ? kJevMaxChoiceOptions
+        : candidates.length;
+    final ids = [for (var i = 0; i < n; i++) 'c$i'];
+    final sb = StringBuffer();
+    for (var i = 0; i < n; i++) {
+      sb.writeln('[[c$i]] ${_jevClip(candidates[i], snippetChars)}');
+    }
+    final d = await jevDecide(
+      feature: feature,
+      state: sb.toString(),
+      questions:
+          JevTemplates.semanticFind(query: query, candidateIds: ids),
+    );
+    if (d == null) return fallback;
+    final best = d['best'];
+    final exists = d['exists']?.noul ?? -1;
+    final verdict = exists < 0
+        ? 'unknown'
+        : (exists >= kJevFoundNoul
+            ? 'found'
+            : (exists < kJevAbsentNoul ? 'absent' : 'partial'));
+    if (best == null || best.probabilities.isEmpty) {
+      return (order: fallback.order, verdict: verdict);
+    }
+    // 確率の高い順。 一覧に出なかった候補は元の順で後ろへ。
+    final scored = <({int i, double p})>[];
+    for (var i = 0; i < n; i++) {
+      scored.add((i: i, p: best.probabilityOf('c$i')));
+    }
+    scored.sort((a, b) => b.p.compareTo(a.p));
+    final order = [for (final e in scored) e.i];
+    for (var i = n; i < candidates.length; i++) {
+      order.add(i);
+    }
+    return (order: order, verdict: verdict);
+  }
+
+  /// [modelOverride] / [reasoningOverride] … この 1 回だけモデルと考える
+  /// 深さを変える (空 = いつもの設定)。
+  ///
+  /// ★ **必ず引数で渡す**。 グローバルを一時的に書き換える形にすると、
+  ///   裏で走っているエージェントの呼び出しと踏み合う (同じ理由で
+  ///   engineOverride も引数になっている)。
   Future<String> askAiViaRelay(String prompt,
-      {int? maxTokens, List<AiInputImage>? images}) async {
+      {int? maxTokens,
+      List<AiInputImage>? images,
+      String modelOverride = '',
+      String reasoningOverride = ''}) async {
     _guardDevSelfCap(estimatedUsd: estimatedTextUsd(maxTokens: maxTokens));
     final base = relayApiBase;
     if (base.isEmpty) throw Exception(t('relay.notConfigured'));
@@ -86879,9 +88582,10 @@ class MindMapProvider extends ChangeNotifier {
             //   (画像生成 /ai/image は絵の指示文なので付けない)
             'prompt': languageInstructionForAi() + prompt,
             // 代行で使うモデル (Gemini / ChatGPT / Claude)。
-            'model': _relayModel,
+            'model': modelOverride.isEmpty ? _relayModel : modelOverride,
             // 考える深さ (= ユーザー要望: 推論レベルの設定)。
-            'reasoning': relayReasoning,
+            'reasoning':
+                reasoningOverride.isEmpty ? relayReasoning : reasoningOverride,
             // 構造化 (JSON) の生成は長くなるので、 呼び出し側が上限を指定する。
             //   指定が無ければ代行サーバー側の既定 (4096) を使う。
             if (maxTokens != null) 'maxTokens': maxTokens,
@@ -87652,13 +89356,18 @@ class MindMapProvider extends ChangeNotifier {
   /// ★ = ユーザー要望「下のチャット欄だけブラウザ版に渡すとか独立で変えられる
   ///   ように」。 以前は全体の設定を一時的に書き換えていたが、 2 つの
   ///   問い合わせが重なると互いを踏むので、 **引数で 1 回きり**渡す形にした。
+  /// [modelOverride] / [reasoningOverride] … この 1 回だけモデルと考える
+  /// 深さを変える。 空で [jevRouteEnabled] が入っていれば、 Jev が依頼の
+  /// 中身を見て決める (= ユーザー要望: 適切なモデル・推論レベルで処理する)。
   Future<String> askAi(String prompt,
       {int? maxTokensOverride,
       Duration? timeoutOverride,
       List<AiInputImage>? images,
       bool allowFiles = false,
       String engineOverride = '',
-      String cliKindOverride = ''}) async {
+      String cliKindOverride = '',
+      String modelOverride = '',
+      String reasoningOverride = ''}) async {
     final wantCli = engineOverride.isEmpty
         ? useCliAi
         : (engineOverride == 'cli' && AgentCli.supported && canUseCliAi);
@@ -87675,6 +89384,15 @@ class MindMapProvider extends ChangeNotifier {
       // ★ 考える深さ (推論) は相手ごとに覚えてあるので
       //   ([AgentCli.reasoningByKind])、 走る相手が決まった所で
       //   [AgentCli] 側が選ぶ。
+      // ★ CLI へ投げる時も考える深さを振り分ける (= ユーザー要望)。
+      //   CLI 側の段は low/medium/high/xhigh/max、 代行 API 側は
+      //   low/medium/high の 3 段しかないので、 **そのまま渡さず訳す**
+      //   (知らない語を渡すと CLI がそのまま引数にして落ちる)。
+      var cliEffort = '';
+      if (jevRouteEnabled) {
+        final r = await jevRoutePrompt(prompt);
+        cliEffort = _cliEffortFromRelay(r.reasoning);
+      }
       final out = await AgentCli.runPrompt(prompt,
           timeout: timeoutOverride,
           guide: languageInstructionForAi().trim(),
@@ -87682,6 +89400,7 @@ class MindMapProvider extends ChangeNotifier {
           imagePaths: cliImages,
           continueDir: _cliContinueDir,
           preferKind: cliKindOverride,
+          effortOverride: cliEffort,
           extraEnvironment: cliAiEnvironment());
       _rememberCliModel();
       _addCliUsage();
@@ -87707,8 +89426,20 @@ class MindMapProvider extends ChangeNotifier {
       //   中の要素が 1 つも作られずに終わる)。 ここで捨てていたので、
       //   長い返事を書かせたい所でも代行サーバーの既定 (4096) 止まりになり、
       //   要素をまとめて足す呼び出しが途中で切れていた。
+      // ★ 指定が無く、 振り分けが入っていれば Jev に決めてもらう。
+      //   取れなければ空が返るだけなので、 いつもの設定で走る。
+      var mo = modelOverride;
+      var ro = reasoningOverride;
+      if (mo.isEmpty && ro.isEmpty && jevRouteEnabled) {
+        final r = await jevRoutePrompt(prompt);
+        mo = r.model;
+        ro = r.reasoning;
+      }
       return askAiViaRelay(prompt,
-          images: images, maxTokens: maxTokensOverride);
+          images: images,
+          maxTokens: maxTokensOverride,
+          modelOverride: mo,
+          reasoningOverride: ro);
     }
     if (relayApiBase.isEmpty || _relayAvailable != true) {
       throw Exception(t('relay.notConfigured'));
@@ -88158,7 +89889,13 @@ Art direction:
   ///   (旧来 2048 上限で長い解説がよく途中で切れて parse 失敗していた)
   ///
   /// [detailed] が true の時は更に大きいトークンを許可する (詳しい解説向け)。
-  Future<String> askAiForJson(String prompt, {bool detailed = false}) async {
+  /// ★ ここにも振り分けを通す。 構造化を使う機能 (PDF 要約・用語解説・
+  ///   クイズ・マップ生成・スライド) はこちらを通るので、 [askAi] だけに
+  ///   足すと AI の呼び出しの半分が振り分けを素通りする。
+  Future<String> askAiForJson(String prompt,
+      {bool detailed = false,
+      String modelOverride = '',
+      String reasoningOverride = ''}) async {
     // ★ PC の CLI に頼む設定なら、 こちらもそちらへ (= 点検で判明:
     //   ここだけ設定を見ておらず、 「PC内AI」 を選んでいても構造化を使う
     //   機能 — PDF 要約・用語解説・クイズ・マップ生成 — は黙って代行
@@ -88193,7 +89930,15 @@ Art direction:
     await awaitPlanReady();
     // 使えるか確かめ直してから諦める (= ユーザー報告: Dev なのに使えない)。
     if (await ensureRelayReady()) {
-      return askAiViaRelay(prompt, maxTokens: maxTokens);
+      var mo = modelOverride;
+      var ro = reasoningOverride;
+      if (mo.isEmpty && ro.isEmpty && jevRouteEnabled) {
+        final r = await jevRoutePrompt(prompt);
+        mo = r.model;
+        ro = r.reasoning;
+      }
+      return askAiViaRelay(prompt,
+          maxTokens: maxTokens, modelOverride: mo, reasoningOverride: ro);
     }
     if (relayApiBase.isEmpty || _relayAvailable != true) {
       throw Exception(t('relay.notConfigured'));
@@ -92006,6 +93751,9 @@ $cleanQ
     // ★ 2 つ目の窓では飛ばす (= 立ち上がりを速く)。 本体が既にやっている。
     if (!fastStartWindow) unawaited(prunePageBackups());
     unawaited(_loadGoogleSession());
+    // 電池が減ったら省電力へ、 の設定 (= ユーザー要望)。 読み終えたら
+    //   見張りが回り始める (Windows のみ)。
+    unawaited(_loadBatterySaverSettings());
     // 分析用の属性 (国 / 言語 / 年齢 / 性別) を読み直す (= ユーザー要望)。
     unawaited(_loadAnalyticsProfile());
     _loadFromStorage().then((_) {
@@ -93953,6 +95701,20 @@ $cleanQ
       }
       final maskQuery =
           updateMaskParts.map((f) => 'updateMask.fieldPaths=$f').join('&');
+      // ★ = 動作検証の仕様確認「アップロード上限に達しても、 添付の無い
+      //   ページは上げられてしまう」。 添付だけを量っていて、 ページ本体の
+      //   JSON は素通しだった。 送る前に同じ物差しで確かめ、 送れたら足す。
+      final patchBody = jsonEncode({'fields': fields});
+      final patchBytes = utf8.encode(patchBody).length;
+      if (!canUseUploadBytes(patchBytes)) {
+        final limitGb =
+            (monthlyUploadLimit / 1024 / 1024 / 1024).toStringAsFixed(1);
+        _lastSyncLimitMessage =
+            t('sync.monthlyUploadLimit').replaceFirst('{limit}', limitGb);
+        _lastSyncAttachmentFailed = true;
+        _firestoreSyncing = false;
+        return;
+      }
       final res = await http
           .patch(
             Uri.parse('$url?$maskQuery'),
@@ -93960,7 +95722,7 @@ $cleanQ
               'Authorization': 'Bearer $_idToken',
               'Content-Type': 'application/json',
             },
-            body: jsonEncode({'fields': fields}),
+            body: patchBody,
           )
           .timeout(const Duration(seconds: 30)); // ハング防止 (= ユーザー報告)
       if ((res.statusCode == 401 || res.statusCode == 403) && !retried) {
@@ -93970,6 +95732,9 @@ $cleanQ
             retried: true, onPageProgress: onPageProgress);
       }
       if (res.statusCode == 200) {
+        // ★ ページ本体の分も今月の量に足す (= 動作検証の仕様確認「添付の無い
+        //   ページは上限を過ぎても上げられる」)。 添付と同じ物差しにする。
+        recordUploadBytes(patchBytes);
         // アップロード成功: 日時を記録
         // ── サーバーの updateTime を記録する (= 時計ズレ対策) ──
         // 旧実装は端末時計 (DateTime.now) を記録していたが、 Ctrl+R の
@@ -96040,7 +97805,8 @@ $cleanQ
           _undoStacks.putIfAbsent(pageId, () => []);
           _redoStacks.putIfAbsent(pageId, () => []);
           final groups = _namedGroups[pageId] ?? {};
-          _undoStacks[pageId]!.add(_PageSnapshot.from(currentPage, groups));
+          _undoStacks[pageId]!.add(
+              _PageSnapshot.from(currentPage, groups, cells: _shelfCells));
           if (_undoStacks[pageId]!.length > _maxHistory) {
             _undoStacks[pageId]!.removeAt(0);
           }
@@ -96299,7 +98065,8 @@ $cleanQ
           _undoStacks.putIfAbsent(pageId, () => []);
           _redoStacks.putIfAbsent(pageId, () => []);
           final groups = _namedGroups[pageId] ?? {};
-          _undoStacks[pageId]!.add(_PageSnapshot.from(page, groups));
+          _undoStacks[pageId]!
+        .add(_PageSnapshot.from(page, groups, cells: _shelfCells));
           if (_undoStacks[pageId]!.length > _maxHistory) {
             _undoStacks[pageId]!.removeAt(0);
           }
@@ -99969,6 +101736,8 @@ $cleanQ
       unawaited(_persistLastPdfPages());
     }
     _disposed = true;
+    _batteryWatchTimer?.cancel();
+    _batteryWatchTimer = null;
     _crossInstanceTimer?.cancel();
     _crossInstanceTimer = null;
     _syncTimer?.cancel();
@@ -102388,9 +104157,11 @@ $cleanQ
       sourcePageId: source.id,
       targetPageId: target.id,
       sourceSnap:
-          _PageSnapshot.from(source, _namedGroups[source.id] ?? const {}),
+          _PageSnapshot.from(source, _namedGroups[source.id] ?? const {},
+              cells: _shelfCells),
       targetSnap:
-          _PageSnapshot.from(target, _namedGroups[target.id] ?? const {}),
+          _PageSnapshot.from(target, _namedGroups[target.id] ?? const {},
+              cells: _shelfCells),
       // ★ 升目はページ別ではなくアプリ全体で 1 つの表だが、 **この 2 枚に
       //   居る要素の分だけ**控える (= 点検で判明: 丸ごと控えて丸ごと
       //   書き戻すと、 転送の後に別のギャラリーで並べ替えた分まで巻き戻る)。
@@ -104340,6 +106111,29 @@ $cleanQ
     _mcpCommandRunner = runner;
   }
 
+  /// MCP から開いた画面を閉じる受け口 (画面側が登録する)。
+  ///
+  /// ★ = 動作検証の機能修正案「MCP から開いた機能画面を閉じる操作」。
+  ///   `run_app_command` で浮遊窓やパレットを開いた後、 同じ道で閉じる方法が
+  ///   無かったので、 続けて検証すると画面が積み上がっていった。
+  ///   `probe` が true の時は**閉じずに**開いているかどうかだけを答える
+  ///   (run_app_command の返事に「閉じられるか」 を載せるため)。
+  Future<Map<String, Object?>> Function(String id, bool probe)?
+      _mcpCommandCloser;
+
+  void registerMcpCommandCloser(
+          Future<Map<String, Object?>> Function(String id, bool probe) f) =>
+      _mcpCommandCloser = f;
+
+  Future<Map<String, Object?>> mcpCloseCommand(String id,
+      {bool probe = false}) async {
+    final f = _mcpCommandCloser;
+    if (f == null) {
+      return {'error': 'the screen is not ready yet - try again in a moment'};
+    }
+    return f(id, probe);
+  }
+
   /// 機能名 (id) を実行する。 知らない id なら false。
   bool mcpRunCommand(String id) {
     final runner = _mcpCommandRunner;
@@ -104590,6 +106384,15 @@ $cleanQ
       parentOf[c.toId] = c.fromId;
     }
 
+    // 子を持っている物 (= 新しい根) は動かさない。
+    //
+    // ★ 点検で判明: 「親が居ない物」 を全部逃がすと、 **自分の子の下**へ
+    //   回されてしまう (根は誰の子でもないので毎回この枠に入る)。 根は
+    //   [mcpAddNode] が既に空いている所へ置いてあるので、 そのままでよい。
+    final hasChild = <String>{for (final c in page.connections) c.fromId};
+    // まだ並べていない兄弟は「居ない物」 として数える (= 仮の置き場に居るので、
+    //   それを基準にすると下へ下へと押し出される)。
+    final placedIds = <String>{};
     final loose = <String>[];
     for (final id in newIds) {
       final node = page.nodes[id];
@@ -104597,7 +106400,7 @@ $cleanQ
       final pid = parentOf[id];
       final parent = pid == null ? null : page.nodes[pid];
       if (parent == null) {
-        loose.add(id);
+        if (!hasChild.contains(id)) loose.add(id);
         continue;
       }
       // 親の右の列。 既にいる兄弟のいちばん下の続きへ。
@@ -104608,16 +106411,25 @@ $cleanQ
         if (c.fromId != parent.id || c.toId == id) continue;
         final sib = page.nodes[c.toId];
         if (sib == null) continue;
+        // ★ この呼び出しで作ったばかりで、 まだ並べていない兄弟は飛ばす。
+        if (newIds.contains(c.toId) && !placedIds.contains(c.toId)) continue;
         final bottom = sib.position.dy + sib.visualHeight;
         if (!found || bottom > y) y = bottom;
         found = true;
       }
       if (found) y += verticalGap;
       node.position = Offset(x, y);
+      placedIds.add(id);
     }
 
-    // 親のいない物は、 従来どおり空いている所へ逃がす。
-    if (loose.isNotEmpty) _spreadLooseNodes(page);
+    // 親のいない物 (= 新しい根) は、 既にある物と重ならない所へ 1 つずつ
+    //   下へ並べる (= 動作検証の不具合「新しい根要素が既存要素と完全に
+    //   重なる」)。 置いたぶんは次の計算に入るので、 根同士も重ならない。
+    for (final id in loose) {
+      final node = page.nodes[id];
+      if (node == null) continue;
+      node.position = mcpFreeSpotOn(page, ignore: {id});
+    }
     _saveToStorage();
     notifyListeners();
   }
@@ -104703,7 +106515,11 @@ $cleanQ
     final page = mcpPageById(pageId);
     if (page == null || page.pageType != 'bookshelf') return;
     if (page.nodes.isEmpty) return;
-    _pushUndo();
+    // ★ 裏のページを整えても控えは**そのページ**へ積む (= 動作検証の不具合
+    //   「ギャラリー整列を取り消しても整列前の座標へ戻らない」。 _pushUndo は
+    //   currentPage 決め打ちだった)。 マス目も控えに入るようにしてある
+    //   ([_PageSnapshot.shelfCells])。
+    _pushUndoForPage(pageId);
     // cleanupWatchedBookshelfVideos と同じ手順 (実績のある並べ直し)。
     repackShelfCellsRowMajor(page);
     _arrangeAsBookshelfBody(page);
@@ -105146,7 +106962,10 @@ $cleanQ
     }
     return {
       'path': full,
-      'fileName': full.split(Platform.pathSeparator).last,
+      // ★ = 動作検証の不具合「読み取り結果の fileName にフォルダー名 /
+      //   フルパスが混ざる」。 Windows でも `/` 区切りの道筋が渡るので、
+      //   どちらの区切りでも切れる [_baseName] を使う。
+      'fileName': _baseName(full),
       'chars': text.length,
       'text': text,
     };
@@ -105236,8 +107055,35 @@ $cleanQ
   ///   * isAttached … どこかのページのタイルが指している
   ///   * isOrphan   … アプリが作った物で、 もうどのタイルも指していない
   ///   editorKind は開いている編集画面の種類 (text / なし)。
+  /// API が返すパスを Windows の正規形へ揃える。
+  ///
+  /// = 動作検証レポート 2026-09-25 不具合 6「Windows パスの区切り文字が
+  ///   API 間で不統一」。 `C:\\...\\913/ファイル.txt` のような混在が
+  ///   list_pages / list_orphan_files / read_page から出ていて、 文字列
+  ///   比較・重複判定・孤児判定が食い違っていた。
+  ///
+  /// ★ **大文字小文字は変えない** (画面に出す名前なので)。 比較する時は
+  ///   今までどおり [mcpSamePath] を使う (そちらが小文字化して比べる)。
+  static String mcpNormalizePath(String path) {
+    var t = path.trim();
+    if (t.isEmpty) return t;
+    if (Platform.isWindows) {
+      const sep = '\\';
+      const unc = '\\\\';
+      t = t.replaceAll('/', sep);
+      // 連続した区切りは 1 つに (先頭の UNC = 区切り 2 つ は残す)。
+      final head = t.startsWith(unc) ? unc : '';
+      var body = head.isEmpty ? t : t.substring(2);
+      while (body.contains(unc)) {
+        body = body.replaceAll(unc, sep);
+      }
+      t = head + body;
+    }
+    return t;
+  }
+
   Map<String, Object?> mcpFileState(String path) {
-    final t = path.trim();
+    final t = mcpNormalizePath(path);
     final front = _frontDocument;
     final isVisible = t.isNotEmpty &&
         front != null &&
@@ -105260,22 +107106,78 @@ $cleanQ
     };
   }
 
+  /// 「無指定の指示は何が相手か」 を**1 か所**で返す。
+  ///
+  /// = 動作検証レポート 2026-09-25 不具合 1「前面ファイルと現在ページの
+  ///   対象判定がツール説明と矛盾」。 `isCurrent` は「今のマップ」 でしか
+  ///   なく、 前面にファイルがあればそれが相手なのに、 判断材料が
+  ///   `isCurrent` と `openFileOnTop` の 2 か所に散っていた。
+  ///
+  /// `kind` は 'file' か 'page'。 file の時も `pageId` (裏のマップ) を
+  /// 付けるので、 「ファイルを直す道具が無いからページへ」 という取り違えを
+  /// せずに案内できる。
+  Map<String, Object?> mcpForegroundContext() {
+    final fd = _frontDocument;
+    final pid = _pages.isEmpty ? null : currentPage.id;
+    if (fd != null) {
+      final st = mcpFileState(fd.path);
+      return {
+        'kind': 'file',
+        'fileName': fd.name,
+        'path': mcpNormalizePath(fd.path),
+        'editorKind': st['editorKind'],
+        'isEditable': st['isEditable'],
+        if (pid != null) 'pageId': pid,
+        if (pid != null) 'pageName': currentPage.name,
+        'note': 'The user is looking at this FILE, opened on top of the map. '
+            'An instruction that does not name a target means THIS FILE, not '
+            'the page behind it. isCurrent in list_pages only says which MAP '
+            'is current. If you have no tool for this file kind, say so and '
+            'tell the user to use the AI button inside that editor - do NOT '
+            'edit the map instead.',
+      };
+    }
+    if (pid == null) return {'kind': 'page'};
+    return {
+      'kind': 'page',
+      'pageId': pid,
+      'pageName': currentPage.name,
+      'pageType': currentPage.pageType,
+      'note': 'No file is open on top, so an instruction that does not name a '
+          'target means THIS page.',
+    };
+  }
+
   Map<String, dynamic> mcpTextFileStatus() {
     final b = _mcpTextFile;
     final front = _frontDocument;
+    // = 動作検証レポート 2026-09-25 不具合 2「open=false の意味が説明と
+    //   矛盾」。 open は**テキストエディタが開いているか**だけを指すので、
+    //   名前を textEditorOpen に付け替え、 前面のファイルは
+    //   foregroundFile に分ける。 旧い鍵 (open / fileName / path /
+    //   editorKind) は互換のため残す。
+    final fgFile = front == null
+        ? null
+        : <String, Object?>{
+            'fileName': front.name,
+            'path': mcpNormalizePath(front.path),
+            'editorKind': mcpFileState(front.path)['editorKind'],
+          };
     if (b == null) {
-      // ★ 「開いていない」 だけで終わらせない (= 調査報告 BUG-10)。
-      //   前面にファイルは出ているのに書き換えられないのか、 そもそも
-      //   何も開いていないのかで、 AI の次の一手が変わる。
       return {
         'open': false,
+        'textEditorOpen': false,
+        if (fgFile != null) 'foregroundFile': fgFile,
         if (front != null) ...{
+          // ── 以下 3 つは互換用 (新しい鍵は foregroundFile) ──
           'fileName': front.name,
-          'path': front.path,
+          'path': mcpNormalizePath(front.path),
           'editorKind': front.kind,
-          'note': 'a file IS on screen, but not in the text editor, so '
-              'text_file_read / text_file_edit cannot touch it.',
         },
+        'note': front == null
+            ? 'nothing is open in the text editor, and no file is on screen.'
+            : 'a file IS on screen, but not in the text editor, so '
+                'text_file_read / text_file_edit cannot touch it.',
       };
     }
     final st = front == null
@@ -105283,8 +107185,10 @@ $cleanQ
         : mcpFileState(front.path);
     return {
       'open': true,
+      'textEditorOpen': true,
       'fileName': b.fileName(),
       'lineCount': b.getLines().length,
+      if (fgFile != null) 'foregroundFile': fgFile,
       ...st,
     };
   }
@@ -105325,6 +107229,28 @@ $cleanQ
           'ask the user to open one first';
     }
     return b.applyEdits(edits);
+  }
+
+  /// 消す前の要素の見出し (= 動作検証レポート 2026-09-25 不具合 7
+  /// 「delete_node の削除結果で無題の表ノードを識別できない」)。
+  ///
+  /// title が空の表・画像・添付でも後から追えるように、 id と caption と
+  /// 種別を添えて返す。 見付からなければ null。
+  Map<String, Object?>? mcpNodeSummary(String pageId, String key) {
+    final page = mcpPageById(pageId);
+    if (page == null) return null;
+    final id = mcpResolveNodeId(pageId, key);
+    if (id == null) return null;
+    final n = page.nodes[id];
+    if (n == null) return null;
+    // caption は表ではなく**ノード自身**の注釈欄 (F3 で書ける説明書き)。
+    final cap = n.caption?.trim() ?? '';
+    return {
+      'id': id,
+      'title': n.title,
+      if (cap.isNotEmpty) 'caption': cap,
+      'contentType': n.contentType.name,
+    };
   }
 
   /// ページを削除する (= ユーザー要望: 明示的に頼んだら消せるように)。
@@ -105526,12 +107452,9 @@ $cleanQ
       for (final p in all)
         if (p['id'] == cur.id || p['folderId'] == fid) p
     ];
+    // ★ 先頭は今のページ。 並べ替えは mcpListPages が済ませてあり、
+    //   ここの絞り込みは順番を保つので、 そのまま先頭に残る。
     final shown = (near.isEmpty ? all : near).take(max).toList();
-    // ★ 今のページを先頭へ寄せる (= ユーザー要望: ページを開いた状態で
-    //   指示した時に、 フォルダーを上から探されるのが冗長)。 一覧の
-    //   どこにあるか分からないと、 AI は結局 list_pages を呼び直す。
-    final i = shown.indexWhere((p) => p['id'] == cur.id);
-    if (i > 0) shown.insert(0, shown.removeAt(i));
     return shown;
   }
 
@@ -105658,19 +107581,35 @@ $cleanQ
     return null;
   }
 
-  List<Map<String, dynamic>> mcpListPages() => [
-        for (final p in _pages)
-          {
-            'id': p.id,
-            'name': p.name,
-            'type': p.pageType,
-            'nodeCount': p.nodes.length,
-            'isCurrent': p.id == currentPage.id,
-            // どのフォルダーに入っているか (null = フォルダーの外)。
-            'folderId': p.folderId,
-            'lastModified': p.lastModifiedAt.toIso8601String(),
-          }
-      ];
+  List<Map<String, dynamic>> mcpListPages() {
+    final out = <Map<String, dynamic>>[
+      for (final p in _pages)
+        {
+          'id': p.id,
+          'name': p.name,
+          'type': p.pageType,
+          'nodeCount': p.nodes.length,
+          'isCurrent': p.id == currentPage.id,
+          // どのフォルダーに入っているか (null = フォルダーの外)。
+          'folderId': p.folderId,
+          'lastModified': p.lastModifiedAt.toIso8601String(),
+          // ★ プランで開けないページは分割にも入らないので、 先に知らせる
+          //   (= 動作検証の不具合「指定したページが黙って別のページと
+          //   すり替わる」の前次で。 鍵を足すだけなので既存の読み手は壊れない)。
+          if (isPageLockedByPlan(p.id)) 'locked': true,
+        }
+    ];
+    // ★ 今のページを先頭へ寄せる (= ユーザー要望: 開いているページから
+    //   探してほしいのに、 一覧の真ん中に埋もれていると AI が上から
+    //   総なめする)。 道具の説明文でも「先頭が開いているページ」 と
+    //   約束しているので、 ここが唯一の並べ替え地点。
+    if (_pages.isNotEmpty) {
+      final cid = currentPage.id;
+      final i = out.indexWhere((e) => e['id'] == cid);
+      if (i > 0) out.insert(0, out.removeAt(i));
+    }
+    return out;
+  }
 
   /// ★ = 検証レポート「表ノードの height が行数に関係なく 14 として返る」。
   ///   表や図の `height` は **上端のつまむ帯 (14px) の分**で、 描いて
@@ -105853,6 +107792,25 @@ $cleanQ
     return true;
   }
 
+  /// そのページで**何にも重ならない**置き場所 (基準位置の下へ逃がす)。
+  ///
+  /// ★ = 動作検証の不具合「既存ページへの一括追加で新しい根要素が既存要素と
+  ///   完全に重なる」「要素を続けて足すと同じ場所に積み上がる」。 基準位置
+  ///   ([mcpReferenceFor]) をそのまま使うと、 既に物が置いてあるページでは
+  ///   いつも同じ 1 点に置かれてしまう。 一番下の物の下へ回す。
+  /// [ignore] … これから一緒に置く分 (まだ仮の座標に居るので数に入れない)。
+  Offset mcpFreeSpotOn(MindMapPage page, {Set<String> ignore = const {}}) {
+    var spot = mcpReferenceFor(page.id);
+    for (final entry in page.nodes.entries) {
+      if (ignore.contains(entry.key)) continue;
+      final nd = entry.value;
+      if (nd.hiddenInContainer != null) continue;
+      spot = Offset(
+          spot.dx, math.max(spot.dy, nd.position.dy + nd.visualHeight + 40));
+    }
+    return spot;
+  }
+
   String? mcpAddNode(
     String pageId, {
     required String title,
@@ -105867,7 +107825,13 @@ $cleanQ
   }) {
     final page = mcpPageById(pageId);
     if (page == null) return null;
-    final base = mcpReferenceFor(pageId);
+    // ★ = 動作検証の不具合「一括追加した要素を直後に取り消せない」。
+    //   一括の時は呼ぶ側が [mcpPushUndo] + [beginUndoBatch] で 1 枚に
+    //   まとめるので、 ここは中で重ねて積まれない (深さで弾かれる)。
+    _pushUndoForPage(pageId, coalesceKey: 'mcpAddNode:$pageId');
+    // ★ 座標を言われていない時は、 既にある物と重ならない所へ置く
+    //   (= 同じ点に積み上がるのを防ぐ)。
+    final base = (x == null && y == null) ? mcpFreeSpotOn(page) : mcpReferenceFor(pageId);
     final flowShape = shape != null && shape != 'rounded';
     final node = MindMapNode(
       id: _uuid.v4(),
@@ -105941,6 +107905,16 @@ $cleanQ
     //   出来てしまい、 手で消すしかなかった)。 断る理由は呼び出し元
     //   (MCP の受け口) が出す。 ここは作らないことだけを受け持つ。
     if (filePath.isEmpty || !File(filePath).existsSync()) return null;
+    // ★ = 点検で判明した穴 (動作検証の不具合「ギャラリーの上限や決まりを MCP
+    //   から破れる」 の残り)。 ここはページの種類も件数の上限も見ていなかった
+    //   ので、 ギャラリーへ絵を足すと**マス目の外**に置かれ、 1000 個の上限も
+    //   素通りしていた。 ギャラリーの時はマス目に並べる道へ寄せる。
+    if (page.pageType == 'bookshelf') {
+      if (!canPlaceShelfItems(1, page)) return null;
+    }
+    // ★ 足した分は取り消せるようにする (= 動作検証の不具合「MCP の追加が
+    //   取り消し履歴へ入らない」 の残り。 表と絵の 2 つだけ抜けていた)。
+    _pushUndoForPage(pageId);
     final base = mcpReferenceFor(pageId);
     final node = MindMapNode(
       id: _uuid.v4(),
@@ -105952,6 +107926,9 @@ $cleanQ
     node.attachmentPath = filePath;
     node.attachmentName = _baseName(filePath);
     page.nodes[node.id] = node;
+    // ★ ギャラリーはマス目が位置の正なので、 置いたら並べ直す
+    //   (= 置かないと絵が他のタイルの下に重なる)。
+    if (page.pageType == 'bookshelf') _arrangeAsBookshelfBody(page);
     _saveToStorage();
     notifyListeners();
     // ★ 画像の縦横比を後から反映する (= 正方形の絵が左右に白帯で出るのを防ぐ)。
@@ -106047,6 +108024,13 @@ $cleanQ
         !File(imagePath).existsSync()) {
       return null;
     }
+    // ★ 画面と同じ上限で止める (= 動作検証の不具合「ギャラリーの 1000 件
+    //   上限を MCP から超えられる」)。 入らない分は黙って捨てず、 null を
+    //   返して呼ぶ側に「入らなかった」 と言わせる。
+    if (!canPlaceShelfItems(1, page)) return null;
+    // ★ 足した分は取り消せるようにする (= 動作検証の不具合。 一括の時は
+    //   呼ぶ側が 1 枚にまとめる)。
+    _pushUndoForPage(pageId, coalesceKey: 'mcpAddGallery:$pageId');
     final node = MindMapNode(
       id: _uuid.v4(),
       title: text ?? '',
@@ -106315,50 +108299,87 @@ $cleanQ
 
   /// フリーノートの「文字の層」 に文章を足す (= ユーザー要望: マークダウンの
   /// 表をフリーノートへ入れられるように)。 今の紙の文字の後ろに継ぎ足す。
-  Future<bool> mcpAppendPaintDocText(String pageId, String text) async {
+  /// フリーノートの**今開いているタブ**の文書レイヤーへ、 段落をまとめて足す。
+  ///
+  /// ★ = 動作検証の不具合「フリーノートの文書追記がタブごとに分かれない」。
+  ///   文書モードの本文は `_PaintSheet` の `'doc'`、 つまり**紙 (タブ) ごと**に
+  ///   持っている。 ところが MCP の `append_document_text` は
+  ///   `document_<pageId>` (= ページに 1 本しかない別の入れ物) へ書いていたので、
+  ///   どのタブを選んでいても同じ所へ溜まり、 1 枚目にまとめて出ていた。
+  ///   ここを通せば、 画面で開いているタブの本文と同じ場所へ入る。
+  ///
+  /// 戻りは「何段落書けたか」 と、 **どこへ書いたか** (バインダー / タブ)。
+  /// フリーノートでない / 形が読めない時は null。
+  Future<({int wrote, int binder, int tab, String tabName})?>
+      mcpAppendPaintDocTexts(String pageId, List<String> texts) async {
     final page = mcpPageById(pageId);
-    if (page == null) return false;
-    if (page.pageType != 'paint' && page.pageType != 'document') return false;
-    final body = text.trimRight();
-    if (body.isEmpty) return false;
+    if (page == null || page.pageType != 'paint') return null;
+    // 空白だけの段落は入れない (= 文書ページ側と同じ作法)。
+    final wanted = [
+      for (final t in texts)
+        if (t.trim().isNotEmpty) t.trimRight(),
+    ];
+    if (wanted.isEmpty) {
+      return (wrote: 0, binder: 0, tab: 0, tabName: '');
+    }
     try {
-      final prefs = await _prefsWithRetry();
-      final key = 'paint_${page.id}';
-      dynamic decoded;
-      final raw = prefs.getString(key);
-      if (raw != null && raw.trim().isNotEmpty) {
-        try {
-          decoded = jsonDecode(raw);
-        } catch (_) {}
-      }
-      if (decoded != null && _mcpPaintSheetOf(decoded).sheet.isEmpty) {
-        return false;
-      }
-      final sheet = _mcpPaintSheetOf(decoded);
-      decoded = sheet.doc;
-      final s = sheet.sheet;
+      final body = await _mcpPaintBody(page.id);
+      // 中身があるのに形が読めない時は触らない (壊さないため)。
+      if (body != null && _mcpPaintSheetOf(body).sheet.isEmpty) return null;
+      final found = _mcpPaintSheetOf(body);
+      final doc = found.doc;
+      final s = found.sheet;
+      final sel = _mcpPaintSel(doc);
       // 既にある文字の後ろへ継ぎ足す (Quill の delta は insert の並び)。
       final cur = s['doc'];
       final ops = <dynamic>[];
       if (cur is List) ops.addAll(cur);
-      final head = ops.isEmpty ? '' : '\n';
-      ops.add({'insert': '$head$body\n'});
+      // ★ 頭の改行は**最初の段落の前に 1 回だけ**。 段落ごとに入れると
+      //   足すたびに空行が増える。
+      var head = ops.isEmpty ? '' : '\n';
+      for (final t in wanted) {
+        ops.add({'insert': '$head$t\n'});
+        head = '';
+      }
       s['doc'] = ops;
-      await prefs.setString(key, jsonEncode(decoded));
-      _paintReloadTick++;
-      _mcpContentTick++;
-      _bumpPaintBodyTick(page.id);
-      markLiveBodyDirty(page.id);
-      // ★ 本文はページ JSON の外にあるので、 時刻は自分で進める
-      //   (= ユーザー報告: 本文を直しても lastModified が変わらない)。
-      _touchPageBody(page.id);
-      notifyListeners();
-      _requestMcpFocus(page.id);
-      return true;
+      await _mcpSavePaintBody(page.id, doc);
+      return (
+        wrote: wanted.length,
+        binder: sel.binder,
+        tab: sel.tab,
+        tabName: '${s['n'] ?? ''}',
+      );
     } catch (e) {
-      debugPrint('mcpAppendPaintDocText failed: $e');
-      return false;
+      debugPrint('mcpAppendPaintDocTexts failed: $e');
+      return null;
     }
+  }
+
+  /// [_mcpPaintSheetOf] が選んだのと**同じ**バインダー / タブの番号。
+  /// 報告に使うだけなので、 形が読めない時は 0 / 0 を返す。
+  ({int binder, int tab}) _mcpPaintSel(dynamic decoded) {
+    if (decoded is! Map) return (binder: 0, tab: 0);
+    final notes = decoded['notes'];
+    if (notes is List && notes.isNotEmpty) {
+      var ni = (decoded['noteSel'] as num?)?.toInt() ?? 0;
+      if (ni < 0 || ni >= notes.length) ni = 0;
+      final note = notes[ni];
+      var si = 0;
+      if (note is Map) {
+        si = (note['sel'] as num?)?.toInt() ?? 0;
+        final pages = note['pages'];
+        if (pages is! List || si < 0 || si >= pages.length) si = 0;
+      }
+      return (binder: ni, tab: si);
+    }
+    var si = (decoded['sel'] as num?)?.toInt() ?? 0;
+    if (si < 0) si = 0;
+    return (binder: 0, tab: si);
+  }
+
+  Future<bool> mcpAppendPaintDocText(String pageId, String text) async {
+    final r = await mcpAppendPaintDocTexts(pageId, [text]);
+    return (r?.wrote ?? 0) > 0;
   }
 
   Future<bool> mcpSetPaintSheetBackground(
@@ -106451,9 +108472,15 @@ $cleanQ
 
   /// paint_<pageId> の中身を読む (無ければ null)。
   Future<dynamic> _mcpPaintBody(String pageId) async {
+    // ★ 鍵は**解決後の** id で作る (= 点検で判明: pageId を省くと
+    //   [mcpPageById] は今のページを返すのに、 ここだけが `paint_` という
+    //   どこでもない鍵を見ていた。 書く側も同じ鍵を見るので、
+    //   「書いて読めた」 と思ったまま本当はどの紙にも入っていなかった)。
+    final id = mcpPageById(pageId)?.id ?? pageId.trim();
+    if (id.isEmpty) return null;
     try {
       final prefs = await SharedPreferences.getInstance();
-      final raw = await _readBodyPrefFresh(prefs, 'paint_$pageId');
+      final raw = await _readBodyPrefFresh(prefs, 'paint_$id');
       if (raw.trim().isEmpty) return null;
       return jsonDecode(raw);
     } catch (_) {
@@ -106463,17 +108490,20 @@ $cleanQ
 
   /// 中身を書き戻して、 画面に知らせる。
   Future<void> _mcpSavePaintBody(String pageId, dynamic body) async {
+    // ★ 読む側 ([_mcpPaintBody]) と**同じ鍵**を使う。 空の id では書かない。
+    final id = mcpPageById(pageId)?.id ?? pageId.trim();
+    if (id.isEmpty) return;
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('paint_$pageId', jsonEncode(body));
+    await prefs.setString('paint_$id', jsonEncode(body));
     _paintReloadTick++;
     _mcpContentTick++;
-    _bumpPaintBodyTick(pageId);
+    _bumpPaintBodyTick(id);
     // ★ 本文はページ JSON の外にあるので、 時刻は自分で進める
     //   (= ユーザー報告: 本文を直しても lastModified が変わらない)。
-    _touchPageBody(pageId);
-    markLiveBodyDirty(pageId);
+    _touchPageBody(id);
+    markLiveBodyDirty(id);
     notifyListeners();
-    _requestMcpFocus(pageId);
+    _requestMcpFocus(id);
   }
 
   /// バインダーの一覧 (= 3 階層の入れ物) を取り出す。 形が違えば null。
@@ -107398,6 +109428,10 @@ $cleanQ
     final page = mcpPageById(pageId);
     if (page == null) return null;
     if (page.pageType != 'document' && page.pageType != 'paint') return null;
+    // ★ = 動作検証の不具合「フリーノートの文書追記がタブごとに分かれない」。
+    //   フリーノートの本文は**紙 (タブ) ごと**なので、 今開いている
+    //   バインダーのタブを 1 枚 1 枚返す (書く側と同じ見方)。
+    if (page.pageType == 'paint') return _mcpReadPaintDoc(page);
     try {
       final prefs = await _prefsWithRetry();
       // ★ = 動作検証レポート 2026-09-24。 書いた直後でも、 ページ JSON 保存の
@@ -107429,12 +109463,102 @@ $cleanQ
       }
       return {
         'pageId': page.id,
+        'scope': 'document',
         // append_document_text は**最後の紙**の末尾へ足す。
         'appendsTo': papers.isEmpty ? 0 : papers.length - 1,
         'papers': papers,
       };
     } catch (e) {
       debugPrint('mcpReadDocument failed: $e');
+      return null;
+    }
+  }
+
+  /// フリーノートの文書レイヤーを「タブ 1 枚 = 紙 1 枚」 として読む。
+  ///
+  /// ★ = 動作検証の不具合「フリーノートの文書追記がタブごとに分かれない」。
+  ///   本文は紙 (タブ) ごとの `'doc'` に入っているので、 今開いている
+  ///   バインダーのタブを順に返す。 `appendsTo` は選んでいるタブ。
+  ///   昔 `document_<pageId>` へ書いた分は `pageSideNote` として添える
+  ///   (読めなくなる物を作らないため)。
+  Future<Map<String, dynamic>?> _mcpReadPaintDoc(MindMapPage page) async {
+    try {
+      String plain(dynamic delta) {
+        if (delta is! List) return '';
+        final b = StringBuffer();
+        for (final op in delta) {
+          if (op is Map && op['insert'] is String) b.write(op['insert']);
+        }
+        return b.toString();
+      }
+
+      final body = await _mcpPaintBody(page.id);
+      final sel = _mcpPaintSel(body);
+      final papers = <Map<String, Object?>>[];
+      List? tabs;
+      if (body is Map) {
+        final notes = body['notes'];
+        if (notes is List && notes.isNotEmpty) {
+          var ni = sel.binder;
+          if (ni < 0 || ni >= notes.length) ni = 0;
+          final note = notes[ni];
+          if (note is Map && note['pages'] is List) tabs = note['pages'] as List;
+        } else if (body['pages'] is List) {
+          tabs = body['pages'] as List;
+        } else if (body['sheets'] is List) {
+          tabs = body['sheets'] as List;
+        }
+      }
+      if (tabs != null) {
+        for (var i = 0; i < tabs.length; i++) {
+          final t = tabs[i];
+          if (t is! Map) continue;
+          papers.add({
+            'index': i,
+            'name': '${t['n'] ?? ''}',
+            'text': plain(t['doc']),
+          });
+        }
+      } else if (body != null) {
+        // 昔の 1 枚だけの形。
+        final found = _mcpPaintSheetOf(body);
+        if (found.sheet.isNotEmpty) {
+          papers.add({
+            'index': 0,
+            'name': '${found.sheet['n'] ?? ''}',
+            'text': plain(found.sheet['doc']),
+          });
+        }
+      }
+      // ページ単位の古い入れ物に残っている分。
+      String side = '';
+      try {
+        final prefs = await _prefsWithRetry();
+        final raw = await _readBodyPrefFresh(prefs, 'document_${page.id}');
+        if (raw.trim().isNotEmpty) {
+          final d = jsonDecode(raw);
+          if (d is Map && d['pages'] is List) {
+            side = [for (final pg in d['pages'] as List) plain(pg)].join('\n');
+          } else if (d is List) {
+            side = plain(d);
+          }
+        }
+      } catch (_) {}
+      var appendsTo = sel.tab;
+      if (appendsTo < 0 || appendsTo >= papers.length) {
+        appendsTo = papers.isEmpty ? 0 : 0;
+      }
+      return {
+        'pageId': page.id,
+        // ★ どの単位で持っているか。 'sheet' = タブごと (今の作り)。
+        'scope': 'sheet',
+        'binder': sel.binder,
+        'appendsTo': appendsTo,
+        'papers': papers,
+        if (side.trim().isNotEmpty) 'pageSideNote': side,
+      };
+    } catch (e) {
+      debugPrint('_mcpReadPaintDoc failed: $e');
       return null;
     }
   }
@@ -107456,10 +109580,22 @@ $cleanQ
           decoded = jsonDecode(raw);
         } catch (_) {}
       }
+      // ★ = 動作検証レポート 2026-09-25 不具合 10「フリーノートの
+      //   hasDocumentLayer が実データと逆」。 タブの 'doc' だけを見ていたが、
+      //   MCP の append_document_text が書くのは**ページ単位**の
+      //   `document_<pageId>` の方なので、 そちらも見る。
+      final pageDoc = await _hasPageDocumentBody(prefs, page.id);
       final found = _mcpPaintSheetOf(decoded);
       final sheet = found.sheet;
       if (sheet.isEmpty) {
-        return {'pageId': page.id, 'texts': const [], 'note': 'empty sheet'};
+        return {
+          'pageId': page.id,
+          'texts': const [],
+          'hasDocumentLayer': false,
+          'documentLayerScope': 'none',
+          if (pageDoc) 'hasPageSideNote': true,
+          'note': 'empty sheet',
+        };
       }
       List<dynamic> listOf(String k) =>
           sheet[k] is List ? (sheet[k] as List) : const [];
@@ -107487,8 +109623,25 @@ $cleanQ
         'shapeCount': listOf('sh').length,
         'imageCount': listOf('im').length,
         if (bgi.isNotEmpty) 'backgroundImage': bgi,
+        // ★ = 動作検証の不具合「フリーノートの文書追記がタブごとに
+        //   分かれない」。 append_document_text は**この紙の** `'doc'` へ
+        //   書くようになったので、 入れ物は常に紙 (タブ) 単位。
         'hasDocumentLayer':
             sheet['doc'] is List && (sheet['doc'] as List).isNotEmpty,
+        'documentLayerScope':
+            sheet['doc'] is List && (sheet['doc'] as List).isNotEmpty
+                ? 'sheet'
+                : 'none',
+        if (sheet['doc'] is List && (sheet['doc'] as List).isNotEmpty)
+          'documentText': () {
+            final b = StringBuffer();
+            for (final op in sheet['doc'] as List) {
+              if (op is Map && op['insert'] is String) b.write(op['insert']);
+            }
+            return b.toString();
+          }(),
+        // 昇の版が `document_<pageId>` へ書いた分 (横のメモ)。
+        if (pageDoc) 'hasPageSideNote': true,
       };
     } catch (e) {
       debugPrint('mcpReadPaintItems failed: $e');
@@ -107499,13 +109652,49 @@ $cleanQ
   /// 動画エディターのタイムラインに載っている物を読む。
   /// 返す鍵は add_video_editor_item が受ける物とそろえてある
   /// (= 読んで、 そのまま直せるように)。
+  /// ページ単位の文書レイヤー (`document_<pageId>`) に中身があるか。
+  ///
+  /// = 動作検証レポート 2026-09-25 不具合 10。 空白だけの段落は「無い」
+  /// 扱いにする。 画像などの埋め込みがあれば「有る」。
+  Future<bool> _hasPageDocumentBody(
+      SharedPreferences prefs, String pageId) async {
+    try {
+      final raw = await _readBodyPrefFresh(prefs, 'document_$pageId');
+      if (raw.trim().isEmpty) return false;
+      final d = jsonDecode(raw);
+      final papers = (d is Map && d['pages'] is List)
+          ? (d['pages'] as List)
+          : const <dynamic>[];
+      for (final pg in papers) {
+        final ops = pg is List
+            ? pg
+            : (pg is Map && pg['ops'] is List
+                ? (pg['ops'] as List)
+                : const <dynamic>[]);
+        for (final op in ops) {
+          if (op is! Map) continue;
+          final ins = op['insert'];
+          if (ins is String) {
+            if (ins.trim().isNotEmpty) return true;
+          } else if (ins != null) {
+            return true; // 画像などの埋め込み
+          }
+        }
+      }
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<Map<String, dynamic>?> mcpListVideoEditorItems(String pageId) async {
     final page = mcpPageById(pageId);
     if (page == null || page.pageType != 'videoEditor') return null;
     try {
       final prefs = await _prefsWithRetry();
-      final raw = prefs.getString('videoEditor_${page.id}');
-      if (raw == null || raw.trim().isEmpty) {
+      // ★ 控えではなく読み直して確かめる (書いた直後に空で返る口を塞ぐ)。
+      final raw = await _readBodyPrefFresh(prefs, 'videoEditor_${page.id}');
+      if (raw.trim().isEmpty) {
         return {'pageId': page.id, 'items': const []};
       }
       final decoded = jsonDecode(raw);
@@ -107710,11 +109899,21 @@ $cleanQ
     if (wanted.isEmpty) return 0;
     final page = mcpPageById(pageId);
     if (page == null) return 0;
-    // 文書ページ本体のほか、 フリーノートの中の文書モードも同じ入れ物を使う。
     if (page.pageType != 'document' && page.pageType != 'paint') return 0;
+    // ★ = 動作検証の不具合「フリーノートの文書追記がタブごとに分かれない」。
+    //   フリーノートの文書モードの本文は**紙 (タブ) ごと**なので
+    //   ([_PaintSheet] の `'doc'`)、 ページに 1 本しかない
+    //   `document_<pageId>` へ書くのは違う。 書く側へ渡す。
+    if (page.pageType == 'paint') {
+      final r = await mcpAppendPaintDocTexts(page.id, texts);
+      return r?.wrote ?? 0;
+    }
     try {
       final prefs = await _prefsWithRetry();
-      final key = 'document_$pageId';
+      // ★ 鍵は**解決後の** page.id で作る (= 点検で判明: pageId を省くと
+      //   [mcpPageById] は今のページを返すのに、 鍵だけが `document_` になり、
+      //   どこでもない所へ書いて「書けました」と答えていた)。
+      final key = 'document_${page.id}';
       // 追記する中身 (改行で終わっていないと Quill が段落を閉じない)。
       final inserts = <dynamic>[
         for (final t in wanted) {'insert': t.endsWith('\n') ? t : '$t\n'},
@@ -107752,16 +109951,20 @@ $cleanQ
       await prefs.setString(key, jsonEncode(out));
       // ★ 書けたと言う前に読み返して確かめる (= フリーノート側と同じ作法。
       //   黙って「書きました」 と答えるのが一番たちが悪い)。
-      if ((prefs.getString(key) ?? '').isEmpty) {
+      // ★ = 動作検証の不具合「文書への追記が成功しているのに失敗として
+      //   返る」。 素の `getString` は、 他の保存が挟む `prefs.reload()` の
+      //   直後だと Dart 側の控えが空に見える事がある。 30 行上の読みと同じ
+      //   [_readBodyPrefFresh] で確かめれば、 読みと検算が食い違わない。
+      if ((await _readBodyPrefFresh(prefs, key)).trim().isEmpty) {
         debugPrint('mcpAppendDocumentTexts: 書いた直後に読み返せませんでした');
         return 0;
       }
       _mcpContentTick++;
       // ★ 本文はページ JSON の外にあるので、 時刻は自分で進める
       //   (= ユーザー報告: 本文を直しても lastModified が変わらない)。
-      _touchPageBody(pageId);
+      _touchPageBody(page.id);
       notifyListeners();
-      _requestMcpFocus(pageId);
+      _requestMcpFocus(page.id);
       return wanted.length;
     } catch (e) {
       debugPrint('mcpAppendDocumentTexts failed: $e');
@@ -107772,10 +109975,21 @@ $cleanQ
   /// 動画エディターのタイムラインに要素 (動画 / 画像 / テキスト) を足す。
   /// 保存形式は `{v:2, items:[…]}`。 [kind] は 'video'/'text'/'image'。
   /// 開始位置を省いたら、 同じレイヤーの末尾に続けて置く。
-  Future<String?> mcpAddVideoEditorItem(
+  /// 一度に**まとめて**足す。 戻りは実際に保存した id の並び。
+  ///
+  /// ★ = 動作検証レポート 2026-09-25 不具合 9「動画キャプション一括追加で
+  ///   返却数と保存数が一致しない (3 件渡して 2 件しか残らない)」。
+  ///   旧: 呼ぶ側が件数ぶんこれを回していたので、 1 件ごとに
+  ///   「読む → 足す → 書く」 を繰り返していた。 その読み書きの**間**に、
+  ///   ページ JSON の保存が挟む `prefs.reload()` が走ると、 さっき書いた
+  ///   分が Dart 側の控えから消える ([_readBodyPrefFresh] の説明を参照)。
+  ///   次の周回は古い一覧に足して**上書きして消して**いた。
+  ///   文書ページの [mcpAppendDocumentTexts] と同じ直し方で、
+  ///   読み書きを**全件まとめて 1 回だけ**にする。
+  Future<List<String>> mcpAddVideoEditorItems(
     String pageId, {
     required String kind,
-    String? text,
+    List<String>? texts,
     String? path,
     int? startMs,
     int? durationMs,
@@ -107783,21 +109997,26 @@ $cleanQ
     double? fontSize,
     int? colorValue,
   }) async {
-    if (kStoreBuild) return null;
+    if (kStoreBuild) return const [];
     final page = mcpPageById(pageId);
-    if (page == null) return null;
-    if (page.pageType != 'videoEditor') return null;
+    if (page == null) return const [];
+    if (page.pageType != 'videoEditor') return const [];
     const kinds = {'video': 0, 'text': 1, 'image': 2};
     final k = kinds[kind];
-    if (k == null) return null;
-    if (k == 1 && (text == null || text.trim().isEmpty)) return null;
-    if (k != 1 && (path == null || path.isEmpty)) return null;
+    if (k == null) return const [];
+    final words = <String>[
+      for (final t in (texts ?? const <String>[]))
+        if (t.trim().isNotEmpty) t.trim()
+    ];
+    if (k == 1 && words.isEmpty) return const [];
+    if (k != 1 && (path == null || path.isEmpty)) return const [];
     try {
       final prefs = await _prefsWithRetry();
       final key = 'videoEditor_$pageId';
       final items = <dynamic>[];
-      final raw = prefs.getString(key);
-      if (raw != null && raw.trim().isNotEmpty) {
+      // ★ 読むのはここ 1 回だけ。 空に見えた時は読み直して確かめる。
+      final raw = await _readBodyPrefFresh(prefs, key);
+      if (raw.trim().isNotEmpty) {
         try {
           final d = jsonDecode(raw);
           if (d is Map && d['items'] is List) items.addAll(d['items'] as List);
@@ -107817,23 +110036,30 @@ $cleanQ
         }
         start = end;
       }
-      final id = 'mcp${DateTime.now().microsecondsSinceEpoch}';
-      items.add({
-        'id': id,
-        'k': k,
-        'l': lay,
-        // ↓ 短い鍵で保存する。 読み返す mcpListVideoEditorItems と対。
-        's': start,
-        'd': durationMs ?? 4000,
-        'p': path ?? '',
-        't': text ?? '',
-        'fs': fontSize ?? 32.0,
-        'c': colorValue ?? 0xFFFFFFFF,
-        'b': true,
-        'x': 0.5,
-        'y': 0.5,
-        'sc': 0.4,
-      });
+      final dur = durationMs ?? 4000;
+      final base = DateTime.now().microsecondsSinceEpoch;
+      final count = k == 1 ? words.length : 1;
+      final ids = <String>[];
+      for (var i = 0; i < count; i++) {
+        final id = 'mcp${base + i}';
+        ids.add(id);
+        items.add({
+          'id': id,
+          'k': k,
+          'l': lay,
+          // ↓ 短い鍵で保存する。 読み返す mcpListVideoEditorItems と対。
+          's': start + dur * i,
+          'd': dur,
+          'p': path ?? '',
+          't': k == 1 ? words[i] : '',
+          'fs': fontSize ?? 32.0,
+          'c': colorValue ?? 0xFFFFFFFF,
+          'b': true,
+          'x': 0.5,
+          'y': 0.5,
+          'sc': 0.4,
+        });
+      }
       await prefs.setString(key, jsonEncode({'v': 2, 'items': items}));
       // ★ ページ単位の印も進める。 画面の鍵と離脱時保存の門がこちらを
       //   見ているので、 進めないと書き込んだのに画面が作り直されない。
@@ -107844,11 +110070,37 @@ $cleanQ
       _touchPageBody(pageId);
       notifyListeners();
       _requestMcpFocus(pageId);
-      return id;
+      return ids;
     } catch (e) {
-      debugPrint('mcpAddVideoEditorItem failed: $e');
-      return null;
+      debugPrint('mcpAddVideoEditorItems failed: $e');
+      return const [];
     }
+  }
+
+  /// 1 件だけ足す (中身は [mcpAddVideoEditorItems] と同じ道を通る)。
+  Future<String?> mcpAddVideoEditorItem(
+    String pageId, {
+    required String kind,
+    String? text,
+    String? path,
+    int? startMs,
+    int? durationMs,
+    int? layer,
+    double? fontSize,
+    int? colorValue,
+  }) async {
+    final ids = await mcpAddVideoEditorItems(
+      pageId,
+      kind: kind,
+      texts: text == null ? null : <String>[text],
+      path: path,
+      startMs: startMs,
+      durationMs: durationMs,
+      layer: layer,
+      fontSize: fontSize,
+      colorValue: colorValue,
+    );
+    return ids.isEmpty ? null : ids.first;
   }
 
   // ─── AI から画面分割を組む (= ユーザー報告: 「4 画面分割にして」 と頼んだ
@@ -108094,11 +110346,24 @@ $cleanQ
           final strokes = (pt?['strokeCount'] as int?) ?? 0;
           final shapes = (pt?['shapeCount'] as int?) ?? 0;
           final images = (pt?['imageCount'] as int?) ?? 0;
+          // ★ 文書モードの本文も「中身」 に数える (= 点検で判明:
+          //   append_document_text で書いただけの紙を、 一覧が「空」 と
+          //   言っていた。 書いた直後に消してよいと判断されるので危うい)。
+          final docChars = () {
+            final d = pt?['documentText'];
+            return d is String ? d.length : 0;
+          }();
+          final hasDoc = pt?['hasDocumentLayer'] == true;
           return {
-            'hasContent':
-                texts.isNotEmpty || strokes > 0 || shapes > 0 || images > 0,
+            'hasContent': texts.isNotEmpty ||
+                strokes > 0 ||
+                shapes > 0 ||
+                images > 0 ||
+                hasDoc,
             'itemCount': texts.length + strokes + shapes + images,
             'textCount': texts.length,
+            if (hasDoc) 'hasDocumentLayer': true,
+            if (docChars > 0) 'documentTextLength': docChars,
           };
         case 'videoEditor':
           final ve = await mcpListVideoEditorItems(page.id);
@@ -108148,7 +110413,11 @@ $cleanQ
       nd.attachmentPath = filePath;
       if (title != null && title.trim().isNotEmpty) nd.title = title;
       nd.contentType = NodeContentType.attachment;
-      nd.attachmentName = name;
+      // ★ 覚えているきれいな名前は潰さない (= 動作検証の不具合「同名の
+      //   既存添付が置換されず、 重複する」の後半)。 ここでディスク上の
+      //   名前 (`会議 (2).md`) を上書きすると、 次の「同じ名前で作り直して」が
+      //   名前比べで一致しなくなり、 直しが**1 回しか効かない**。
+      if ((nd.attachmentName ?? '').trim().isEmpty) nd.attachmentName = name;
       _saveToStorage();
       notifyListeners();
       _requestMcpFocus(page.id);
@@ -108158,11 +110427,7 @@ $cleanQ
     //   重なる (= 動作確認で判明)。 既にある物の下へずらして置く。
     //   ページ全体は動かさない (利用者が組んだ配置を崩さないため)。
     //   逃がし先のページに置く時は、 そのページの基準位置を使う。
-    var spot = mcpReferenceFor(page.id);
-    for (final nd in page.nodes.values) {
-      spot = Offset(
-          spot.dx, math.max(spot.dy, nd.position.dy + nd.visualHeight + 40));
-    }
+    final spot = mcpFreeSpotOn(page);
     final node = MindMapNode(
       id: _uuid.v4(),
       title: title ?? name,
@@ -108201,10 +110466,18 @@ $cleanQ
     // 列数を揃える (足りない所は空文字で埋める)。
     final cols = rows.fold<int>(0, (m, r) => math.max(m, r.length));
     if (cols == 0) return null;
+    // ★ 上限は**ここ**でも見る (= 点検で判明: MCP の受け口だけで見ていたので、
+    //   画面から表をページへ送る道 (markdown の表 / 工程表) は 100 行 30 列を
+    //   超えた表を作れた。 画面で作れる大きさと合わせる)。
+    if (rows.length > kTableMaxRows || cols > kTableMaxCols) return null;
     final cells = [
       for (final r in rows)
         [for (var c = 0; c < cols; c++) c < r.length ? r[c] : '']
     ];
+    // ★ 表も取り消せるようにする (= 動作検証の不具合「MCP の追加が
+    //   取り消し履歴へ入らない」 の残り)。 強め方を断った後に積むので、
+    //   断った呼び出しは控えを汚さない。
+    _pushUndoForPage(pageId);
     final table = TableData(cells: cells, headerRow: headerRow);
     final base = mcpReferenceFor(pageId);
     final node = MindMapNode(
@@ -108252,15 +110525,32 @@ $cleanQ
     final node =
         page.nodes[_resolveNodeIdIn(page, nodeKey, fuzzy: false) ?? nodeKey];
     if (node == null) return false;
-    // ★ 空白だけの題名にしない (= 動作検証レポート: 通ってしまうと、 以降は
-    //   id を知らない限り指せなくなる)。 題名を変えない呼び方 (null) とは
-    //   区別する。 作る側 (mcpCreatePage) と同じ作法。
-    if (title != null && title.trim().isEmpty) return false;
-    // 色・リンクの書き換えは戻せるようにしておく (= 見た目が変わる操作)。
-    if (colorValue != null || url != null || clearUrl) {
+    // ★ = 動作検証の不具合「ギャラリー要素を格子外の座標へ移動できてしまう」
+    //   「使用中のマスへ移動しても入れ替わらず重なる」。 ギャラリーの位置は
+    //   マス目が決める物で、 画面にも要素をつまんで好きな所へ置く手立ては
+    //   無い。 好きな座標を受けると、 格子から外れた所に 1 件だけ残ったり、
+    //   同じマスに 2 件が完全に重なって後ろが見えなくなる。 座標だけ捨て、
+    //   題名や色などの書き換えはそのまま通す (並べ直しは mcpTidyGallery)。
+    if (page.pageType == 'bookshelf') {
+      x = null;
+      y = null;
+    }
+    // ★ 空の題名は**受ける** (= 動作検証の不具合「題名を空にできず、 存在する
+    //   ID を『見つからない』 と返す」)。 チェック項目も「題名を空にして確定
+    //   すると、 要素は消えずに中身が空のまま残る」 と決めている。 空白だけの
+    //   時は空文字に均す (見た目が同じなので、 以降 id で指せる事も変わらない)。
+    // 直した所は全部戻せるようにする (= 動作検証の不具合「MCP で移動した要素 /
+    //   題名を変えた要素を取り消せない」。 以前は色とリンクだけ積んでいた)。
+    if (title != null ||
+        memo != null ||
+        x != null ||
+        y != null ||
+        colorValue != null ||
+        url != null ||
+        clearUrl) {
       _pushUndoForPage(pageId, coalesceKey: 'mcpUpdateNode:$pageId');
     }
-    if (title != null) node.title = title;
+    if (title != null) node.title = title.trim().isEmpty ? '' : title;
     if (memo != null) {
       node.contentType = NodeContentType.memo;
       node.memoText = memo;
@@ -108378,12 +110668,26 @@ $cleanQ
     } catch (_) {}
   }
 
-  bool mcpFileWasCreatedHere(String filePath) {
+  /// [strict] を true にすると、 控え ([_mcpCreatedFiles]) に載っている物だけを
+  /// 「アプリが作った」 と見なす。
+  ///
+  /// ★ = 点検で判明: 下のフォルダー名での判定は `<書類>/attachments/` を
+  ///   含むが、 そこは**利用者が貼ったファイルの写しも落ちる場所**なので、
+  ///   「名前が同じだから書き換えてよい」 の判断には使えない。 消す / 掃除する側は
+  ///   今までどおり緩いままでよい (b400 以前に作った物を取りこぼさないため)。
+  ///
+  /// ★ ただし**「同じ名前で作り直す」の相手探しは例外**で、そこでは
+  ///   緩い判定を使う ([_mcpExistingPathOnPage])。 strict だと、 控えに載る物は
+  ///   ディスク上の名前をそのまま覚えているため、 名前比べの枝が一度も通らない。
+  ///   あちらは別に**ページに貼ってある物だけ**に絞っているので、
+  ///   利用者のデスクトップのファイルが巻き込まれる事はない。
+  bool mcpFileWasCreatedHere(String filePath, {bool strict = false}) {
     final t = filePath.trim();
     if (t.isEmpty) return false;
     for (final v in _mcpCreatedFiles) {
       if (mcpSamePath(v, t)) return true;
     }
+    if (strict) return false;
     // ★ = 調査報告 BUG-08「アプリ生成済みの孤立ファイルを取りこぼす」。
     //   控え (_mcpCreatedFiles) は b400 で入れた仕組みなので、 それ以前に
     //   作った物は載っていない。 ただし**アプリ自身の書類フォルダーの中**は
@@ -108478,7 +110782,8 @@ $cleanQ
       // ★ 背景 / フリーノート / 動画の素材になっている物を「迷子」 と
       //   言わない (= 利用者が消してしまう)。
       if ((await mcpOtherUsesOfFile(v)).isNotEmpty) continue;
-      out.add(v);
+      // 区切り文字を揃えて返す (= 不具合 6)。
+      out.add(mcpNormalizePath(v));
     }
     return out;
   }
@@ -108581,10 +110886,13 @@ $cleanQ
   ///   すれば、 そもそも id を書き写す必要が無くなる。
   ///   探す順は id → 題名の完全一致 → 大小文字と空白を無視した一致 →
   ///   部分一致。
-  String? mcpResolveNodeId(String pageId, String key) {
+  /// [fuzzy] を false にすると部分一致を使わない (= 書き換え / 削除の経路が
+  /// 実際に使う物差しと同じにする。 点検で判明: 緩い物差しで「居る」 と
+  /// 答えると、 部分一致しかしていない時に理由を言い間違える)。
+  String? mcpResolveNodeId(String pageId, String key, {bool fuzzy = true}) {
     final page = mcpPageById(pageId);
     if (page == null) return null;
-    return _resolveNodeIdIn(page, key);
+    return _resolveNodeIdIn(page, key, fuzzy: fuzzy);
   }
 
   /// [fuzzy] を false にすると部分一致を使わない。
@@ -108714,12 +111022,17 @@ $cleanQ
             (c.fromId == toId && c.toId == fromId));
     if (at >= 0) {
       if (label != null && label.trim().isNotEmpty) {
+        // ★ ラベルの書き換えも戻せるようにする (= 動作検証の不具合)。
+        _pushUndoForPage(pageId, coalesceKey: 'mcpConnect:$pageId');
         page.connections[at] = page.connections[at].copyWith(label: label);
       }
       _saveToStorage();
       notifyListeners();
       return true;
     }
+    // ★ 新しく引いた線も戻せるようにする (= 動作検証の不具合「接続を
+    //   取り消せない」)。 引けなかった時 (上の return false) では積まない。
+    _pushUndoForPage(pageId, coalesceKey: 'mcpConnect:$pageId');
     page.connections.add(NodeConnection(
       fromId: fromId,
       fromAnchor: vertical ? AnchorDirection.south : AnchorDirection.east,
@@ -108763,11 +111076,16 @@ $cleanQ
     final fromId = _resolveNodeIdIn(page, fromKey, fuzzy: false);
     final toId = _resolveNodeIdIn(page, toKey, fuzzy: false);
     if (fromId == null || toId == null) return 0;
-    final before = page.connections.length;
-    _pushUndoForPage(pageId, coalesceKey: 'mcpDisconnect:$pageId');
-    page.connections.removeWhere((c) =>
+    // ★ 何も消さない呼び出しで控えを積まない (= 点検で判明: 空振りでも 1 枚
+    //   積んでいたので、 「やり直し (redo)」 と「消したページを戻す」 の枠が
+    //   黙って捨てられていた)。 先に相手を数えてから積む。
+    bool hits(NodeConnection c) =>
         (c.fromId == fromId && c.toId == toId) ||
-        (c.fromId == toId && c.toId == fromId));
+        (c.fromId == toId && c.toId == fromId);
+    final before = page.connections.length;
+    if (!page.connections.any(hits)) return 0;
+    _pushUndoForPage(pageId, coalesceKey: 'mcpDisconnect:$pageId');
+    page.connections.removeWhere(hits);
     final removed = before - page.connections.length;
     if (removed == 0) return 0;
     _saveToStorage();
@@ -108860,7 +111178,7 @@ $cleanQ
       aroundNodeIds: List<String>.unmodifiable(resolvedAroundIds),
       aroundNodePadding: aroundPadding,
     );
-    _pushUndoForPage(pageId, coalesceKey: 'mcpDeco:$pageId');
+    _pushUndoForPage(pageId, coalesceKey: 'mcpDecoAdd:$pageId');
     page.decorations.add(deco);
     page.lastModifiedAt = DateTime.now();
     _saveToStorage();
@@ -108899,7 +111217,7 @@ $cleanQ
       //   一番困る)。 折れ線は通過点が要るので作る側と同じく扱わない。
       if (k == null || k == MapDecorationKind.polyline) return false;
     }
-    _pushUndoForPage(pageId, coalesceKey: 'mcpDeco:$pageId');
+    _pushUndoForPage(pageId, coalesceKey: 'mcpDecoUpdate:$pageId');
     page.decorations[i] = page.decorations[i].copyWith(
       kind: k,
       colorRgb: colorRgb == null ? null : (colorRgb & 0xFFFFFF),
@@ -108939,8 +111257,13 @@ $cleanQ
     try {
       final prefs = await _prefsWithRetry();
       final key = 'videoEditor_${page.id}';
-      final raw = prefs.getString(key);
-      if (raw == null || raw.trim().isEmpty) {
+      // ★ 素の getString は、 他の保存が挟む prefs.reload() の直後だと Dart 側の
+      //   控えが空に見える (= 動作検証の不具合「追記が成功しているのに失敗と
+      //   して返る」 と同じ原因)。 足す側と読む側は [_readBodyPrefFresh] を
+      //   通しているのに、 ここだけ素で読んでいたので、 中身のある
+      //   タイムラインに「空です」 と答える事があった。
+      final raw = await _readBodyPrefFresh(prefs, key);
+      if (raw.trim().isEmpty) {
         return {'ok': false, 'reason': 'the timeline is empty'};
       }
       final decoded = jsonDecode(raw);
@@ -108982,8 +111305,11 @@ $cleanQ
   bool mcpDeleteDecoration(String pageId, String decorationId) {
     final page = mcpPageById(pageId);
     if (page == null) return false;
+    // ★ 居ない図形を消せと言われた時に控えを積まない (= 点検で判明。 空振りが
+    //   「やり直し」 と「消したページを戻す」 の枠を黙って捨てていた)。
+    if (!page.decorations.any((d) => d.id == decorationId)) return false;
     final before = page.decorations.length;
-    _pushUndoForPage(pageId, coalesceKey: 'mcpDeco:$pageId');
+    _pushUndoForPage(pageId, coalesceKey: 'mcpDecoDelete:$pageId');
     page.decorations.removeWhere((d) => d.id == decorationId);
     if (page.decorations.length == before) return false;
     page.lastModifiedAt = DateTime.now();
@@ -111728,7 +114054,12 @@ $cleanQ
     if (!shelfCellWithinLimit(col, row)) return;
     // ★ 枠 (列数) の外は受け付けない。 受けると格子ごと横に広がる
     //   (= ユーザー報告: 列が勝手に増えて崩れる)。 段 (row) は増える仕様。
-    if (currentPage.pageType == 'bookshelf' && col >= _shelfGridCols()) return;
+    // ★ 幅は [_shelfEffectiveCols] (= 点検で判明: 生の列数で弾いていたので、
+    //   件数が増えて広がった列へ落とした物が黙って置かれなかった)。
+    if (currentPage.pageType == 'bookshelf' &&
+        col >= _shelfEffectiveCols(currentPage)) {
+      return;
+    }
     _shelfCells[nodeId] = [col, row];
     _saveShelfCells();
   }
@@ -111971,6 +114302,32 @@ $cleanQ
   static const int kShelfMaxGridRows = 100;
   static const int kShelfMaxVisibleItems = 1000;
 
+  /// キャンバスの端 (= 置き場所の丸め込みと bookshelfCanvasSize の上限)。
+  static const double kShelfCanvasLimit = 20000.0;
+
+  /// 実際に**描ける**段数。
+  ///
+  /// ★ = 動作検証の不具合「多数のギャラリー要素を一括追加すると同じ座標へ
+  ///   大量に重なる」 の残り半分。 段の y は
+  ///   `kShelfOuterControlPad + r * (行の高さ + kShelfGap)` で決まるので、
+  ///   100 段ぶん並べると下の方が端 (20000) を越え、 丸め込みで**全部同じ
+  ///   y に潰れて**いた (報告の「y=20000 の各列に 11 個ずつ重なる」)。
+  ///   端を越えない段だけを数える: (20000-120-209)/225 + 1 = 88 段。
+  ///   列を増やす計算 ([_shelfEffectiveCols]) もこの段数で割るので、
+  ///   1000 個は 12 列 × 88 段 = 1056 マスに収まる。
+  static int get kShelfUsableRows {
+    const double rowH = kShelfTileW * 1.1; // 209.0 (_buildShelfGrid の既定)
+    const double pitch = rowH + kShelfGap; // 225.0
+    final n =
+        ((kShelfCanvasLimit - kShelfOuterControlPad - rowH) / pitch).floor() + 1;
+    return n.clamp(1, kShelfMaxGridRows);
+  }
+
+  /// 表の上限 (= 画面の表作成ダイアログ `_CreateTableDialogState` と同じ値)。
+  /// ★ 画面は黙って丸めるが、 MCP は理由を返して断る。
+  static const int kTableMaxRows = 100;
+  static const int kTableMaxCols = 30;
+
   int _shelfVisibleGridCount(MindMapPage page) =>
       page.nodes.values.where((n) => n.hiddenInContainer == null).length;
 
@@ -112008,7 +114365,9 @@ $cleanQ
   /// (= ユーザー要望: 既定 5×5、 勝手には増えないが満杯時は追加できる)。
   int _shelfGridRows([MindMapPage? p]) {
     final page = p ?? currentPage;
-    final cols = _shelfGridCols(page);
+    // ★ マス目を配る側と同じ幅で数える (= 点検で判明: 広げた列の分だけ
+    //   +ボックスと掴みが足りなくなる)。
+    final cols = _shelfEffectiveCols(page);
     // 表紙 (格納コンテナ) に隠れている要素はセルを占有しないので除外して数える
     // (= 大量取り込みを 1 表紙にまとめてもグリッドが膨らまないように)。
     final visible = _shelfVisibleGridCount(page);
@@ -112026,7 +114385,8 @@ $cleanQ
     if (maxOccRow + 1 > needed) needed = maxOccRow + 1;
     final base = page.shelfRows > 0 ? page.shelfRows : kShelfDefaultGridRows;
     final rows = base > needed ? base : needed + 1;
-    return rows.clamp(1, kShelfMaxGridRows).toInt();
+    // ★ 描けない段に + ボックスを出さない (= 同じ直し)。
+    return rows.clamp(1, kShelfUsableRows).toInt();
   }
 
   /// ギャラリーのグリッド総セル数 (横 × 縦) を返す (= 既定 5×5 = 25)。
@@ -112065,13 +114425,13 @@ $cleanQ
     final cols = gridCols ?? _shelfGridCols();
     int col = fromCol < 0 ? 0 : (fromCol >= cols ? 0 : fromCol);
     int row = fromRow < 0 ? 0 : fromRow;
-    if (row >= kShelfMaxGridRows) return null;
+    if (row >= kShelfUsableRows) return null;
     while (occ.contains('$col,$row')) {
       col++;
       if (col >= cols) {
         col = 0;
         row++;
-        if (row >= kShelfMaxGridRows) return null;
+        if (row >= kShelfUsableRows) return null;
       }
     }
     return [col, row];
@@ -112094,6 +114454,7 @@ $cleanQ
       final c = _shelfCells[id];
       if (c != null) occ.add('${c[0]},${c[1]}');
     }
+    final cols = _shelfEffectiveCols(page);
     bool changed = false;
     for (final id in page.nodes.keys) {
       if (_shelfCells.containsKey(id)) continue;
@@ -112103,7 +114464,7 @@ $cleanQ
       //   列数になり、 別のギャラリー (分割の向こう側 / AI アシスタント /
       //   ページ間の受け渡し) を並べた時に、 そのページの枠より右へ
       //   マス目を配ってしまう (= 列が勝手に増える原因)。
-      final cell = _nextFreeShelfCell(occ, gridCols: _shelfGridCols(page));
+      final cell = _nextFreeShelfCell(occ, gridCols: cols);
       if (cell == null) break;
       _shelfCells[id] = [cell[0], cell[1]];
       occ.add('${cell[0]},${cell[1]}');
@@ -112125,9 +114486,26 @@ $cleanQ
   ///   1 マスも動かさない (= 既存の配置を勝手に詰め直さない)。
   ///   利用者が自分で列を増やした時は [_shelfGridCols] がその値を返すので、
   ///   この整えは何もしない。
+  /// 実際に使う列数。
+  ///
+  /// ★ = 動作検証の不具合「多数のギャラリー要素を一括追加すると同じ座標へ
+  ///   大量に重なる」。 既定は 5 列なので 5 × 100 行 = 500 マスで打ち止めに
+  ///   なり、 それ以降はマス目をもらえないまま 1 枚目の上に積み上がって
+  ///   いた。 足りない時だけ広げる (上限 [kShelfMaxGridCols])。
+  /// ★ マス目を配る側 ([_ensureShelfCells]) と、 枠の外を戻す側
+  ///   ([_normalizeShelfCells]) が**同じ幅**を見ないと、 配った直後に
+  ///   戻されて元の木阿弥になる。 だからここ 1 か所で決める。
+  int _shelfEffectiveCols(MindMapPage page) {
+    final base = _shelfGridCols(page);
+    // ★ 割るのは**描ける段数** ([kShelfUsableRows])。 100 段で割ると、
+    //   描けない段を数に入れてしまい列が足りず、 下の段が端で潰れていた。
+    final need = (_shelfVisibleGridCount(page) / kShelfUsableRows).ceil();
+    return math.max(base, need).clamp(1, kShelfMaxGridCols).toInt();
+  }
+
   void _normalizeShelfCells(MindMapPage page) {
     if (page.pageType != 'bookshelf') return;
-    final cols = _shelfGridCols(page);
+    final cols = _shelfEffectiveCols(page);
     final occ = <String>{};
     final strays = <String>[];
     // 見た目の並び (上→下、 左→右) で見て、 戻す順を安定させる。
@@ -112171,6 +114549,7 @@ $cleanQ
   List<List<int>> bookshelfFrontierCells({MindMapPage? pageOverride}) {
     final page = pageOverride ?? currentPage;
     if (page.pageType != 'bookshelf') return const [];
+    // ★ 幅は [_shelfEffectiveCols] で揃える (下の `cols` もこれを使う)。
     final occ = <String>{};
     for (final id in page.nodes.keys) {
       // 表紙に隠れているメンバーはセルを占有しない (= ユーザー要望: 要素が
@@ -112180,7 +114559,11 @@ $cleanQ
       final c = _shelfCells[id];
       if (c != null) occ.add('${c[0]},${c[1]}');
     }
-    final cols = _shelfGridCols(page);
+    // ★ = 点検で判明: 上の注記どおり [_shelfEffectiveCols] を使う。 生の
+    //   [_shelfGridCols] を見ていたので、 件数が増えて列が広がった時に
+    //   6 列目以降は**実物のタイルが居るのに +ボックスも取っ手も出ない**
+    //   「帯」 になっていた (この注記が直したはずの症状そのもの)。
+    final cols = _shelfEffectiveCols(page);
     final rows = _shelfGridRows(page);
     final out = <List<int>>[];
     for (int row = 0; row < rows; row++) {
@@ -113193,7 +115576,10 @@ $cleanQ
       for (final u in updated) {
         final node = page.nodes[u.id];
         if (node == null || isCover(node)) continue;
-        final c = _shelfCells[u.id] ?? [0, 0];
+        // ★ マス目が無い物は触らない (= 以前は [0,0] として 1 枚目の
+        //   上に重ねていた。 動作検証の「502 要素が同じ座標」 の正体)。
+        final c = _shelfCells[u.id];
+        if (c == null) continue;
         final double cellH = _gridH(grid, c[1]);
         final double extra = node.copyWith(height: 0.0).visualHeight;
         final double effH =
@@ -113201,7 +115587,8 @@ $cleanQ
         page.nodes[u.id] = node.copyWith(height: effH);
       }
       for (final u in updated) {
-        final c = _shelfCells[u.id] ?? [0, 0];
+        final c = _shelfCells[u.id];
+        if (c == null) continue; // 同上 (重ねない)
         final p = _shelfCellPos2(grid, c[0], c[1]);
         page.nodes[u.id] = page.nodes[u.id]!.copyWith(
             position:

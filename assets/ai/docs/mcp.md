@@ -122,8 +122,9 @@ flowchart TD
 
 | ツール | 説明 |
 |---|---|
-| `list_pages` | `{ pages: [...], openFileOnTop?: {...} }`。`pages` は全ページ (id, name, type, ノード数, `isCurrent`, `lastModified`)<br/>★ `isCurrent: true` が利用者の見ているページ。「このページ」は必ずこれ 1 枚<br/>★ `openFileOnTop` があれば、利用者は**そのファイル**(pptx/xlsx/csv/txt/docx)を前面で開いている。どこを直すか明示されない指示はそのファイルのこと。マップを勝手に書き換えず、道具が無ければその画面の AI ボタンを案内する<br/>★ `lastModified` は**最終更新**で作成日ではない (同名ページの「古いほう」は決められない) |
-| `read_page` | 1 ページを完全な JSON で (nodes / connections / decorations) |
+| `list_pages` | `{ pages: [...], foregroundContext: {...}, openFileOnTop?: {...} }`。`pages` は全ページ (id, name, type, ノード数, `isCurrent`, `lastModified`)<br/>★ **`foregroundContext` が「無指定の指示は何が相手か」の唯一の答え**。`kind:"page"` ならそのページ、`kind:"file"` なら前面のファイル (その `pageId` は裏のマップでしかない)<br/>★ `isCurrent` は「**今のマップ**」でしかない。前面にファイルがあっても true なので、それだけで「見ているページ」と決めない (= 2026-09-25 不具合 1)<br/>★ 先頭は今のマップ。**どこを直すか探すためにこれを呼ばない**。場所が書かれていない指示は開いているページのこと (下ごしらえに pageId とノードの題が載っている)。名指しされた別のページを触る時だけ引く<br/>★ `openFileOnTop` は互換用 (`foregroundContext` と同じ判断から作られる)。道具が無ければその画面の AI ボタンを案内する<br/>★ `lastModified` は**最終更新**で作成日ではない (同名ページの「古いほう」は決められない) |
+| `read_page` | 1 ページを完全な JSON で (nodes / connections / decorations)<br/>★ **`pageId` は省ける** → 今開いているページ。場所が書かれていない指示はまずこれで中を見る<br/>★ `attachmentPath` は Windows の正規形で返る (区切りは `\`) |
+| `undo_page` | マップページの編集を 1 手戻す。**保存まで待って**から返る<br/>★ `pageId` は省ける → 今開いているページ。戻したら `read_page` は即座に一致する<br/>★ 戻りは `{undone, pageId, nodeCount, connectionCount, canUndoMore}`<br/>★ 履歴が無い / 本文がページ JSON の外にある種別 (paint・document・videoEditor) は `no_history` を返す (画面の Ctrl+Z を案内する) |
 | `create_page` | 新規ページ。type = `normal` / `bookshelf` / `paint` / `document` / `markdown` / `videoEditor`<br/>戻り値 `{pageId, type}` の `type` が実際に出来た種類 (知らない type は `normal` に倒れる) |
 | `delete_page` | ページを完全に削除。最後の 1 枚は消せない<br/>★ 短い間に 2 枚を超えて消そうとすると拒否される (暴走の歯止め。【8】参照)<br/>★ 戻す道具は無い。アプリ側の Ctrl+Z (`undoLastDeletedPage`) で**直前の 1 枚だけ**復元できる |
 | `set_page_type` | 中身を残したまま種類を変える (`create_page` と同じ 6 種類)<br/>★ `markdown` ページの本文は `write_markdown` で書く。ファイルとして欲しいと言われた時だけ `create_document_file` の `md` |
@@ -133,8 +134,11 @@ flowchart TD
 
 > ★ **戻り値で確かめる道具**: `read_page` は先頭に `nodeCount` / `connectionCount` を返す。
 > `add_node` は `nodeIds` / `unlinked` / `note` (重なっているので tidy_page を呼べ)、
-> `update_node` は書き換えた `nodeId` と `title`、`connect_nodes` は `fromId` / `toId`、
-> `delete_node` は**消した題名**、`set_page_background` は実際に入った値を返す。
+> `update_node` は `applied` (実際に当てた title / memo / x / y / color / url) と
+> `ignored` (渡されなかった項目) を返すので、**確かめるための `read_page` は要らない**。
+> `connect_nodes` は `fromId` / `toId`、`delete_node` は `deleted` (題名・互換) と
+> `deletedItems` (`id` / `title` / `caption` / `contentType` — 題名が空の表でも追える)、
+> `set_page_background` は実際に入った値を返す。
 > 頼んだ値ではなく、返ってきた値を報告する。
 
 > ★ **題名で指せるが、あいまい一致はしない**: 消す (`delete_node`) と
@@ -151,8 +155,9 @@ flowchart TD
 | ツール | 説明 |
 |---|---|
 | `add_node` | ノード追加。**バッチ形が推奨**<br/>`nodes: [{title, memo?, url?, color?, parentIndex?, parentId?}]`<br/>`parentIndex` は同じ配列内の先に作ったノードの 0 始まり番号で、同時に接続線も引く → 中心 + 子をまとめて 1 回で作れる。座標は省略推奨 |
-| `update_node` | title / memo / 位置の更新 |
-| `delete_node` | ノードと接続線を削除 |
+| `update_node` | title / memo / 位置の更新。戻りに `applied` と `ignored` が付く |
+| `disconnect_nodes` | 線を外す。外せない時は札で理由が分かれる: `node_not_found` (打ち間違い。`unknown` に該当分) / `not_connected` (両方あるが線が無い = もう切れている。何度呼んでも同じ) (= 2026-09-25 不具合 8) |
+| `delete_node` | ノードと接続線を削除。戻りに `deletedItems` (id / title / caption / contentType) |
 | `connect_nodes` | 接続。**バッチ形推奨** `connections: [{fromId, toId, label?}]` |
 | `add_image_node` | 画像ノード。`imageBase64`+`fileName` か `imagePath`。画像を渡さず `prompt` だけ書くと AI が描いて置く (= `generate_image`)。`pageId` 省略 = 今開いているページ |
 | `generate_image` | **AI に絵を描かせてページの上に置く**。`prompt` / `pageId`(省略 = 今開いているページ) / `title`。「〜の絵を描いて」「画像を生成して」はこれ (**背景ではない**)。種類に応じて 画像ノード / タイル / 紙の上の画像 / 本文末尾の `![](…)` / タイムラインの画像 として置かれ、どれで置いたかが `placedOn` で返る。絵 1 枚分のクレジットを消費 |
@@ -184,7 +189,7 @@ flowchart TD
 | `delete_paint_item` | タブ (紙) 1 枚、または `binder` だけ渡してバインダーごと消す。最後の 1 枚 / 最後のバインダーは消せない<br/>★ 取り消せない。消すのは**利用者に頼まれた物**か、自分が作業用に作ったタブだけ |
 | `append_document_text` | ノート (paint / document) の末尾に段落を追記。`texts` で一括<br/>★ `markdown` ページには使えない (`write_markdown` を使う) |
 | `write_markdown` | マークダウン (markdown) ページの本文を書く。`text` に**まるごと 1 回**で渡す (見出し・表・```mermaid も描ける)<br/>既定は総入れ替え。`append: true` で末尾に足す。書き終えるとそのページが開いた状態になる<br/>★ マークダウンのページは**タブ**を複数持てる。長い資料は各部分の先頭に `<<<PAGE: タブ名>>>` の行を置くとタブごとに分かれる (1 つ目は今のタブ、残りは後ろへ追加)。1 枚目を目次にして `[タブ名](tab:タブ名)` でリンクする。区切りが無くても長い文書は見出しで自動分割。`split: "single"` で 1 枚に固定、`split: "tabs"` で短い文書も分割、`append` 時は分割しない。返事の `tabs` が書いたタブ数<br/>★ 改行は**本物の改行**で書く (`\n` という 2 文字を書かない)。行頭でしか効かない記法が全部死ぬ |
-| `add_video_editor_item` | 動画エディターのタイムラインに 1 項目。`kind` = text / video / image。`startMs` 省略でそのレイヤーの末尾、`durationMs` 既定 4000、`layer` 0 が最背面 |
+| `add_video_editor_item` | 動画エディターのタイムラインへ。`kind` = text / video / image。`startMs` 省略でそのレイヤーの末尾、`durationMs` 既定 4000、`layer` 0 が最背面<br/>★ `texts` に並べれば**まとめて 1 回の書き込み**で入る。戻りは `{itemIds, requested, persisted}` で、`persisted` が保存できた数 (3 件渡して 2 件しか残らない不具合を直した = 2026-09-25 不具合 9)<br/>★ 置いた物を動かす・時間を変える・消すのは `update_video_editor_item` (できる。以前「無い」と書いてあったのは誤り) |
 
 ### ファイル作成
 
@@ -196,16 +201,37 @@ flowchart TD
 
 | ツール | 説明 |
 |---|---|
-| `text_file_status` | アプリのテキストエディタで開いているファイル `{open, fileName, lineCount}`<br/>★ `open: false` の時、ページに貼ってあるファイルはこの系統では触れない。`read_page` → `read_device_file` で読み、`create_document_file` (同じ `pageId` + 同じ `fileName`) で書き直す |
-| `text_file_read` | 行番号付きで読む (`startLine` / `endLine` で範囲指定可) |
+| `text_file_status` | `{textEditorOpen, fileName, lineCount, foregroundFile?}` (`open` は `textEditorOpen` の旧名)<br/>★ `textEditorOpen` は「**テキストエディタ**に入っているか」だけ。画面に何か出ているかは `foregroundFile` (`fileName` / `path` / `editorKind`) を見る。`textEditorOpen:false` + `foregroundFile.editorKind:"pptx"` = PPTX が前面だがこの系統では触れない (= 2026-09-25 不具合 2)<br/>★ ページに貼ってあるファイルは `read_page` → `read_device_file` で読み、`create_document_file` (同じ `pageId` + 同じ `fileName`) で書き直す |
+| `text_file_read` | 行番号付きで読む (`startLine` / `endLine` で範囲指定可)<br/>★ 読めない時は札を返す: `unsupported_editor_kind` (前面のファイルがテキストエディタではない → `editorKind` と次の一手が付く) / `no_file_open`。**「TXT を開いて」と利用者に頼ませない** (= 2026-09-25 不具合 3) |
 | `text_file_edit` | `edits` 配列で一括編集。`action` = replace / insert / delete / set_all。行番号は 1 始まり・**呼び出し前**の状態基準 (下から適用されるので前方の番号は崩れない) |
+
+### 探す
+
+| ツール | 説明 |
+|---|---|
+| `search_pages` | ページの中の文字を探す (要素の題名 / メモ / 表のセル)。`pageId` を渡せばそのページだけ、省けばフォルダー内 / 全ページ<br/>★ 戻りの `verdict` は `found` (1 件以上あった) / `absent` (無かった) / `unknown` (探せなかった)。**1 件でも当たれば `found`** なので、`matchCount` と併せてそのまま報告する |
+| `search_folder_files` | 開いているフォルダーの**ファイルの中身**を探す (txt / md / csv / docx / xlsx / pptx / pdf)<br/>★ xlsx は数値セルも本文として探せる。`verdict` は `search_pages` と同じ意味 |
+
+### 自動操作 (PC そのものの操作)
+
+| ツール | 説明 |
+|---|---|
+| `run_automation` | PC の操作 (Chrome を起動して打つ等) を自動操作へ委ねる。**受け付けた所で返る**ので、戻りの `runId` を控える |
+| `get_automation_status` | その `runId` の様子を訊く。`state` = `accepted` / `running` / `awaitingUser` (利用者の確認待ち) / `done` / `failed` / `cancelled` / `refused`<br/>★ `finished` が true になるまで数秒おきに訊く。**`run_automation` の返事だけで「やりました」と言わない** |
+| `cancel_automation` | その `runId` を止める (画面の「停止」と同じ道)。既に終わっていれば `cancelled: false` が返る |
+
+> ★ **なぜ 3 つに分けたか** (= 動作検証の機能修正案): `run_automation` だけでは
+> 「実行中 / 確認待ち / 成功 / 失敗」を呼んだ側から判定できず、画面操作を含む
+> 検証を自動化できなかった。OS を触る判断は今までどおり自動操作の 1 箇所に
+> 集めたまま、**様子を読む道と止める道**だけを足してある。
 
 ### アプリ機能の起動
 
 | ツール | 説明 |
 |---|---|
 | `list_app_commands` | 起動できる機能の id + ラベル一覧 |
-| `run_app_command` | id を指定して機能を開く (例: flashcards / silentCamera / calendar / qrReader) |
+| `run_app_command` | id を指定して機能を開く (例: flashcards / silentCamera / calendar / qrReader)<br/>★ 戻りに `screenId` と `closeable` が付く。閉じる時はその `screenId` を `close_app_command` へ |
+| `close_app_command` | `run_app_command` で開いた画面を閉じる。`id` を省くとここから開けた物を全部閉じて元の表示へ戻す<br/>★ 閉じられるのは**浮遊窓**と**分割ペインに埋めた道具**だけ。全画面のダイアログは `notOpen` に `reason: "fullScreenDialog"` で返る (利用者しか閉じられない)。閉じたと言わない |
 | `set_split_view` | 画面分割の形を決める (`quad` = 2×2 の 4 分割 / `leftRight` / `topBottom` / `off`) |
 
 > ★ **バッチ引数を用意した理由**: 1 件ずつのツールしか無いと AI が途中で取りこぼす
@@ -313,13 +339,19 @@ flowchart TD
 
 ### run_app_command
 
-`provider.mcpRunCommand(id)` を呼ぶ。失敗時のメッセージが親切になっている:
+`provider.mcpRunCommand(id)` を呼ぶ。失敗するのは **id が違う時だけ**
+(`list_app_commands` を見よ)。
 
-- 「id が違う (`list_app_commands` を見よ)」
-- 「利用者本人しか始められない機能 (LAN 共有・クラウド同期・アプリロック/集中ロック)
-  なので、ユーザーにボタンを押すよう伝えよ」
-
-> ★ 危険な操作を AI に勝手に実行させないための線引き。
+> ★ 止め札 (`_mcpBlockedCommands`) は**今は空**。クラウド同期も含めて
+> `list_app_commands` に出る id は全部呼べる。上げ過ぎを止めるのは**上限**の方。
+> 詳しくは末尾の「run_app_command の実情」を見よ (以前ここには
+> 「利用者本人しか始められないので断れ」と書いてあったが、実装と逆だった
+> = 動作検証レポート 2026-09-25 不具合 5)。
+>
+> ★ **`undo` は run_app_command で呼ばない**。あれは画面のボタンを押すだけで、
+> AI 中断・ページ削除復元・カレンダーの取り消しが先に走り、相手も画面の
+> ページになり、保存が 350ms 遅れて後の操作へ被さる。代わりに
+> **`undo_page`** を使う (ページ指定・保存まで待つ)。
 
 ### create_document_file (pptx) — 絵と図形
 
@@ -364,9 +396,17 @@ pptx エディターの中の AI 欄も同じ事ができる。`deck` の各ス�
 
 - **3 分割は無い**。`_visibleSplitSlots()` は 2 か 4 しか返さない。
 - `pageIds` を渡すと 0=左上 1=右上 2=左下 3=右下 の順に入る。
+  **id でも、ページ名でも受ける** (同じ名前のページが 1 枚だけの時)。
   渡さなかったセルは他のページで自動的に埋まる。
-  文書 (`document`) と動画エディター (`videoEditor`) のページは入らず、
-  `couldNotPlace` に返る。
+  文書 (`document`) / 動画エディター (`videoEditor`) / 自動操作 (`automation`)
+  のページは入らず、`couldNotPlace` に返る。
+  同じページを 2 つのセルには置けない。
+- `couldNotPlace` の各項目には **`reason`** が付く: `notFound` / `ambiguousName` /
+  `pageType` / `lockedByPlan` / `duplicateRequest` / `noCell` / `couldNotOpen` /
+  `substituted`。**`substituted` は「別のページが置かれた」**という意味なので、
+  頼まれたページが開いたと答えてはいけない (= 動作検証の不具合
+  「2 枠目に指定したページが黙って別のページとすり替わる」)。
+  戻りの `pageIds` が各セルに**実際に出ているページ**、`editorCell` が編集側。
 - 同じ形をもう一度頼んでも閉じない (ボタンと違ってトグルしない)。
   閉じたい時は `off`。
 - **1 つのペインを全画面にする**時も `off`。`cell` にその番号を添えると、

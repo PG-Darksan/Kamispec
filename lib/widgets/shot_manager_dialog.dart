@@ -29,6 +29,19 @@ Future<Directory> automationShotsDir() async {
   return dir;
 }
 
+/// 自動操作で撮った**動画**の置き場 (= ユーザー要望: 「自動操作で撮った動画を
+/// 保存して置く場所がないのじゃない?」)。
+///
+/// ★ 録画そのものは [ScreenRecorder] がアプリ専用フォルダーへ書き出すので、
+///   撮り終わったらここへ移す。 スクショ (automation_shots) と同じ並びに
+///   置いて、 自動操作で出来た物が 1 か所から辿れるようにする。
+Future<Directory> automationVideosDir() async {
+  final base = await getApplicationDocumentsDirectory();
+  final dir = Directory('${base.path}/automation_videos');
+  if (!await dir.exists()) await dir.create(recursive: true);
+  return dir;
+}
+
 /// 自動操作で作ったファイルの置き場 (= ユーザー要望: ファイルを作成して
 /// そのままアップロードできるように)。
 Future<Directory> automationFilesDir() async {

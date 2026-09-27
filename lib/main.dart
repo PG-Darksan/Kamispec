@@ -2585,6 +2585,98 @@ final ValueNotifier<String?> assistantRequestFromFloating =
 final ValueNotifier<String?> automationRequestFromAssistant =
     ValueNotifier<String?>(null);
 
+/// 自動操作の「1 回の走り」 の様子。
+///
+/// ★ = 動作検証の機能修正案「自動操作の完了状態を MCP から確認・中止できる
+///   ようにする」。 `run_automation` は受け付けた所で返るので、 呼んだ側から
+///   「まだ動いているのか / 確認待ちか / 終わったのか」 が分からなかった。
+///   自動操作の画面 (WebAutomationPanel) が**持っている真実**をここへ写し、
+///   MCP は読むだけにする。 OS を触る判断は今までどおり自動操作の 1 箇所
+///   ([automationRequestFromAssistant] の注記) に集めたまま。
+class AutomationRunState {
+  const AutomationRunState({
+    required this.runId,
+    required this.phase,
+    this.instruction = '',
+    this.status = '',
+    this.steps = 0,
+    this.startedAtMs,
+    this.finishedAtMs,
+    this.error,
+  });
+
+  /// `run_automation` が付けた番号。 状態を訊く / 止める時の合図。
+  final String runId;
+
+  /// accepted (受け付けた・まだ始まっていない) / running / awaitingUser
+  /// (利用者の確認待ち) / done / failed / cancelled / refused (他の実行中で
+  /// 受けられなかった)。
+  final String phase;
+
+  final String instruction;
+
+  /// 画面に出ている 1 行 (進み具合)。
+  final String status;
+
+  /// 組み上がった手順の数。
+  final int steps;
+
+  final int? startedAtMs;
+  final int? finishedAtMs;
+  final String? error;
+
+  bool get isFinished =>
+      phase == 'done' ||
+      phase == 'failed' ||
+      phase == 'cancelled' ||
+      phase == 'refused';
+
+  AutomationRunState copyWith({
+    String? phase,
+    String? status,
+    int? steps,
+    int? startedAtMs,
+    int? finishedAtMs,
+    String? error,
+  }) =>
+      AutomationRunState(
+        runId: runId,
+        phase: phase ?? this.phase,
+        instruction: instruction,
+        status: status ?? this.status,
+        steps: steps ?? this.steps,
+        startedAtMs: startedAtMs ?? this.startedAtMs,
+        finishedAtMs: finishedAtMs ?? this.finishedAtMs,
+        error: error ?? this.error,
+      );
+
+  Map<String, Object?> toJson() => {
+        'runId': runId,
+        'state': phase,
+        'finished': isFinished,
+        'awaitingUser': phase == 'awaitingUser',
+        if (instruction.isNotEmpty) 'instruction': instruction,
+        if (status.isNotEmpty) 'status': status,
+        'steps': steps,
+        if (startedAtMs != null)
+          'startedAt':
+              DateTime.fromMillisecondsSinceEpoch(startedAtMs!).toIso8601String(),
+        if (finishedAtMs != null)
+          'finishedAt': DateTime.fromMillisecondsSinceEpoch(finishedAtMs!)
+              .toIso8601String(),
+        if ((error ?? '').isNotEmpty) 'error': error,
+      };
+}
+
+/// 直近の (= 今の) 自動操作の様子。 書くのは自動操作の画面、 読むのは MCP。
+final ValueNotifier<AutomationRunState?> automationRunForAssistant =
+    ValueNotifier<AutomationRunState?>(null);
+
+/// 「この走りを止めて」 の合図 (値 = runId)。 自動操作の画面が拾って、
+/// 画面の「停止」 と**同じ道**で止める (止め方を 2 本にしないため)。
+final ValueNotifier<String?> automationCancelRequest =
+    ValueNotifier<String?>(null);
+
 /// ショートカット起動でボタンの開き方が「フローティング」 の時に開く URL。
 /// 本体を立ち上げないために main 側で解決する (screen 側の対応表の写し)。
 String? _shortcutFloatingUrl(SharedPreferences prefs, String id) {

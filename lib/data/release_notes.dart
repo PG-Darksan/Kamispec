@@ -50,6 +50,255 @@ const String kAppVersionName = '1.0.0';
 /// **新しい順**に並べる (先頭が今の版)。
 const List<ReleaseNote> kReleaseNotes = <ReleaseNote>[
   ReleaseNote(
+    build: 443,
+    date: '2026-09-27',
+    lines: <String, List<String>>{
+      'ja': [
+        'フリーノートの文書モードに外の AI から書いた文章が、'
+            'タブごとに分かれるようになりました。'
+            'タブを切り替えると、そのタブに書いた文章だけが出ます。',
+        '画面分割でページを指定した時に、頼んだページではなく'
+            '別のページが黙って置かれる事があったのを直しました。'
+            'ページ名でも指定できるようになり、置けなかった時は理由が出ます。',
+        '外の AI から始めた「パソコンの自動操作」の様子を'
+            '確認・中止できるようになりました。'
+            '終わったかどうかを確かめずに「やりました」と答える事が無くなります。',
+        '外の AI から開いた機能の画面を、同じところから閉じられるようになりました。',
+        '同じ名前でファイルを作り直した時に、'
+            '2 つ目のファイルと要素が出来てしまうのを直しました。',
+        'ギャラリーにたくさん足した時、下の方の段が画面の端で'
+            '重なっていたのを直しました。1000 個まで重ならずに並びます。',
+        '表と画像の追加も取り消せるようになりました。'
+            'また、立て続けに操作した時に取り消しが効かない事があったのを直しました。',
+        'マークダウン・文書・フリーノートの本文と、PDF のメモも'
+            '検索で見つかるようになりました。'
+            '探せなかったページがある時は、その事も伝えます。',
+        'ギャラリーでは図形を後から動かせないようにしました（挿入と同じ線引きです）。',
+        '表の 100 行 30 列の上限を、画面から表を送った時にも守るようにしました。',
+        '動画エディターでまとめて字幕を足して失敗した時に、'
+            '本当の理由が出るようになりました。',
+      ],
+      'en': [
+        'Text written into a free note\'s document mode by an external AI now '
+            'belongs to the tab it was written on - switching tabs shows only '
+            'that tab\'s text.',
+        'Fixed a split view silently showing a different page than the one '
+            'asked for. Pages can now be named as well as given by id, and '
+            'anything that could not be placed comes back with a reason.',
+        'A PC automation started by an external AI can now be checked on and '
+            'cancelled, so it can no longer be reported as done before it has '
+            'finished.',
+        'A feature window opened by an external AI can now be closed the same '
+            'way.',
+        'Rebuilding a file under the same name no longer leaves a second file '
+            'and a second tile.',
+        'Fixed gallery items piling up on the lower rows at the edge of the '
+            'canvas; all 1000 now sit in their own cell.',
+        'Adding a table or an image can now be undone, and undo no longer '
+            'misses edits made in quick succession.',
+        'Markdown, document and free-note bodies - and PDF memos - are now '
+            'found by search, and pages that could not be searched are '
+            'reported instead of being called "not found".',
+        'Shapes can no longer be moved around a gallery page, matching the '
+            'rule that already blocked inserting them.',
+        'The 100 row x 30 column table limit now also applies to tables sent '
+            'to a page from within the app.',
+        'When adding several video captions at once fails, the real reason is '
+            'now given.',
+      ],
+    },
+  ),
+  ReleaseNote(
+    build: 442,
+    date: '2026-09-27',
+    lines: <String, List<String>>{
+      'ja': [
+        '要素を右クリックすると「ファイルを別の場所に保存」が出るようになりました。'
+            'マークダウン・文書・表・PDF・画像・動画など、ファイルを持つ要素を'
+            '1 つだけ選んで、好きな場所へ書き出せます。',
+        '外の AI から操作した時の取り消し (Ctrl+Z) が効くようになりました。'
+            '要素の追加・移動・題名の変更・線の付け替えを、1 回の取り消しで戻せます。',
+        'ギャラリーの整列を取り消すと、整列前の並びに戻るようになりました。',
+        'ギャラリーへ大量に足した時に、要素が同じ場所に積み重なるのを直しました。'
+            '1000 個を超える分は理由を出して断ります。',
+        '表は 100 行 30 列までに揃えました (画面から作れる大きさと同じです)。',
+        'ギャラリーでは線や図形が作れないようにしました (画面の動きと合わせています)。',
+        '要素の題名を空にできるようになりました。',
+        'エクセル (xlsx) の数字が読み取りと検索に出てくるようになりました。',
+        '画像として読めないファイルは、ページの背景にできないようにしました。',
+        '同じ名前のファイルを作り直した時に、2 つ目ができてしまうのを直しました。',
+        'ファイルの読み取りで、ファイル名にフォルダー名が混ざるのを直しました。',
+        '文書への追記が成功しているのに失敗と出る事と、'
+            '足りない入力を「ページの種類が違う」と案内していたのを直しました。',
+        '探して見つかった時に「見つからない」寄りの返事になっていたのを直しました。',
+        'アップロードの上限に達した後は、添付の無いページも上げられないようにしました。',
+      ],
+      'en': [
+        'Right-clicking an element now offers "Save file to…" - pick one '
+            'element that holds a file (markdown, document, table, PDF, '
+            'image, video…) and write it wherever you like.',
+        'Undo (Ctrl+Z) now works for edits made by an external AI: adding, '
+            'moving and renaming elements and re-linking lines all revert in '
+            'one step.',
+        'Undoing a gallery tidy now restores the previous arrangement.',
+        'Fixed items piling up on the same spot when many are added to a '
+            'gallery at once; anything past 1000 is refused with a reason.',
+        'Tables are now capped at 100 rows by 30 columns, matching what the '
+            'app itself can create.',
+        'Lines and shapes can no longer be created in a gallery, matching '
+            'the app behaviour.',
+        'An element title can now be cleared.',
+        'Numbers in Excel (xlsx) files now show up when reading and '
+            'searching.',
+        'A file that cannot be decoded as an image can no longer be set as '
+            'a page background.',
+        'Rebuilding a file with the same name no longer leaves a second '
+            'copy.',
+        'File reads no longer return a folder name inside the file name.',
+        'Appending to a document no longer reports a failure when it '
+            'succeeded, and a missing input is no longer described as a '
+            'wrong page type.',
+        'A search that found an exact match no longer answers as if it had '
+            'found nothing.',
+        'Once the monthly upload limit is reached, pages without attachments '
+            'are no longer uploaded either.',
+      ],
+    },
+  ),
+  ReleaseNote(
+    build: 441,
+    date: '2026-09-27',
+    lines: <String, List<String>>{
+      'ja': [
+        'AI の順番待ち (キュー) に 100 件まで指示を入れておけるようにしました。',
+        'キューの欄は Enter で確定、Shift+Enter で改行できます。',
+        'キューに溜めた指示は、左の取っ手でつまんで順番を入れ替えられます。'
+            '行を押すと下の欄に移って書き直せます (まとめて消すこともできます)。',
+        '右クリックの「ページ切り替え」を押すと、押した項目のすぐ下に'
+            'ページの一覧が出るようにしました。',
+      ],
+      'en': [
+        'The AI prompt queue now holds up to 100 entries.',
+        'In the queue box, Enter adds the prompt and Shift+Enter starts a '
+            'new line.',
+        'Queued prompts can be dragged by the handle on the left to reorder, '
+            'and tapping a row moves it down into the box so you can rewrite '
+            'it (you can also clear them all at once).',
+        'Choosing "Switch page" from the right-click menu now opens the page '
+            'list directly below the item you pressed.',
+      ],
+    },
+  ),
+  ReleaseNote(
+    build: 440,
+    date: '2026-09-26',
+    lines: <String, List<String>>{
+      'ja': [
+        '検索の窓を 3 画面・4 画面 (2×2) にも分けられるようにしました。'
+            '枠を右クリックして枚数を選べます。',
+        '枠を右クリックすると、左右 (上下) を入れ替えられるようになりました。',
+        '「並べるのをやめる」を「全画面表示に戻す」に改めました。',
+        'タブは出したまま、ヘッダーのボタンだけ隠せるようになりました。'
+            'タブを隠すボタンとヘッダーを隠すボタンは別々に効きます。',
+        'タブをドラッグして順番を入れ替えられるようにしました。'
+            '今までは帯のスクロールに邪魔されて掴めませんでした'
+            '(検索の窓と CLI の両方)。',
+        'Ctrl+W でタブを閉じられるようにしました。ページの上にカーソルが'
+            'あっても効きます。Ctrl+Shift+T で閉じたタブが戻ります。',
+        'ページ切り替えを押すと、そのボタンの近くに「ページ一覧を開く」'
+            '「ページを追加」が出るようにしました。ページ一覧の見出しからも'
+            '新しいページを作れます。',
+        '画面を分割した時に、マークダウンなどのページ名の札がタブと'
+            '重なっていたのを直しました。札に隠れて 1 枚目のタブが'
+            '押せない状態も直っています。',
+        'CLI のタブの名前を変えられるようにしました'
+            '(右クリック →「タブの名前を変える」)。',
+        'CLI の更新が終わっても画面が変わらない事があったのを直しました。'
+            '終わったら新しいセッションを開いて、そのまま打てる状態にします。',
+        'CLI の画面を開いた時に一覧がちらつくのを直しました。',
+        'CLI の「分割表示 / 単体表示」のアイコンを、押すとどうなるかを'
+            '表す向きに入れ替えました。',
+      ],
+      'en': [
+        'The search window can now be split into three or four panes (2×2). '
+            'Right-click a pane to pick the number.',
+        'Right-clicking a pane can now swap left and right (or top and '
+            'bottom).',
+        'Renamed "Stop showing side by side" to "Back to full screen".',
+        'You can now hide just the header buttons and keep the tabs. The '
+            'hide-tabs and hide-header buttons work independently.',
+        'Tabs can be dragged to reorder. Until now the strip\'s own scrolling '
+            'stole the grab, so it never started (search window and CLI both).',
+        'Ctrl+W closes the current tab, even while the pointer is over the '
+            'page. Ctrl+Shift+T brings back a closed tab.',
+        'The page-switch button now offers "Open the page list" and "Add page" '
+            'right next to it, and the page list itself can create a page.',
+        'Fixed the page-name badge overlapping the tabs in a split pane — the '
+            'badge also used to swallow clicks on the first tab.',
+        'CLI tabs can be renamed (right-click → Rename this tab).',
+        'Fixed the screen not refreshing after a CLI update finished. It now '
+            'opens a fresh session, ready to type in.',
+        'Fixed the CLI list flickering while the screen was open.',
+        'The CLI split/single icons now show what pressing them does.',
+      ],
+    },
+  ),
+  ReleaseNote(
+    build: 439,
+    date: '2026-09-26',
+    lines: <String, List<String>>{
+      'ja': [
+        'YouTube の広告にも再生速度の倍率が乗るようになりました。'
+            '速度を押し返す代わりに、向こうからの書き換えを受け流す形に'
+            '変えたので、音が途切れることもありません。',
+        'バックグラウンド再生が、動画の切り替わりで止まってしまうのを'
+            '直しました。ピクチャインピクチャを開いて閉じるだけで'
+            '常駐が畳まれ、二度と音が戻らなくなることがありました。',
+        '裏で聞いている間に次の動画へ進む時、音をいったん止めないように'
+            'しました。切り替えの後は鳴らし直しの仕掛けを立て直します。',
+        '自動操作で撮った動画の置き場を作りました。ヘッダーの'
+            'フィルムのボタンから、開く・消す・フォルダーを開くができます。',
+        'CLI のタブは、名前を押せば必ず切り替わるようになりました'
+            '(少し長めに押すと切り替わらないことがありました)。',
+        'CLI のタブをドラッグで入れ替えると、画面の並び順もそれに'
+            '合わせて変わるようになりました。',
+        'CLI の右クリックの一覧で、「もう 1 つ並べる」を'
+            '「分割ビュー」より上に移しました。',
+        'AI (API) の説明欄は初めて開いた時だけ出るようにしました。'
+            '2 回目からは前に見ていた画面が出ます (説明は ⓘ でいつでも'
+            '開けます)。',
+        '「アプリの外に出す」を見出しのボタンに置きました。'
+            '端末を出したままでも押せます。',
+        '「ショートカットを作る」を「デスクトップにショートカット作成」に'
+            '改めました。',
+      ],
+      'en': [
+        'The playback speed now applies to YouTube ads as well. Instead of '
+            'pushing the speed back, the app now swallows the site\'s own '
+            'changes, so the audio no longer stutters.',
+        'Fixed background playback dying when the video changed. Opening and '
+            'closing picture-in-picture could shut the service down, and the '
+            'sound never came back.',
+        'When you move to the next video while listening in the background, '
+            'the sound is no longer paused first, and the keep-playing hooks '
+            'are re-armed after the switch.',
+        'Added a home for the videos recorded by web automation — the film '
+            'button in the header opens, deletes, or reveals them.',
+        'Clicking a CLI tab name always switches to it now (a slightly long '
+            'press used to swallow the click).',
+        'Reordering CLI tabs by dragging now reorders the panes to match.',
+        'In the CLI right-click menu, "Add one more pane" moved above '
+            '"Split view".',
+        'The AI (API) capability panel now opens only the first time. After '
+            'that you get the screen you were last on — the ⓘ button opens the '
+            'description whenever you want it.',
+        'Added "Open in its own window" to the header, so it is reachable '
+            'while a terminal is showing.',
+        'Renamed "Create a shortcut" to "Create a desktop shortcut".',
+      ],
+    },
+  ),
+  ReleaseNote(
     build: 438,
     date: '2026-09-25',
     lines: <String, List<String>>{

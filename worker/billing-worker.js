@@ -51,6 +51,12 @@ export default {
     if (url.pathname === '/ai/usage' && request.method === 'GET') {
       return handleAiUsage(url, env, request);
     }
+    // ── 判断だけを返す代行 (Jev / TypeSafe System One) ──
+    //   文章は作らない。 選択肢・順序尺度・Yes 確率を返すだけなので、
+    //   生成用の /ai/generate とは混ぜずに別口にしてある。
+    if (url.pathname === '/ai/decision' && request.method === 'POST') {
+      return handleAiDecision(request, env);
+    }
 
     // ── 前払いクレジット (= 最初に 10 ドル、 足りなくなったら都度チャージ) ──
     if (url.pathname === '/ai/models' && request.method === 'GET') {
@@ -75,6 +81,9 @@ export default {
           billedOutputPerMTok: round6(live.output * (1 + MARKUP)),
           estimated: false,
           available: true,
+          // ★ 文脈の長さ (= ユーザー要望の振り分けで「長い依頼はどのモデルへ」
+          //   を決める材料。 これが無いと長さで選べない)。 取れない時は 0。
+          contextLength: Number(live.contextLength || 0),
         });
       };
       // 会社ごとに、 単価が確定している物を先に全部、 その後で
@@ -2557,7 +2566,8 @@ async function livePrices(env) {
   // ★ 鍵を v2 に上げてある。 価格表は 12 時間 KV に残るので、 取り込みを
   //   直しても古い表が残っている間は反映されない (= gemini-pro-latest が
   //   一覧に出ないまま)。 直した時は鍵を上げて取り直させる。
-  const KEY = 'model_prices_v2';
+  //   v3: contextLength を足したので取り直させる。
+  const KEY = 'model_prices_v3';
   try {
     const c = await env.ENTITLEMENTS.get(KEY, 'json');
     if (c && Date.now() - c.at < 12 * 60 * 60 * 1000) return c.map;
@@ -2590,12 +2600,17 @@ async function livePrices(env) {
       else if (vendor === 'anthropic') provider = 'anthropic';
       else if (vendor === 'google') provider = 'gemini';
       if (!provider) continue;
-      map[name] = { provider, input, output };
+      // ★ 文脈の長さも控える (= 依頼の長さでモデルを振り分けるため。
+      //   これが無いと「長い依頼をどこへ」 を決める材料が無い)。
+      const ctx = Number(m.context_length || m.top_provider?.context_length || 0);
+      map[name] = { provider, input, output, contextLength: ctx };
       // Anthropic は各社 API 側が日付付き id を使う (claude-haiku-4.5 →
       //   claude-haiku-4-5-20251001)。 ドットを ハイフンに直した形も引ける
       //   ようにしておく。
       const dashed = name.replace(/\./g, '-');
-      if (!map[dashed]) map[dashed] = { provider, input, output };
+      if (!map[dashed]) {
+        map[dashed] = { provider, input, output, contextLength: ctx };
+      }
     }
   } catch (e) {
     console.log('price fetch failed', String(e));
@@ -3194,6 +3209,276 @@ function maxBillableOutTokens(provider, maxTokens, reasoning) {
   }
   // anthropic は max_tokens が固い上限。
   return maxTokens;
+}
+
+// ─── Jev (TypeSafe System One) — 判断だけを返す代行 ──────────────────
+//
+// Jev は文章を作る生成 AI ではなく、 与えた状態に対して
+//   ・choice … 候補から 1 つ (確率分布付き)
+//   ・score  … 低→高の段階 (加重平均 + 確率分布)
+//   ・noul   … Yes である確率 (0〜1)
+// を返す判断モデル。 1 回の呼び出しに質問を複数まとめて入れられる。
+//
+// ★ なぜ別口か: 戻り値の形が生成と全く違う (text ではなく answers)。
+//   /ai/generate に混ぜると、 どちらの形で返るかを呼ぶ側が毎回見分けねば
+//   ならなくなる。
+// ★ 鍵は Worker の Secret (TYPESAFE_API_KEY) だけが持つ。 アプリにも
+//   ページデータにもログにも入れない。
+// ★ 質問文はクライアントから自由に送らせない。 許可した質問の型
+//   (type / instructions / criteria) しか通さず、 大きさも上限で切る。
+const JEV_ENDPOINT = 'https://api.typesafe.ai/v1/systemone';
+const JEV_MODEL = 'jev-1.13.0';
+// 入力 $0.042 / 100万トークン、 出力は無料 (2026-09 時点の公表値)。
+const JEV_INPUT_PER_MTOK = 0.042;
+// 公式の上限は 1 回 64k トークン (state + 最長質問で 32k)。
+//   文字数で安全側に切る (CJK は 1 文字が 1 トークンを超えることがある)。
+const JEV_STATE_MAX_CHARS = 20000;
+const JEV_MAX_QUESTIONS = 12;
+const JEV_MAX_CRITERIA = 255;
+// 同じ判断を短い間に何度も買わない (本文ではなく要約鍵で引く)。
+const JEV_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+
+/// クライアントから来た questions を、 許した形だけに削る。
+/// 通らない物があれば理由の文字列を返す (null なら合格)。
+function sanitizeJevQuestions(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { error: 'questions must be an object' };
+  }
+  const keys = Object.keys(raw);
+  if (keys.length === 0) return { error: 'questions is empty' };
+  if (keys.length > JEV_MAX_QUESTIONS) {
+    return { error: `too many questions (max ${JEV_MAX_QUESTIONS})` };
+  }
+  const out = {};
+  for (const k of keys) {
+    if (!/^[A-Za-z0-9_]{1,48}$/.test(k)) {
+      return { error: `bad question key: ${k}` };
+    }
+    const q = raw[k];
+    if (!q || typeof q !== 'object') return { error: `bad question: ${k}` };
+    const type = String(q.type || '');
+    if (!['choice', 'score', 'noul'].includes(type)) {
+      return { error: `bad type for ${k}` };
+    }
+    const instructions = String(q.instructions || '').slice(0, 2000);
+    if (!instructions) return { error: `instructions required for ${k}` };
+    const one = { type, instructions };
+    if (type === 'choice') {
+      // criteria = 候補名 → 説明 のオブジェクト。
+      const c = q.criteria;
+      if (!c || typeof c !== 'object' || Array.isArray(c)) {
+        return { error: `choice needs criteria object: ${k}` };
+      }
+      const names = Object.keys(c).slice(0, JEV_MAX_CRITERIA);
+      if (names.length < 2) return { error: `choice needs 2+ options: ${k}` };
+      one.criteria = {};
+      for (const n of names) {
+        const d = c[n];
+        one.criteria[String(n).slice(0, 200)] =
+          d === null || d === undefined ? null : String(d).slice(0, 400);
+      }
+    } else if (type === 'score') {
+      // criteria = 低→高の並び (2〜10 段)。
+      if (!Array.isArray(q.criteria) || q.criteria.length < 2) {
+        return { error: `score needs criteria array (2..10): ${k}` };
+      }
+      one.criteria = q.criteria
+        .slice(0, 10)
+        .map((v) => String(v).slice(0, 400));
+    } else if (q.criteria && typeof q.criteria === 'object') {
+      // noul の criteria は任意。 true / false の意味付けだけ通す。
+      const t = q.criteria['true'];
+      const f = q.criteria['false'];
+      if (t !== undefined || f !== undefined) {
+        one.criteria = {
+          true: String(t === undefined ? '' : t).slice(0, 400),
+          false: String(f === undefined ? '' : f).slice(0, 400),
+        };
+      }
+    }
+    out[k] = one;
+  }
+  return { questions: out };
+}
+
+async function handleAiDecision(request, env) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'invalid json' }, 400);
+  }
+  // ★ /ai/generate と同じ方針: 合鍵 (x-dev-key) では通さない。
+  //   本人のトークンから uid を取り出す。
+  const { uid, developer: devClaim } = await authIdentity(request, env);
+  if (!uid) return unauthorized();
+  if (!env.TYPESAFE_API_KEY) {
+    return json({ error: 'decision not configured' }, 503);
+  }
+
+  const featureId = String(body.featureId || '').slice(0, 64);
+  if (!/^[a-z0-9_.-]{1,64}$/.test(featureId)) {
+    return json({ error: 'featureId is required' }, 400);
+  }
+  const templateVersion = String(body.templateVersion || 'v1').slice(0, 16);
+  let state = String(body.state || '');
+  if (!state.trim()) return json({ error: 'state is required' }, 400);
+  let truncated = false;
+  if (state.length > JEV_STATE_MAX_CHARS) {
+    state = state.slice(0, JEV_STATE_MAX_CHARS);
+    truncated = true;
+  }
+  const checked = sanitizeJevQuestions(body.questions);
+  if (checked.error) return json({ error: checked.error }, 400);
+  const questions = checked.questions;
+
+  // ── 同じ判断は買い直さない ──
+  //   鍵は本文そのものではなく要約 (sha256)。 KV に本文は残らない。
+  const cacheKey =
+    'jev:' +
+    (await sha256Hex(
+      [featureId, templateVersion, JEV_MODEL, state, JSON.stringify(questions)].join(
+        '\u0000'
+      )
+    ));
+  try {
+    const hit = await env.ENTITLEMENTS.get(cacheKey, 'json');
+    if (hit && Date.now() - Number(hit.at || 0) < JEV_CACHE_TTL_MS) {
+      return json({ ...hit.body, cached: true });
+    }
+  } catch (_) {}
+
+  const devEnt = await isFreeAiUid(env, uid, devClaim);
+
+  // ── 月上限 (生成と同じ財布・同じ上限で数える) ──
+  const ym = currentYm();
+  const used = await readUsage(env, uid, ym);
+  const cap = devEnt ? DEV_MONTHLY_CAP_USD : MONTHLY_HARD_CAP_USD;
+  if (used.billedUsd >= cap) {
+    return json({ error: 'monthly cap reached', usage: used }, 429);
+  }
+  const devCap = await devCapState(env, uid, devClaim);
+  if (devCap && devCap.over) {
+    return json(
+      {
+        error: 'dev cap reached',
+        detail: 'このコードで使える上限に達しました',
+        capUsd: devCap.capUsd,
+        spentUsd: devCap.spentUsd,
+      },
+      402
+    );
+  }
+
+  // ── 仮押さえ → 上流 → 精算 (生成と同じ順番) ──
+  //   出力は無料なので、 入力だけを多めに見積る。
+  const qChars = JSON.stringify(questions).length;
+  const inEstTokens = Math.ceil((state.length + qChars) * 1.4) + 400;
+  const worstCase = Math.max(
+    (inEstTokens / 1e6) * JEV_INPUT_PER_MTOK * (1 + MARKUP),
+    0.000001
+  );
+  const held = devEnt
+    ? null
+    : await creditOp(env, uid, '/reserve', { usd: round6(worstCase) });
+  if (held && held.ok === false) {
+    return json(
+      {
+        error: 'insufficient credit',
+        balanceUsd: held.credit.balanceUsd,
+        neededUsd: round6(worstCase),
+        packUsd: CREDIT_PACK_USD,
+      },
+      402
+    );
+  }
+  const reserved = held && held.ok ? round6(worstCase) : 0;
+
+  let up;
+  try {
+    const r = await fetch(JEV_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${env.TYPESAFE_API_KEY}`,
+      },
+      body: JSON.stringify({ state, model: JEV_MODEL, questions }),
+    });
+    const text = await r.text();
+    if (!r.ok) {
+      if (reserved > 0) {
+        await creditOp(env, uid, '/settle', { hold: reserved, actual: 0 });
+      }
+      return json(
+        { error: 'upstream error', detail: text.slice(0, 500) },
+        r.status === 429 ? 429 : 502
+      );
+    }
+    up = JSON.parse(text);
+  } catch (e) {
+    if (reserved > 0) {
+      await creditOp(env, uid, '/settle', { hold: reserved, actual: 0 });
+    }
+    return json({ error: 'upstream error', detail: String(e) }, 502);
+  }
+
+  const inTok = Number(up?.usage?.input_tokens || 0);
+  const outTok = Number(up?.usage?.output_tokens || 0);
+  // 出力は無料なので原価は入力だけ。
+  const cost = (inTok / 1e6) * JEV_INPUT_PER_MTOK;
+  const billed = round6(cost * (1 + MARKUP));
+
+  if (devEnt) {
+    await addDevSpent(env, uid, billed, devClaim);
+  } else if (reserved > 0) {
+    await creditOp(env, uid, '/settle', {
+      hold: reserved,
+      actual: billed,
+      note: `${JEV_MODEL}:${featureId}:${inTok}`,
+    });
+  } else {
+    await spendCredit(env, uid, billed, `${JEV_MODEL}:${featureId}`);
+  }
+
+  const next = {
+    inputTokens: used.inputTokens + inTok,
+    outputTokens: used.outputTokens + outTok,
+    costUsd: round6(used.costUsd + cost),
+    billedUsd: round6(used.billedUsd + billed),
+    updatedAt: new Date().toISOString(),
+  };
+  await env.ENTITLEMENTS.put(usageKey(uid, ym), JSON.stringify(next));
+
+  const credit = await readCredit(env, uid);
+  const out = {
+    // 実際に使われた版を必ず返す (別名 jev-latest では固定できないため)。
+    model: String(up.model || JEV_MODEL),
+    featureId,
+    templateVersion,
+    answers: up.answers || {},
+    truncated,
+    usage: {
+      inputTokens: inTok,
+      outputTokens: outTok,
+      costUsd: round6(cost),
+      billedUsd: billed,
+    },
+    credit: {
+      balanceUsd: credit.balanceUsd,
+      low: credit.balanceUsd < CREDIT_LOW_USD,
+      packUsd: CREDIT_PACK_USD,
+    },
+    monthly: next,
+  };
+  try {
+    // 控えるのは答えと使用量だけ。 state (本文) は入れない。
+    await env.ENTITLEMENTS.put(
+      cacheKey,
+      JSON.stringify({ at: Date.now(), body: { ...out, credit: undefined } }),
+      { expirationTtl: 60 * 60 * 12 }
+    );
+  } catch (_) {}
+  return json(out);
 }
 
 async function handleAiGenerate(request, env) {

@@ -25,6 +25,22 @@ import 'package:xterm/xterm.dart';
 
 import 'agent_cli.dart';
 
+/// 順番待ちに溜めてある 1 件。
+///
+/// ★ 番号 ([id]) を付けてあるのが肝。 画面は「3 行目」 ではなく「この番号の
+///   行」 を直したり消したりする。 溜めた分は 500 ミリ秒ごとに先頭から
+///   渡っていくので、 位置で指すと**直している間に別の行へすり替わる**。
+///   同じ文言が 2 つ並ぶ事もあるので、 中身で見分ける事もできない。
+class QueuedPrompt {
+  const QueuedPrompt(this.id, this.text);
+
+  /// 入れた時に配る通し番号 (この実行の中で重複しない)。
+  final int id;
+
+  /// 渡す文。
+  final String text;
+}
+
 /// 1 回分の実行。 画面を閉じても、 これが生きている限り走り続ける。
 class AgentCliSession extends ChangeNotifier {
   AgentCliSession({
@@ -41,7 +57,28 @@ class AgentCliSession extends ChangeNotifier {
   });
 
   /// 見出し (「Claude Code — インストール」 など)。
+  ///
+  /// ★ ここは**起こした時の名前**で、 開き直しや重複の見分け ([title] を
+  ///   引き継ぐ / 数字を足す) に使うので変えない。 利用者が付け直した名前は
+  ///   [displayTitle] に持ち、 画面は [tabTitle] を出す。
   final String title;
+
+  /// 利用者が付け直した札の名前 (= ユーザー要望「CLI などのタブの名前を
+  /// 変えられるようにして欲しい」)。 空 / null なら [title] を出す。
+  String? displayTitle;
+
+  /// 画面に出す名前。
+  String get tabTitle {
+    final d = displayTitle?.trim() ?? '';
+    return d.isEmpty ? title : d;
+  }
+
+  /// 札の名前を付け直す (空にすると元の名前へ戻る)。
+  void rename(String? name) {
+    final v = name?.trim() ?? '';
+    displayTitle = v.isEmpty ? null : v;
+    notifyListeners();
+  }
   final String exePath;
   final List<String> arguments;
   final String workingDirectory;
@@ -307,15 +344,38 @@ class AgentCliSession extends ChangeNotifier {
     notifyListeners();
   }
 
-  final List<String> _queued = [];
-  List<String> get queued => List<String>.unmodifiable(_queued);
+  final List<QueuedPrompt> _queued = [];
+
+  /// 溜めてある指示 (古い順)。 表示にだけ使う。
+  List<String> get queued =>
+      List<String>.unmodifiable(_queued.map((e) => e.text));
+
+  /// 溜めてある指示 (番号付き)。 画面が 1 件を言い当てる時はこちら。
+  ///
+  /// ★ 中身 (文字) では言い当てられない。 同じ指示を 2 回溜める事も、
+  ///   上限待ちの「続けて」 が先頭に挿さって重なる事もあるので、
+  ///   **入れた時に配る番号**で指す ([QueuedPrompt.id])。
+  List<QueuedPrompt> get queuedItems => List<QueuedPrompt>.unmodifiable(_queued);
+
+  /// 溜めてある件数 (一覧を作らずに数だけ見たい時)。
+  int get queuedCount => _queued.length;
+
+  /// 順番待ちが動いた回数。 画面の組み直しの判定に使う (= 100 件を毎回
+  /// つないで比べると無駄が大きい)。
+  int get queueRev => _queueRev;
+  int _queueRev = 0;
+
+  int _queueSeq = 0;
   Timer? _queueTimer;
 
-  /// 溜めておける件数の上限 (= ユーザー要望: 5 件まで)。
+  /// 溜めておける件数の上限 (= ユーザー要望: 100 件まで)。
   ///
-  /// ★ いくらでも溜められると、 渡す頃には前提が変わっていて
-  ///   無駄に走らせるだけになるので、 意図的に少なくしてある。
-  static const int kMaxQueued = 5;
+  /// ★ 以前は 5 件だった (渡す頃には前提が変わっているので少なく、 という
+  ///   考え)。 実際には「思い付いた分をまとめて並べておきたい」 という使い方
+  ///   だったので 100 件まで溜められるようにした。 並びは後から入れ替え
+  ///   ([reorderQueued]) / 中身も書き直せる ([updateQueued]) ので、
+  ///   前提が変わったら渡る前に直せる。
+  static const int kMaxQueued = 100;
 
   /// 溜めておける枠がもう無いか。
   bool get queueFull => _queued.length >= kMaxQueued;
@@ -325,7 +385,8 @@ class AgentCliSession extends ChangeNotifier {
     final t = text.trim();
     if (t.isEmpty) return false;
     if (queueFull) return false;
-    _queued.add(t);
+    _queued.add(QueuedPrompt(++_queueSeq, t));
+    _queueRev++;
     _startQueueTimer();
     notifyListeners();
     return true;
@@ -654,7 +715,8 @@ class AgentCliSession extends ChangeNotifier {
     final back = _inFlight;
     _inFlight = null;
     if (back != null) {
-      _queued.insert(0, back);
+      _queued.insert(0, QueuedPrompt(++_queueSeq, back));
+      _queueRev++;
       _needsResumeWord = false;
     } else {
       // こちらが渡した物ではない = 返事の途中で切れた。 続きを頼む。
@@ -714,7 +776,10 @@ class AgentCliSession extends ChangeNotifier {
     if (_needsResumeWord) {
       _needsResumeWord = false;
       final w = resumeWord.trim();
-      if (w.isNotEmpty) _queued.insert(0, w);
+      if (w.isNotEmpty) {
+        _queued.insert(0, QueuedPrompt(++_queueSeq, w));
+        _queueRev++;
+      }
     }
     // 次の見回りですぐ 1 件出せるように、 落ち着いた事にする。
     _lastOutputAt =
@@ -749,12 +814,66 @@ class AgentCliSession extends ChangeNotifier {
   void cancelQueued(int index) {
     if (index < 0 || index >= _queued.length) return;
     _queued.removeAt(index);
+    _queueRev++;
+    notifyListeners();
+  }
+
+  /// 番号で 1 件取り消す (= 画面はこちらを使う)。
+  void cancelQueuedId(int id) {
+    final i = _queued.indexWhere((e) => e.id == id);
+    if (i < 0) return;
+    cancelQueued(i);
+  }
+
+  /// 溜めた 1 件の中身を書き直す (= ユーザー要望: キューの内容を編集
+  /// できるように)。 空にしたら消す。
+  ///
+  /// ★ もう渡してしまった分 ([_inFlight]) はここには居ない。 直せるのは
+  ///   まだ渡していない分だけ。
+  void updateQueued(int index, String text) {
+    if (index < 0 || index >= _queued.length) return;
+    final t = text.trim();
+    if (t.isEmpty) {
+      _queued.removeAt(index);
+    } else {
+      if (_queued[index].text == t) return;
+      _queued[index] = QueuedPrompt(_queued[index].id, t);
+    }
+    _queueRev++;
+    notifyListeners();
+  }
+
+  /// 番号で 1 件書き直す (= 画面はこちらを使う)。 まだ居れば true。
+  ///
+  /// ★ 直している間に先頭が渡ってしまっても、 番号で指しているので
+  ///   **別の行を書き潰す事がない**。 もう渡ってしまった時は false。
+  bool updateQueuedId(int id, String text) {
+    final i = _queued.indexWhere((e) => e.id == id);
+    if (i < 0) return false;
+    updateQueued(i, text);
+    return true;
+  }
+
+  /// 溜めた並びを入れ替える (= ユーザー要望: キューの順番を入れ替えたい)。
+  ///
+  /// `ReorderableListView` と同じ約束 ([to] は**抜く前**の位置なので、
+  /// 下へ動かす時は 1 つ大きい)。 直しはここで持つ (呼ぶ側では何もしない)。
+  void reorderQueued(int from, int to) {
+    if (from < 0 || from >= _queued.length) return;
+    var t = to;
+    if (t > from) t -= 1;
+    t = t.clamp(0, _queued.length - 1);
+    if (from == t) return;
+    final item = _queued.removeAt(from);
+    _queued.insert(t, item);
+    _queueRev++;
     notifyListeners();
   }
 
   void clearQueued() {
     if (_queued.isEmpty) return;
     _queued.clear();
+    _queueRev++;
     notifyListeners();
   }
 
@@ -773,7 +892,8 @@ class AgentCliSession extends ChangeNotifier {
     //   (= ユーザー要望: 上限が解けるまで送信を待つ)。
     if (_limitWaiting) return;
     if (DateTime.now().difference(_lastOutputAt) < _kIdle) return;
-    final next = _queued.removeAt(0);
+    final next = _queued.removeAt(0).text;
+    _queueRev++;
     // ★ 渡した 1 件は、 返事が終わるまで控えておく。 上限で弾かれたら
     //   ここから順番待ちの先頭へ戻す (消えてしまわないように)。
     _inFlight = next;
@@ -1051,6 +1171,7 @@ class AgentCliSession extends ChangeNotifier {
     _busyTimer?.cancel();
     _busyTimer = null;
     _queued.clear();
+    _queueRev++;
     // ★ 端末が閉じたら上限待ちも畳む (送る先が無いため)。
     _limitWaiting = false;
     _limitUntil = null;

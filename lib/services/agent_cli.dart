@@ -1832,6 +1832,12 @@ class AgentCli {
       String continueDir = '',
       // この 1 回だけ使う CLI の種類 (空 = 画面で選んでいる物)。
       String preferKind = '',
+      // ★ この 1 回だけのモデルと考える深さ (空 = 相手ごとに覚えている物)。
+      //   = ユーザー要望「CLI や AI(API) 欄に投げたプロンプトを適切な
+      //   モデル・推論レベルで処理する」。 グローバルを書き換える形に
+      //   すると、 同時に走っている別の問い合わせと踏み合う。
+      String modelOverride = '',
+      String effortOverride = '',
       Map<String, String> extraEnvironment = const <String, String>{}}) async {
     lastPromptError = '';
     if (!supported || prompt.trim().isEmpty) return null;
@@ -1885,8 +1891,12 @@ class AgentCli {
     }
     // 選んだモデルがあれば指定する (空なら CLI の既定に任せる)。
     // ★ **その相手の**選択を使う (= ユーザー報告: luna を選んでも sol)。
-    final m = modelFor(pick.spec.kind);
-    final effort = reasoningFor(pick.spec.kind);
+    final m = modelOverride.isNotEmpty
+        ? modelOverride
+        : modelFor(pick.spec.kind);
+    final effort = effortOverride.isNotEmpty
+        ? effortOverride
+        : reasoningFor(pick.spec.kind);
     final args = <String>[
       ...pick.launchPrefixArgs,
       ...switch (pick.spec.kind) {
@@ -2036,11 +2046,18 @@ class AgentCli {
             err.toString().toLowerCase().contains('unexpected argument')) {
           _codexNoLastMessage = true;
           debugPrint('codex has no --output-last-message; retrying without it');
+          // ★ 渡された物を落とさない (= 落とすと、 この再試行だけ
+          //   勝手に既定のモデル / 相手 / 画像なしに戻る)。
           return runPrompt(prompt,
               timeout: timeout,
               workingDir: workingDir,
               guide: guide,
               allowFiles: allowFiles,
+              imagePaths: imagePaths,
+              continueDir: continueDir,
+              preferKind: preferKind,
+              modelOverride: modelOverride,
+              effortOverride: effortOverride,
               extraEnvironment: extraEnvironment);
         }
       }
