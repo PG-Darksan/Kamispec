@@ -6382,18 +6382,15 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
               padding: const EdgeInsets.symmetric(horizontal: 10),
               color: const Color(0xFF1E1E2E),
               child: Row(children: [
-                const Icon(Icons.ads_click_rounded,
-                    size: 15, color: Color(0xFF80CBC4)),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(provider.t('hdr.autoClicker'),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                          color: Colors.white70,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700)),
+                // ★ = ユーザー要望「ヘッダーの文字は要らない」。 掴む帯なので
+                //   絵柄だけにして、 狭い幅でも札が隠れないようにする
+                //   (双子: lib/widgets/auto_clicker.dart の見出し)。
+                Tooltip(
+                  message: provider.t('hdr.autoClicker'),
+                  child: const Icon(Icons.ads_click_rounded,
+                      size: 15, color: Color(0xFF80CBC4)),
                 ),
+                const Spacer(),
                 InkWell(
                   borderRadius: BorderRadius.circular(16),
                   onTap: () => setState(() => _autoClickerOpen = false),

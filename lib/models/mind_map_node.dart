@@ -928,6 +928,20 @@ class MindMapNode {
   /// (= ユーザー要望) を実現する。 既定 false (= 従来どおり内容で高さが伸びる)。
   bool clampHeight;
 
+  /// ギャラリー (棚) に並べる**前**の寸法。 null = 棚の寸法がまだ当たって
+  /// いない (= 普通のマップの寸法のまま)。
+  ///
+  /// ★ = 動作検証 2026-09-28「ページ種別の往復で要素寸法が変わる」。
+  ///   棚に並べると幅 190 / 高さ 209 (表紙は 190x52 + 縦横比) が**上書き**
+  ///   され、 通常マップへ戻す時に元へ返す手掛かりが無かった。 b444 は
+  ///   「既定の 160x40 へ均す」 で誤魔化したが、 読み込んだノードの既定は
+  ///   140x42 (= CLAUDE.md の注記: fromJson と ctor で既定が違う) なので、
+  ///   均すと必ず別の大きさになる。 棚を当てる時に控え、 戻す時に返す。
+  double? preShelfWidth;
+  double? preShelfHeight;
+  bool? preShelfClampHeight;
+  double? preShelfAspectRatio;
+
   /// 描画レイヤー 1〜5 (既定 3)。 図形・接続線と同じ考え方で、 大きいほど
   /// 手前に描かれる (= ユーザー要望: レイヤーをノードやリンクにも適用)。
   int layer;
@@ -986,6 +1000,10 @@ class MindMapNode {
     this.chartData,
     this.richText,
     this.clampHeight = false,
+    this.preShelfWidth,
+    this.preShelfHeight,
+    this.preShelfClampHeight,
+    this.preShelfAspectRatio,
     this.layer = 3,
     this.shape,
     this.diagramSource,
@@ -1464,6 +1482,13 @@ class MindMapNode {
     Object? chartData = _sentinel,
     Object? richText = _sentinel,
     bool? clampHeight,
+    // ★ 棚に並べる前の寸法。 null を「変えない」 と取り違えると、 棚を
+    //   並べ直すたびに控えが消えて往復が壊れる ので、 他の nullable と同じ
+    //   印 (_sentinel) 方式にする。
+    Object? preShelfWidth = _sentinel,
+    Object? preShelfHeight = _sentinel,
+    Object? preShelfClampHeight = _sentinel,
+    Object? preShelfAspectRatio = _sentinel,
     int? layer,
     Object? shape = _sentinel,
     Object? diagramSource = _sentinel,
@@ -1527,6 +1552,18 @@ class MindMapNode {
           chartData == _sentinel ? this.chartData : chartData as ChartData?,
       richText: richText == _sentinel ? this.richText : richText as String?,
       clampHeight: clampHeight ?? this.clampHeight,
+      preShelfWidth: preShelfWidth == _sentinel
+          ? this.preShelfWidth
+          : preShelfWidth as double?,
+      preShelfHeight: preShelfHeight == _sentinel
+          ? this.preShelfHeight
+          : preShelfHeight as double?,
+      preShelfClampHeight: preShelfClampHeight == _sentinel
+          ? this.preShelfClampHeight
+          : preShelfClampHeight as bool?,
+      preShelfAspectRatio: preShelfAspectRatio == _sentinel
+          ? this.preShelfAspectRatio
+          : preShelfAspectRatio as double?,
       shape: shape == _sentinel ? this.shape : shape as String?,
       diagramSource: diagramSource == _sentinel
           ? this.diagramSource
@@ -1593,6 +1630,12 @@ class MindMapNode {
       // 高さ固定フラグ (ギャラリーのテキストタイル)。 既定 false のときは
       //   キーを出さず後方互換を保つ。
       if (clampHeight) 'clampHeight': true,
+      // 棚に並べる前の寸法 (= 通常マップへ戻す時に返す控え)。 普通のページ
+      // では null なのでキーを出さず、 古い版とも読み書きが噛み合う。
+      if (preShelfWidth != null) 'preShelfW': preShelfWidth,
+      if (preShelfHeight != null) 'preShelfH': preShelfHeight,
+      if (preShelfClampHeight != null) 'preShelfClamp': preShelfClampHeight,
+      if (preShelfAspectRatio != null) 'preShelfAr': preShelfAspectRatio,
       if (layer != 3) 'layer': layer,
       // ノード形状 (フローチャート記法)。 既定 (null/'rounded') は出さない。
       if (shape != null && shape != 'rounded') 'shape': shape,
@@ -1668,6 +1711,10 @@ class MindMapNode {
           : null,
       richText: json['richText'] as String?,
       clampHeight: json['clampHeight'] as bool? ?? false,
+      preShelfWidth: (json['preShelfW'] as num?)?.toDouble(),
+      preShelfHeight: (json['preShelfH'] as num?)?.toDouble(),
+      preShelfClampHeight: json['preShelfClamp'] as bool?,
+      preShelfAspectRatio: (json['preShelfAr'] as num?)?.toDouble(),
       layer: ((json['layer'] as num?)?.toInt() ?? 3).clamp(1, 5).toInt(),
       shape: json['shape'] as String?,
       diagramSource: json['diagramSource'] as String?,

@@ -12324,6 +12324,18 @@ class _MindMapScreenState extends State<MindMapScreen>
 
   /// このボタンの開き方。 設定が無ければ今までの動き。
   String _openStyleOf(String commandId) {
+    // ★ = ユーザー要望「オートクリッカーは全画面モードとか存在させず、
+    //   図形パレットみたいな感じで別の場所を操作しながらも使えるように」。
+    //   全画面は**持たない**ので、 昔 (b444 以前) に選ばれて prefs に残って
+    //   いる 'full' も、 下の「全画面に戻す」 の印も受けない。 分割ペインは
+    //   残す (画面の中で作業しながら使えるため)。 一番上で決める。
+    if (commandId == 'autoClicker') {
+      final saved = _commandOpenStyle[commandId];
+      if (saved != null && saved != 'full' && _isKnownOpenStyle(saved)) {
+        return saved;
+      }
+      return 'floating';
+    }
     // 「全画面に戻す」 を押した直後だけ、 設定を無視して全画面で開く。
     if (_forceFullCommandId == commandId) return 'full';
     // ★ アラームは開き方を選べない (= ユーザー要望: 左右分割 /
@@ -12508,9 +12520,14 @@ class _MindMapScreenState extends State<MindMapScreen>
         commandId == 'inquiry' ||
         // 面接練習も左右分割 / フローティングで開ける (= ユーザー要望)。
         _isTalkPracticeCommand(commandId) ||
-        commandId == 'webAutomation' ||
-        commandId == 'autoClicker') {
+        commandId == 'webAutomation') {
       return const ['full', 'floating', 'splitLeft', 'splitRight'];
+    }
+    // ★ = ユーザー要望「オートクリッカーは全画面モードとか存在させず」。
+    //   選べる開き方からも全画面を外す (選べないのに一覧に出ていると、
+    //   押した人には「効かない」 としか見えない)。
+    if (commandId == 'autoClicker') {
+      return const ['floating', 'splitLeft', 'splitRight'];
     }
     return _floatableToolCommands.contains(commandId)
         ? const ['full', 'floating']
@@ -38697,7 +38714,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     try {
       final rect = _splitCellGlobalRect(slot);
       if (rect.width <= 0 || rect.height <= 0) return null;
-      final ctrl = _ctrlFor('split_$pageId');
+      // ★ 拡大率・位置は**セルごと** (= 同じページを 2 枠に出せるように
+      //   なったので、 ページ名だけを鍵にすると両方が一緒に動く)。
+      final ctrl = _ctrlFor('split_${slot}_$pageId');
       final local = globalPos - rect.topLeft;
       return MatrixUtils.transformPoint(
           Matrix4.inverted(ctrl.value), local);
@@ -49471,7 +49490,7 @@ class _MindMapScreenState extends State<MindMapScreen>
     showDialog<void>(
       context: context,
       barrierColor: Colors.black54,
-      builder: (dctx) => Dialog.fullscreen(
+      builder: (dctx) => _noteMcpFullScreenIn(dctx, Dialog.fullscreen(
         backgroundColor: const Color(0xFF12121C),
         child: Column(children: [
           Container(
@@ -49495,8 +49514,15 @@ class _MindMapScreenState extends State<MindMapScreen>
           const Divider(color: Colors.white12, height: 1),
           Expanded(child: child),
         ]),
-      ),
+      )),
     );
+  }
+
+  /// 建てた画面をそのまま返しつつ、 MCP 用の閉じ方を控える小さな包み。
+  /// (builder の本体が式 1 つの所で [_noteMcpFullScreen] を差し込むため)
+  Widget _noteMcpFullScreenIn(BuildContext dctx, Widget child) {
+    _noteMcpFullScreen(dctx);
+    return child;
   }
 
   /// アプリの中で URL を開く (= ユーザー要望: Markdown のリンクも
@@ -50668,34 +50694,30 @@ class _MindMapScreenState extends State<MindMapScreen>
         // 開き方 (全画面 / 浮かせる / 左右分割) は他の道具と同じ作法。
         // ★ = ユーザー要望: 設定の欄をやめて縦長のパレットにしたので、
         //   窓も細長くする。
+        // ★ = ユーザー要望「オートクリッカーは全画面モードとか存在させず、
+        //   図形パレットみたいな感じで別の場所を操作しながらも使えるように」。
+        //   全画面のダイアログは画面を覆って下を触れなくするので、 この道具
+        //   とは噛み合わない (押したい相手はたいてい**別のアプリ**)。
+        //   浮かせた窓だけにし、 全画面へ戻す口も出さない
+        //   (開き方の選択肢からも外してある = _openStylesFor)。
+        // ★ 高さは札 10 枚 (1 枚 52px) + 見出し + 状態の 1 行が入る大きさに
+        //   する (= ユーザー指摘「ボタンも縦方向に入り切れていない」)。
         unawaited(_openToolCommandStyled(
           'autoClicker',
-          width: 150,
-          height: 560,
+          width: 168,
+          height: 700,
+          // 上の帯に AI / メモ / 全画面は出さない (= ユーザー要望)。
+          noModeSwitch: true,
+          allowRestoreFull: false,
+          // 細長い札の列なので、 既定の下限 (360x280) では縮められない。
+          minWidth: 140,
+          minHeight: 220,
           floating: (_) => AutoClickerView(
             provider: provider,
             onPopOut: _isDesktop ? _openClickerPaletteWindow : null,
             onRequestClose: () => _closeFloatingPanelByKey('autoClicker'),
           ),
-        ).then((handled) async {
-          if (handled || !mounted) return;
-          await _showNearDialogMain<void>(
-            width: 480,
-            height: 560,
-            builder: (dctx) => Dialog(
-              backgroundColor: Colors.transparent,
-              insetPadding: const EdgeInsets.all(12),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: AutoClickerView(
-                  provider: provider,
-                  onPopOut: _isDesktop ? _openClickerPaletteWindow : null,
-                  onRequestClose: () => Navigator.pop(dctx),
-                ),
-              ),
-            ),
-          );
-        }));
+        ));
         break;
       // 'sharePageLan' (LAN 共有) は廃止 (= ユーザー要望)。 配置済みでも
       //   何も起きない。
@@ -67348,6 +67370,16 @@ class _MindMapScreenState extends State<MindMapScreen>
       // ★ 集中ロックだけは**設定を出さずにそのまま始める**
       //   (= ユーザー要望: ショートカットから呼んだらロックが始まって
       //    欲しい)。 ヘッダーのボタンから押した時は今までどおり設定が出る。
+      // ★ = 動作検証 2026-09-28「Windows の『集中ロック』 とチェック項目が
+      //   合わない」 の調べで見つかった穴。 パソコンでは集中ロックのボタンを
+      //   どこにも出していない (OS 側を押さえられないため) のに、 手で作った
+      //   ショートカット (--command=focusLock) だけはここを通り、 **何も
+      //   押さえない**覆いだけが全画面で出ていた。 出さないと決めた所では
+      //   始めない (ボタンが無い事は画面の作りと揃っている)。
+      if (commandId == 'focusLock' && _isDesktop) {
+        _showLockToast(provider.t('lock.mobileOnly'));
+        return;
+      }
       if (commandId == 'focusLock') {
         final taskMode = provider.focusLockMode == 'tasks';
         if (!(taskMode && provider.focusLockTasks.isEmpty)) {
@@ -68636,6 +68668,14 @@ class _MindMapScreenState extends State<MindMapScreen>
         // ★ = 動作検証の機能修正案「MCP から開いた機能画面を閉じる操作」。
         //   後で閉じられるように、 MCP が開いた物を控えておく。
         _mcpOpenedCommands.add(id);
+        // ★ = 機能追加案 2026-09-28「アシスタントから全画面の機能画面を
+        //   閉じる」。 これから建つ全画面のダイアログを、 この機能の物として
+        //   控えさせる合図。 開くのは非同期 (_openToolCommandStyled が
+        //   設定の読み込みを待つ) なので、 すぐには下ろさない。
+        _mcpArmedCommandId = id;
+        Future<void>.delayed(const Duration(milliseconds: 1200), () {
+          if (_mcpArmedCommandId == id) _mcpArmedCommandId = null;
+        });
         _executeHeaderCommand(id, provider);
       },
     );
@@ -68681,12 +68721,113 @@ class _MindMapScreenState extends State<MindMapScreen>
   ///   4 分割はパソコンだけの機能なので、 携帯では 2 分割に落ちる。 そのまま
   ///   「4 分割にしました」 と答えさせないための約束
   ///   (= ユーザー報告の裏返し: 出来ない事を出来ると言うのも困る)。
+  /// 分割の指定 (id か名前) からページを引く。
+  ///
+  /// 当たれば `{'page': MindMapPage}`、 駄目なら `{'error': 理由}`。
+  /// ★ 引き方を 1 か所に集める (= 置く時と「全画面で開く時」 で当たり方が
+  ///   違うと、 同じ言葉を渡したのに結果が変わる)。
+  Map<String, dynamic> _splitPageFromRef(
+      MindMapProvider provider, String raw) {
+    // id が丸一致 → 名前が丸一致 → 名前が大小文字を無視して一致。
+    // ★ 種別の検分は id で当たった時にも掛ける (= 掛けないと、 同じページを
+    //   id で指すか名前で指すかで答えが変わる)。
+    final byId = provider.pages.where((p) => p.id == raw).firstOrNull;
+    if (byId != null) {
+      if (!_splitEligiblePage(byId)) {
+        return {
+          'error': '"${byId.name}" is a "${byId.pageType ?? 'normal'}" page, '
+              'which cannot be shown in a pane. Nothing was changed.',
+        };
+      }
+      return {'page': byId};
+    }
+    final byName = provider.pages.where((p) => p.name.trim() == raw).toList();
+    final hits = byName.isNotEmpty
+        ? byName
+        : provider.pages
+            .where((p) => p.name.trim().toLowerCase() == raw.toLowerCase())
+            .toList();
+    if (hits.length > 1) {
+      return {
+        'error': 'more than one page is called "$raw" - pass the id instead. '
+            'Candidates: ${[for (final p in hits) p.id].join(', ')}. '
+            'Nothing was changed.',
+      };
+    }
+    final one = hits.firstOrNull;
+    if (one == null) {
+      return {
+        'error': 'no page has the id or name "$raw" - call list_pages. '
+            'Nothing was changed.',
+      };
+    }
+    if (!_splitEligiblePage(one)) {
+      return {
+        'error': '"${one.name}" is a "${one.pageType ?? 'normal'}" page, '
+            'which cannot be shown in a pane. Nothing was changed.',
+      };
+    }
+    return {'page': one};
+  }
+
   Future<Map<String, dynamic>> _setSplitViewForMcp(
       String layout, List<String> pageIds, int? cell) async {
     final provider = context.read<MindMapProvider>();
     switch (layout) {
       case 'off':
         {
+          // ★ = 機能追加案 2026-09-28「分割解除と同時に、 指定ページを全画面で
+          //   開く」。 今までは「表示中のセルを残す」 しか出来ず、 分割の外の
+          //   ページへ戻すには「一度そのページを分割へ入れてから、 そのセルを
+          //   全画面にする」 の 2 手が要った。 pageIds に 1 枚だけ書かれた時は
+          //   そのページを 1 画面で開く。
+          final wantRaw = pageIds
+              .map((e) => e.trim())
+              .where((e) => e.isNotEmpty)
+              .toList();
+          if (wantRaw.isNotEmpty) {
+            if (wantRaw.length > 1) {
+              return {
+                'error': 'layout "off" shows ONE page, but "pageIds" had '
+                    '${wantRaw.length} entries. Nothing was changed - pass '
+                    'just the page you want full screen.',
+              };
+            }
+            if (cell != null) {
+              return {
+                'error': '"cell" and "pageIds" ask for different things: '
+                    '"cell" keeps whatever that pane shows, "pageIds" names '
+                    'the page. Nothing was changed - send one of them.',
+              };
+            }
+            final found = _splitPageFromRef(provider, wantRaw.first);
+            if (found['error'] != null) return found;
+            final page = found['page'] as MindMapPage;
+            if (provider.isPageLockedByPlan(page.id)) {
+              return {
+                'error': '"${page.name}" cannot be opened on the current '
+                    'plan, so it was not put on screen. Nothing was changed.',
+              };
+            }
+            final at = provider.pages.indexOf(page);
+            if (at >= 0) provider.switchPage(at);
+            if (!mounted) return {'error': 'the screen went away'};
+            if (provider.currentPage.id != page.id) {
+              return {
+                'error': 'the app refused to open "${page.name}". Nothing '
+                    'was changed.',
+              };
+            }
+            if (_mapSplitOpen) _closeMapSplit();
+            if (!mounted) return {'error': 'the screen went away'};
+            return {
+              'layout': 'off',
+              'cells': 1,
+              // 変えた**後**の実際の表示を返す (前もって控えた名前ではなく)。
+              'pageId': provider.currentPage.id,
+              'page': provider.currentPage.name,
+            };
+          }
           // ★「右下の画面を全画面にして」 = そのセルのページを残して閉じる
           //   (= ユーザー報告: やり方を教えてくるだけで実際にやってくれない)。
           //   セルの指定が無ければ、 今編集しているセルをそのまま残す。
@@ -68856,16 +68997,11 @@ class _MindMapScreenState extends State<MindMapScreen>
         });
         continue;
       }
-      if (!takenIds.add(page.id)) {
-        notPlaced.add({
-          'requested': raw,
-          'name': page.name,
-          'reason': 'duplicateRequest',
-          'cell': slots[i],
-          'hint': 'the same page cannot fill two cells at once.',
-        });
-        continue;
-      }
+      // ★ = 機能追加案 2026-09-28「同じページを複数の分割画面へ表示する」。
+      //   以前はここで 2 枚目を duplicateRequest として断り、 別のページに
+      //   すり替えていた。 同じページを並べて見比べられるようにしたので、
+      //   断らない (中身は 1 つ、 拡大率と位置だけセルごと)。
+      takenIds.add(page.id);
       wanted[slots[i]] = page;
     }
     if (wanted.isNotEmpty) {
@@ -68905,6 +69041,8 @@ class _MindMapScreenState extends State<MindMapScreen>
           _mapSplitCellWeb.remove(e.key);
           _mapSplitCellWebCur.remove(e.key);
           _mapSplitCells[e.key] = e.value.id;
+          // はっきり頼まれたセル (= 同じページを重ねてよい印)。
+          _mapSplitCellsPinned.add(e.key);
         }
         _mapSplitEditorSlot = editorSlot;
         _syncNarrowPaneRatio();
@@ -72362,15 +72500,11 @@ class _MindMapScreenState extends State<MindMapScreen>
           // ── 予定を選択中に Backspace/Del で削除 (= ユーザー要望:
           //    × ボタンを廃止しキー操作で削除できるように) ──
           onKeyEvent: (node, event) {
-            if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
-              return KeyEventResult.ignored;
-            }
-            // 入力欄にフォーカスがあるときは介入しない (テキスト編集を壊さない)
-            final primary = FocusManager.instance.primaryFocus;
-            if (primary != null && primary != node) {
-              final w = primary.context?.widget;
-              if (w is EditableText) return KeyEventResult.ignored;
-            }
+            // ★ 双子 (ページ一覧の Drawer) と同じ直し。 押しっぱなしは受けず、
+            //   入力欄の判定は先祖まで辿る物差しを使う (生の
+            //   `widget is EditableText` は本物の TextField では必ず外れる)。
+            if (event is! KeyDownEvent) return KeyEventResult.ignored;
+            if (_isPrimaryEditableTextFocused()) return KeyEventResult.ignored;
             if (event.logicalKey == LogicalKeyboardKey.delete ||
                 event.logicalKey == LogicalKeyboardKey.backspace) {
               final id = _selectedTimelineEventId;
@@ -73710,14 +73844,19 @@ class _MindMapScreenState extends State<MindMapScreen>
           // バックグラウンドで KeyEvent を黙って観察する用途。
           // 子の入力フィールドには干渉せず、Del/Backspace のみ消費する。
           onKeyEvent: (focusNode, event) {
-            if (event is! KeyDownEvent && event is! KeyRepeatEvent)
-              return KeyEventResult.ignored;
-            // 入力欄にフォーカスがあるときは介入しない (テキスト編集を壊さない)
-            final primary = FocusManager.instance.primaryFocus;
-            if (primary != null && primary != focusNode) {
-              final ctxW = primary.context?.widget;
-              if (ctxW is EditableText) return KeyEventResult.ignored;
-            }
+            // ★ = ユーザー報告「一覧を複数選んで Backspace / Delete で消したい」。
+            //   仕組みは前からあるのに 3 か所で効かなくなっていた。
+            //   (1) 押しっぱなしを受けていたので、 確認の窓が何枚も積み上がる。
+            //   押した瞬間 (KeyDownEvent) だけ見る。
+            if (event is! KeyDownEvent) return KeyEventResult.ignored;
+            // (2) 入力欄にフォーカスがある時の見分けが**必ず外れて**いた。
+            //   本物の TextField では primaryFocus.context.widget は
+            //   EditableText の中に建つ Focus なので、 `is EditableText` は
+            //   一度も真にならない。 フォルダー名を書き換えている最中の
+            //   Backspace がこちらへ流れ、 消す確認が出ていた。
+            //   キャンバス側と同じ物差し ([_isPrimaryEditableTextFocused])
+            //   を通す (あちらは EditableText の先祖まで辿る)。
+            if (_isPrimaryEditableTextFocused()) return KeyEventResult.ignored;
             // ── Esc: 複数選択中はまず選択解除だけ行い、 サイドバーは閉じない
             //    (= ユーザー要望)。 選択が無ければ ignored を返して通常どおり
             //    Drawer を閉じる。 handled を返すとフレームワークの
@@ -76845,8 +76984,12 @@ class _MindMapScreenState extends State<MindMapScreen>
           _confirmDeleteFolder(ctx, provider, folder);
           break;
         case _FolderAction.bulkDelete:
+          // ★ 選ばれているディスクのファイルも渡す (= ユーザー報告:
+          //   ファイルだけを選んだ時に、 この項目が何もしなかった)。
           _confirmBulkDelete(ctx, provider,
-              folderIds: folderIds, pageIds: pageIds);
+              folderIds: folderIds,
+              pageIds: pageIds,
+              filePaths: _drawerSelectedFilePaths.toList());
           break;
         case _FolderAction.clearSelection:
           setState(_endDrawerMultiSelect);
@@ -77695,8 +77838,11 @@ class _MindMapScreenState extends State<MindMapScreen>
           if (i >= 0) _confirmDeletePageAt(ctx, provider, i);
           break;
         case _PageAction.bulkDelete:
+          // ★ 双子 (_FolderAction.bulkDelete) と同じく、 ディスクのファイルも渡す。
           _confirmBulkDelete(ctx, provider,
-              folderIds: folderIds, pageIds: pageIds);
+              folderIds: folderIds,
+              pageIds: pageIds,
+              filePaths: _drawerSelectedFilePaths.toList());
           break;
         case _PageAction.clearSelection:
           setState(_endDrawerMultiSelect);
@@ -79315,6 +79461,9 @@ class _MindMapScreenState extends State<MindMapScreen>
   void _closeMapSplit() {
     // 分割が畳まれたら「道具のために開いた」 印も消す。
     _toolOpenedSplit.clear();
+    // 「このセルにはこれを」 の印も畳む (= 開き直した時に、 頼んでいない
+    //   のに左右同じページが出るのを防ぐ)。
+    _mapSplitCellsPinned.clear();
     if (!_mapSplitOpen) return;
     setState(() {
       _mapSplitOpen = false;
@@ -79518,7 +79667,15 @@ class _MindMapScreenState extends State<MindMapScreen>
   Future<bool> _openToolCommandStyled(String id,
       {WidgetBuilder? floating,
       double width = 760,
-      double height = 620}) async {
+      double height = 620,
+      // ★ = ユーザー要望「オートクリッカーのヘッダーに AI やメモは要らない」
+      //   「全画面モードは存在させない」。 浮かせた窓の上の帯に何を出すかを
+      //   呼ぶ側から決められるようにする。 既定は今までどおり (= 他の 12 個
+      //   の道具の見た目を変えない)。
+      bool noModeSwitch = false,
+      bool allowRestoreFull = true,
+      double minWidth = 360,
+      double minHeight = 280}) async {
     // 開き方の読み込みが終わる前に押されると既定に落ちるので待つ。
     try {
       await _commandOpenStylesReady;
@@ -79543,7 +79700,13 @@ class _MindMapScreenState extends State<MindMapScreen>
           height: height,
           memoryKey: id,
           singletonKey: id,
-          onRestoreFull: () => _reopenCommandFullscreen(id));
+          noModeSwitch: noModeSwitch,
+          minWidth: minWidth,
+          minHeight: minHeight,
+          // 全画面を持たない道具には「全画面に戻す」 を出さない
+          //   (押しても戻る先が無いため)。
+          onRestoreFull:
+              allowRestoreFull ? () => _reopenCommandFullscreen(id) : null);
       return true;
     }
     return false;
@@ -80813,6 +80976,69 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 呼ばれた時に「自分が開けた物だけ」 を閉じるために使う。
   final Set<String> _mcpOpenedCommands = {};
 
+  /// 「このセルにはこのページを出して」 とはっきり頼まれたセル。
+  ///
+  /// ★ = 機能追加案 2026-09-28「同じページを複数の分割画面へ表示する」。
+  ///   同じページを重ねてよいのは**頼まれた時だけ**。 分割を閉じても
+  ///   [_mapSplitCells] の控えは残るので、 これが無いと開き直した時に
+  ///   左右が同じページになる事がある。
+  final Set<int> _mapSplitCellsPinned = {};
+
+  /// MCP が開いた**全画面の窓**を閉じる手 (機能 id -> 閉じ方)。
+  ///
+  /// ★ = 機能追加案 2026-09-28「アシスタントから全画面の機能画面を閉じる」。
+  ///   浮遊窓と分割ペインは台帳があるので閉じられたが、 全画面のダイアログは
+  ///   どこにも控えが無く、 「利用者しか閉じられません」 と返すしか無かった。
+  ///   開く時に**そのダイアログの BuildContext** から閉じ方を作って預かる。
+  final Map<String, Future<bool> Function()> _mcpFullScreenClosers = {};
+
+  /// 今まさに MCP が開こうとしている機能 id (開き終わるまでの短い間だけ)。
+  /// これが立っている間に建った全画面のダイアログを、 その機能の物として控える。
+  String? _mcpArmedCommandId;
+
+  /// 全画面のダイアログが建った時に、 MCP 用の閉じ方を控える。
+  ///
+  /// ★ 閉じ方は「掴んだ context の route を消す」 形にする。
+  ///   `Navigator.pop()` を画面側の context から呼ぶと、 一番下の route
+  ///   (アプリ本体) まで閉じてしまう事がある。 今いちばん上なら pop、
+  ///   そうでなければ removeRoute にして、 上に載っている別の物
+  ///   (pptx や PDF) を巻き添えにしない。
+  /// ★ 呼ぶのは**機能の画面を開く口だけ** ([_openToolDialog])。
+  ///   汎用の [_showNearDialogMain] からは呼ばない ── あちらは「本当に
+  ///   消しますか」 のような確認にも使われるので、 合図が立っている間に
+  ///   利用者が出した確認まで「MCP が開けた画面」 として控えてしまい、
+  ///   close_app_command がその確認を閉じて (= 取り消して) しまう。
+  void _noteMcpFullScreen(BuildContext dctx) {
+    final id = _mcpArmedCommandId;
+    if (id == null) return;
+    // 1 回の合図で控えるのは 1 枚だけ。
+    _mcpArmedCommandId = null;
+    final route = ModalRoute.of(dctx);
+    if (route == null || route.isFirst) return;
+    // 本当に閉じた時だけ true (= 既に無い物を「閉じました」 と答えない)。
+    Future<bool> close() async {
+      if (!route.isActive) return false;
+      final nav = Navigator.of(dctx);
+      if (route.isCurrent) {
+        nav.pop();
+      } else {
+        nav.removeRoute(route);
+      }
+      return true;
+    }
+
+    _mcpFullScreenClosers[id] = close;
+    // 利用者が自分で閉じた時は、 控えも捨てる (残っていると、 既に無い物を
+    //   「閉じました」 と答えてしまう)。
+    // ★ 自分が入れた物だけ外す。 同じ機能をもう一度開いて新しい閉じ方が
+    //   入っている時に、 古い窓の後始末で**新しい方**を捨てないように。
+    route.completed.whenComplete(() {
+      if (identical(_mcpFullScreenClosers[id], close)) {
+        _mcpFullScreenClosers.remove(id);
+      }
+    });
+  }
+
   /// その機能を分割ペインに埋めているセル (無ければ null)。
   int? _splitSlotOfTool(String id) {
     for (final e in _mapSplitCellTool.entries) {
@@ -80842,7 +81068,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     //   単に非対応な機能の区別が付かなかった。
     bool openNow(String cid) =>
         _floatingPanelSingletons.containsKey(cid) ||
-        _splitSlotOfTool(cid) != null;
+        _splitSlotOfTool(cid) != null ||
+        // ★ = 機能追加案 2026-09-28。 全画面の窓も控えが在れば「開いている」。
+        _mcpFullScreenClosers.containsKey(cid);
     if (want.isEmpty) {
       // もう開いていない物は控えから外す (溜めても誤解を生むだけ)。
       _mcpOpenedCommands.removeWhere((c) => !openNow(c));
@@ -80853,8 +81081,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         'closed': const <String>[],
         'notOpen': const <Map<String, Object?>>[],
         'note': 'no screen opened from here is on display right now, so '
-            'nothing was closed. Full-screen dialogs are not listed here - '
-            'only the user can close those.',
+            'nothing was closed.',
       };
     }
     final closed = <String>[];
@@ -80875,6 +81102,30 @@ class _MindMapScreenState extends State<MindMapScreen>
         closed.add(cid);
         continue;
       }
+      // ★ = 機能追加案 2026-09-28「アシスタントから全画面の機能画面を
+      //   閉じる」。 開いた時に預かった閉じ方があれば、 全画面でも閉じる。
+      final closer = _mcpFullScreenClosers[cid];
+      if (closer != null) {
+        if (probe) {
+          closed.add(cid);
+          continue;
+        }
+        // 本当に閉じたかを見てから答える (= 既に利用者が閉じていた物を
+        //   「閉じました」 と報告しない)。
+        final didClose = await closer();
+        _mcpFullScreenClosers.remove(cid);
+        if (didClose) {
+          closed.add(cid);
+        } else {
+          notOpen.add({
+            'id': cid,
+            'reason': 'alreadyClosed',
+            'hint': 'that screen was already gone (the user closed it), so '
+                'nothing was done.',
+          });
+        }
+        continue;
+      }
       // ★ = 継続検証 169。 「今開いていない」 と「開いてはいるが道具からは
       //   閉じられない全画面ダイアログ」 を分ける。 開いた覚えが無い物は
       //   notCurrentlyOpen (機能の非対応ではない)。
@@ -80889,8 +81140,9 @@ class _MindMapScreenState extends State<MindMapScreen>
             ? 'this screen was not opened from here, so there is nothing to '
                 'close.'
             : (full
-                ? 'this feature opens as a full-screen dialog, which only the '
-                    'user can close (Esc or the close button).'
+                ? 'this screen is not one the app can close from code (it is '
+                    'not a dialog it opened itself, or it was already '
+                    'closed). Ask the user to press Esc or its close button.'
                 : 'it is not open right now.'),
       });
     }
@@ -80947,6 +81199,9 @@ class _MindMapScreenState extends State<MindMapScreen>
       // 全画面で開き直す入口 (= ユーザー要望: フローティングから
       //   元の全画面に戻せるように)。 null ならボタンを出さない。
       VoidCallback? onRestoreFull,
+      // 縮められる下限 (= 細長いパレットの窓は既定の 360x280 より小さい)。
+      double minWidth = 360,
+      double minHeight = 280,
       VoidCallback? onClosed}) {
     // ★ 同じ窓が既に開いていれば、 増やさずに前面へ出し直す。
     //
@@ -81018,6 +81273,8 @@ class _MindMapScreenState extends State<MindMapScreen>
             : null,
         slimChrome: slimChrome,
         noModeSwitch: noModeSwitch,
+        minWidth: minWidth,
+        minHeight: minHeight,
         onRestoreFull: onRestoreFull == null
             ? null
             : () {
@@ -81607,8 +81864,30 @@ class _MindMapScreenState extends State<MindMapScreen>
         .where((p) => !provider.isPageLockedByPlan(p.id))
         .toList();
     final storedId = _mapSplitCells[k];
+    // ★ = 機能追加案 2026-09-28「同じページを複数の分割画面へ表示する」。
+    //   はっきりそのセルへ割り当てられたページは、 他のセルや編集セルと
+    //   同じでも**そのまま出す**。 大きなマップの離れた所を見比べる / 全体と
+    //   細部を同時に見る、 が出来るようになる (中身は同じ物を見ているので
+    //   編集は即座に両方へ映り、 拡大率と位置だけセルごとに持つ)。
+    //
+    // ★ ただし 2 つの歯止めを掛ける (= 点検で判明):
+    //   (1) **キャンバスのページだけ**。 フリーノート / マークダウン / 文書は
+    //       本文がページ JSON の外にあり、 セルごとに別の編集器 (State) が
+    //       建つ。 同じページを 2 つ開くと、 後から保存した方が先の編集を
+    //       丸ごと消す (= 本文の消失)。 これらは今までどおり重ねない。
+    //   (2) **はっきり頼まれたセルだけ** ([_mapSplitCellsPinned])。 分割を
+    //       閉じても _mapSplitCells は残るので、 開き直した時に古い控えが
+    //       currentPage と一致して、 頼んでいないのに左右同じページが
+    //       出てしまう。 頼まれた時だけ重ねる。
+    final canDuplicate = _mapSplitCellsPinned.contains(k);
     for (final p in pages) {
-      if (p.id == storedId && !used.contains(p.id)) return p;
+      if (p.id != storedId) continue;
+      if (!used.contains(p.id)) return p;
+      final ty = p.pageType ?? 'normal';
+      final bodyOwned =
+          ty == 'paint' || ty == 'markdown' || ty == 'document';
+      if (canDuplicate && !bodyOwned) return p;
+      break;
     }
     for (final p in pages) {
       if (!used.contains(p.id)) return p;
@@ -84419,7 +84698,9 @@ class _MindMapScreenState extends State<MindMapScreen>
         ),
       );
     }
-    final paneCtrl = _ctrlFor('split_${page.id}');
+    // ★ 拡大率・位置は**セルごと** (= 同じページを 2 枠に出せるように
+    //   なったので、 ページ名だけを鍵にすると両方が一緒に動く)。
+    final paneCtrl = _ctrlFor('split_${slot}_${page.id}');
     final bool paneShelf = page.pageType == 'bookshelf';
     // ── 折りたたみ (collapsed) をペインにも反映する ──
     // ★ 以前は page.nodes をそのまま描いていたので、 ペイン側だけ折りたたみが
@@ -84822,7 +85103,18 @@ class _MindMapScreenState extends State<MindMapScreen>
     // 既にアクティブなら何もしない (パン終了とタップの両方から呼ばれても
     // 二重に切り替わらないように冪等にする)。 nodeId の選択処理だけは行う。
     final switched = oldId != pageId;
-    if (switched) {
+    // ★ = 機能追加案 2026-09-28「同じページを複数の分割画面へ表示する」。
+    //   同じページが 2 枠に出せるようになったので、「ページは同じだが**別の
+    //   セル**を触った」 も編集セルの移動として扱う。 これが無いと、 2 枚目の
+    //   枠は永久に編集できず、 その枠でノードを触っても操作の札だけが
+    //   1 枚目の枠の上に出てしまう。
+    final oldSlot = _mapSplitEditorSlot;
+    final tappedSlot = slot ??
+        _visibleSplitSlots().firstWhere(
+            (i) => i != oldSlot && _mapSplitCells[i] == pageId,
+            orElse: _primaryViewerSlot);
+    final slotMoved = slot != null && slot != oldSlot;
+    if (switched || slotMoved) {
       final idx = provider.pages.indexWhere((p) => p.id == pageId);
       if (idx < 0) return;
       // ペインで見えていた位置をそのまま編集用コントローラへ、 逆に旧編集
@@ -84836,7 +85128,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       //   ・かといって素のまま代入するとギャラリーのパン制限
       //     (_clampBookshelfPan) が旧ページ基準で働いて切り詰められるので、
       //     引き渡しの間だけ制限を止める。
-      final paneMatrix = _ctrlFor('split_$pageId').value.clone();
+      // 拡大率・位置はセルごとに持つので、 鍵にもセル番号を入れる。
+      final paneMatrix = _ctrlFor('split_${tappedSlot}_$pageId').value.clone();
       final editorMatrix = _ctrlFor(oldId).value.clone();
       _clampingShelf = true;
       // ★ 代入より先に _lastMatrix を新しい行列へそろえる。 軸ロック
@@ -84845,7 +85138,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       //   そこへ引きずられてしまう (_applyScale と同じ手当て)。
       _lastMatrix = paneMatrix.clone();
       _ctrlFor(pageId).value = paneMatrix;
-      _ctrlFor('split_$oldId').value = editorMatrix;
+      _ctrlFor('split_${oldSlot}_$oldId').value = editorMatrix;
       _clampingShelf = false;
       // ギャラリーは初回表示時の自動センタリングが走ると位置が飛ぶので、
       // アクティブ化時は「センタリング済み」 扱いにして抑止する
@@ -84856,15 +85149,10 @@ class _MindMapScreenState extends State<MindMapScreen>
       // 切替済みで「切替と同時のクリックか」 が判別できない。 時刻で見分ける
       // (= ユーザー報告: 分割の別画面を触っただけで子ノードが展開/収納される)。
       _splitActivatedAtMs = DateTime.now().millisecondsSinceEpoch;
-      provider.switchPage(idx);
+      if (switched) provider.switchPage(idx);
       setState(() {
         // タップされたセルへ編集側が移り、 旧編集セルには旧ページが残る
         // (= セルのページ配置は動かさず、 編集権だけが移動する)。
-        final oldSlot = _mapSplitEditorSlot;
-        final tappedSlot = slot ??
-            _visibleSplitSlots().firstWhere(
-                (i) => i != oldSlot && _mapSplitCells[i] == pageId,
-                orElse: _primaryViewerSlot);
         _mapSplitCells[oldSlot] = oldId;
         _mapSplitCells[tappedSlot] = pageId;
         _mapSplitEditorSlot = tappedSlot;
@@ -85459,7 +85747,8 @@ class _MindMapScreenState extends State<MindMapScreen>
         if (_mapSplitCellTool.containsKey(k)) continue;
         final page = _resolveSplitCellPage(provider, k);
         if (page == null || page.pageType != 'bookshelf') continue;
-        _centerBookshelfPane(provider, page, k, _ctrlFor('split_${page.id}'));
+        _centerBookshelfPane(
+            provider, page, k, _ctrlFor('split_${k}_${page.id}'));
       }
     });
   }
@@ -103388,6 +103677,21 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 削除後は drawer の選択状態をクリアする。
   void _confirmDeleteSelectedDrawerItems(
       BuildContext context, MindMapProvider provider) {
+    // ★ = ユーザー報告「一覧を複数選んで Backspace / Delete で消したい」の (3)。
+    //   選べる物は 3 種類 (ページ / フォルダー / ディスクのファイル) あるのに、
+    //   この確認はページとフォルダーしか見ていなかった。 ファイルだけを選んで
+    //   Del を押すと、 下の早戻りで**何も起きずに終わって**いた。
+    //   ファイルが混ざっている時は、 3 種類とも扱える確認へ回す。
+    if (_drawerSelectedFilePaths.isNotEmpty) {
+      unawaited(_confirmBulkDelete(
+        context,
+        provider,
+        folderIds: _drawerSelectedFolderIds.toList(),
+        pageIds: _drawerSelectedPageIds.toList(),
+        filePaths: _drawerSelectedFilePaths.toList(),
+      ));
+      return;
+    }
     final pageIds = _drawerSelectedPageIds.toList();
     // ★ 本物のフォルダーを開いた物 (= 連動フォルダー) は、 Del でも消さない
     //   (= ユーザー要望: 誤ってフォルダーごと削除できないように)。 ここは
@@ -283115,7 +283419,17 @@ class _FloatingPanelWindow extends StatefulWidget {
     this.initialRect,
     this.slimChrome = false,
     this.noModeSwitch = false,
+    this.minWidth = 360,
+    this.minHeight = 280,
   });
+
+  /// この窓を縮められる下限。
+  ///
+  /// ★ = ユーザー要望「オートクリッカーは細長いパレット」。 下限が 360x280
+  ///   決め打ちだったので、 幅 168 で開いた窓は縁を 1px 掴んだだけで 2 倍以上に
+  ///   広がり、 覚えていた細い大きさも読み込み時に捨てられていた。
+  final double minWidth;
+  final double minHeight;
 
   /// メモ / ブラウザ AI への切り替えボタンを出さないか
   /// (= ユーザー要望: 自動操作の窓には要らない)。
@@ -283255,8 +283569,8 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
       final y = (m['y'] as num?)?.toDouble();
       if (!mounted) return;
       setState(() {
-        if (w != null && w >= 360) _w = w;
-        if (h != null && h >= 280) _h = h;
+        if (w != null && w >= widget.minWidth) _w = w;
+        if (h != null && h >= widget.minHeight) _h = h;
         if (x != null && y != null) _pos = Offset(x, y);
       });
       // 覚えていた大きさ・位置が今の画面より大きいことがある。
@@ -283277,8 +283591,8 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
     const grab = 6.0; // 掴める帯の太さ
     // 角で掴める四角の一辺。 縁より広くしないと、 角は狙いにくい。
     const corner = 16.0;
-    const minW = 360.0;
-    const minH = 280.0;
+    final double minW = widget.minWidth;
+    final double minH = widget.minHeight;
     // つまみ (アイコン) を出さない窓では、 上の両角も帯にする
     // (= ユーザー要望: つまみは邪魔だから消して、 境界を掴んで
     //   大きさを変えられるように)。

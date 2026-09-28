@@ -285,22 +285,22 @@ class _AutoClickerViewState extends State<AutoClickerView> {
       color: const Color(0xFF12121C),
       child: Column(children: [
         // 見出し
+        // ★ = ユーザー要望「ヘッダーの文字が入り切れていないから文字書かなく
+        //   ていい」。 窓は縦長の細いパレットなので、 8 文字の題名を置くと
+        //   必ず折り返して切れる。 絵柄だけ残し、 題名は道具の一覧 (hdr.
+        //   autoClicker) とヒントに任せる。
         Container(
-          padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
+          padding: const EdgeInsets.fromLTRB(8, 4, 4, 4),
           decoration: const BoxDecoration(
             border: Border(bottom: BorderSide(color: Colors.white12)),
           ),
           child: Row(children: [
-            const Icon(Icons.ads_click_rounded,
-                size: 18, color: Color(0xFF4DD0E1)),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(p.t('hdr.autoClicker'),
-                  style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w700)),
+            Tooltip(
+              message: p.t('hdr.autoClicker'),
+              child: const Icon(Icons.ads_click_rounded,
+                  size: 18, color: Color(0xFF4DD0E1)),
             ),
+            const Spacer(),
             // ★ = ユーザー要望「パレットが出てきて、 他の箇所がアクティブ
             //   でも消えずに押せるみたいなものを想定していた」。 アプリの
             //   中の枠は、 他のアプリを前に出すと一緒に後ろへ回ってしまう。

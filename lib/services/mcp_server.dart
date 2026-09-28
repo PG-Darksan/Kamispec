@@ -1740,11 +1740,13 @@ class McpServer {
         'Close a feature screen that run_app_command opened. Pass the '
         '"screenId" it returned; pass nothing to close everything opened from '
         'here and put the view back as it was. '
-        'Returns {closed:[ids], notOpen:[{id, reason}]}. Only floating '
-        'windows and tools embedded in a split pane can be closed this way; a '
-        'feature that opens as a FULL-SCREEN DIALOG is reported in notOpen '
-        'with reason "fullScreenDialog" because only the user can close it - '
-        'say so rather than claiming it is closed.',
+        'Returns {closed:[ids], notOpen:[{id, reason}]}. Floating windows, '
+        'tools embedded in a split pane AND full-screen screens that '
+        'run_app_command opened can all be closed this way. A screen the app '
+        'cannot close from code (it was opened by the user, or it is already '
+        'gone) comes back in notOpen with reason "fullScreenDialog" / '
+        '"notCurrentlyOpen" - read the reason and say that, rather than '
+        'claiming it is closed.',
         {
           'id': {'type': 'string'},
         }),
@@ -1764,17 +1766,25 @@ class McpServer {
         '3=bottom-right). The split closes and the page that was in that pane '
         'fills the window. DO IT - do not explain how the user could do it '
         'by hand. '
+        'TO MAKE A NAMED PAGE FULL SCREEN, even one that is not in any pane: '
+        'call layout "off" with that ONE page as the only entry of "pageIds" '
+        '(id or name). The split closes and that page fills the window. Use '
+        '"cell" when you mean "whatever that pane is showing" and "pageIds" '
+        'when you mean a particular page - sending both is refused. '
         'Optionally pass pageIds to fill the cells, in the order '
         '0 = top-left, 1 = top-right, 2 = bottom-left, 3 = bottom-right. '
         'Each entry may be an id from list_pages OR a page name, as long as '
-        'only one page has that name. A page can fill only ONE cell, '
+        'only one page has that name. The SAME page may fill several cells '
+        '(handy for comparing two distant parts of one big map): both cells '
+        'show the same document and edits appear in both at once, while '
+        'scroll position and zoom stay independent per cell. '
         'document / videoEditor / automation pages cannot go in a pane, and '
         'a page the plan cannot open is refused. Cells you leave out are '
         'filled with other pages automatically. Calling it twice with the '
         'same layout is safe - it does not toggle the split back off; use '
         '"off" to close it. '
         'CHECK "couldNotPlace": every entry carries a "reason" (notFound / '
-        'ambiguousName / pageType / lockedByPlan / duplicateRequest / '
+        'ambiguousName / pageType / lockedByPlan / '
         'noCell / couldNotOpen / substituted). "substituted" means the app '
         'put a DIFFERENT page in that cell - report that instead of claiming '
         'the requested page is open. The reply also returns "pageIds" (what '
@@ -3021,8 +3031,37 @@ class McpServer {
         {
           final id = a['pageId'] as String? ?? '';
           final type = a['type'] as String? ?? '';
-          final ok = await _provider.mcpSetPageType(id, type);
-          if (ok) return _ok('page $id is now "$type"');
+          // ★ = 動作検証 2026-09-28「ページ種別の往復で要素寸法が変わる」。
+          //   ギャラリーから戻した時に、 何枚の寸法を返せて、 何枚は
+          //   控えが無くてそのままにしたのかを返す (黙って均さない)。
+          final typeOut = <String, Object?>{};
+          final ok = await _provider.mcpSetPageType(id, type,
+              outcome: typeOut);
+          if (ok) {
+            final restored = (typeOut['restoredSizes'] as int?) ?? 0;
+            final kept = (typeOut['keptGallerySize'] as int?) ?? 0;
+            if (restored == 0 && kept == 0) {
+              return _ok('page $id is now "$type"');
+            }
+            return _ok({
+              'pageId': id,
+              'type': type,
+              if (restored > 0) 'restoredSizes': restored,
+              if (kept > 0) 'keptGallerySize': kept,
+              'note': [
+                'page $id is now "$type".',
+                if (restored > 0)
+                  '$restored tile(s) went back to the exact size they had '
+                      'before the page was laid out as a gallery.',
+                if (kept > 0)
+                  '$kept tile(s) kept their gallery size because no '
+                      'pre-gallery size was ever recorded for them (the page '
+                      'was already a gallery before this app started keeping '
+                      'that note); only their fixed height was released. Tell '
+                      'the user rather than claiming everything was restored.',
+              ].join(' '),
+            });
+          }
           // 知らない id と知らない種別を区別する (= 前は id が違っても
           //   「その種類はありません」 と返り、 原因を取り違えていた)。
           if (_provider.mcpPageById(id) == null) {
@@ -5184,10 +5223,10 @@ class McpServer {
                 'closeHint': 'call close_app_command with this screenId to '
                     'close it again.'
               else
-                'closeHint': 'this one looks like a full-screen dialog, so '
-                    'only the user can close it (Esc or the close button). '
-                    'Try close_app_command anyway if the user asks - it will '
-                    'say "fullScreenDialog" if it really cannot.',
+                'closeHint': 'pass this screenId back to close_app_command '
+                    'when the user is done - full-screen screens opened from '
+                    'here can be closed too. If it really cannot be closed, '
+                    'the reply says so with a reason.',
             });
           }
           // ★ 「知らない id」 と「利用者しか始められない機能」 を区別する。

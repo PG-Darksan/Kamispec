@@ -27607,6 +27607,20 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Iniciar',
       'ru': 'Начать',
     },
+    // ★ = 動作検証 2026-09-28。 パソコンには集中ロックのボタンを出していない
+    //   のに、 手で作ったショートカットだけが素通りして「何も押さえない覆い」
+    //   を出していた。 断る時の一言。
+    'lock.mobileOnly': {
+      'ja': '集中ロックはスマホ版だけの機能です',
+      'en': 'Focus lock is available on the phone app only',
+      'zh': '专注锁定仅在手机版中可用',
+      'ko': '집중 잠금은 모바일 앱에서만 사용할 수 있습니다',
+      'es': 'El bloqueo de concentración solo está en la app móvil',
+      'fr': 'Le verrou de concentration n\'existe que sur mobile',
+      'de': 'Der Fokus-Sperre gibt es nur in der Handy-App',
+      'pt': 'O bloqueio de foco existe apenas no app para celular',
+      'ru': 'Блокировка фокуса доступна только в мобильном приложении',
+    },
     'gs.mobileOnly': {
       'ja': 'この機能はモバイル版のブラウザで利用できます',
       'en': 'This feature is available in the mobile browser',
@@ -101122,6 +101136,13 @@ $cleanQ
       return changed;
     }
     if (pt.isNotEmpty && page.pageType != pt) {
+      // ★ = 動作検証 2026-09-28「ページ種別の往復で要素寸法が変わる」の双子。
+      //   共同編集の相手がギャラリーから戻した時も、 棚の寸法を残さない。
+      if (page.pageType == 'bookshelf' && pt != 'bookshelf') {
+        _restorePreShelfSizes(page);
+      } else if (page.pageType != 'bookshelf' && pt == 'bookshelf') {
+        _capturePreShelfSizes(page);
+      }
       page.pageType = pt;
       changed = true;
     }
@@ -107489,7 +107510,8 @@ $cleanQ
     if (!kStoreBuild) 'videoEditor',
   };
 
-  Future<bool> mcpSetPageType(String pageId, String type) async {
+  Future<bool> mcpSetPageType(String pageId, String type,
+      {Map<String, Object?>? outcome}) async {
     if (!kMcpPageTypes.contains(type)) return false;
     final i = _pages.indexWhere((p) => p.id == pageId);
     if (i < 0) return false;
@@ -107509,25 +107531,92 @@ $cleanQ
       }
     }
     // ★ = 継続検証 102「ギャラリーから通常ページへ戻しても要素サイズが
-    //   戻らない」。 棚に並べる時に付く棚用の寸法 (190x209 + clampHeight) が
-    //   そのまま残るので、 同じ通常ページの中で新しい要素 (140x40) と
-    //   大きさが揃わなくなっていた。 通常マップへ戻す時は既定の寸法へ均す。
+    //   戻らない」/ 動作検証 2026-09-28「ページ種別の往復で要素寸法が変わる」。
+    //   b444 は「既定の 160x40 へ均す」 で応えたが、 読み込んだノードの既定は
+    //   140x42 (= CLAUDE.md: fromJson と ctor で既定が違う) なので、 均すと
+    //   必ず**別の**大きさになっていた (140 → 160、 動画の描画高 118.75 → 130)。
+    //   棚を当てる時に控えた本当の寸法 ([MindMapNode.preShelfWidth] ほか) を
+    //   返す。 控えが無い物 (この仕組みより前からギャラリーだったページ) は、
+    //   元の大きさが誰にも分からないので**推測せずそのまま**にする。
     final was = _pages[i].pageType;
-    if (was == 'bookshelf' && type == 'normal') {
-      for (final n in _pages[i].nodes.values) {
-        // 添付 (画像 / ファイル) のタイルは元から大きいので触らない。
-        if ((n.attachmentPath ?? '').isNotEmpty) continue;
-        if (n.tableData != null) continue;
-        n.width = 160;
-        n.height = 40;
-        n.clampHeight = false;
-      }
+    final restore = <String, Object?>{};
+    if (was == 'bookshelf' && type != 'bookshelf') {
+      _restorePreShelfSizes(_pages[i], outcome: restore);
+    } else if (was != 'bookshelf' && type == 'bookshelf') {
+      // 棚の寸法を当てる前に、 今の寸法を控える (戻す時に返す物)。
+      _capturePreShelfSizes(_pages[i]);
     }
     _pages[i].pageType = type;
     _pages[i].lastModifiedAt = DateTime.now();
+    if (outcome != null) outcome.addAll(restore);
     notifyListeners();
     await _saveToStorage();
     return true;
+  }
+
+  /// ギャラリーへ変える**直前**の寸法を控える。
+  ///
+  /// ★ = 動作検証 2026-09-28「ページ種別の往復で要素寸法が変わる」。
+  ///   控えるのは「普通のページがギャラリーになる、 その瞬間」 だけ。
+  ///   並べる処理 ([_arrangeAsBookshelfBody]) の中で控えると、 ページを
+  ///   開くたびに走る [reflowBookshelf] が**棚の寸法**を「元の大きさ」 と
+  ///   して覚えてしまう (= 元からギャラリーだったページで、 戻しても
+  ///   190x209 のままになる)。 種別が変わる所は 2 か所しか無いので、
+  ///   そこで 1 回だけ控える。
+  void _capturePreShelfSizes(MindMapPage page) {
+    for (final id in page.nodes.keys.toList()) {
+      final n = page.nodes[id];
+      if (n == null) continue;
+      // 既に控えが在るなら触らない (往復を繰り返しても最初の寸法を守る)。
+      if (n.preShelfWidth != null) continue;
+      page.nodes[id] = n.copyWith(
+        preShelfWidth: n.width,
+        preShelfHeight: n.height,
+        preShelfClampHeight: n.clampHeight,
+        preShelfAspectRatio: n.attachmentAspectRatio,
+      );
+    }
+  }
+
+  /// ギャラリーの寸法を、 棚に並べる前の寸法へ返す。 返した件数を返す。
+  ///
+  /// ★ 控えが無いノードは**触らない** (`clampHeight` だけは外す = 通常ページで
+  ///   高さが固定されたままだと本文が省略表示のまま隠れてしまうため)。
+  ///   書き換えは必ず [MindMapNode.copyWith] を通す ── `visualHeight` の
+  ///   覚え書きの鍵に `attachmentAspectRatio` が入っていないので、 その場で
+  ///   書き換えると古い高さが返ってくる。
+  int _restorePreShelfSizes(MindMapPage page,
+      {Map<String, Object?>? outcome}) {
+    var restored = 0;
+    var kept = 0;
+    for (final id in page.nodes.keys.toList()) {
+      final n = page.nodes[id];
+      if (n == null) continue;
+      if (n.preShelfWidth == null || n.preShelfHeight == null) {
+        if (n.clampHeight) {
+          page.nodes[id] = n.copyWith(clampHeight: false);
+          kept++;
+        }
+        continue;
+      }
+      page.nodes[id] = n.copyWith(
+        // 保存し直した時に丸められる範囲 (fromJson と同じ) へ収める。
+        width: n.preShelfWidth!.clamp(80.0, 2000.0),
+        height: n.preShelfHeight!.clamp(14.0, 4000.0),
+        clampHeight: n.preShelfClampHeight ?? false,
+        attachmentAspectRatio: n.preShelfAspectRatio,
+        preShelfWidth: null,
+        preShelfHeight: null,
+        preShelfClampHeight: null,
+        preShelfAspectRatio: null,
+      );
+      restored++;
+    }
+    if (outcome != null) {
+      outcome['restoredSizes'] = restored;
+      if (kept > 0) outcome['keptGallerySize'] = kept;
+    }
+    return restored;
   }
 
   /// ヘッダーに並べるボタンを設定する (= ユーザー要望: ヘッダーにボタンを
@@ -122992,6 +123081,14 @@ $example
         attachmentAspectRatio: node.attachmentAspectRatio,
         diagramSource: node.diagramSource,
         chartData: node.chartData?.copy(),
+        // ★ 高さの固定と「棚に並べる前の寸法」 も連れて行く (= 点検で判明:
+        //   ギャラリーの中で複製すると、 複製だけが棚の寸法を「元の寸法」 と
+        //   して覚え、 通常マップへ戻した時に 1 枚だけ大きさが違っていた)。
+        clampHeight: node.clampHeight,
+        preShelfWidth: node.preShelfWidth,
+        preShelfHeight: node.preShelfHeight,
+        preShelfClampHeight: node.preShelfClampHeight,
+        preShelfAspectRatio: node.preShelfAspectRatio,
       );
       newIds.add(newId);
     }
