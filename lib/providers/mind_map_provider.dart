@@ -1682,15 +1682,42 @@ List<({String name, String text})> splitMarkdownIntoTabs(
   int headingMinSections = 3,
   int headingMaxSections = 12,
 }) {
-  final re = RegExp(r'^<<<PAGE:\s*(.+?)\s*>>>\s*$', multiLine: true);
-  final hits = re.allMatches(body).toList();
-  if (hits.isNotEmpty) {
+  // ★ = 動作検証 継続検証 133「コードブロック内のタブ区切り文字列まで実タブと
+  //   して分割する」。 区切りの数え方も、 見出しと同じく**コードフェンスの
+  //   中は見ない**。 説明・見本・テンプレートで区切りの書き方そのものを
+  //   コード表示すると、 意図しないタブ分割と Markdown 破損が起きていた。
+  final re = RegExp(r'^<<<PAGE:\s*(.+?)\s*>>>\s*$');
+  final srcLines = body.split('\n');
+  final marks = <({int line, String name})>[];
+  {
+    var fence = '';
+    for (var i = 0; i < srcLines.length; i++) {
+      final t = srcLines[i].trimLeft();
+      final f = RegExp(r'^(`{3,}|~{3,})').firstMatch(t);
+      if (f != null) {
+        final mark = f.group(1)![0];
+        if (fence.isEmpty) {
+          fence = mark;
+        } else if (fence == mark) {
+          fence = '';
+        }
+        continue;
+      }
+      if (fence.isNotEmpty) continue;
+      final m = re.firstMatch(srcLines[i].trim());
+      if (m != null) {
+        marks.add((line: i, name: (m.group(1) ?? '').trim()));
+      }
+    }
+  }
+  if (marks.isNotEmpty) {
     final out = <({String name, String text})>[];
-    for (var i = 0; i < hits.length; i++) {
-      final m = hits[i];
-      final end = i + 1 < hits.length ? hits[i + 1].start : body.length;
-      final text = body.substring(m.end, end).trim();
-      final name = (m.group(1) ?? '').trim();
+    for (var i = 0; i < marks.length; i++) {
+      final endLine =
+          i + 1 < marks.length ? marks[i + 1].line : srcLines.length;
+      final text =
+          srcLines.sublist(marks[i].line + 1, endLine).join('\n').trim();
+      final name = marks[i].name;
       if (text.isEmpty) continue;
       out.add((name: name.isEmpty ? '${i + 1}' : name, text: text));
     }
@@ -87896,7 +87923,9 @@ class MindMapProvider extends ChangeNotifier {
       ({
         List<Map<String, Object?>> hits,
         String verdict,
-        List<String> unsearched
+        List<String> unsearched,
+        int totalMatches,
+        bool truncated,
       })> mcpSearchNodes(
     String query, {
     String scope = 'all',
@@ -87909,9 +87938,17 @@ class MindMapProvider extends ChangeNotifier {
         hits: const <Map<String, Object?>>[],
         verdict: 'absent',
         unsearched: const <String>[],
+        totalMatches: 0,
+        truncated: false,
       );
     }
-    final needle = q.toLowerCase();
+    final needle = mcpSearchNormalize(q);
+    // ★ = 継続検証 126「結果の空白表示と実際の改行一致条件が異なる」
+    //   「全角・半角の英数字を同一視しない」。 探す時だけ文字を均し、
+    //   空白の並びは「1 つ以上の空白」 として照らし合わせる
+    //   ([mcpSearchNormalize] は**字数を変えない**ので、 当たった位置は
+    //   元の本文の位置とそのまま対応する)。
+    final needleRe = _searchNeedleRegExp(needle);
     final cur = currentPage;
     final raw = <Map<String, Object?>>[];
     // 本文がページ JSON の外にある種別。 読むのは prefs なので数を抑える。
@@ -87930,8 +87967,14 @@ class MindMapProvider extends ChangeNotifier {
           unsearched.add(p.name);
         }
       } else if (p.pageType == 'videoEditor') {
-        // 字幕は list_video_editor_items で読む物なので、 ここでは見ない。
-        unsearched.add(p.name);
+        // ★ = 継続検証 167「検索対象と説明されている動画字幕を検索できない」。
+        //   道具の説明では字幕も探すと約束しているのに、 ページごと
+        //   unsearched に落としていた。 他の本文と同じように読んで探す。
+        if (bodyPages.length < kMaxBodyReads) {
+          bodyPages.add(p);
+        } else {
+          unsearched.add(p.name);
+        }
       }
       for (final n in p.nodes.values) {
         // ★ 題名・メモ・注釈・表の見出しまで見る (= 画面の検索は題名と
@@ -87953,21 +87996,19 @@ class MindMapProvider extends ChangeNotifier {
         var where = '';
         for (final f in fields) {
           if (f.isEmpty) continue;
-          final lower = f.toLowerCase();
-          var at = lower.indexOf(needle);
-          while (at >= 0) {
+          final hay = mcpSearchNormalize(f);
+          for (final m in needleRe.allMatches(hay)) {
             count++;
             if (where.isEmpty) {
-              final from = (at - 40) < 0 ? 0 : at - 40;
-              final to = (at + snippetChars) > f.length
+              final from = (m.start - 40) < 0 ? 0 : m.start - 40;
+              final to = (m.start + snippetChars) > f.length
                   ? f.length
-                  : at + snippetChars;
+                  : m.start + snippetChars;
               where = f
                   .substring(from, to)
                   .replaceAll(RegExp(r'\s+'), ' ')
                   .trim();
             }
-            at = lower.indexOf(needle, at + needle.length);
             if (count > 50) break;
           }
         }
@@ -88000,20 +88041,19 @@ class MindMapProvider extends ChangeNotifier {
       for (final part in parts) {
         final f = part.text;
         if (f.isEmpty) continue;
-        final lower = f.toLowerCase();
+        final hay = mcpSearchNormalize(f);
         var count = 0;
         var where = '';
-        var at = lower.indexOf(needle);
-        while (at >= 0) {
+        for (final m in needleRe.allMatches(hay)) {
           count++;
           if (where.isEmpty) {
-            final from = (at - 40) < 0 ? 0 : at - 40;
-            final to =
-                (at + snippetChars) > f.length ? f.length : at + snippetChars;
+            final from = (m.start - 40) < 0 ? 0 : m.start - 40;
+            final to = (m.start + snippetChars) > f.length
+                ? f.length
+                : m.start + snippetChars;
             where =
                 f.substring(from, to).replaceAll(RegExp(r'\s+'), ' ').trim();
           }
-          at = lower.indexOf(needle, at + needle.length);
           if (count > 50) break;
         }
         if (count == 0) continue;
@@ -88034,6 +88074,8 @@ class MindMapProvider extends ChangeNotifier {
         hits: const <Map<String, Object?>>[],
         verdict: unsearched.isEmpty ? 'absent' : 'unknown',
         unsearched: unsearched,
+        totalMatches: 0,
+        truncated: false,
       );
     }
     // 素の並びは「今のページを先に、 次に当たった数の多い順」。
@@ -88054,7 +88096,49 @@ class MindMapProvider extends ChangeNotifier {
       hits: narrowed.hits,
       verdict: narrowed.verdict,
       unsearched: unsearched,
+      // ★ = 継続検証 105 / 139「上限で省略されたことを判別できない」。
+      //   当たった総数と「打ち切ったか」 を必ず返す (5 件しか無いのか、
+      //   30 件のうち 5 件なのかを応答から見分けられるように)。
+      totalMatches: raw.length,
+      truncated: narrowed.hits.length < raw.length,
     );
+  }
+
+  /// 探す時だけ文字を均す (**字数は変えない**)。
+  ///
+  /// ★ = 動作検証 継続検証 126。 全角の英数字・記号を半角へ、 全角空白と
+  ///   改行・タブを半角空白へ、 大文字を小文字へ。 1 文字 → 1 文字の
+  ///   置き換えだけにしてあるので、 均した後の位置は元の本文の位置と
+  ///   そのまま対応する (= 抜粋を切り出す時にずれない)。
+  static String mcpSearchNormalize(String s) {
+    final b = StringBuffer();
+    for (final c in s.codeUnits) {
+      var u = c;
+      // 全角の ！〜～ → 半角 !〜~
+      if (u >= 0xFF01 && u <= 0xFF5E) {
+        u -= 0xFEE0;
+      } else if (u == 0x3000) {
+        u = 0x20; // 全角空白
+      } else if (u == 0x09 || u == 0x0A || u == 0x0B || u == 0x0C ||
+          u == 0x0D) {
+        u = 0x20; // タブ・改行
+      }
+      // 大文字 → 小文字 (ASCII だけ。 日本語には大小が無い)
+      if (u >= 0x41 && u <= 0x5A) u += 0x20;
+      b.writeCharCode(u);
+    }
+    return b.toString();
+  }
+
+  /// 均した検索語から、 空白の並びを「1 つ以上の空白」 として扱う型を作る。
+  static RegExp _searchNeedleRegExp(String normalizedNeedle) {
+    final parts = normalizedNeedle
+        .split(RegExp(r' +'))
+        .where((e) => e.isNotEmpty)
+        .map(RegExp.escape)
+        .toList();
+    if (parts.isEmpty) return RegExp(r' +');
+    return RegExp(parts.join(' +'));
   }
 
   /// 本文がページ JSON の外にある種別の本文を、 探せる形で返す。
@@ -88101,6 +88185,20 @@ class MindMapProvider extends ChangeNotifier {
             if (t is Map) b.writeln('${t['text'] ?? ''}');
           }
           if (b.isNotEmpty) out.add((label: 'sheet text', text: b.toString()));
+        }
+        break;
+      // ★ = 継続検証 167「検索対象と説明されている動画字幕を検索できない」。
+      case 'videoEditor':
+        final ve = await mcpListVideoEditorItems(p.id);
+        final items = (ve?['items'] as List?) ?? const [];
+        for (final it in items) {
+          if (it is! Map) continue;
+          final t = '${it['text'] ?? ''}';
+          if (t.trim().isEmpty) continue;
+          out.add((
+            label: 'caption ${it['startMs'] ?? 0}ms',
+            text: t,
+          ));
         }
         break;
       default:
@@ -106511,14 +106609,44 @@ $cleanQ
   /// と言われて整列されない)。 mcpTidyPage には入れない — あちらは AI が
   /// 触った全ページへ毎回自動で掛かるため、 ギャラリーの意図的な配置まで
   /// 勝手に詰め直してしまう。 こちらは明示的に頼まれた時だけ呼ばれる。
-  void mcpTidyGallery(String pageId) {
+  /// 動いた件数を返す (0 = 既に整列済みで何もしなかった)。
+  int mcpTidyGallery(String pageId) {
     final page = mcpPageById(pageId);
-    if (page == null || page.pageType != 'bookshelf') return;
-    if (page.nodes.isEmpty) return;
+    if (page == null || page.pageType != 'bookshelf') return 0;
+    if (page.nodes.isEmpty) return 0;
+    // ★ = 継続検証 175「変化のない整列が成功扱いになり、 取り消し履歴を
+    //   消費する」。 並べる**前**の座標を控えて、 1 件も動かないなら
+    //   保存も控えも触らない (利用者の Ctrl+Z を空振りで食わせない)。
+    final before = {
+      for (final e in page.nodes.entries) e.key: e.value.position
+    };
+    // マス目も控える (整列はマス目そのものを詰め直すため)。
+    final cellsBefore = {
+      for (final e in _shelfCells.entries) e.key: List<int>.of(e.value)
+    };
+    // 試しに並べてから比べる。 動かないなら元へ戻して何も残さない。
+    repackShelfCellsRowMajor(page);
+    _arrangeAsBookshelfBody(page);
+    final moved = [
+      for (final e in page.nodes.entries)
+        if (before[e.key] != e.value.position) e.key
+    ];
+    if (moved.isEmpty) {
+      return 0;
+    }
     // ★ 裏のページを整えても控えは**そのページ**へ積む (= 動作検証の不具合
     //   「ギャラリー整列を取り消しても整列前の座標へ戻らない」。 _pushUndo は
     //   currentPage 決め打ちだった)。 マス目も控えに入るようにしてある
     //   ([_PageSnapshot.shelfCells])。
+    //   並べ直しは既に済んでいるので、 控えを積む前に**並べる前**の
+    //   座標とマス目へ戻す (戻さないと、 取り消しても整列後の形が返る)。
+    for (final e in page.nodes.entries) {
+      final was = before[e.key];
+      if (was != null) e.value.position = was;
+    }
+    _shelfCells
+      ..clear()
+      ..addAll(cellsBefore);
     _pushUndoForPage(pageId);
     // cleanupWatchedBookshelfVideos と同じ手順 (実績のある並べ直し)。
     repackShelfCellsRowMajor(page);
@@ -106527,6 +106655,7 @@ $cleanQ
     _saveToStorage();
     notifyListeners();
     _requestMcpFocus(pageId);
+    return moved.length;
   }
 
   /// 子が奇数個の親は、 真ん中の子を親とちょうど同じ高さに揃える
@@ -106683,13 +106812,41 @@ $cleanQ
     int? hueDegrees,
     int? saturationPercent,
     int? brightnessPercent,
+    // ★ = 継続検証 155「背景なしへの再削除が更新扱いになり、 未保存の調整値を
+    //   返す」「無効テンプレートとページ不存在のエラーを区別できない」。
+    //   断った理由と「本当に変わったか」 を呼ぶ側へ返す。
+    Map<String, Object?>? outcome,
   }) async {
     final page = mcpPageById(pageId);
-    if (page == null) return false;
+    if (page == null) {
+      outcome?['reason'] = 'page_not_found';
+      return false;
+    }
     // ★ 背景を描かない種別 (マークダウン / 動画エディター) は断る。
     //   入れても画面には出ないので、 成功と返すと「変えました」 と嘘を
     //   つく事になる (= ユーザー報告)。
-    if (!_pageTypeShowsBackground(page.pageType)) return false;
+    if (!_pageTypeShowsBackground(page.pageType)) {
+      outcome?['reason'] = 'page_type_has_no_background';
+      return false;
+    }
+    // ★ = 継続検証 155。 削除と背景指定を同時に渡すのは食い違った依頼。
+    //   黙って削除を優先すると、 渡した絵柄が消えた事に気付けない。
+    if (clear &&
+        ((template ?? '').trim().isNotEmpty ||
+            (imagePath ?? '').trim().isNotEmpty)) {
+      outcome?['reason'] = 'clear_conflicts_with_background';
+      return false;
+    }
+    // ★ = 継続検証 155。 既に背景が無いのに clear を頼まれた時は、
+    //   更新日時も控えも触らない (同期の対象まで無駄に増えていた)。
+    if (clear &&
+        page.pageType != 'paint' &&
+        page.pageType != 'document' &&
+        (page.backgroundImagePath ?? '').isEmpty) {
+      outcome?['reason'] = 'already_no_background';
+      outcome?['changed'] = false;
+      return false;
+    }
     // ★ フリーノートは page.backgroundImagePath を読まない (= 何も起きない
     //   のに成功と返していた)。 紙 (シート) の背景へ回す。
     if (page.pageType == 'paint' || page.pageType == 'document') {
@@ -106712,6 +106869,8 @@ $cleanQ
       // ★ 今の一覧 + 下ろした古い id。 古い方も受け付けるのは、 AI が
       //   前の版の名前で指定してきても描ける (= 絵は残してある) ため。
       if (!kBgTemplateIds.contains(id) && !kLegacyBgTemplateIds.contains(id)) {
+        outcome?['reason'] = 'invalid_template';
+        outcome?['templates'] = kBgTemplateIds.toList();
         return false;
       }
       page.backgroundImagePath = 'builtin-map-background:$id';
@@ -106719,7 +106878,10 @@ $cleanQ
       page.backgroundOpacityPercent = opacityPercent ?? 100;
     } else if (imagePath != null && imagePath.trim().isNotEmpty) {
       final p = imagePath.trim();
-      if (!File(p).existsSync()) return false;
+      if (!File(p).existsSync()) {
+        outcome?['reason'] = 'image_not_found';
+        return false;
+      }
       page.backgroundImagePath = p;
     } else if (opacityPercent == null &&
         fit == null &&
@@ -106727,6 +106889,7 @@ $cleanQ
         saturationPercent == null &&
         brightnessPercent == null) {
       // 何も指定が無ければ変えようがない。
+      outcome?['reason'] = 'nothing_to_change';
       return false;
     }
     // ── 見え方の調整 ──
@@ -106749,6 +106912,7 @@ $cleanQ
       page.backgroundBrightnessPercent = brightnessPercent.clamp(50, 150);
     }
     page.lastModifiedAt = DateTime.now();
+    outcome?['changed'] = true;
     notifyListeners();
     await _saveToStorageLocal();
     _triggerAutoSync();
@@ -106900,10 +107064,23 @@ $cleanQ
   }
 
   bool _mcpPathAlreadyAllowed(String path) {
-    if (_mcpAllowedReadFiles.contains(path)) return true;
-    for (final d in _mcpAllowedReadDirs) {
-      if (path.startsWith(d)) return true;
+    // ★ = 動作検証 継続検証 87「作成ツールの返却パスをそのまま読み取りへ渡すと
+    //   完了しない」。 生の文字で突き合わせていたので、 `\` と `/` が混ざった
+    //   道筋 (…\913/名前.txt) では許可も控えも当たらず、 毎回**利用者に
+    //   確認を出して**そこで止まっていた。 区切りと大小文字を吸収して見る。
+    if (_mcpAllowedReadFiles.any((v) => mcpSamePath(v, path))) return true;
+    String norm(String v) {
+      final x = v.replaceAll('\\', '/');
+      return Platform.isWindows ? x.toLowerCase() : x;
     }
+
+    final p = norm(path);
+    for (final d in _mcpAllowedReadDirs) {
+      if (p.startsWith(norm(d))) return true;
+    }
+    // ★ このアプリが作ったファイルは、 同じ実行中なら確認を挟まない
+    //   (道具の説明もそう約束している)。
+    if (mcpFileWasCreatedHere(path, strict: true)) return true;
     return false;
   }
 
@@ -106917,7 +107094,9 @@ $cleanQ
     if (raw.isEmpty) return {'error': 'path is required'};
     String full;
     try {
-      full = File(raw).absolute.path;
+      // ★ = 継続検証 87。 区切りを揃えてから絶対パスにする (混ざったままだと
+      //   許可の控えにも、 返す道筋にも同じ物が二通り現れる)。
+      full = File(mcpNormalizePath(raw)).absolute.path;
     } catch (_) {
       full = raw;
     }
@@ -107261,15 +107440,35 @@ $cleanQ
   ///   以前は短い間に消せる枚数に歯止めを掛けていたが、 まとめて片付けたい
   ///   時に邪魔になるため撤廃した。 消し過ぎの防止は、 消した物を後から
   ///   戻せる控え (deletePageBackup) と、 道具の説明文に任せる。
-  Future<String?> mcpDeletePage(String pageId) async {
+  /// ★ = 動作検証 継続検証 95「添付を持つページを消すとファイルが孤立する」。
+  ///   [disposeFiles] ('no' / 'generated' / 'yes') を渡すと、 そのページに
+  ///   貼ってあったファイルも**ごみ箱まで**送る (完全削除は決してしない)。
+  ///   何をどうしたかは [disposed] へ 1 件ずつ入れて返す。
+  Future<String?> mcpDeletePage(String pageId,
+      {String disposeFiles = 'no',
+      List<Map<String, Object?>>? disposed}) async {
     final i = _pages.indexWhere((p) => p.id == pageId);
     if (i < 0) {
       return 'no page has the id "$pageId". Call list_pages and use an id '
           'from it (ids are not guessable). Do not try other ids.';
     }
+    // 消す**前**に添付の在処を控える (消した後では引けない)。
+    final attachments = <String>[];
+    if (disposeFiles != 'no') {
+      for (final n in _pages[i].nodes.values) {
+        final p = (n.attachmentPath ?? '').trim();
+        if (p.isNotEmpty && !attachments.any((v) => mcpSamePath(v, p))) {
+          attachments.add(p);
+        }
+      }
+    }
     // ★ 最後の 1 枚でも消せる (= ユーザー要望)。
     //   消した後は自動で白紙が 1 枚置かれる。
     deletePage(i);
+    for (final p in attachments) {
+      final r = await mcpDisposeAttachmentFile(p, disposeFiles);
+      disposed?.add({'path': p, ...r});
+    }
     return null;
   }
 
@@ -107307,6 +107506,21 @@ $cleanQ
         try {
           await unpublishPage(pageId);
         } catch (_) {}
+      }
+    }
+    // ★ = 継続検証 102「ギャラリーから通常ページへ戻しても要素サイズが
+    //   戻らない」。 棚に並べる時に付く棚用の寸法 (190x209 + clampHeight) が
+    //   そのまま残るので、 同じ通常ページの中で新しい要素 (140x40) と
+    //   大きさが揃わなくなっていた。 通常マップへ戻す時は既定の寸法へ均す。
+    final was = _pages[i].pageType;
+    if (was == 'bookshelf' && type == 'normal') {
+      for (final n in _pages[i].nodes.values) {
+        // 添付 (画像 / ファイル) のタイルは元から大きいので触らない。
+        if ((n.attachmentPath ?? '').isNotEmpty) continue;
+        if (n.tableData != null) continue;
+        n.width = 160;
+        n.height = 40;
+        n.clampHeight = false;
       }
     }
     _pages[i].pageType = type;
@@ -107682,11 +107896,24 @@ $cleanQ
 
   /// [folderId] を渡すとそのフォルダーへ、 [toRoot] なら一番上へ作る。
   /// どちらも無ければ、 今開いているフォルダーの中 (今までどおり)。
+  /// 画面側のマークダウン編集器が差し込む「書き方の見本」 を出した事にする。
+  /// ★ = 継続検証 170 / 171。 道具から作ったページは書く相手が決まって
+  ///   いるので、 空のまま離れても入門本文を混ぜない。
+  Future<void> _mcpSuppressMarkdownStarter(String pageId) async {
+    try {
+      final sp = await _prefsWithRetry();
+      await sp.setBool('md_sample_seeded_$pageId', true);
+    } catch (_) {}
+  }
+
   String? mcpCreatePage({
     required String type,
     String? name,
     String? folderId,
     bool toRoot = false,
+    // ★ = 継続検証 138「存在しない保存先のエラーが無関係な原因と複合される」。
+    //   断った本当の理由を 1 つだけ返す。
+    Map<String, Object?>? outcome,
   }) {
     // ★ = 検証レポート「新規ページの格納先が暗黙的」。 行き先を指定できる
     //   ようにし、 作った後に実際どこへ入ったかを返せるようにする
@@ -107694,6 +107921,7 @@ $cleanQ
     final wantFolder = (folderId ?? '').trim();
     if (wantFolder.isNotEmpty &&
         !_folders.any((f) => f.id == wantFolder)) {
+      outcome?['reason'] = 'folder_not_found';
       return null;
     }
     final dest = toRoot
@@ -107704,23 +107932,62 @@ $cleanQ
     //   していた。 名前は省略できる引数なので、 断るのではなく
     //   「指定なし」 に倒す (= フォルダー作成 mcpCreateFolder と同じ作法)。
     //   こうすると自動の名前 (マップ 3 など) が付く。
-    final trimmedName = (name ?? '').trim();
+    // ★ 制御文字・改行は落とし、 同じフォルダーの同名は採番する
+    //   (= 継続検証 128 / 178)。
+    final trimmedName = mcpSafeDisplayName(name ?? '');
     name = trimmedName.isEmpty ? null : trimmedName;
     // 作れる種別は画面が描き分けられる物だけ (= 動作確認で判明: 知らない
     //   種別を作らせると、 見た目は普通のマップなのに種別だけ違う、 誰にも
-    //   直せないページが残る)。 知らない種別は 'normal' に倒し、 何を作った
-    //   かは呼び出し側が pageType を見て確かめる。
+    //   直せないページが残る)。
     // ストア版は黙って normal に倒さず失敗を返す
     //   (= 作っていないのに「作りました」 と言わせない)。
-    if (kStoreBuild && type == 'videoEditor') return null;
-    const known = {'bookshelf', 'paint', 'videoEditor', 'document', 'markdown'};
-    final t = known.contains(type) ? type : 'normal';
-    if (!canCreatePageType(t)) return null;
+    if (kStoreBuild && type == 'videoEditor') {
+      outcome?['reason'] = 'store_build_no_video_editor';
+      return null;
+    }
+    // ★ = 継続検証 144「作成だけ不正な種類名を黙って normal に倒す」。
+    //   種類を変える方 (mcpSetPageType) は理由を返して断るのに、 作る方だけ
+    //   すり替えていたので、 大小文字の間違いで別のページが増えていた。
+    //   同じ列挙で検査し、 大小文字だけの違いは正しい綴りへ均す。
+    const known = {
+      'normal',
+      'bookshelf',
+      'paint',
+      'videoEditor',
+      'document',
+      'markdown'
+    };
+    final asked = type.trim();
+    final t = known.firstWhere(
+      (k) => k.toLowerCase() == asked.toLowerCase(),
+      orElse: () => '',
+    );
+    if (t.isEmpty) {
+      outcome?['reason'] = 'unknown_type';
+      outcome?['requestedType'] = type;
+      return null;
+    }
+    if (!canCreatePageType(t)) {
+      outcome?['reason'] = 'plan_or_quota';
+      return null;
+    }
+    if (name != null) {
+      final dst = toRoot
+          ? null
+          : (wantFolder.isNotEmpty ? wantFolder : _validOpenFolderId);
+      name = mcpUniqueName(name, [
+        for (final p in _pages)
+          if (p.folderId == dst) p.name
+      ]);
+    }
     // ★ = 点検で判明: 鍵の掛かる枚数で作ると、 道具 (MCP) には id を返すのに
     //   [mcpPageById] が null を返すので、 以後の書き込みが全部
     //   「ページが見つかりません」 になる。 しかも利用者が何も触っていないのに
     //   プラン案内のモーダルが開く。 画面側の作成口と同じく、 作る前に断る。
-    if (wouldNewPageBeLocked) return null;
+    if (wouldNewPageBeLocked) {
+      outcome?['reason'] = 'would_be_locked_by_plan';
+      return null;
+    }
     switch (t) {
       case 'bookshelf':
         addBookshelfPage(name: name, folderId: dest);
@@ -107742,6 +108009,15 @@ $cleanQ
     }
     if (_pages.isEmpty) return null;
     final created = _pages.last.id;
+    // ★ = 継続検証 170「空のマークダウンページのまま離れると、 入門本文が
+    //   自動保存される」。 道具の説明は「直後に書かなければ空ページになる」
+    //   と約束しているのに、 画面側 (_MarkdownPageView) が空の紙を見ると
+    //   書き方の見本を差し込んで保存していた。 道具から作った物は書く相手が
+    //   決まっているので、 見本を出した事にして差し込ませない。
+    if (t == 'markdown') {
+      // ignore: discarded_futures
+      _mcpSuppressMarkdownStarter(created);
+    }
     // 作ったページをそのまま開く (= ユーザー要望: 新規作成されたら
     //   切り替えた画面に生成物が表示されるように)。
     final idx = _pages.indexWhere((e) => e.id == created);
@@ -107822,6 +108098,10 @@ $cleanQ
     // フローチャートのブロックの形 (= ユーザー要望: 図を形のまま変換)。
     // updateNodeShape は currentPage 決め打ちなのでここで直接持たせる。
     String? shape,
+    // ★ = 継続検証 147「新規追加時の不正 URL 変換を応答で説明しない」。
+    //   開けない URL はリンクにせずメモへ回しているのに、 返るのは id だけ
+    //   だったので、 呼ぶ側は「リンクになった」 と信じていた。
+    Map<String, Object?>? outcome,
   }) {
     final page = mcpPageById(pageId);
     if (page == null) return null;
@@ -107866,6 +108146,12 @@ $cleanQ
     //   押しても何も起きないリンクは「壊れている」 としか見えないので、
     //   通らない物は本文へ回す (捨てない)。
     if (link.isNotEmpty && !mcpIsUsableLink(link)) {
+      if (outcome != null) {
+        outcome['requestedUrl'] = link;
+        outcome['storedAs'] = memoText.isEmpty ? 'memo' : 'dropped';
+        outcome['reason'] = 'unsupported_scheme: only http(s) links can be '
+            'opened from a node, so it was NOT made clickable';
+      }
       if (memoText.isEmpty) {
         node.contentType = NodeContentType.memo;
         node.memoText = link;
@@ -108707,20 +108993,40 @@ $cleanQ
   /// [tab] を渡せばそのタブ 1 枚、 [binder] だけならバインダーごと。
   /// 最後の 1 枚 / 最後のバインダーは残す (空のノートは画面が開けない)。
   /// 戻り値は消した物の名前。 消せなかった時は null。
+  /// ★ = 継続検証 154「削除失敗の原因がすべて同じ汎用エラーになる」。
+  ///   断った理由を [outcome] の 'reason' で返す (呼ぶ側が入力ミスと
+  ///   仕様上の保護を言い分けられるように)。
   Future<String?> mcpDeletePaintItem(String pageId,
-      {int? binder, int? tab}) async {
+      {int? binder, int? tab, Map<String, Object?>? outcome}) async {
     final page = mcpPageById(pageId);
-    if (page == null || page.pageType != 'paint') return null;
+    if (page == null || page.pageType != 'paint') {
+      outcome?['reason'] =
+          page == null ? 'pageNotFound' : 'wrongPageType';
+      return null;
+    }
     final body = await _mcpPaintBody(pageId);
     final binders = _mcpPaintBinders(body);
-    if (binders == null || binders.isEmpty) return null;
+    if (binders == null || binders.isEmpty) {
+      outcome?['reason'] = 'noBinders';
+      return null;
+    }
     final bi = binder ?? ((body['noteSel'] as num?)?.toInt() ?? 0);
-    if (bi < 0 || bi >= binders.length) return null;
+    if (bi < 0 || bi >= binders.length) {
+      outcome?['reason'] = 'binderNotFound';
+      outcome?['binderCount'] = binders.length;
+      return null;
+    }
     final note = binders[bi];
-    if (note is! Map) return null;
+    if (note is! Map) {
+      outcome?['reason'] = 'binderNotFound';
+      return null;
+    }
     final String gone;
     if (tab == null) {
-      if (binders.length <= 1) return null;
+      if (binders.length <= 1) {
+        outcome?['reason'] = 'lastBinderProtected';
+        return null;
+      }
       gone = '${note['n'] ?? ''}';
       binders.removeAt(bi);
       var sel = (body['noteSel'] as num?)?.toInt() ?? 0;
@@ -108729,8 +109035,15 @@ $cleanQ
       body['noteSel'] = sel < 0 ? 0 : sel;
     } else {
       final pages = note['pages'];
-      if (pages is! List || tab < 0 || tab >= pages.length) return null;
-      if (pages.length <= 1) return null;
+      if (pages is! List || tab < 0 || tab >= pages.length) {
+        outcome?['reason'] = 'tabNotFound';
+        outcome?['tabCount'] = pages is List ? pages.length : 0;
+        return null;
+      }
+      if (pages.length <= 1) {
+        outcome?['reason'] = 'lastTabProtected';
+        return null;
+      }
       final t = pages[tab];
       gone = (t is Map) ? '${t['n'] ?? ''}' : '';
       pages.removeAt(tab);
@@ -109259,8 +109572,12 @@ $cleanQ
       var limit = paper.$2 - math.max(24.0, lineH);
       var texts = (target['t'] is List) ? target['t'] as List : <dynamic>[];
       // 位置を指定されなければ、 既に描かれている物の**下端**の下から。
-      var cursor = y ??
-          math.max(80.0, (_mcpPaintContentBottom(target) ?? 0) + lineH * 0.8);
+      // ★ = 継続検証 110「負の Y 座標だけが保存される」。 X は既に紙の幅で
+      //   丸めているのに、 Y は素通りだったので紙の上の外側 (選べない所) へ
+      //   文字が置けていた。 X と同じ物差しで紙の中へ丸める。
+      var cursor = y == null
+          ? math.max(80.0, (_mcpPaintContentBottom(target) ?? 0) + lineH * 0.8)
+          : y.clamp(0.0, math.max(0.0, paper.$2 - lineH)).toDouble();
       var wrote = 0;
       var stopped = false;
       var addedSheets = 0;
@@ -109724,6 +110041,11 @@ $cleanQ
           if (e['s'] != null) 'startMs': e['s'],
           if (e['d'] != null) 'durationMs': e['d'],
           if (text.isNotEmpty) 'text': text,
+          // ★ = 継続検証 123「文字色・文字サイズを保存後に確認できない」。
+          //   保存はしているのに読み返す口が無かったので、 見た目の回帰を
+          //   自動で確かめられなかった。 保存された値をそのまま返す。
+          if (e['fs'] != null) 'fontSize': e['fs'],
+          if (e['c'] != null) 'color': e['c'],
           if (path.isNotEmpty) 'path': path,
           // 元のファイルが消えていれば知らせる (= 書き出しが真っ黒になるのを、
           //   作り直す前に気付けるように)。
@@ -109751,8 +110073,18 @@ $cleanQ
   ///   null (既定) は「区切り <<<PAGE:…>>> があれば必ず分け、 無ければ長い
   ///   文書だけ見出しで分ける」。
   ///   末尾へ足す時 ([append]) は、 足す 1 行を割らないよう分けない。
+  /// ★ = 継続検証 109「split:"single" が既存の他タブを残すのに tabs:1 と
+  ///   返す」。 返すのは「書いたタブの数」 ではなく、 書いた後の**ページの
+  ///   実状態**。 [outcome] に 'pageTabs' (ページ全体のタブ数) /
+  ///   'wroteTabs' (この呼び出しで書いたタブ数) / 'wroteTo' (書いた先の名前)
+  ///   / 'otherTabsKept' を入れる。
+  /// [clear] を true にすると、 空の本文で**明示的に空ページへ戻す**
+  ///   (= 継続検証 171「空内容の保存が拒否されるので入門本文を抑止できない」)。
   Future<int> mcpWriteMarkdown(String pageId, String text,
-      {bool append = false, bool? split}) async {
+      {bool append = false,
+      bool? split,
+      bool clear = false,
+      Map<String, Object?>? outcome}) async {
     final page = mcpPageById(pageId);
     if (page == null) return 0;
     if (page.pageType != 'markdown') return 0;
@@ -109761,7 +110093,7 @@ $cleanQ
     //   'markdown_' という誰も読まない場所へ書いて成功を返してしまう。
     final id = page.id;
     final body = text.trimRight();
-    if (body.trim().isEmpty && append) return 0;
+    if (body.trim().isEmpty && append && !clear) return 0;
     try {
       final prefs = await _prefsWithRetry();
       final key = 'markdown_$id';
@@ -109848,8 +110180,32 @@ $cleanQ
         }
       } else {
         final cur = '${tabs[sel]['text'] ?? ''}'.trimRight();
+        // ★ = 継続検証 122「追記時の空行自動挿入が入力先頭の改行と重複する」。
+        //   こちらが必ず 1 行空けるので、 渡された本文の先頭の改行は落とす
+        //   (落とさないと合計 4 改行の広すぎる空白が残っていた)。
+        final add = body.replaceFirst(RegExp(r'^[\r\n]+'), '');
         tabs[sel]['text'] =
-            append ? (cur.isEmpty ? body : '$cur\n\n$body') : body;
+            append ? (cur.isEmpty ? add : '$cur\n\n$add') : body;
+      }
+      // ★ = 継続検証 171。 明示的な「空にする」 だけは受ける。
+      if (clear) {
+        tabs
+          ..clear()
+          ..add({
+            'id': 'md${DateTime.now().microsecondsSinceEpoch}',
+            'name': '1',
+            'text': '',
+          });
+        sel = 0;
+      }
+      if (outcome != null) {
+        outcome['pageTabs'] = tabs.length;
+        outcome['wroteTabs'] = parts.length > 1 ? parts.length : 1;
+        outcome['wroteTo'] = '${tabs[sel]['name'] ?? ''}';
+        final wrote = parts.length > 1 ? parts.length : 1;
+        if (!append && tabs.length > wrote) {
+          outcome['otherTabsKept'] = tabs.length - wrote;
+        }
       }
       final encoded = jsonEncode({'v': 2, 'sel': sel, 'tabs': tabs});
       await prefs.setString(key, encoded);
@@ -110052,7 +110408,11 @@ $cleanQ
           'd': dur,
           'p': path ?? '',
           't': k == 1 ? words[i] : '',
-          'fs': fontSize ?? 32.0,
+          // ★ = 継続検証 123「範囲外の文字サイズが拒否・補正・保存の
+          //   どれになったか確認できない」。 描ける範囲へ丸めてから保存し、
+          //   読み返す mcpListVideoEditorItems で確かめられるようにする。
+          'fs': (fontSize ?? 32.0)
+              .clamp(kVideoCaptionMinFont, kVideoCaptionMaxFont),
           'c': colorValue ?? 0xFFFFFFFF,
           'b': true,
           'x': 0.5,
@@ -110517,71 +110877,161 @@ $cleanQ
     int? colorValue,
     String? url,
     bool clearUrl = false,
+    // ★ = 動作検証 継続検証 94 / 119 / 137 / 147 / 175 / 183。
+    //   「本当に当てた項目」 と「受け取ったのに当てなかった項目 (と理由)」 を
+    //   呼ぶ側へ返す。 bool だけだと、 何も変わっていないのに updated:true と
+    //   答え、 取り消し履歴まで 1 手食う事に気付けなかった。
+    Map<String, Object?>? outcome,
   }) {
+    void report(List<String> applied, List<Map<String, Object?>> ignored) {
+      if (outcome == null) return;
+      outcome['appliedFields'] = applied;
+      outcome['ignored'] = ignored;
+      outcome['changed'] = applied.isNotEmpty;
+    }
+
     final page = mcpPageById(pageId);
-    if (page == null) return false;
+    if (page == null) {
+      report(const [], const []);
+      return false;
+    }
     // 書き換えも部分一致では選ばない (= 消す時と同じ理由。 こちらは
     //   取り消しも積んでいないので、 別ノードを潰すと戻せない)。
     final node =
         page.nodes[_resolveNodeIdIn(page, nodeKey, fuzzy: false) ?? nodeKey];
-    if (node == null) return false;
+    if (node == null) {
+      report(const [], const []);
+      return false;
+    }
+    final applied = <String>[];
+    final ignored = <Map<String, Object?>>[];
+    void skip(String field, String reason, [Object? value]) => ignored.add({
+          'field': field,
+          if (value != null) 'value': value,
+          'reason': reason,
+        });
     // ★ = 動作検証の不具合「ギャラリー要素を格子外の座標へ移動できてしまう」
     //   「使用中のマスへ移動しても入れ替わらず重なる」。 ギャラリーの位置は
     //   マス目が決める物で、 画面にも要素をつまんで好きな所へ置く手立ては
     //   無い。 好きな座標を受けると、 格子から外れた所に 1 件だけ残ったり、
     //   同じマスに 2 件が完全に重なって後ろが見えなくなる。 座標だけ捨て、
     //   題名や色などの書き換えはそのまま通す (並べ直しは mcpTidyGallery)。
-    if (page.pageType == 'bookshelf') {
+    // ★ = 継続検証 94 / 175「成功扱いなのに反映されない」。 黙って捨てると
+    //   呼ぶ側は「置いた」 と信じる。 捨てた事と理由を必ず返す。
+    if (page.pageType == 'bookshelf' && (x != null || y != null)) {
+      skip(
+          'x/y',
+          'a gallery (bookshelf) page lays its tiles out on a fixed grid, so '
+              'x / y cannot be set from here - the tile stayed in its cell. '
+              'Call tidy_page to repack the grid, or convert the page with '
+              'set_page_type "normal" first.',
+          {'x': x, 'y': y});
       x = null;
       y = null;
     }
+    // ── 何をどう変えるかを**先に**決める (控えを積む前に) ──
+    //
     // ★ 空の題名は**受ける** (= 動作検証の不具合「題名を空にできず、 存在する
     //   ID を『見つからない』 と返す」)。 チェック項目も「題名を空にして確定
     //   すると、 要素は消えずに中身が空のまま残る」 と決めている。 空白だけの
     //   時は空文字に均す (見た目が同じなので、 以降 id で指せる事も変わらない)。
+    final String? newTitle =
+        title == null ? null : (title.trim().isEmpty ? '' : title);
+    // ★ = 継続検証 137「空白だけのメモが保存され、 見えないのに背が伸びる」。
+    //   足す時は空白だけを捨てているので、 直す時も同じ物差しで空に均す。
+    final String? newMemo =
+        memo == null ? null : (memo.trim().isEmpty ? '' : memo);
+    if (memo != null && memo.trim().isEmpty && memo.isNotEmpty) {
+      skip('memo',
+          'whitespace-only memo text was normalised to an empty memo (a memo '
+          'that holds no real characters would still make the node taller).');
+    }
+    // URL は「通常リンク」 と「YouTube」 が**排他**。
+    // ★ = 継続検証 99 / 136「種類を変えると前の URL が内部に残る」。
+    final link = (url ?? '').trim();
+    String? wantLink; // 新しい linkUrl
+    String? wantYoutube; // 新しい youtubeUrl
+    var touchUrl = false;
+    if (clearUrl) {
+      touchUrl = node.linkUrl != null || node.youtubeUrl != null;
+    } else if (link.isNotEmpty) {
+      // ★ 開けない文字列はリンクにしない (= 調査報告 BUG-14)。
+      //   ここは書き換えなので、 通らない値は**何もしない**
+      //   (元のリンクを壊さない)。
+      // ★ = 継続検証 147「危険 URL を成功・適用済みと返すが実際は変えない」。
+      //   何もしないなら、 何もしなかったと言う。
+      if (!mcpIsUsableLink(link)) {
+        skip(
+            'url',
+            'unsupported or unsafe scheme - only http(s) links can be opened '
+                'from a node, so the link that was already there was left '
+                'exactly as it was.',
+            link);
+      } else if (_isYoutubeVideoUrl(link)) {
+        wantYoutube = link;
+        wantLink = null;
+        touchUrl = node.youtubeUrl != link || node.linkUrl != null;
+      } else {
+        wantLink = link;
+        wantYoutube = null;
+        touchUrl = node.linkUrl != link || node.youtubeUrl != null;
+      }
+    }
+    // 「本当に変わる物」 だけ数える (= 継続検証 119 / 183: 同じ値への
+    //   書き換えで updated:true を返し、 取り消し履歴まで 1 手食っていた)。
+    if (newTitle != null && newTitle != node.title) applied.add('title');
+    if (newMemo != null && newMemo != (node.memoText ?? '')) {
+      applied.add('memo');
+    }
+    if (x != null && x != node.position.dx) applied.add('x');
+    if (y != null && y != node.position.dy) applied.add('y');
+    if (colorValue != null && Color(colorValue) != node.color) {
+      applied.add('color');
+    }
+    if (touchUrl) applied.add('url');
+    if (applied.isEmpty) {
+      // 何も変わらないなら、 保存も控えも触らない。
+      report(applied, ignored);
+      return true;
+    }
     // 直した所は全部戻せるようにする (= 動作検証の不具合「MCP で移動した要素 /
     //   題名を変えた要素を取り消せない」。 以前は色とリンクだけ積んでいた)。
-    if (title != null ||
-        memo != null ||
-        x != null ||
-        y != null ||
-        colorValue != null ||
-        url != null ||
-        clearUrl) {
-      _pushUndoForPage(pageId, coalesceKey: 'mcpUpdateNode:$pageId');
-    }
-    if (title != null) node.title = title.trim().isEmpty ? '' : title;
-    if (memo != null) {
-      node.contentType = NodeContentType.memo;
-      node.memoText = memo;
+    _pushUndoForPage(pageId, coalesceKey: 'mcpUpdateNode:$pageId');
+    if (newTitle != null) node.title = newTitle;
+    if (newMemo != null) {
+      node.memoText = newMemo.isEmpty ? null : newMemo;
+      if (newMemo.isEmpty) {
+        if (node.contentType == NodeContentType.memo) {
+          node.contentType = (node.youtubeUrl ?? '').isNotEmpty
+              ? NodeContentType.youtube
+              : ((node.linkUrl ?? '').isNotEmpty
+                  ? NodeContentType.link
+                  : NodeContentType.none);
+        }
+      } else {
+        node.contentType = NodeContentType.memo;
+      }
     }
     if (x != null || y != null) {
       node.position = Offset(x ?? node.position.dx, y ?? node.position.dy);
     }
     if (colorValue != null) node.color = Color(colorValue);
-    if (clearUrl) {
-      node.linkUrl = null;
-      node.youtubeUrl = null;
-      node.contentType = (node.memoText ?? '').isEmpty
-          ? NodeContentType.none
-          : NodeContentType.memo;
-    } else if (url != null &&
-        url.trim().isNotEmpty &&
-        // ★ 開けない文字列はリンクにしない (= 調査報告 BUG-14)。
-        //   ここは書き換えなので、 通らない値は**何もしない**
-        //   (元のリンクを壊さない)。
-        mcpIsUsableLink(url)) {
-      final link = url.trim();
-      if (_isYoutubeVideoUrl(link)) {
-        node.youtubeUrl = link;
+    if (touchUrl) {
+      node.linkUrl = wantLink;
+      node.youtubeUrl = wantYoutube;
+      if (wantYoutube != null) {
         node.contentType = NodeContentType.youtube;
+      } else if (wantLink != null) {
+        node.contentType = (node.memoText ?? '').isEmpty
+            ? NodeContentType.link
+            : NodeContentType.memo;
       } else {
-        node.linkUrl = link;
-        if ((node.memoText ?? '').isEmpty) {
-          node.contentType = NodeContentType.link;
-        }
+        node.contentType = (node.memoText ?? '').isEmpty
+            ? NodeContentType.none
+            : NodeContentType.memo;
       }
     }
+    report(applied, ignored);
     _saveToStorage();
     notifyListeners();
     return true;
@@ -110998,11 +111448,18 @@ $cleanQ
 
   bool mcpConnectNodes(String pageId, String fromKey, String toKey,
       {String? label,
+      // ★ = 継続検証 121 / 140「既存の札を空文字で外せない」。 空文字は
+      //   「指定なし」 と見分けが付かないので、 外す時は専用の印を渡す。
+      bool clearLabel = false,
       bool allowParallel = false,
       // 図の変換用: 矢じりの有無 / 双方向 / 縦の流れ (上→下)。
       bool showArrow = true,
       bool bidirectional = false,
-      bool vertical = false}) {
+      bool vertical = false,
+      // ★ = 継続検証 161 / 163。 「新しく引いた / 札を変えた / 向きを変えた /
+      //   元から同じだった」 を呼ぶ側へ返す。 bool だけだと、 何も変わって
+      //   いないのに updated と答え、 取り消し履歴を 1 手食っていた。
+      Map<String, Object?>? outcome}) {
     final page = mcpPageById(pageId);
     if (page == null) return false;
     final fromId = _resolveNodeIdIn(page, fromKey);
@@ -111021,17 +111478,52 @@ $cleanQ
             (c.fromId == fromId && c.toId == toId) ||
             (c.fromId == toId && c.toId == fromId));
     if (at >= 0) {
-      if (label != null && label.trim().isNotEmpty) {
-        // ★ ラベルの書き換えも戻せるようにする (= 動作検証の不具合)。
-        _pushUndoForPage(pageId, coalesceKey: 'mcpConnect:$pageId');
-        page.connections[at] = page.connections[at].copyWith(label: label);
+      final cur = page.connections[at];
+      final changed = <String>[];
+      // ★ = 継続検証 115 / 163「逆向きに指定すると応答だけ逆向きになり、
+      //   保存された矢印は変わらない」。 同じ組を逆順で頼まれたのだから、
+      //   保存する向き (と繋ぎ口) も反転させる。 応答と実データを合わせる。
+      final flip = cur.fromId == toId && cur.toId == fromId;
+      final newLabel = clearLabel
+          ? null
+          : ((label != null && label.trim().isNotEmpty) ? label : cur.label);
+      if (clearLabel) {
+        if ((cur.label ?? '').isNotEmpty) changed.add('label');
+      } else if (label != null &&
+          label.trim().isNotEmpty &&
+          label != cur.label) {
+        changed.add('label');
       }
+      if (flip) changed.add('direction');
+      if (changed.isEmpty) {
+        outcome?['changed'] = const <String>[];
+        outcome?['fromId'] = cur.fromId;
+        outcome?['toId'] = cur.toId;
+        // 何も変わらないなら、 保存も控えも取り消し履歴も触らない。
+        return true;
+      }
+      // ★ ラベルの書き換えも戻せるようにする (= 動作検証の不具合)。
+      _pushUndoForPage(pageId, coalesceKey: 'mcpConnect:$pageId');
+      page.connections[at] = cur.copyWith(
+        fromId: flip ? fromId : cur.fromId,
+        toId: flip ? toId : cur.toId,
+        fromAnchor: flip ? cur.toAnchor : cur.fromAnchor,
+        toAnchor: flip ? cur.fromAnchor : cur.toAnchor,
+        label: newLabel,
+        clearLabel: clearLabel,
+      );
+      outcome?['changed'] = changed;
+      outcome?['fromId'] = page.connections[at].fromId;
+      outcome?['toId'] = page.connections[at].toId;
       _saveToStorage();
       notifyListeners();
       return true;
     }
     // ★ 新しく引いた線も戻せるようにする (= 動作検証の不具合「接続を
     //   取り消せない」)。 引けなかった時 (上の return false) では積まない。
+    outcome?['changed'] = const <String>['created'];
+    outcome?['fromId'] = fromId;
+    outcome?['toId'] = toId;
     _pushUndoForPage(pageId, coalesceKey: 'mcpConnect:$pageId');
     page.connections.add(NodeConnection(
       fromId: fromId,
@@ -111112,6 +111604,9 @@ $cleanQ
     String? text,
     bool? filled,
     int? layer,
+    // ★ = 継続検証 129 / 132 / 180。 丸めた層と、 囲めなかった相手を返す
+    //   (黙って一部だけ囲むと、 呼ぶ側は全部囲めたと信じる)。
+    Map<String, Object?>? outcome,
   }) {
     final page = mcpPageById(pageId);
     if (page == null) return null;
@@ -111125,13 +111620,17 @@ $cleanQ
     Offset? start;
     Offset? end;
     final resolvedAroundIds = <String>[];
+    final missedAround = <String>[];
     const aroundPadding = 28.0;
     if (aroundNodeIds != null && aroundNodeIds.isNotEmpty) {
       double? l, t, r, b;
       for (final key in aroundNodeIds) {
         final id = _resolveNodeIdIn(page, key);
         final n = id == null ? null : page.nodes[id];
-        if (n == null) continue;
+        if (n == null) {
+          missedAround.add(key);
+          continue;
+        }
         if (!resolvedAroundIds.contains(n.id)) resolvedAroundIds.add(n.id);
         final nl = n.position.dx;
         final nt = n.position.dy;
@@ -111171,13 +111670,36 @@ $cleanQ
       end: end,
       // MapDecoration.colorRgb は 24 ビット (不透明度を持たない)。
       colorRgb: (colorRgb ?? 0x222222) & 0xFFFFFF,
-      strokeWidth: strokeWidth ?? 2.5,
+      // ★ = 継続検証 107 / 181「線幅へ負の値を保存できる」。 負や 0 の太さは
+      //   描けない (見えない図形になる) ので、 描ける最小へ丸める。
+      strokeWidth: strokeWidth == null
+          ? 2.5
+          : strokeWidth.clamp(kMapDecoMinStroke, kMapDecoMaxStroke),
       text: (text ?? '').trim(),
       filled: filled ?? false,
       layer: (layer ?? activeLayerOf(pageId)).clamp(1, 5),
       aroundNodeIds: List<String>.unmodifiable(resolvedAroundIds),
       aroundNodePadding: aroundPadding,
     );
+    if (outcome != null) {
+      outcome['layer'] = deco.layer;
+      if (layer != null && layer != deco.layer) {
+        outcome['requestedLayer'] = layer;
+        outcome['layerClamped'] = true;
+      }
+      outcome['strokeWidth'] = deco.strokeWidth;
+      if (strokeWidth != null && strokeWidth != deco.strokeWidth) {
+        outcome['requestedStrokeWidth'] = strokeWidth;
+        outcome['strokeWidthClamped'] = true;
+      }
+      if (resolvedAroundIds.isNotEmpty) {
+        outcome['aroundNodeIds'] = List<String>.from(resolvedAroundIds);
+        outcome['aroundFitsOnce'] = true;
+      }
+      if (missedAround.isNotEmpty) {
+        outcome['aroundNotFound'] = missedAround;
+      }
+    }
     _pushUndoForPage(pageId, coalesceKey: 'mcpDecoAdd:$pageId');
     page.decorations.add(deco);
     page.lastModifiedAt = DateTime.now();
@@ -111203,6 +111725,8 @@ $cleanQ
     String? text,
     bool? filled,
     int? layer,
+    // ★ = 継続検証 129。 丸めた値を呼ぶ側へ返す。
+    Map<String, Object?>? outcome,
   }) {
     final page = mcpPageById(pageId);
     if (page == null) return false;
@@ -111217,15 +111741,42 @@ $cleanQ
       //   一番困る)。 折れ線は通過点が要るので作る側と同じく扱わない。
       if (k == null || k == MapDecorationKind.polyline) return false;
     }
+    // ★ = 継続検証 107 / 181「線幅へ負の値を保存できる」。 足す側と同じ物差し。
+    final double? stroke = strokeWidth == null
+        ? null
+        : strokeWidth.clamp(kMapDecoMinStroke, kMapDecoMaxStroke);
+    // ★ = 継続検証 141「空白だけの文字へ更新でき、 見えないのに文字付きに
+    //   なる」。 空白だけは空文字に均す (= 文字を消したのと同じ扱い)。
+    final String? newText =
+        text == null ? null : (text.trim().isEmpty ? '' : text);
     _pushUndoForPage(pageId, coalesceKey: 'mcpDecoUpdate:$pageId');
     page.decorations[i] = page.decorations[i].copyWith(
       kind: k,
       colorRgb: colorRgb == null ? null : (colorRgb & 0xFFFFFF),
-      strokeWidth: strokeWidth,
-      text: text,
-      filled: filled,
+      strokeWidth: stroke,
+      text: newText,
+      // ★ = 継続検証 181「文字だけ直すと塗りつぶしが解除される」。
+      //   MapDecoration.copyWith の filled は noChange 印を使う仕組みなので、
+      //   null をそのまま渡すと「塗りを消す」 の意味になっていた。
+      filled: filled ?? MapDecoration.noChange,
       layer: layer?.clamp(1, 5),
     );
+    if (outcome != null) {
+      final d = page.decorations[i];
+      outcome['kind'] = d.kind.name;
+      outcome['layer'] = d.layer;
+      outcome['strokeWidth'] = d.strokeWidth;
+      outcome['filled'] = d.filled ?? false;
+      outcome['text'] = d.text;
+      if (layer != null && layer != d.layer) {
+        outcome['requestedLayer'] = layer;
+        outcome['layerClamped'] = true;
+      }
+      if (strokeWidth != null && strokeWidth != d.strokeWidth) {
+        outcome['requestedStrokeWidth'] = strokeWidth;
+        outcome['strokeWidthClamped'] = true;
+      }
+    }
     page.lastModifiedAt = DateTime.now();
     _saveToStorage();
     notifyListeners();
@@ -111246,6 +111797,9 @@ $cleanQ
     int? startMs,
     int? durationMs,
     String? text,
+    // ★ = 継続検証 123「既存字幕の見た目を後から変えられない」。
+    double? fontSize,
+    int? colorValue,
     bool remove = false,
   }) async {
     final page = mcpPageById(pageId);
@@ -111281,13 +111835,47 @@ $cleanQ
         };
       }
       if (remove) {
+        // ★ = 継続検証 148「削除なのに、 一緒に書いた更新値の検査で削除が
+        //   断られる」。 消すなら更新用の項目は**見ない** (要らない値の
+        //   妥当性で削除が失敗すると、 後片付けが出来なくなる)。
         list.removeAt(i);
       } else {
+        // ★ = 継続検証 149「更新だけ空文字・空白だけの字幕を保存できる」。
+        //   足す側は空白だけを断っているので、 直す側も同じ物差しにする。
+        if (text != null && text.trim().isEmpty) {
+          return {
+            'ok': false,
+            'reason': 'a caption needs real characters: blank / '
+                'whitespace-only "text" is refused here too (the item would '
+                'still hold its slot on the timeline but show nothing). '
+                'Nothing was changed - pass remove:true to delete it.',
+          };
+        }
+        // ★ = 継続検証 150「開始時刻と長さに実用上無制限の巨大値を保存
+        //   できる」。 扱える尺 (24 時間) を超える指定は断る。
+        const maxMs = 24 * 60 * 60 * 1000;
+        final s = startMs ?? ((list[i] as Map)['s'] as num?)?.toInt() ?? 0;
+        final d = durationMs ?? ((list[i] as Map)['d'] as num?)?.toInt() ?? 0;
+        if ((startMs != null && startMs > maxMs) ||
+            (durationMs != null && durationMs > maxMs) ||
+            s + d > maxMs) {
+          return {
+            'ok': false,
+            'reason': 'the timeline holds at most 24 hours '
+                '($maxMs ms): startMs + durationMs would be ${s + d} ms. '
+                'Nothing was changed.',
+          };
+        }
         final m = Map<String, dynamic>.from(list[i] as Map);
         if (layer != null) m['l'] = layer.clamp(0, 5);
         if (startMs != null) m['s'] = startMs < 0 ? 0 : startMs;
         if (durationMs != null && durationMs > 0) m['d'] = durationMs;
         if (text != null) m['t'] = text;
+        if (fontSize != null) {
+          m['fs'] =
+              fontSize.clamp(kVideoCaptionMinFont, kVideoCaptionMaxFont);
+        }
+        if (colorValue != null) m['c'] = colorValue;
         list[i] = m;
       }
       await prefs.setString(key, jsonEncode({'v': 2, 'items': list}));
@@ -111296,7 +111884,22 @@ $cleanQ
       _touchPageBody(page.id);
       notifyListeners();
       _requestMcpFocus(page.id);
-      return {'ok': true, 'itemId': id, if (remove) 'removed': true};
+      final after = remove ? null : (list[i] as Map);
+      return {
+        'ok': true,
+        'itemId': id,
+        if (remove) 'removed': true,
+        // ★ 実際に保存された値を返す (= 継続検証 123 / 129: 丸めた値を
+        //   返さないと、 呼ぶ側は頼んだとおりに入ったと信じる)。
+        if (after != null) ...{
+          if (after['l'] != null) 'layer': after['l'],
+          if (after['s'] != null) 'startMs': after['s'],
+          if (after['d'] != null) 'durationMs': after['d'],
+          if (after['t'] != null) 'text': after['t'],
+          if (after['fs'] != null) 'fontSize': after['fs'],
+          if (after['c'] != null) 'color': after['c'],
+        },
+      };
     } catch (e) {
       return {'ok': false, 'reason': '$e'};
     }
@@ -111318,25 +111921,84 @@ $cleanQ
     return true;
   }
 
+  /// 表示名を安全な 1 行に均す。
+  ///
+  /// ★ = 動作検証 継続検証 128「ページ名・フォルダー名に制御文字と改行を
+  ///   保存できる」。 改行とタブは一覧の 1 行表示・検索結果・書き出し名・
+  ///   ログを分断し、 NUL 文字は外部連携で処理ごと落とす。 名前として
+  ///   意味のある文字だけ残す (記号はそのまま = 利用者が意図して使う)。
+  static String mcpSafeDisplayName(String raw) {
+    // 改行・タブ・垂直タブなどは空白 1 つへ。 それ以外の制御文字は落とす。
+    var s = raw.replaceAll(RegExp(r'[\t\n\v\f\r  ]'), ' ');
+    s = s.replaceAll(
+        RegExp(r'[ --​-‏﻿]'), '');
+    // 空白が続いた所は 1 つにまとめる (全角の空白もここで揃える)。
+    s = s.replaceAll(RegExp(r'[ 　]{2,}'), ' ');
+    return s.trim();
+  }
+
+  /// 同じ名前が既にあれば「名前 (2)」「名前 (3)」 …へずらす。
+  ///
+  /// ★ = 動作検証 継続検証 176 / 178「同名のページ / フォルダーを作れて、
+  ///   一覧では見分けが付かない」。 マークダウンのタブ分割は既に自動採番して
+  ///   いるので、 操作感もそちらへそろえる。
+  static String mcpUniqueName(String wanted, Iterable<String> taken) {
+    final used = {for (final t in taken) t.trim().toLowerCase()};
+    if (!used.contains(wanted.toLowerCase())) return wanted;
+    for (var n = 2; n < 1000; n++) {
+      final c = '$wanted ($n)';
+      if (!used.contains(c.toLowerCase())) return c;
+    }
+    return wanted;
+  }
+
   /// ページの名前を変える。 知らない id なら false。
-  bool mcpRenamePage(String pageId, String name) {
-    final n = name.trim();
+  /// 実際に入った名前 (採番されたら「名前 (2)」) は [applied] へ返す。
+  bool mcpRenamePage(String pageId, String name, {List<String>? applied}) {
+    final n = mcpSafeDisplayName(name);
     if (n.isEmpty) return false;
     final i = _pages.indexWhere((p) => p.id == pageId);
     if (i < 0) return false;
-    renamePage(i, n);
+    // 同じフォルダーの中だけ見る (別のフォルダーなら同名でも迷わない)。
+    final fid = _pages[i].folderId;
+    final unique = mcpUniqueName(n, [
+      for (final p in _pages)
+        if (p.id != pageId && p.folderId == fid) p.name
+    ]);
+    applied?.add(unique);
+    renamePage(i, unique);
     return true;
   }
 
   /// ページを並べ替える。 [orderedPageIds] は「こう並べたい」 順。
   /// 渡さなかったページは、 渡した分の後ろに元の順で残る。
   /// 並べ替えた後の全ページ id を返す (AI が結果をそのまま報告できるように)。
-  List<String> mcpReorderPages(List<String> orderedPageIds) {
+  List<String> mcpReorderPages(List<String> orderedPageIds,
+      // ★ = 継続検証 125 / 177「重複 ID・存在しない ID が黙って除外される」。
+      //   捨てた物と理由を呼ぶ側へ返す (部分成功を成功と読ませない)。
+      {Map<String, Object?>? outcome}) {
     // 知っている id だけを、 重複を除いて拾う。
     final wanted = <String>[];
-    for (final id in orderedPageIds) {
-      if (wanted.contains(id)) continue;
-      if (_pages.any((p) => p.id == id)) wanted.add(id);
+    final dupes = <Map<String, Object?>>[];
+    final unknown = <Map<String, Object?>>[];
+    for (var i = 0; i < orderedPageIds.length; i++) {
+      final id = orderedPageIds[i];
+      if (wanted.contains(id)) {
+        dupes.add({'index': i, 'pageId': id, 'reason': 'listed more than once'});
+        continue;
+      }
+      if (_pages.any((p) => p.id == id)) {
+        wanted.add(id);
+      } else {
+        unknown.add(
+            {'index': i, 'pageId': id, 'reason': 'no page has that id'});
+      }
+    }
+    if (outcome != null) {
+      outcome['requested'] = orderedPageIds.length;
+      outcome['used'] = wanted.length;
+      if (dupes.isNotEmpty) outcome['ignoredDuplicates'] = dupes;
+      if (unknown.isNotEmpty) outcome['unknownPageIds'] = unknown;
     }
     if (wanted.isEmpty) return [for (final p in _pages) p.id];
     // 現在ページを id で覚えておく (並べ替えで番号がずれるため)。
@@ -111375,17 +112037,26 @@ $cleanQ
 
   /// フォルダーを作る。 出来たフォルダーの id を返す。
   String mcpCreateFolder([String? name]) {
-    final n = (name ?? '').trim();
-    return addFolder(name: n.isEmpty ? null : n);
+    // ★ 制御文字と改行を落とし、 同名は採番する (= 継続検証 128 / 176)。
+    final n = mcpSafeDisplayName(name ?? '');
+    if (n.isEmpty) return addFolder();
+    return addFolder(
+        name: mcpUniqueName(n, [for (final f in _folders) f.name]));
   }
 
   /// フォルダーの名前を変える。 知らない id なら false
   /// (renameFolder は黙って何もしないので、 ここで先に確かめる)。
-  bool mcpRenameFolder(String folderId, String name) {
-    final n = name.trim();
+  /// 実際に入った名前 (採番されたら「名前 (2)」) は [applied] へ返す。
+  bool mcpRenameFolder(String folderId, String name, {List<String>? applied}) {
+    final n = mcpSafeDisplayName(name);
     if (n.isEmpty) return false;
     if (!_folders.any((f) => f.id == folderId)) return false;
-    renameFolder(folderId, n);
+    final unique = mcpUniqueName(n, [
+      for (final f in _folders)
+        if (f.id != folderId) f.name
+    ]);
+    applied?.add(unique);
+    renameFolder(folderId, unique);
     return true;
   }
 
@@ -114327,6 +114998,19 @@ $cleanQ
   /// ★ 画面は黙って丸めるが、 MCP は理由を返して断る。
   static const int kTableMaxRows = 100;
   static const int kTableMaxCols = 30;
+
+  /// 動画エディターの字幕の文字サイズの範囲。
+  /// ★ = 動作検証 継続検証 123。 範囲外を素通しにすると、 拒否・補正・保存の
+  ///   どれになったのか呼ぶ側から確かめられない。 丸めてから保存する。
+  static const double kVideoCaptionMinFont = 6.0;
+  static const double kVideoCaptionMaxFont = 200.0;
+
+  /// 図形 (装飾) の線の太さの範囲。
+  /// ★ = 動作検証 継続検証 107 / 181「線幅へ負の値を保存できる」。 0 以下は
+  ///   描かれない (= 見えない図形が残る) ので、 描ける最小・最大へ丸める。
+  ///   画面のパレットも 0.5〜40 の範囲でしか選べない。
+  static const double kMapDecoMinStroke = 0.5;
+  static const double kMapDecoMaxStroke = 40.0;
 
   int _shelfVisibleGridCount(MindMapPage page) =>
       page.nodes.values.where((n) => n.hiddenInContainer == null).length;

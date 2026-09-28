@@ -2600,6 +2600,8 @@ class AutomationRunState {
     this.instruction = '',
     this.status = '',
     this.steps = 0,
+    this.doneSteps = const <String>[],
+    this.remainingSteps = 0,
     this.startedAtMs,
     this.finishedAtMs,
     this.error,
@@ -2621,6 +2623,13 @@ class AutomationRunState {
   /// 組み上がった手順の数。
   final int steps;
 
+  /// ★ = 動作検証 継続検証 85 / 143 / 169「途中で止まると、 どの確認が
+  ///   成功したのか分からない」。 実際に走った手順を 1 行ずつ控える。
+  final List<String> doneSteps;
+
+  /// 走らせないまま残った手順の数 (= 止められた時に何が残ったか)。
+  final int remainingSteps;
+
   final int? startedAtMs;
   final int? finishedAtMs;
   final String? error;
@@ -2635,6 +2644,8 @@ class AutomationRunState {
     String? phase,
     String? status,
     int? steps,
+    List<String>? doneSteps,
+    int? remainingSteps,
     int? startedAtMs,
     int? finishedAtMs,
     String? error,
@@ -2645,6 +2656,8 @@ class AutomationRunState {
         instruction: instruction,
         status: status ?? this.status,
         steps: steps ?? this.steps,
+        doneSteps: doneSteps ?? this.doneSteps,
+        remainingSteps: remainingSteps ?? this.remainingSteps,
         startedAtMs: startedAtMs ?? this.startedAtMs,
         finishedAtMs: finishedAtMs ?? this.finishedAtMs,
         error: error ?? this.error,
@@ -2658,6 +2671,16 @@ class AutomationRunState {
         if (instruction.isNotEmpty) 'instruction': instruction,
         if (status.isNotEmpty) 'status': status,
         'steps': steps,
+        // ★ = 継続検証 85 / 143 / 169。 止まった時も「何が走ったか」 を返す
+        //   (これが無いと、 呼んだ側は項目別の成否を報告できなかった)。
+        if (doneSteps.isNotEmpty) 'ranSteps': doneSteps,
+        'ranStepCount': doneSteps.length,
+        if (remainingSteps > 0) 'remainingSteps': remainingSteps,
+        if (isFinished && phase != 'done')
+          'outcomeNote': 'this run did NOT finish its instruction. Report the '
+              'steps in "ranSteps" as the only things that actually happened, '
+              'and say the rest was not done - never report an unverified '
+              'check as successful.',
         if (startedAtMs != null)
           'startedAt':
               DateTime.fromMillisecondsSinceEpoch(startedAtMs!).toIso8601String(),

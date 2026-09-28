@@ -68722,13 +68722,41 @@ class _MindMapScreenState extends State<MindMapScreen>
     //   返す」 のと同じ間違い)。 先に断る。
     if (provider.pages.isNotEmpty &&
         !_splitEligiblePage(provider.currentPage)) {
-      return {
-        'error': 'the page open right now ("${provider.currentPage.name}", '
-            'a "${provider.currentPage.pageType ?? 'normal'}" page) cannot be '
-            'shown in a split pane, so the split would close again straight '
-            'away. Nothing was changed. Ask the user to switch to a map, '
-            'gallery, free-note or markdown page first.',
-      };
+      // ★ = 動作検証 継続検証 157「明示した 4 ページが対応種類でも、 現在
+      //   ページが動画編集だと処理全体が拒否される」。 置き先を全部言われて
+      //   いるのだから、 指定に含まれない現在ページの種類で断るのは筋違い。
+      //   頼まれた中から分割に出せるページへ先に切り替える。
+      MindMapPage? firstUsable;
+      for (final raw in pageIds) {
+        final k = raw.trim();
+        if (k.isEmpty) continue;
+        final p = provider.pages.where((e) => e.id == k).firstOrNull ??
+            provider.pages.where((e) => e.name.trim() == k).firstOrNull;
+        if (p == null) continue;
+        if (!_splitEligiblePage(p)) continue;
+        if (provider.isPageLockedByPlan(p.id)) continue;
+        firstUsable = p;
+        break;
+      }
+      if (firstUsable == null) {
+        return {
+          'error': 'the page open right now ("${provider.currentPage.name}", '
+              'a "${provider.currentPage.pageType ?? 'normal'}" page) cannot '
+              'be shown in a split pane, so the split would close again '
+              'straight away, and "pageIds" held no page that can. Nothing '
+              'was changed. Pass map / gallery / free-note / markdown pages '
+              'in "pageIds", or ask the user to switch to one first.',
+        };
+      }
+      final at = provider.pages.indexOf(firstUsable);
+      if (at >= 0) provider.switchPage(at);
+      if (!mounted) return {'error': 'the screen went away'};
+      if (!_splitEligiblePage(provider.currentPage)) {
+        return {
+          'error': 'could not open "${firstUsable.name}" to build the split '
+              '(the app kept the current page). Nothing was changed.',
+        };
+      }
     }
     switch (layout) {
       case 'leftRight':
@@ -80807,12 +80835,26 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (!mounted) return {'error': 'the screen went away'};
     final provider = context.read<MindMapProvider>();
     final want = id.trim();
+    // ★ = 動作検証 継続検証 169「全件終了の結果へ未起動の全画面機能まで
+    //   列挙される」。 id を渡されない「全部閉じて」 では、 今**本当に開いて
+    //   いる**物だけを相手にする。 前に開いて既に閉じた物や、 道具から
+    //   閉じられない全画面ダイアログまで並べると、 実際に開いている画面と
+    //   単に非対応な機能の区別が付かなかった。
+    bool openNow(String cid) =>
+        _floatingPanelSingletons.containsKey(cid) ||
+        _splitSlotOfTool(cid) != null;
+    if (want.isEmpty) {
+      // もう開いていない物は控えから外す (溜めても誤解を生むだけ)。
+      _mcpOpenedCommands.removeWhere((c) => !openNow(c));
+    }
     final ids = want.isEmpty ? _mcpOpenedCommands.toList() : <String>[want];
     if (ids.isEmpty) {
       return {
         'closed': const <String>[],
         'notOpen': const <Map<String, Object?>>[],
-        'note': 'nothing was opened from here, so nothing was closed.',
+        'note': 'no screen opened from here is on display right now, so '
+            'nothing was closed. Full-screen dialogs are not listed here - '
+            'only the user can close those.',
       };
     }
     final closed = <String>[];
@@ -80833,13 +80875,23 @@ class _MindMapScreenState extends State<MindMapScreen>
         closed.add(cid);
         continue;
       }
+      // ★ = 継続検証 169。 「今開いていない」 と「開いてはいるが道具からは
+      //   閉じられない全画面ダイアログ」 を分ける。 開いた覚えが無い物は
+      //   notCurrentlyOpen (機能の非対応ではない)。
+      final opened = _mcpOpenedCommands.contains(cid);
+      final full = _openStyleOf(cid) == 'full';
       notOpen.add({
         'id': cid,
-        'reason': _openStyleOf(cid) == 'full' ? 'fullScreenDialog' : 'notOpen',
-        'hint': _openStyleOf(cid) == 'full'
-            ? 'this feature opens as a full-screen dialog, which only the '
-                'user can close (Esc or the close button).'
-            : 'it is not open right now.',
+        'reason': !opened
+            ? 'notCurrentlyOpen'
+            : (full ? 'fullScreenDialog' : 'notOpen'),
+        'hint': !opened
+            ? 'this screen was not opened from here, so there is nothing to '
+                'close.'
+            : (full
+                ? 'this feature opens as a full-screen dialog, which only the '
+                    'user can close (Esc or the close button).'
+                : 'it is not open right now.'),
       });
     }
     if (!probe) {

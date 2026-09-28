@@ -867,7 +867,13 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
   ///   始めた実行まで報告すると、 MCP から見た時に「頸んだ物が動いている」
   ///   と取り違える。 refused だけは例外 (受けられなかったと伝えるため)。
   void _publishAutomationPhase(String phase,
-      {String? status, String? error, int? startedAtMs, bool finished = false}) {
+      {String? status,
+      String? error,
+      int? startedAtMs,
+      // ★ = 継続検証 85 / 143 / 169。 実際に走った手順を添える。
+      List<String>? doneSteps,
+      int? remainingSteps,
+      bool finished = false}) {
     final cur = automationRunForAssistant.value;
     if (cur == null) return;
     if (phase != 'refused' && _assistantRunId != cur.runId) return;
@@ -875,6 +881,8 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
       phase: phase,
       status: status,
       steps: _steps.length,
+      doneSteps: doneSteps,
+      remainingSteps: remainingSteps,
       startedAtMs: startedAtMs,
       finishedAtMs:
           finished ? DateTime.now().millisecondsSinceEpoch : cur.finishedAtMs,
@@ -2815,10 +2823,21 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
       // ★ 終わった事を必ず知らせる (= 動作検証の機能修正案: 呼んだ側が
       //   「成功したのか失敗したのか」 を判定できなかった)。 止められた時は
       //   cancelled。 手順が 1 つも組めなかった時は failed。
+      // ★ = 継続検証 85 / 143 / 169「中断時に依頼と関係の薄い状態文だけが
+      //   返り、 項目別の成否が得られない」。 上の setState が _status を
+      //   「手順を N 件残しました」 (= 保存のすすめ) に書き換えるため、
+      //   止まった理由が消えていた。 止まった時は何が走ったかを答える。
+      final ranList = List<String>.from(done);
       _publishAutomationPhase(
         wasStopped ? 'cancelled' : (_steps.isEmpty ? 'failed' : 'done'),
-        status: _status,
+        status: wasStopped
+            ? 'stopped after ${ranList.length} step(s) - the rest of the '
+                'instruction was NOT carried out.'
+            : _status,
         error: _steps.isEmpty && !wasStopped ? _status : null,
+        doneSteps: ranList,
+        remainingSteps:
+            _steps.length > ranList.length ? _steps.length - ranList.length : 0,
         finished: true,
       );
     }
