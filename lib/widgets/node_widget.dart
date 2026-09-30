@@ -522,24 +522,57 @@ class _NodeWidgetState extends State<NodeWidget> {
             ),
             SizedBox(height: compact ? 2 : 4),
           ],
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.16),
-              borderRadius: BorderRadius.circular(999),
-              border: Border.all(color: Colors.white.withValues(alpha: 0.5)),
-            ),
-            child: Text(
-              host,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 10,
-                fontWeight: FontWeight.w700,
+          // ── 押すとそのサイトを開く札 ──
+          //
+          // ★ = ユーザー報告「リンクをギャラリーページに埋め込んでもその
+          //   サイトに飛ぶことができない」。 マインドマップ側は本文の下に
+          //   出る「リンクの帯」 (この下の hasLinkBar) が入口だが、
+          //   ギャラリーのタイルは帯を出さずこのカードで埋めるので、
+          //   飛ぶ手立てがどこにも無かった。 この札を入口にする。
+          // ★ カード全面ではなく札だけを入口にするのは、 タイルを押した時の
+          //   「編集 / 削除」 の項目 (= 要素のアクションバー) を塞がないため。
+          Builder(builder: (_) {
+            final open = widget.onThumbnailTap;
+            final chip = Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: open == null ? 0.16 : 0.22),
+                borderRadius: BorderRadius.circular(999),
+                border: Border.all(
+                    color: Colors.white.withValues(alpha: open == null ? 0.5 : 0.7)),
               ),
-            ),
-          ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (open != null) ...[
+                    const Icon(Icons.open_in_new_rounded,
+                        size: 11, color: Colors.white),
+                    const SizedBox(width: 4),
+                  ],
+                  Flexible(
+                    child: Text(
+                      host,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+            // ★ 開く手が無い時 (= 分割ペインの読むだけの写し) は札のまま。
+            //   包んでしまうと、 ペインを活かすための 1 タップを食う。
+            if (open == null) return chip;
+            return GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: open,
+              child: chip,
+            );
+          }),
         ],
       ),
     );

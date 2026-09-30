@@ -522,8 +522,17 @@ class TalkReference {
           final t = buf.toString().trim();
           if (t.isNotEmpty) return _clip(t, maxChars);
         } catch (_) {
-          // 壊れた xlsx / excel が開けない形 → 下の従来路へ。
+          // 壊れた xlsx / excel が開けない形 → 下の控えへ。
         }
+        // ★ = 動作検証 2026-09-30「20 桁整数を含む xlsx の MCP 読込で、 表と
+        //   数値が返らず共有文字列の重複除去一覧だけが返る」。
+        //   原因は excel パッケージの読み手: 数値セルを必ず `int.parse` に
+        //   掛けるので、 Dart の int に収まらない桁 (= 20 桁) で例外になり、
+        //   表がまるごと諦められて上の catch に落ちていた。 諦める前に
+        //   worksheet の XML を自分で読む ([_xlsxRowsFromXml]。 数値は書かれた
+        //   文字のまま扱うので、 どんな桁でも落ちない・丸めない)。
+        final manual = _xlsxRowsFromXml(bytes);
+        if (manual.isNotEmpty) return _clip(manual, maxChars);
         return _clip(
             _ooxmlPartText(bytes, 'xl/sharedStrings.xml'), maxChars);
       }
@@ -531,6 +540,143 @@ class TalkReference {
       debugPrint('資料の読み取りに失敗 ($path): $e');
     }
     return null;
+  }
+
+  /// xlsx の worksheet を**自分で**読んで、 1 行 = タブ区切りの文字にする。
+  ///
+  /// excel パッケージが開けなかった時の控え (= 動作検証 2026-09-30「20 桁
+  /// 整数を含む xlsx で表が返らない」)。 あちらは数値セルを必ず `int.parse`
+  /// に掛けるので、 Dart の int に収まらない桁で例外になり表を諦めてしまう。
+  /// ここでは数値を**書かれている文字のまま**扱うので、 桁がいくら大きくても
+  /// 落ちないし丸めない。
+  ///
+  /// ★ 読み手を足すだけで、 上の本筋 (excel パッケージ) は変えていない。
+  ///   ふつうのファイルは今までどおりあちらが読む。
+  /// ★ xml パッケージは直の依存に入っていないので、 正規表現で拾う
+  ///   (取り出すのは `<row>` / `<c>` / `<v>` / `<f>` / `<t>` だけ)。
+  static String _xlsxRowsFromXml(List<int> bytes) {
+    String textOfT(String xml) {
+      final buf = StringBuffer();
+      for (final m
+          in RegExp(r'<t[^>]*>(.*?)</t>', dotAll: true).allMatches(xml)) {
+        buf.write(_unescapeHtml(m.group(1) ?? ''));
+      }
+      return buf.toString();
+    }
+
+    // 'B' → 1、 'AA' → 26 (0 から数えた列番号)。
+    int colOf(String letters) {
+      if (letters.isEmpty) return -1;
+      var n = 0;
+      for (final u in letters.codeUnits) {
+        if (u < 65 || u > 90) return -1;
+        n = n * 26 + (u - 64);
+      }
+      return n - 1;
+    }
+
+    int sheetNoOf(String name) =>
+        int.tryParse(
+            RegExp(r'sheet(\d+)\.xml$').firstMatch(name)?.group(1) ?? '') ??
+        0;
+
+    try {
+      final archive = ZipDecoder().decodeBytes(bytes);
+      // ── 共有文字列 (<si> 1 つ = 1 件) ──
+      final shared = <String>[];
+      for (final f in archive.files) {
+        if (f.isFile && f.name == 'xl/sharedStrings.xml') {
+          final xml = utf8.decode(f.content as List<int>, allowMalformed: true);
+          for (final m
+              in RegExp(r'<si\b[^>]*>(.*?)</si>', dotAll: true).allMatches(xml)) {
+            shared.add(textOfT(m.group(1) ?? ''));
+          }
+          break;
+        }
+      }
+      // ── シートの名前 (workbook.xml に並んでいる順) ──
+      final sheetNames = <String>[];
+      for (final f in archive.files) {
+        if (f.isFile && f.name == 'xl/workbook.xml') {
+          final xml = utf8.decode(f.content as List<int>, allowMalformed: true);
+          for (final m
+              in RegExp(r'<sheet\b[^>]*\bname="([^"]*)"').allMatches(xml)) {
+            sheetNames.add(_unescapeHtml(m.group(1) ?? ''));
+          }
+          break;
+        }
+      }
+      final sheets = archive.files
+          .where((f) =>
+              f.isFile &&
+              RegExp(r'xl/worksheets/sheet\d+\.xml$').hasMatch(f.name))
+          .toList()
+        ..sort((a, b) => sheetNoOf(a.name).compareTo(sheetNoOf(b.name)));
+      final out = StringBuffer();
+      for (int si = 0; si < sheets.length; si++) {
+        final xml =
+            utf8.decode(sheets[si].content as List<int>, allowMalformed: true);
+        // ★ 中身のある行が 1 つでも出た時だけ見出しを書く。 見出しだけを
+        //   返してしまうと、 本当は何も読めていないのに「読めた」 事に
+        //   なって、 下の共有文字列の控えへ落ちなくなる。
+        final lines = <String>[];
+        for (final rowM
+            in RegExp(r'<row\b[^>]*>(.*?)</row>', dotAll: true).allMatches(xml)) {
+          final cells = <int, String>{};
+          var maxCol = -1;
+          for (final cM in RegExp(r'<c\b([^>]*?)(?:/>|>(.*?)</c>)',
+                  dotAll: true)
+              .allMatches(rowM.group(1) ?? '')) {
+            final attrs = cM.group(1) ?? '';
+            final inner = cM.group(2) ?? '';
+            final ref =
+                RegExp(r'\br="([A-Z]+)\d+"').firstMatch(attrs)?.group(1) ?? '';
+            final col = colOf(ref);
+            if (col < 0) continue;
+            final type =
+                RegExp(r'\bt="([^"]+)"').firstMatch(attrs)?.group(1) ?? 'n';
+            final v = RegExp(r'<v[^>]*>(.*?)</v>', dotAll: true)
+                .firstMatch(inner)
+                ?.group(1);
+            String text;
+            if (type == 's') {
+              final i = int.tryParse((v ?? '').trim());
+              text = (i != null && i >= 0 && i < shared.length)
+                  ? shared[i]
+                  : '';
+            } else if (type == 'inlineStr') {
+              text = textOfT(inner);
+            } else if (type == 'b') {
+              text = (v ?? '').trim() == '1' ? 'TRUE' : 'FALSE';
+            } else {
+              // 数値 / 数式 / 文字列の結果。 数値は書かれた文字のまま。
+              final fx = RegExp(r'<f[^>]*>(.*?)</f>', dotAll: true)
+                  .firstMatch(inner)
+                  ?.group(1);
+              text = (v != null && v.trim().isNotEmpty)
+                  ? _unescapeHtml(v.trim())
+                  : (fx == null || fx.isEmpty ? '' : '=${_unescapeHtml(fx)}');
+            }
+            cells[col] = text;
+            if (col > maxCol) maxCol = col;
+          }
+          if (maxCol < 0) continue;
+          final line = [for (var i = 0; i <= maxCol; i++) cells[i] ?? ''];
+          if (line.any((c) => c.trim().isNotEmpty)) lines.add(line.join('\t'));
+        }
+        if (lines.isEmpty) continue;
+        // 名前の数が合う時だけ workbook.xml の名前を使う (ずれた推測はしない)。
+        out.writeln(sheetNames.length == sheets.length
+            ? '[${sheetNames[si]}]'
+            : '[Sheet${si + 1}]');
+        for (final l in lines) {
+          out.writeln(l);
+        }
+      }
+      return out.toString().trim();
+    } catch (_) {
+      return '';
+    }
   }
 
   static bool _isTextLike(String ext) => const {

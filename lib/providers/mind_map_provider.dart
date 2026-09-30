@@ -28251,6 +28251,42 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Salvar em uma pasta',
       'ru': 'Сохранить в папку',
     },
+    // ★ = ユーザー要望「google 検索でタブを複製する機能を右クリックの項目に」。
+    'gs.duplicateTab': {
+      'ja': 'タブを複製',
+      'en': 'Duplicate tab',
+      'zh': '复制标签页',
+      'ko': '탭 복제',
+      'es': 'Duplicar pestaña',
+      'fr': 'Dupliquer l’onglet',
+      'de': 'Tab duplizieren',
+      'pt': 'Duplicar guia',
+      'ru': 'Дублировать вкладку',
+    },
+    // ★ = ユーザー要望「メモをページに埋め込む際にリンクまで含めるかどうかは
+    //   設定で変えられるように」。
+    'gs.embedLinkTip': {
+      'ja': 'ページに埋め込む時にリンクも含める',
+      'en': 'Include the link when embedding into a page',
+      'zh': '嵌入到页面时同时包含链接',
+      'ko': '페이지에 삽입할 때 링크도 포함',
+      'es': 'Incluir el enlace al insertar en una página',
+      'fr': 'Inclure le lien lors de l’insertion dans une page',
+      'de': 'Link beim Einbetten in eine Seite mitnehmen',
+      'pt': 'Incluir o link ao inserir em uma página',
+      'ru': 'Включать ссылку при вставке на страницу',
+    },
+    'gs.embedLinkOffTip': {
+      'ja': 'ページに埋め込む時はリンクを含めない',
+      'en': 'Do not include the link when embedding into a page',
+      'zh': '嵌入到页面时不包含链接',
+      'ko': '페이지에 삽입할 때 링크를 포함하지 않음',
+      'es': 'No incluir el enlace al insertar en una página',
+      'fr': 'Ne pas inclure le lien lors de l’insertion dans une page',
+      'de': 'Link beim Einbetten in eine Seite nicht mitnehmen',
+      'pt': 'Não incluir o link ao inserir em uma página',
+      'ru': 'Не включать ссылку при вставке на страницу',
+    },
     'gs.openSite': {
       'ja': '{s} を開く',
       'en': 'Open {s}',
@@ -88619,6 +88655,26 @@ class MindMapProvider extends ChangeNotifier {
   String? adBlockInstallJsOrNull() =>
       _adBlockEnabled ? googleAdBlockInstallJs() : null;
 
+  /// Google 検索のメモをページへ埋め込む時、 見ていたページのリンクも
+  /// 一緒に入れるか。
+  ///
+  /// ★ = ユーザー要望「google 検索からメモをページに埋め込む際に、 リンクまで
+  ///   含めるかどうかは設定で変えられるようにして欲しい」。 以前は保存済みメモ
+  ///   に URL が付いていれば**必ず**リンク付きの要素になっていた。
+  ///   切っておくと、 本文だけの要素として貼る。
+  bool _gsMemoEmbedLink = true;
+  bool get gsMemoEmbedLink => _gsMemoEmbedLink;
+
+  Future<void> setGsMemoEmbedLink(bool v) async {
+    if (_gsMemoEmbedLink == v) return;
+    _gsMemoEmbedLink = v;
+    notifyListeners();
+    try {
+      final p = await _prefsWithRetry();
+      await p.setBool('gsMemoEmbedLink', v);
+    } catch (_) {}
+  }
+
   // ═══ エージェント向けの検索 (トークンを抑える) ═════════════════
   //
   // = ユーザー要望「AI エージェントのフォルダー内検索に Jev を実装して
@@ -89443,6 +89499,8 @@ class MindMapProvider extends ChangeNotifier {
     _jevFileFindEnabled = prefs.getBool('jevFileFind') ?? false;
     _jevDocQaEnabled = prefs.getBool('jevDocQa') ?? false;
     _adBlockEnabled = prefs.getBool('adBlockEnabled') ?? false;
+    // 既定は「含める」 (= 今までの動き)。
+    _gsMemoEmbedLink = prefs.getBool('gsMemoEmbedLink') ?? true;
     _jevCalls = prefs.getInt('jevCalls') ?? 0;
     _jevSpentUsd = prefs.getDouble('jevSpentUsd') ?? 0.0;
   }

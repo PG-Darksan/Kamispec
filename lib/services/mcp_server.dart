@@ -1617,7 +1617,9 @@ class McpServer {
         'pre-allowed; after a restart the user may be asked once). '
         'Choose "kind": '
         '"xlsx"/"csv" -> pass "rows" (array of arrays of strings; first row '
-        'is the header). '
+        'is the header). Cells are kept EXACTLY as written unless they are '
+        'already a plain number, so "00123", "09012345678" and 20-digit ids '
+        'survive; in xlsx a cell starting with "=" becomes a real formula. '
         '"docx"/"txt"/"md"/"pdf" -> pass "title" and "paragraphs" (array of '
         'strings, one per paragraph); "pdf" may ALSO take "rows" to append a '
         'table. '
@@ -1719,6 +1721,19 @@ class McpServer {
               'type': 'array',
               'items': {'type': 'string'}
             },
+            // ★ = 動作検証 2026-09-30「郵便番号 00123 が 123、 20 桁 ID が
+            //   丸められて保存される」/「=SUM(...) が数式にならない」。
+            //   直した振る舞いを道具の説明にも書く (AI が「文字のまま保つ
+            //   には」 と聞かれた時に答えられるように)。
+            'description':
+                'One entry per row; the first row is the header. Every cell '
+                'is a string and is written EXACTLY as you give it unless it '
+                'is already a plain number: "00123", "09012345678", "+81", '
+                '"1.2300", "1e3" and long ids keep every character (they are '
+                'stored as text), while "123" / "-8" / "1.5" become real '
+                'numbers you can sum. In xlsx a cell starting with "=" '
+                'becomes a REAL FORMULA ("=SUM(B2:B9)", "=B2*C2", "=IF(...)") '
+                '- in csv it stays the literal text.',
           },
           // 配色 (= ユーザー要望: 白地に文字だけの資料にしない)。
           'theme': {

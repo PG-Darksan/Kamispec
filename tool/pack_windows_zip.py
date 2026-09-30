@@ -64,6 +64,13 @@ def main():
             if rel.lower().endswith(('.msix', '.appx', '.appxbundle', '.pfx')):
                 skipped.append(rel)
                 continue
+            # ★ 利用者のアプリが走っていて掴んでいた exe / dll は、 殺さずに
+            #   ビルドを通すため `.locked` へ改名してある
+            #   ([[locked-exe-rename-trick]])。 走っているアプリが閉じるまで
+            #   消せないので、 固める時にここで除く (b396 では 54 個あった)。
+            if rel.lower().endswith('.locked'):
+                skipped.append(rel)
+                continue
             files.append((full, rel))
     files.sort(key=lambda x: x[1])
     for rel in skipped:

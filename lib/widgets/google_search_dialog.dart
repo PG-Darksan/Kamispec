@@ -1515,10 +1515,6 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   // 閉じたタブの履歴 (Ctrl+Shift+T で復元)。 末尾が直近に閉じたタブ。
   final List<_GsTab> _closedGsTabs = [];
 
-  /// 「リンク埋め込み / お気に入りボタン登録」 統合ボタンの現在モード
-  /// (= ユーザー要望: 2 機能を 1 ボタンに統合し、PC は右クリック・モバイルは
-  ///   長押しで切替)。false=リンク埋め込み / true=お気に入りボタン登録。
-  bool _gsSaveAsBookmark = false;
   static const List<(String, String)> _gsSites = [
     ('Google 検索', 'https://www.google.com/'),
     ('YouTube', 'https://www.youtube.com/'),
@@ -3010,6 +3006,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       setState(() => _memoAttachments.addAll(added));
     } catch (e) {
       if (!mounted) return;
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text('$e'),
         backgroundColor: const Color(0xFFE57373),
@@ -3092,6 +3089,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     // 添付だけでも残せるようにする (= ユーザー要望: 画像や PDF を貼る)。
     if (text.isEmpty && _memoAttachments.isEmpty) {
       final provider = context.read<MindMapProvider>();
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(provider.t('googleSearch.emptyWarn')),
         backgroundColor: const Color(0xFFFFA726),
@@ -3122,12 +3120,9 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       provider.setGoogleSearchMemoDraft('');
     }
     _resetEditor();
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(provider.t('googleSearch.memoSaved')),
-      backgroundColor: const Color(0xFF43B97F),
-      duration: const Duration(seconds: 2),
-    ));
+    // ★ = ユーザー要望「メモ欄に追加したり、 削除した時に一々メッセージが
+    //   出ないようにして欲しい」。 保存できた事は一覧に行が増える / 入力欄が
+    //   空になる事で分かるので、 知らせは出さない。
   }
 
   /// 既存メモを編集モードでロード。
@@ -3251,27 +3246,14 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         _deletionHistory.removeAt(0);
       }
     });
-    // 削除完了 SnackBar (取り消しの導線を案内する)
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(
-        snapshot.length == 1
-            ? provider.t(_isDesktop
-                ? 'googleSearch.deletedOneHint'
-                : 'googleSearch.deletedOneHintMobile')
-            : provider
-                .t(_isDesktop
-                    ? 'googleSearch.deletedManyHint'
-                    : 'googleSearch.deletedManyHintMobile')
-                .replaceAll('{n}', '${snapshot.length}'),
-      ),
-      backgroundColor: const Color(0xFF455A64),
-      duration: const Duration(seconds: 3),
-      action: SnackBarAction(
-        label: provider.t('googleSearch.undoLabel'),
-        textColor: const Color(0xFFFFC107),
-        onPressed: _undoDelete,
-      ),
-    ));
+    // ★ = ユーザー要望「メモを削除しましたのメッセージが消えずに残り続ける」
+    //   +「メモ欄に追加したり、 削除した時に一々メッセージが出ないように」。
+    //   消えなかったのは知らせが**順番待ちで積まれる**ため (ScaffoldMessenger
+    //   は 1 枚ずつ出すので、 3 件消すと 3 秒 × 3 件ぶん出続けて「消えない」
+    //   ように見えていた)。 出すのをやめれば両方とも起きない。
+    //   取り消しは Ctrl+Z (パソコン) / 一覧の取り消しボタンで今までどおり。
+    //   ついでに、 既に出ている知らせが残っていたら畳んでおく。
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
   }
 
   /// Ctrl+Z: 直前の削除を取り消し。
@@ -3280,6 +3262,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   void _undoDelete() {
     final provider = context.read<MindMapProvider>();
     if (_deletionHistory.isEmpty) {
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(provider.t('googleSearch.nothingToUndo')),
         backgroundColor: const Color(0xFFFFA726),
@@ -3290,6 +3273,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     final batch = _deletionHistory.removeLast();
     provider.restoreGoogleSearchMemos(batch);
     setState(() {});
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(
         provider
@@ -3345,9 +3329,12 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       final lines = memo.text.split('\n');
       final title = lines.first.trim();
       final body = lines.length > 1 ? lines.sublist(1).join('\n').trim() : '';
-      widget.onAddNode(title, body, memo.snapshotUrl);
+      // ★ リンクを含めるかは設定で切り替える (= ユーザー要望)。
+      widget.onAddNode(
+          title, body, provider.gsMemoEmbedLink ? memo.snapshotUrl : null);
     }
     if (!mounted) return;
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(
         provider
@@ -3374,6 +3361,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     final memoRaw = _memoCtrl.text.trim();
     if (memoRaw.isEmpty) {
       final provider = context.read<MindMapProvider>();
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(provider.t('googleSearch.emptyWarn')),
         backgroundColor: const Color(0xFFFFA726),
@@ -3384,10 +3372,13 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     final lines = memoRaw.split('\n');
     final title = lines.first.trim();
     final body = lines.length > 1 ? lines.sublist(1).join('\n').trim() : '';
-    final linkUrl = _includeUrl ? _currentUrl : null;
+    final provider = context.read<MindMapProvider>();
+    // ★ 入力欄の「URL を含める」 の印と、 埋め込みの設定 (= ユーザー要望)
+    //   の**両方**が立っている時だけリンクを付ける。
+    final linkUrl =
+        (_includeUrl && provider.gsMemoEmbedLink) ? _currentUrl : null;
     widget.onAddNode(title, body, linkUrl);
 
-    final provider = context.read<MindMapProvider>();
     // ── 編集モードのメモを削除しない (= リストに残す) ──
     // 旧版は `provider.removeGoogleSearchMemo(_editingMemoId!)` で
     // 「ノードに昇格 = 保存リストから除去」 していたが、 ユーザー要望で
@@ -3404,6 +3395,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     if (keepOpen) {
       _resetEditor();
       _memoFocus.requestFocus();
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(provider.t('googleSearch.nodeAdded')),
         backgroundColor: const Color(0xFF43B97F),
@@ -3420,8 +3412,11 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     final lines = memo.text.split('\n');
     final title = lines.first.trim();
     final body = lines.length > 1 ? lines.sublist(1).join('\n').trim() : '';
-    widget.onAddNode(title, body, memo.snapshotUrl);
     final provider = context.read<MindMapProvider>();
+    // ★ リンクを含めるかは設定で切り替える (= ユーザー要望)。
+    widget.onAddNode(
+        title, body, provider.gsMemoEmbedLink ? memo.snapshotUrl : null);
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(provider.t('googleSearch.nodeAdded')),
       backgroundColor: const Color(0xFF43B97F),
@@ -3563,9 +3558,15 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         // minimalMode (= ノードから立ち上げる小さな検索窓) では幅が狭く
         //   ボタンが重なるため非表示にする (= ユーザー要望)。 これらは
         //   「全画面表示」 で開き直した先で利用できる。
-        if (_isHorizontalLayout && !widget.minimalMode)
-          // リンク埋め込み / お気に入り登録 を統合した 1 ボタン
-          _buildCombinedSaveButton(),
+        if (_isHorizontalLayout && !widget.minimalMode) ...[
+          // ページへ貼る
+          _buildEmbedLinkButton(),
+          // ★ = ユーザー要望「google 検索にお気に入り登録ボタンがないから
+          //   付けて欲しい」。 前は上のボタンと 1 つに束ねてあり、 右クリック
+          //   (PC) / 長押し (スマホ) でモードを切り替えないとお気に入りに
+          //   入れられなかった。 いつも見えるボタンにする。
+          _buildBookmarkAddButton(),
+        ],
       ],
     );
   }
@@ -3980,60 +3981,42 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   //
   // データモデル: List<{url, title, savedAt}> を JSON 文字列で保存。
 
-  /// 現在のページをブックマークに追加。
+  /// 「いま見ているページをマップへ貼る」 ボタン。
   ///
-  /// 動作:
-  /// - `onCreateBookmarkButton` コールバックが設定されている場合:
-  ///   呼び出し元 (mind_map_screen) にカスタマイズダイアログを開かせて、
-  ///   ユーザーに名前/アイコン/色を選んでもらい、 動的ボタンとして作成。
-  /// - コールバック未設定 (= 旧互換) の場合:
-  ///   従来通り SharedPreferences (`mokumoku_gs_bookmarks_v1`) に追加して、
-  ///   検索ダイアログ内のお気に入り一覧に表示するだけ。
-  /// 「リンク埋め込み」と「お気に入りボタン登録」を 1 つに統合したボタン。
-  /// タップ=現在モードを実行 / PC は右クリック・モバイルは長押しでモード切替。
-  Widget _buildCombinedSaveButton() {
-    final isBookmark = _gsSaveAsBookmark;
-    void toggle() => setState(() => _gsSaveAsBookmark = !_gsSaveAsBookmark);
-    final desktop = _isDesktop;
-    // 多言語対応 (= ユーザー報告: ヘルパーテキストが日本語固定だった)。
+  /// ★ 以前は下の「お気に入り登録」 と 1 つのボタンに束ねてあり、 PC は
+  ///   右クリック / スマホは長押しでモードを切り替える作りだった。
+  ///   = ユーザー報告「google 検索にお気に入り登録ボタンがない」。 切り替えに
+  ///   気付けないので**別々のボタン**に分けた (押した物がそのまま起きる)。
+  Widget _buildEmbedLinkButton() {
     final p = context.read<MindMapProvider>();
-    final switchHint =
-        p.t(desktop ? 'gs.hintRightClick' : 'gs.hintLongPress');
-    return GestureDetector(
-      onSecondaryTap: desktop ? toggle : null,
-      onLongPress: desktop ? null : toggle,
-      child: Tooltip(
-        message: isBookmark
-            ? '${p.t('gs.addBookmarkBtn')}\n'
-                '${p.t('gs.switchToEmbed').replaceFirst('{hint}', switchHint)}'
-            : '${p.t('gs.embedAsLink')}\n'
-                '${p.t('gs.switchToBookmark').replaceFirst('{hint}', switchHint)}',
-        child: IconButton(
-          icon: Icon(
-            // 埋め込みは「+」 のアイコンにする (= ユーザー要望: + ボタン
-            // みたいなアイコンにして欲しい)。
-            // ★ = ユーザー要望「リンクとして埋め込みのボタンがタブ追加と
-            //   似ているから別のものに」。 四角に＋の絵柄は右の「＋」 (新しい
-            //   タブ) と見分けが付かないので、 「ページへ貼る」 絵柄にする。
-            isBookmark
-                ? Icons.bookmark_add_rounded
-                : Icons.note_add_outlined,
-            color:
-                isBookmark ? const Color(0xFFFFB347) : const Color(0xFF4FC3F7),
-            size: 22,
-          ),
-          visualDensity: VisualDensity.compact,
-          padding: const EdgeInsets.all(6),
-          constraints: const BoxConstraints(),
-          onPressed: () {
-            if (isBookmark) {
-              _addCurrentPageToBookmarks();
-            } else {
-              _addPageInfoAsNode();
-            }
-          },
-        ),
-      ),
+    return IconButton(
+      // ★ = ユーザー要望「リンクとして埋め込みのボタンがタブ追加と似ている
+      //   から別のものに」。 四角に＋の絵柄は右の「＋」 (新しいタブ) と
+      //   見分けが付かないので、 「ページへ貼る」 絵柄にする。
+      icon: const Icon(Icons.note_add_outlined,
+          color: Color(0xFF4FC3F7), size: 22),
+      tooltip: p.t('gs.embedAsLink'),
+      visualDensity: VisualDensity.compact,
+      padding: const EdgeInsets.all(6),
+      constraints: const BoxConstraints(),
+      onPressed: _addPageInfoAsNode,
+    );
+  }
+
+  /// 「いま見ているページをお気に入りに登録」 ボタン (= ユーザー要望)。
+  ///
+  /// 押すと名前 / アイコン / 色を選ぶ窓が出て、 ヘッダーやフッターに置ける
+  /// お気に入りボタンになる ([_addCurrentPageToBookmarks])。
+  Widget _buildBookmarkAddButton() {
+    final p = context.read<MindMapProvider>();
+    return IconButton(
+      icon: const Icon(Icons.star_rounded,
+          color: Color(0xFFFFB347), size: 22),
+      tooltip: p.t('gs.addBookmarkBtn'),
+      visualDensity: VisualDensity.compact,
+      padding: const EdgeInsets.all(6),
+      constraints: const BoxConstraints(),
+      onPressed: _addCurrentPageToBookmarks,
     );
   }
 
@@ -4051,6 +4034,15 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     );
   }
 
+  /// 現在のページをブックマーク (お気に入り) に追加。
+  ///
+  /// 動作:
+  /// - `onCreateBookmarkButton` コールバックが設定されている場合:
+  ///   呼び出し元 (mind_map_screen) にカスタマイズダイアログを開かせて、
+  ///   ユーザーに名前/アイコン/色を選んでもらい、 動的ボタンとして作成。
+  /// - コールバック未設定 (= 旧互換) の場合:
+  ///   従来通り SharedPreferences (`mokumoku_gs_bookmarks_v1`) に追加して、
+  ///   検索ダイアログ内のお気に入り一覧に表示するだけ。
   Future<void> _addCurrentPageToBookmarks() async {
     final url = _currentUrl;
     if (url.isEmpty) {
@@ -4669,6 +4661,30 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     _openUrl(t.url);
   }
 
+  /// タブを複製 (= ユーザー要望: 右クリックの項目に「タブを複製」 を追加)。
+  ///
+  /// ★ 並べ (分割) の枠は札の**番号**で覚えているので、 途中へ挿すと枠が
+  ///   別の札を指してしまう。 ブラウザのように隣へ挿さず**末尾へ足す**
+  ///   ([_addGsTab] と同じ作り)。
+  /// ★ 今見ている札の URL は `_currentUrl` が最新 (札の `url` は切り替えた
+  ///   時にだけ書き戻す作りなので、 そこを読むと 1 つ前の住所になる)。
+  void _duplicateGsTab(int i) {
+    if (i < 0 || i >= _gsTabs.length) return;
+    if (_gsTabs.length >= _kGsMaxTabs) return;
+    final url = (i == _gsActiveTab ? _currentUrl : _gsTabs[i].url).trim();
+    if (url.isEmpty) return;
+    final title = _gsTabs[i].title;
+    // 今の札の住所を控えてから移る (切り替えの作法と同じ)。
+    _gsTabs[_gsActiveTab].url = _currentUrl;
+    setState(() {
+      _gsTabs.add(_GsTab(url: url, title: title));
+      _gsActiveTab = _gsTabs.length - 1;
+      _currentUrl = url;
+      _pageTitle = title;
+    });
+    _openUrl(url);
+  }
+
   void _openSiteGsTab(int i, String url, String name) {
     if (i < 0 || i >= _gsTabs.length) return;
     if (i != _gsActiveTab) _gsTabs[_gsActiveTab].url = _currentUrl;
@@ -4688,6 +4704,18 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       color: const Color(0xFF22222E),
       position: RelativeRect.fromLTRB(pos.dx + 6, pos.dy + 6, pos.dx + 6, pos.dy + 6),
       items: [
+        // ★ = ユーザー要望「タブを複製する機能を右クリックの項目に追加」。
+        if (_gsTabs.length < _kGsMaxTabs)
+          PopupMenuItem<String>(
+            value: 'duplicate',
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              const Icon(Icons.copy_all_rounded,
+                  size: 15, color: Color(0xFF4FC3F7)),
+              const SizedBox(width: 8),
+              Text(context.read<MindMapProvider>().t('gs.duplicateTab'),
+                  style: const TextStyle(color: Colors.white, fontSize: 13)),
+            ]),
+          ),
         PopupMenuItem<String>(
           value: 'folder',
           child: Text(context.read<MindMapProvider>().t('gs.saveToFolder'),
@@ -4756,7 +4784,9 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       ],
     );
     if (selected == null || !mounted) return;
-    if (selected == 'folder') {
+    if (selected == 'duplicate') {
+      _duplicateGsTab(i);
+    } else if (selected == 'folder') {
       _gsSaveTabToFolder(i);
     } else if (selected == 'splitwith') {
       // 今の札を右クリックした時は、 隣 (右優先、 無ければ左) と並べる。
@@ -5454,6 +5484,24 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   }
 
   Widget _buildGsTabBar() {
+    // ★ = ユーザー要望「タブ上を右クリックした時だけ項目が表示されるが、
+    //   何もないヘッダー欄を右クリックしても同様の項目が出るように」。
+    //   帯ぜんぶを包む。 札の上はその札の受け口 (より内側) が勝つので、
+    //   今までどおりその札の一覧が出る。 何も無い所ではここが受け取り、
+    //   今見ている札を相手にした同じ一覧を出す。
+    // ★ 包みは `Row` の**外側**に置く (中に挟むと帯の高さが崩れる)。
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onSecondaryTapDown: (d) =>
+          _showGsTabMenu(d.globalPosition, _gsActiveTab),
+      onLongPressStart: _isDesktop
+          ? null
+          : (d) => _showGsTabMenu(d.globalPosition, _gsActiveTab),
+      child: _buildGsTabBarBody(),
+    );
+  }
+
+  Widget _buildGsTabBarBody() {
     return Container(
       height: 34,
       color: const Color(0xFF0E0E1A),
@@ -7284,17 +7332,20 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
               size: 18,
             ),
             const SizedBox(width: 6),
+            // ★ = ユーザー要望「メモ欄に編集中であっても『編集中』 と書かないで
+            //   欲しい、 邪魔」。 編集中は札を出さない (鉛筆のアイコンと ✕ で
+            //   じゅうぶん分かる)。 「新規メモ」 の時は今までどおり出す。
             Expanded(
-              child: Text(
-                isEditing
-                    ? provider.t('googleSearch.editingNow')
-                    : provider.t('googleSearch.newMemo'),
-                style: TextStyle(
-                  color: isEditing ? const Color(0xFF4FC3F7) : Colors.white,
-                  fontWeight: FontWeight.w600,
-                  fontSize: 13,
-                ),
-              ),
+              child: isEditing
+                  ? const SizedBox.shrink()
+                  : Text(
+                      provider.t('googleSearch.newMemo'),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 13,
+                      ),
+                    ),
             ),
             if (isEditing || _memoEditorOpen)
               IconButton(
@@ -8104,6 +8155,28 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                       fontSize: 13,
                     ),
                   ),
+                ),
+                // ── ページに埋め込む時にリンクも含めるか (= ユーザー要望:
+                //    「リンクまで含めるかどうかは設定で変えられるように」) ──
+                //    覚える設定なので、 次に開いた時もこのままになる。
+                IconButton(
+                  icon: Icon(
+                      provider.gsMemoEmbedLink
+                          ? Icons.link_rounded
+                          : Icons.link_off_rounded,
+                      color: provider.gsMemoEmbedLink
+                          ? const Color(0xFF4FC3F7)
+                          : Colors.white38,
+                      size: 18),
+                  tooltip: provider.t(provider.gsMemoEmbedLink
+                      ? 'gs.embedLinkTip'
+                      : 'gs.embedLinkOffTip'),
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 28, minHeight: 28),
+                  onPressed: () => unawaited(
+                      provider.setGsMemoEmbedLink(!provider.gsMemoEmbedLink)),
                 ),
                 // ＋新規メモ (= PDF ビューアの「フリーメモ」 ボタンに相当)
                 IconButton(
@@ -9574,22 +9647,52 @@ const String _kGsWheelTameJs = r'''
                     (first === 'maps' || first === 'earth' ||
                      path === '/maps' || path.indexOf('/maps/') === 0);
     if (googleMap) return;
-    e.preventDefault();
     var dy = e.deltaY * FACTOR;
     var dx = e.deltaX * FACTOR;
-    var el = e.target;
-    while (el && el.nodeType === 1 &&
-           el !== document.body && el !== document.documentElement) {
+    // ── 動かせる相手を**先に**探し、 見つかった時だけ横取りする ──
+    //
+    // ★ = ユーザー報告「google 検索の AI チャット欄のマウスによるスクロール
+    //   操作ができない」。 以前は必ず preventDefault してから相手を探して
+    //   いたので、 見つからないページ (ChatGPT / Gemini のような、 中身を
+    //   独自の入れ物で流すつくりの画面) ではブラウザの標準動作まで止めて
+    //   しまい、 どこも動かなかった。 見つからない時は素通しして
+    //   WebView2 に任せる。
+    function movable(el){
+      if (!el || el.nodeType !== 1) return false;
       var st = window.getComputedStyle(el);
-      if (((st.overflowY === 'auto' || st.overflowY === 'scroll') &&
-           el.scrollHeight > el.clientHeight) ||
-          ((st.overflowX === 'auto' || st.overflowX === 'scroll') &&
-           el.scrollWidth > el.clientWidth)) {
-        el.scrollTop += dy; el.scrollLeft += dx; return;
+      var oy = st.overflowY, ox = st.overflowX;
+      var scrollableY = (oy === 'auto' || oy === 'scroll' || oy === 'overlay');
+      var scrollableX = (ox === 'auto' || ox === 'scroll' || ox === 'overlay');
+      if (dy && scrollableY && el.scrollHeight > el.clientHeight + 1) {
+        if (dy > 0 ? (el.scrollTop + el.clientHeight < el.scrollHeight - 1)
+                   : (el.scrollTop > 0)) return true;
       }
-      el = el.parentElement;
+      if (dx && scrollableX && el.scrollWidth > el.clientWidth + 1) {
+        if (dx > 0 ? (el.scrollLeft + el.clientWidth < el.scrollWidth - 1)
+                   : (el.scrollLeft > 0)) return true;
+      }
+      return false;
     }
-    window.scrollBy(dx, dy);
+    // 影の DOM (shadow DOM) の中から始まった時も辿れるようにする。
+    var path = (typeof e.composedPath === 'function') ? e.composedPath() : null;
+    var el = (path && path.length) ? path[0] : e.target;
+    var hops = 0;
+    while (el && el.nodeType === 1 && hops++ < 80) {
+      if (movable(el)) {
+        e.preventDefault();
+        if (dy) el.scrollTop += dy;
+        if (dx) el.scrollLeft += dx;
+        return;
+      }
+      el = el.parentElement ||
+           (el.parentNode && el.parentNode.host) || null;
+    }
+    var doc = document.scrollingElement || document.documentElement;
+    if (movable(doc) || movable(document.body)) {
+      e.preventDefault();
+      window.scrollBy(dx, dy);
+    }
+    // ここまで来たら横取りしない (= ブラウザに任せる)。
   }, { passive: false, capture: true });
 })();
 ''';

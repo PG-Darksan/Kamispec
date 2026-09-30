@@ -1944,7 +1944,13 @@ Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
     //   アプリ本体側に出てしまう (= ユーザー報告: モデル切り替え画面が
     //   AI アシスタントの浮遊窓の下に出る)。 false なら一番近い
     //   Navigator = その窓自身になり、 窓の上に重なって出る。
-    bool useRootNavigator = true}) async {
+    bool useRootNavigator = true,
+    // ★ = ユーザー要望「AI(API) の画面は API 専用にしたいから、 codex CLI
+    //   などの CLI の選択肢は AI(API) の画面からは消して欲しい」。
+    //   この一覧はどの AI 欄からも開くので、 呼ぶ側で出し分ける。
+    //   false = パソコンに入れた CLI の行 (と その CLI のモデル / 推論) を
+    //   まるごと出さない。 CLI は AI ボタンの「相手選び」 から選ぶ。
+    bool allowCli = true}) async {
   // 一覧は各モデル自身の名前で並べる (いま使う相手の札とは別)。
   String label(String id) => provider.relayModelRawLabel(id);
   // ★ 同じ系統はいちばん新しい版だけ (= ユーザー要望: 選択肢が多過ぎる)。
@@ -2136,7 +2142,8 @@ Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
             //    どの AI 欄からも CLI に切り替えられるように) ──
             //    ここで選ぶと、 この後の問い合わせはすべて PC の CLI が
             //    答える (契約している分を使うので AI の残高は減らない)。
-            if (AgentCli.supported && provider.canUseCliAi) ...[
+            // ★ AI(API) の画面から開いた時は出さない ([allowCli] = false)。
+            if (allowCli && AgentCli.supported && provider.canUseCliAi) ...[
               // ★ = ユーザー要望「codexCLI と ClaudeCode の Opus が混ざって
               //   しまっているので分けて」+「PC内AI って表記じゃなくて」。
               //   1 つの「PC内AI」の行だったのを、 CLI の種類ごとの行にして、
@@ -2757,6 +2764,48 @@ class _MindMapScreenState extends State<MindMapScreen>
   final FocusNode _keyboardFocusNode = FocusNode();
   // Scaffold を外部から操作するためのキー（ドロワー開閉など）
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+
+  // ── 重ねた画面の上に出す「ページ一覧」 (= 本物の引き出しをそのまま) ──
+  //
+  // ★ = ユーザー要望「json などのファイルページ上で ctrl+shift+e を押したら
+  //   マインドマップなどで開かれるのと同じページ一覧が開かれるようにして
+  //   欲しい。 現状 ctrl や shift でまとめてページを削除したりできないから」。
+  //   ファイルのビューアは本体の**上に重ねた別の route** なので、 本物の
+  //   引き出し (Scaffold の drawer) を開いても裏で見えない。 そこで
+  //   `_buildDrawer` の中身をそのまま一番上の route に出す。
+  // ★ 別の route は本体の setState では建て直されないので、 開いている間だけ
+  //   「建て直しの手」 と「閉じる手」 を預かり、 本体の setState のたびに
+  //   建て直す ([setState] の override / [_closePageListPanel])。
+  VoidCallback? _hostedPageListRefresh;
+  VoidCallback? _hostedPageListClose;
+
+  /// その一覧を今出しているか (= 引き出しの代わりにこちらを閉じる)。
+  bool get _pageListHostedOpen => _hostedPageListClose != null;
+
+  /// 本体が建て直る時は、 上に出している「ページ一覧」 も建て直す。
+  ///
+  /// ★ 引き出しの複数選択 (`_drawerSelectedIds` など) は本体の状態なので、
+  ///   ここを通さないと、 別の route に出した一覧では選んだ印が出ない
+  ///   (= Ctrl / Shift でまとめて選べない) 。
+  /// ★ 建て直しは**次のフレーム**に回す。 組み立ての最中に別の route へ
+  ///   建て直しを頼むと弾かれるため (setState は描画中にも呼ばれ得る)。
+  @override
+  void setState(VoidCallback fn) {
+    super.setState(fn);
+    if (_hostedPageListRefresh == null) return;
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) => _hostedPageListRefresh?.call());
+  }
+
+  /// ページ一覧を閉じる (引き出し / 上に出している一覧のどちらでも)。
+  void _closePageListPanel() {
+    final close = _hostedPageListClose;
+    if (close != null) {
+      close();
+      return;
+    }
+    _scaffoldKey.currentState?.closeDrawer();
+  }
   // InteractiveViewer 自体ではなく、その内側の Stack に付ける
   final GlobalKey _canvasKey = GlobalKey();
   // Scaffold body 直下の Stack に付けるキー。 図形選択ツールバーを「図形の
@@ -29962,17 +30011,23 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// サイドメニュー。
   Future<void> _showQuickPageSwitcher(MindMapProvider provider,
       {Offset? nearAnchor}) async {
-    final ctrl = TextEditingController();
     if (nearAnchor != null) {
+      final ctrl = TextEditingController();
       await _showPageSwitcherNear(provider, ctrl, nearAnchor);
       ctrl.dispose();
       return;
     }
-    // ★ = ユーザー要望「マークダウンページ等のページ切り替えは、 ページ一覧が
-    //   サイドメニューで出てくる形にして欲しい」。 以前は押した所の近くに出る
-    //   小さな窓だったが、 本体の引き出しと同じく画面の左端から出る縦長の
-    //   サイドメニューにする。 ファイルを重ねて開いている間は本物の引き出しを
-    //   開けない (重ねた画面の裏で開いて見えない) ので、 ここで一番上に出す。
+    // ★ = ユーザー要望「json などのファイルページ上で ctrl+shift+e を押したら
+    //   マインドマップなどで開かれるのと同じページ一覧が開かれるようにして
+    //   欲しい。 現状 ctrl や shift でまとめてページを削除したりできない」。
+    //   以前はここだけ簡易版 (_buildPageSwitcherBody) を出していたので、
+    //   名前の変更と 1 件ずつの削除まではできても、 Ctrl / Shift で
+    //   まとめて選ぶ (= 複数選択して一括削除) ことができなかった。
+    //   **本物の引き出しの中身**をそのまま一番上の route に出す。
+    // ★ ファイルを重ねて開いている間は本物の引き出しを開けない (重ねた画面の
+    //   裏で開いて見えない) ので、 ここで一番上に出すのは今までどおり。
+    // ★ 既に出している時は二重に積まない (割り当ての連打)。
+    if (_pageListHostedOpen) return;
     await showGeneralDialog<void>(
       context: context,
       barrierDismissible: true,
@@ -29985,27 +30040,23 @@ class _MindMapScreenState extends State<MindMapScreen>
                 CurvedAnimation(parent: anim, curve: Curves.easeOutCubic)),
         child: child,
       ),
-      pageBuilder: (dctx, _, __) {
-        final screen = MediaQuery.sizeOf(dctx);
-        final w = math.min(340.0, math.max(240.0, screen.width * 0.82));
-        return Align(
-          alignment: Alignment.centerLeft,
-          child: SizedBox(
-            width: w,
-            height: double.infinity,
-            child: Material(
-              color: const Color(0xFF1E1E32),
-              elevation: 12,
-              child: SafeArea(
-                child: _buildPageSwitcherBody(provider, ctrl,
-                    bounded: false),
-              ),
-            ),
-          ),
-        );
-      },
+      pageBuilder: (dctx, _, __) => Align(
+        alignment: Alignment.centerLeft,
+        child: _HostedPageListPanel(
+          // 中身は本体の引き出しと**同じ物**。 建てる時の context は本体の
+          //   物を渡す (中で開く確認の窓などは、 この一覧より上に出る)。
+          builder: (_) => _buildDrawer(context, provider),
+          attach: (refresh, close) {
+            _hostedPageListRefresh = refresh;
+            _hostedPageListClose = close;
+          },
+        ),
+      ),
     );
-    ctrl.dispose();
+    // 閉じ終わったら、 選びかけの印は畳んでおく (引き出しを閉じた時と同じ)。
+    if (mounted && _drawerMultiSelectActive) {
+      setState(_endDrawerMultiSelect);
+    }
   }
 
   /// 「ページ切り替え」 の中身 (見出し / 探す欄 / ページの一覧)。
@@ -64530,9 +64581,15 @@ class _MindMapScreenState extends State<MindMapScreen>
             _showMapShapePicker();
           } else if (commandId == 'googleSearch') {
             // Ctrl+Shift+F: Google 検索 + メモダイアログを開く。
-            // ユーザー要望: 「ノードから検索を押して立ち上がる google 検索は
-            // 全画面ではなく、 小さいダイアログ」 → compactMode: true で開く。
-            _openGoogleSearchDialog(context, provider, compactMode: true);
+            //
+            // ★ = ユーザー報告「ctrl+shift+f で開くと画面の全体より少し
+            //   小さい大きさで開かれて気が散る。 ボタンから開くのと同じ
+            //   大きさにして」。 以前はここだけ `compactMode: true`
+            //   (= 要素の「検索」 から出す小さい窓) を渡していたので、
+            //   全画面のつもりで押しても一段小さい窓が出ていた。
+            //   ヘッダー / フッターのボタンと同じ入口へ通すと、 選んだ
+            //   開き方 (全画面 / 左右分割 / フローティング) もそのまま効く。
+            _executeHeaderCommand('googleSearch', provider);
           } else if (commandId == 'customPage1' ||
               commandId == 'customPage2' ||
               commandId == 'customPage3' ||
@@ -76686,7 +76743,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       }
       if (!mounted) return;
       setState(_endDrawerMultiSelect);
-      _scaffoldKey.currentState?.closeDrawer();
+      _closePageListPanel();
     } else {
       _appSnack(
           ctx,
@@ -77388,7 +77445,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             final k =
                 await _pickSplitSlotForPage(provider, anchorKey.currentContext ?? context);
             if (k == null || !mounted) return;
-            _scaffoldKey.currentState?.closeDrawer();
+            _closePageListPanel();
             // ★ 分割を解除して全画面で開く (= ユーザー要望)。
             if (k == -1) {
               final idx = provider.pages.indexWhere((p) => p.id == page.id);
@@ -77406,7 +77463,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           }();
           return;
         }
-        _scaffoldKey.currentState?.closeDrawer();
+        _closePageListPanel();
         provider.switchPage(i);
         WidgetsBinding.instance.addPostFrameCallback((_) => _centerOnRoot());
       },
@@ -77858,7 +77915,11 @@ class _MindMapScreenState extends State<MindMapScreen>
       unawaited(_setOpenFolder(null));
     }
     // ページ一覧 (drawer) が閉じていると編集欄が見えないので開いておく。
-    if (_scaffoldKey.currentState?.isDrawerOpen != true) {
+    // ★ 重ねた画面の上に一覧を出している時は、 それが既に見えているので
+    //   本物の引き出し (裏で見えない) は開かない。
+    if (_pageListHostedOpen) {
+      if (_drawerView != 'maps') setState(() => _drawerView = 'maps');
+    } else if (_scaffoldKey.currentState?.isDrawerOpen != true) {
       setState(() => _drawerView = 'maps');
       _scaffoldKey.currentState?.openDrawer();
     } else if (_drawerView != 'maps') {
@@ -82274,7 +82335,8 @@ class _MindMapScreenState extends State<MindMapScreen>
         ],
       },
       'pageListDrawerOpen':
-          appMainScaffoldKey?.currentState?.isDrawerOpen == true,
+          appMainScaffoldKey?.currentState?.isDrawerOpen == true ||
+              appHostedPageListOpen,
       'floatingWindows': [
         for (final k in _floatingPanelSingletons.keys)
           {'id': k, 'label': cmdLabel[k] ?? k}
@@ -112474,6 +112536,60 @@ class _MindMapScreenState extends State<MindMapScreen>
       captureFocus.dispose();
     });
   }
+}
+
+// ─── 重ねた画面の上に出す「ページ一覧」 の入れ物 ───────────────────────────
+
+/// 本体の引き出し (`_buildDrawer`) を、 別の route の上にそのまま出すための包み。
+///
+/// ★ = ユーザー要望「json などのファイルページ上で ctrl+shift+e を押したら
+///   マインドマップなどで開かれるのと同じページ一覧が開かれるようにして欲しい。
+///   現状 ctrl や shift でまとめてページを削除したりできないから」。
+/// ★ なぜ包みが要るか: `showGeneralDialog` の中身は**別の route** なので、
+///   本体 (`_MindMapScreenState`) が setState しても建て直されない。 引き出しの
+///   複数選択やフォルダーの開閉は本体の状態なので、 建て直しの手を本体へ
+///   預けて、 本体の setState のたびに呼んでもらう。
+/// ★ 閉じる手も一緒に預ける。 引き出しの行は `closeDrawer()` ではなく
+///   本体の `_closePageListPanel()` を通るので、 どちらの出し方でも閉じる。
+class _HostedPageListPanel extends StatefulWidget {
+  const _HostedPageListPanel({required this.builder, required this.attach});
+
+  /// 中身 (= 本体の引き出しそのもの)。
+  final WidgetBuilder builder;
+
+  /// 建て直しの手と閉じる手を預ける / 外す (外す時は両方 null)。
+  final void Function(VoidCallback? refresh, VoidCallback? close) attach;
+
+  @override
+  State<_HostedPageListPanel> createState() => _HostedPageListPanelState();
+}
+
+class _HostedPageListPanelState extends State<_HostedPageListPanel> {
+  @override
+  void initState() {
+    super.initState();
+    widget.attach(_refresh, _close);
+    // 知らせ (SnackBar) を幕より手前に出させる ([_showSnackAboveDrawer])。
+    appHostedPageListOpen = true;
+  }
+
+  void _refresh() {
+    if (mounted) setState(() {});
+  }
+
+  void _close() {
+    if (mounted) Navigator.of(context).maybePop();
+  }
+
+  @override
+  void dispose() {
+    widget.attach(null, null);
+    appHostedPageListOpen = false;
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.builder(context);
 }
 
 // ─── インラインタイトル編集ダイアログ ─────────────────────────────────────────
@@ -214555,6 +214671,15 @@ void Function(String url, {bool newTab})? openUrlInAppFromAnywhere;
 ///   見えないのに入力だけ吸う)。 上に出せる「ページを選ぶ窓」 を使う。
 Future<void> Function()? openPageListFromAnywhere;
 
+/// 重ねた画面の上に「ページ一覧」 を出している間だけ true。
+///
+/// ★ = ユーザー要望「json などのファイルページ上でも同じページ一覧を」。
+///   本物の引き出しと違い `isDrawerOpen` では分からないので、 手前に知らせを
+///   出すかどうかの判定 ([_showSnackAboveDrawer]) で見る。 一覧は幕
+///   (barrier) 付きの route なので、 幕の後ろに出た知らせの「元に戻す」 は
+///   押せない。 引き出しと同じく、 一番手前へ写しを出す。
+bool appHostedPageListOpen = false;
+
 /// 「ページ切り替え」 の**ボタン**から呼ぶ入口 (= ユーザー要望: 押した所の
 /// 近くに「ページ一覧」「ページを追加」 の小さな一覧を出す)。
 ///
@@ -214981,7 +215106,9 @@ OverlayEntry? _drawerSnackEntry;
 Timer? _drawerSnackTimer;
 void _showSnackAboveDrawer(BuildContext ctx, SnackBar patched) {
   final scaffold = appMainScaffoldKey?.currentState;
-  if (scaffold == null || !scaffold.isDrawerOpen) return;
+  if (scaffold == null || !(scaffold.isDrawerOpen || appHostedPageListOpen)) {
+    return;
+  }
   final overlay = Overlay.maybeOf(ctx, rootOverlay: true);
   if (overlay == null) return;
   _drawerSnackTimer?.cancel();
@@ -215051,7 +215178,8 @@ ScaffoldFeatureController<SnackBar, SnackBarClosedReason>? _appSnack(
   // ── ドロワーが開いている間は、 手前の写しだけを出す (= ユーザー報告:
   //    上下に二重で表示される)。 本物の SnackBar はドロワーの後ろに
   //    隠れる位置に出るので、 この間は出さない。 ──
-  if (appMainScaffoldKey?.currentState?.isDrawerOpen == true) {
+  if (appMainScaffoldKey?.currentState?.isDrawerOpen == true ||
+      appHostedPageListOpen) {
     _showSnackAboveDrawer(ctx, patched);
     return null;
   }
@@ -215178,7 +215306,8 @@ ScaffoldFeatureController<SnackBar, SnackBarClosedReason>? _appSnackM(
       _patchSnackBarDuration(messenger.context, bar, processing: processing);
   noteAppNotice(patched);
   // ドロワーが開いている間は手前の写しだけ (= 二重表示させない)。
-  if (appMainScaffoldKey?.currentState?.isDrawerOpen == true) {
+  if (appMainScaffoldKey?.currentState?.isDrawerOpen == true ||
+      appHostedPageListOpen) {
     _showSnackAboveDrawer(messenger.context, patched);
     return null;
   }
@@ -236534,6 +236663,16 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
     if (raw.isEmpty) return xls.TextCellValue('');
     if (raw.startsWith('=') && raw.length > 1) {
       return xls.FormulaCellValue(raw.substring(1));
+    }
+    // ★ 有効 15 桁を超える数字は文字のまま (= 動作検証 2026-09-30「20 桁 ID が
+    //   12345678901234567000.0 になる」 と同じ壊れ方)。 Excel 自身が 15 桁しか
+    //   持てず 16 桁目以降を 0 に丸めるので、 数値にした時点で ID が壊れる。
+    //   19 桁を超えると Dart の int にも収まらず、 読み戻す側が落ちて**表ごと
+    //   読めなくなる**。 先頭ゼロと同じ扱いで文字のまま置く。
+    final longDigits =
+        raw.replaceAll(RegExp(r'[^0-9]'), '').replaceFirst(RegExp(r'^0+'), '');
+    if (longDigits.length > 15 && !raw.contains('/')) {
+      return xls.TextCellValue(raw);
     }
     // `/` を含まなければ数値として解釈を試みる
     // (含む場合は日付候補なので数値判定はスキップ)
@@ -270210,6 +270349,34 @@ class _OfficeFileTemplate {
     }
   }
 
+  /// 文字を数値のセルにしてよいか。 よければその数、 駄目なら null。
+  ///
+  /// ★ = 動作検証 2026-09-30「MCP で xlsx を作ると、 文字列として渡した
+  ///   郵便番号 `00123` は `123`、 電話番号 `09012345678` は `9012345678`、
+  ///   20 桁 ID `12345678901234567890` は `12345678901234567000.0` に
+  ///   変わって保存された。 CSV では同じ値が保持された」。
+  ///   以前は `num.tryParse` が通れば何でも数値にしていたので、 先頭の 0、
+  ///   `+` 記号、 指数の書き方 (`1e3`)、 小数の末尾の 0 (`1.2300`)、
+  ///   桁数の多い整数が**ことごとく書き換わって**いた。
+  /// ★ 物差しは「数値に直して文字へ戻した時、 元と一字も違わない」 かどうか。
+  ///   集計したい人は素直な書き方 (`123` / `1.5` / `-8`) で渡せば今までどおり
+  ///   数値になり、 識別子は 1 字も変わらず残る。
+  /// ★ 有効 15 桁を超える整数も数値にしない。 Excel 自身が 15 桁までしか
+  ///   持てず、 16 桁目以降を 0 に丸めてしまうため (= ID が壊れる)。
+  ///   加えて 19 桁を超えると Dart の int にも収まらず、 読み戻す側の
+  ///   `int.parse` が落ちて**表ごと読めなくなる**
+  ///   (= 同じ検証の「20 桁整数を含む xlsx の読込で表が返らない」)。
+  static num? _xlsxNumberOrNull(String s) {
+    if (s.isEmpty) return null;
+    final n = num.tryParse(s);
+    if (n == null) return null;
+    // 符号・小数点を除いた数字の並び (先頭の 0 は桁数に数えない)。
+    final digits =
+        s.replaceAll(RegExp(r'[^0-9]'), '').replaceFirst(RegExp(r'^0+'), '');
+    if (digits.length > 15) return null;
+    return n.toString() == s ? n : null;
+  }
+
   /// 表の中身が入った xlsx。 excel パッケージで組むので確実に読み戻せる。
   static Uint8List _buildXlsxRows(List<List<String>> rows) {
     final excel = xls.Excel.createExcel();
@@ -270220,17 +270387,29 @@ class _OfficeFileTemplate {
     for (int r = 0; r < rows.length; r++) {
       for (int c = 0; c < rows[r].length; c++) {
         final raw = rows[r][c];
-        // 数字に見えるものは数値として入れる (集計できるように)。
-        final asNum = num.tryParse(raw.trim());
+        final t = raw.trim();
+        final xls.CellValue cell;
+        if (t.isEmpty) {
+          cell = xls.TextCellValue('');
+        } else if (t.startsWith('=') && t.length > 1) {
+          // ★ = 動作検証 2026-09-30「`=B2*C2` / `=IF(...)` / `=SUM(...)` の
+          //   セルが共有文字列になり、 数式要素 `<f>` が無い」。 OOXML の
+          //   `<f>` は先頭の `=` を含まない決まりなので 1 字落として渡す
+          //   (画面の表計算エディタ `_parseStringToCellValue` と同じ扱い)。
+          cell = xls.FormulaCellValue(t.substring(1));
+        } else {
+          // 数字に見えるものは数値として入れる (集計できるように)。 ただし
+          //   元の文字と一字も違わない時だけ ([_xlsxNumberOrNull])。
+          final asNum = _xlsxNumberOrNull(t);
+          cell = asNum == null
+              ? xls.TextCellValue(raw)
+              : (asNum is int
+                  ? xls.IntCellValue(asNum)
+                  : xls.DoubleCellValue(asNum.toDouble()));
+        }
         sheet.updateCell(
           xls.CellIndex.indexByColumnRow(columnIndex: c, rowIndex: r),
-          raw.trim().isEmpty
-              ? xls.TextCellValue('')
-              : (asNum == null
-                  ? xls.TextCellValue(raw)
-                  : (asNum is int
-                      ? xls.IntCellValue(asNum)
-                      : xls.DoubleCellValue(asNum.toDouble()))),
+          cell,
         );
       }
     }
@@ -295917,7 +296096,14 @@ class _McpChatDialogState extends State<_McpChatDialog>
         //   (= ユーザー要望: モデル切り替え画面を AI アシスタントの
         //   浮遊画面の上に出す)。 既定のままだと根っこの Navigator に
         //   積まれ、 窓の裏 = アプリ本体側に隠れてしまう。
-        useRootNavigator: !widget.floatingPanel, onChanged: () {
+        useRootNavigator: !widget.floatingPanel,
+        // ★ = ユーザー要望「AI(API) の画面は API 専用にしたいから、
+        //   codex CLI などの CLI の選択肢は AI(API) の画面からは消して」。
+        //   ここはモデルを選ぶ一覧なのに、 パソコンに入れた CLI の行が
+        //   混ざっていて、 押すとアプリ全体の相手が CLI へ切り替わって
+        //   いた。 CLI は AI ボタンの「相手選び」 から選ぶ。
+        allowCli: false,
+        onChanged: () {
       if (mounted) setState(() {});
     });
   }
