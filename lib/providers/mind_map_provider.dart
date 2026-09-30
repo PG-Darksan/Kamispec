@@ -28251,6 +28251,67 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Salvar em uma pasta',
       'ru': 'Сохранить в папку',
     },
+    // ★ = ユーザー要望「各機能ボタンを右クリックした際にショートカットキーを
+    //   設定できる項目を追加して欲しい」。
+    'shortcuts.assignTitle': {
+      'ja': 'ショートカットキーを設定',
+      'en': 'Set a keyboard shortcut',
+      'zh': '设置快捷键',
+      'ko': '단축키 설정',
+      'es': 'Asignar un atajo de teclado',
+      'fr': 'Définir un raccourci clavier',
+      'de': 'Tastenkürzel festlegen',
+      'pt': 'Definir um atalho de teclado',
+      'ru': 'Назначить сочетание клавиш',
+    },
+    'shortcuts.assignNone': {
+      'ja': '未設定',
+      'en': 'Not set',
+      'zh': '未设置',
+      'ko': '설정 안 됨',
+      'es': 'Sin asignar',
+      'fr': 'Non défini',
+      'de': 'Nicht festgelegt',
+      'pt': 'Não definido',
+      'ru': 'Не назначено',
+    },
+    // ★ = ユーザー要望「既に割り当てられている場合は、 割り当てられている側の
+    //   ショートカットキーを変更できる項目も出して欲しい」。
+    'keyEdit.changeOther': {
+      'ja': '{name} の割り当てを変える',
+      'en': 'Change the shortcut of {name}',
+      'zh': '更改 {name} 的快捷键',
+      'ko': '{name}의 단축키 변경',
+      'es': 'Cambiar el atajo de {name}',
+      'fr': 'Modifier le raccourci de {name}',
+      'de': 'Kürzel von {name} ändern',
+      'pt': 'Alterar o atalho de {name}',
+      'ru': 'Изменить сочетание для {name}',
+    },
+    // ★ = ユーザー要望「AI 画面をアイコンとして折り畳む / 展開する機能にも
+    //   ショートカットキーを割り当てられるように」。
+    'cmd.toggleAiPanelCollapse': {
+      'ja': 'AI 画面を折り畳む / 広げる',
+      'en': 'Collapse / expand the AI window',
+      'zh': '折叠 / 展开 AI 窗口',
+      'ko': 'AI 창 접기 / 펴기',
+      'es': 'Contraer / expandir la ventana de IA',
+      'fr': 'Replier / déplier la fenêtre IA',
+      'de': 'KI-Fenster ein-/ausklappen',
+      'pt': 'Recolher / expandir a janela de IA',
+      'ru': 'Свернуть / развернуть окно ИИ',
+    },
+    'shortcuts.assignAiCollapse': {
+      'ja': '折り畳み / 展開にキーを設定',
+      'en': 'Set a key for collapse / expand',
+      'zh': '为折叠 / 展开设置快捷键',
+      'ko': '접기 / 펴기에 단축키 설정',
+      'es': 'Asignar una tecla a contraer / expandir',
+      'fr': 'Définir une touche pour replier / déplier',
+      'de': 'Taste für Ein-/Ausklappen festlegen',
+      'pt': 'Definir uma tecla para recolher / expandir',
+      'ru': 'Назначить клавишу для сворачивания',
+    },
     // ★ = ユーザー要望「google 検索でタブを複製する機能を右クリックの項目に」。
     'gs.duplicateTab': {
       'ja': 'タブを複製',

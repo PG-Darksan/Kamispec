@@ -4020,6 +4020,124 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     );
   }
 
+  /// 再生速度のボタン (押すとスライドバーが出る)。
+  ///
+  /// ★ = ユーザー要望「再生速度はスライドバー設定の方が嬉しい」。 以前は
+  ///   0.5 倍刻みの一覧 (PopupMenu) だったので、 細かく決められず、 押す
+  ///   たびに一覧をたどる必要があった。
+  /// ★ 色は「等速ではない時」 だけ付ける (= ユーザー要望: オフの時は色を
+  ///   消す)。
+  Widget _buildVideoRateButton() {
+    final on = _searchVideoRate != 1.0;
+    return Builder(
+      builder: (btnCtx) => IconButton(
+        icon: Icon(
+          on ? Icons.slow_motion_video_rounded : Icons.speed_rounded,
+          color: on ? const Color(0xFF4FC3F7) : Colors.white70,
+          size: 22,
+        ),
+        tooltip: '${context.read<MindMapProvider>().t('gs.videoRate')}'
+            ' (${_searchVideoRate.toStringAsFixed(2)}x)',
+        visualDensity: VisualDensity.compact,
+        padding: const EdgeInsets.all(6),
+        constraints: const BoxConstraints(),
+        onPressed: () => _showVideoRateSlider(btnCtx),
+      ),
+    );
+  }
+
+  /// 速度のスライドバーを、 押したボタンの下に出す。
+  ///
+  /// ★ 動かしている間ずっと当て直す (= つまみを放す前から速さが変わるので、
+  ///   ちょうど良い所で止められる)。
+  Future<void> _showVideoRateSlider(BuildContext btnCtx) async {
+    final p = context.read<MindMapProvider>();
+    final box = btnCtx.findRenderObject() as RenderBox?;
+    final overlay =
+        Overlay.of(btnCtx).context.findRenderObject() as RenderBox?;
+    if (box == null || overlay == null) return;
+    final topLeft = box.localToGlobal(Offset.zero, ancestor: overlay);
+    final pos = RelativeRect.fromLTRB(
+      topLeft.dx - 150,
+      topLeft.dy + box.size.height + 4,
+      overlay.size.width - topLeft.dx - box.size.width,
+      0,
+    );
+    await showMenu<void>(
+      context: btnCtx,
+      position: pos,
+      color: const Color(0xFF1E1E32),
+      items: <PopupMenuEntry<void>>[
+        PopupMenuItem<void>(
+          // ★ 押しても閉じない項目にする (= つまみを動かしている最中に
+          //   menu が閉じてしまわないように)。 中のスライダーはそのまま
+          //   触れる。
+          enabled: false,
+          height: 56,
+          child: StatefulBuilder(
+            builder: (_, setM) => SizedBox(
+              width: 240,
+              child: Row(children: [
+                const Icon(Icons.speed_rounded,
+                    size: 16, color: Color(0xFF4FC3F7)),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: SliderTheme(
+                    data: SliderTheme.of(context).copyWith(
+                      activeTrackColor: const Color(0xFF4FC3F7),
+                      inactiveTrackColor: Colors.white24,
+                      thumbColor: const Color(0xFF4FC3F7),
+                      overlayColor:
+                          const Color(0xFF4FC3F7).withValues(alpha: 0.18),
+                      trackHeight: 3,
+                    ),
+                    child: Slider(
+                      value: _searchVideoRate.clamp(1.0, 4.0),
+                      min: 1.0,
+                      max: 4.0,
+                      // 0.05 刻み (= 細かく決められるように)。
+                      divisions: 60,
+                      onChanged: (v) {
+                        final r = double.parse(v.toStringAsFixed(2));
+                        setM(() {});
+                        setState(() => _searchVideoRate = r);
+                        _applySearchVideoRate(r);
+                      },
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 4),
+                SizedBox(
+                  width: 44,
+                  child: Text('${_searchVideoRate.toStringAsFixed(2)}x',
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700)),
+                ),
+              ]),
+            ),
+          ),
+        ),
+        PopupMenuItem<void>(
+          height: 34,
+          onTap: () {
+            setState(() => _searchVideoRate = 1.0);
+            _applySearchVideoRate(1.0);
+          },
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            const Icon(Icons.restart_alt_rounded,
+                size: 15, color: Colors.white54),
+            const SizedBox(width: 8),
+            Text(p.t('btn.reset'),
+                style: const TextStyle(color: Colors.white, fontSize: 12.5)),
+          ]),
+        ),
+      ],
+    );
+  }
+
   /// モバイルの「⋮」 オーバーフローメニュー用の項目。
   PopupMenuItem<String> _gsOverflowItem(
       String value, IconData icon, String label) {
@@ -8627,6 +8745,19 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                     backgroundColor: const Color(0xFF1A1A1A),
                     elevation: 0,
                     automaticallyImplyLeading: false,
+                    // ★ 帯の**何もない所**を押したら畳む (= ユーザー要望)。
+                    //   `flexibleSpace` は題と操作より**後ろ**に敷かれるので、
+                    //   ボタンや入力欄を押した時はそちらが先に受け取る。
+                    //   タブの帯は自前の受け口 (opaque) が押しを吸うので、
+                    //   そこを押しても畳まない。
+                    //   戻せる口を持たない触る端末では畳ませない。
+                    flexibleSpace: _gsHoverCapable
+                        ? GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: () =>
+                                setState(() => _gsHeaderHidden = true),
+                          )
+                        : null,
                     title: _buildSearchBar(provider),
                     titleSpacing: 12,
                     toolbarHeight: 56,
@@ -8695,7 +8826,10 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                             _memoSideExpanded
                                 ? Icons.sticky_note_2_rounded
                                 : Icons.sticky_note_2_outlined,
-                            color: const Color(0xFFFFB347),
+                            // ★ 開いている時だけ色を付ける (= ユーザー要望)。
+                            color: _memoSideExpanded
+                                ? const Color(0xFFFFB347)
+                                : Colors.white70,
                             size: 22,
                           ),
                           tooltip: (_memoSideExpanded
@@ -8741,7 +8875,8 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                                 _gsSplitDown
                                     ? _GSearchSplitIconFill.bottom
                                     : _GSearchSplitIconFill.top,
-                                color: const Color(0xFF43B97F),
+                                // 押すだけのボタンは白 (= ユーザー要望)。
+                                color: Colors.white70,
                                 size: 22,
                               ),
                             ),
@@ -8764,7 +8899,10 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                               _aiPanelOpen
                                   ? Icons.smart_toy_rounded
                                   : Icons.smart_toy_outlined,
-                              color: const Color(0xFF4FC3F7),
+                              // ★ 開いている時だけ色を付ける (= ユーザー要望)。
+                              color: _aiPanelOpen
+                                  ? const Color(0xFF4FC3F7)
+                                  : Colors.white70,
                               size: 22,
                             ),
                             tooltip: () {
@@ -8793,7 +8931,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                       if (!widget.minimalMode && !isMobileHeader)
                         IconButton(
                           icon: const Icon(Icons.ios_share_rounded,
-                              color: Color(0xFF4FC3F7), size: 20),
+                              color: Colors.white70, size: 20),
                           tooltip: context.read<MindMapProvider>().t('gs.sharePageAi'),
                           visualDensity: VisualDensity.compact,
                           padding: const EdgeInsets.all(6),
@@ -8802,55 +8940,11 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                         ),
                       // ── 動画の再生速度 (= ユーザー要望: Google 検索で出てきた埋め込み
                       //    動画の再生速度を変えられるように) ──
+                      // ★ = ユーザー要望「再生速度はスライドバー設定の方が
+                      //   嬉しい」。 0.5 倍刻みの一覧から、 つまみを滑らせて
+                      //   決める形にした ([_buildVideoRateButton])。
                       if (!widget.minimalMode && !isMobileHeader)
-                        PopupMenuButton<double>(
-                          tooltip: context.read<MindMapProvider>().t('gs.videoRate'),
-                          icon: Icon(
-                            _searchVideoRate == 1.0
-                                ? Icons.speed_rounded
-                                : Icons.slow_motion_video_rounded,
-                            color: const Color(0xFF4FC3F7),
-                            size: 22,
-                          ),
-                          color: const Color(0xFF1E1E32),
-                          padding: const EdgeInsets.all(6),
-                          onSelected: (r) {
-                            setState(() => _searchVideoRate = r);
-                            _applySearchVideoRate(r);
-                          },
-                          itemBuilder: (_) => [
-                            // 0.5 倍速刻みで 1.0〜4.0 倍まで (= ユーザー要望: 1 倍未満は出さない)。
-                            for (final r in const [
-                              1.0,
-                              1.5,
-                              2.0,
-                              2.5,
-                              3.0,
-                              3.5,
-                              4.0
-                            ])
-                              PopupMenuItem<double>(
-                                value: r,
-                                height: 38,
-                                child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Icon(
-                                        r == _searchVideoRate
-                                            ? Icons.check_rounded
-                                            : Icons.speed_rounded,
-                                        size: 16,
-                                        color: const Color(0xFF4FC3F7),
-                                      ),
-                                      const SizedBox(width: 8),
-                                      Text('${r}x',
-                                          style: const TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 13)),
-                                    ]),
-                              ),
-                          ],
-                        ),
+                        _buildVideoRateButton(),
                       // ── 広告を隠す (= ユーザー要望: 設定の奥ではなく、
                       //    使う画面から入切できるように) ──
                       if (!widget.minimalMode && !isMobileHeader)
@@ -8862,7 +8956,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                                 : Icons.block_outlined,
                             color: provider.adBlockEnabled
                                 ? const Color(0xFF7FD8A0)
-                                : Colors.white54,
+                                : Colors.white70,
                             size: 20,
                           ),
                           color: const Color(0xFF1E1E32),
@@ -8881,8 +8975,13 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                       //    モバイルはスペースが無いので非表示) ──
                       if (!widget.minimalMode && useHorizontal)
                         IconButton(
-                          icon: const Icon(Icons.translate_rounded,
-                              color: Color(0xFF0F73B8), size: 22),
+                          // ★ DeepL の欄を開いている時だけ色を付ける
+                          //   (= ユーザー要望: オフの時は色を消す)。
+                          icon: Icon(Icons.translate_rounded,
+                              color: (_aiPanelOpen && _aiPanelIsDeepL)
+                                  ? const Color(0xFF0F73B8)
+                                  : Colors.white70,
+                              size: 22),
                           tooltip: context.read<MindMapProvider>().t('gs.openDeepl'),
                           visualDensity: VisualDensity.compact,
                           padding: const EdgeInsets.all(6),
@@ -8896,7 +8995,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                         IconButton(
                           icon: const Icon(
                               Icons.picture_in_picture_alt_rounded,
-                              color: Color(0xFF80CBC4),
+                              color: Colors.white70,
                               size: 20),
                           tooltip: context
                               .read<MindMapProvider>()
@@ -9059,21 +9158,12 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                             );
                           },
                         ),
-                      // ── ヘッダーを隠す (= ユーザー要望: Google 検索の
-                      //    ヘッダーを非表示にするボタン)。 隠すと本文だけに
-                      //    なり、 同じ右上に出る小さな山形で戻せる。 ──
-                      IconButton(
-                        // 柔らかい印象のアイコン (= ユーザー要望: 目のアイコンが
-                        // 不気味)。 上向きの山形 = 「畳んで仕舞う」。
-                        icon: const Icon(Icons.keyboard_arrow_up_rounded,
-                            color: Colors.white70, size: 21),
-                        tooltip: provider.t('gs.hideHeader'),
-                        visualDensity: VisualDensity.compact,
-                        padding: const EdgeInsets.all(6),
-                        constraints: const BoxConstraints(),
-                        onPressed: () =>
-                            setState(() => _gsHeaderHidden = true),
-                      ),
+                      // ★ = ユーザー要望「ヘッダーを隠すボタンは無くして、
+                      //   ヘッダーの何もない箇所をクリックしたら閉じて、
+                      //   ヘッダー上部にカーソルがホバー状態になったら表示する
+                      //   ボタンが出てくるように」。 隠すボタンはここから外し、
+                      //   畳むのは帯の空いた所を押す形にした (下の
+                      //   `flexibleSpace`)。 戻す山形は本文の上端に出る。
                       // ── 閉じるボタン (右上) ──
                       // ユーザー要望により、 左上ではなく右上に配置 (= マウスカーソルで
                       // 右上の X ボタンが反射的にクリックできる位置)。

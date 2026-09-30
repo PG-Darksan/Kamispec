@@ -13304,6 +13304,67 @@ class _MindMapScreenState extends State<MindMapScreen>
                       const TextStyle(color: Colors.white54, fontSize: 11),
                 ),
               ),
+              // ── ショートカットキーを設定 (= ユーザー要望: 各機能ボタンを
+              //    右クリックした時に、 そのボタンのキーを決められるように) ──
+              //    既に他で使われているキーを入れた時は、 その相手の割り当てを
+              //    その場で変えられる ([_showKeyBindingEditor])。
+              const Divider(color: Colors.white12, height: 1),
+              ListTile(
+                leading: const Icon(Icons.keyboard_alt_rounded,
+                    color: Color(0xFFFFB347)),
+                title: Text(provider.t('shortcuts.assignTitle'),
+                    style: const TextStyle(color: Colors.white)),
+                subtitle: Text(
+                  () {
+                    final cur = _currentBindingFor(
+                        _shortcutIdForButton(commandId));
+                    return cur.isEmpty
+                        ? provider.t('shortcuts.assignNone')
+                        : cur;
+                  }(),
+                  style: const TextStyle(
+                      color: Color(0xFF4FC3F7),
+                      fontSize: 11,
+                      fontFamily: 'monospace'),
+                ),
+                onTap: () {
+                  Navigator.of(sctx).pop();
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (!mounted) return;
+                    _showShortcutAssignForButton(context, commandId);
+                  });
+                },
+              ),
+              // ★ AI のボタンだけ、 「AI 画面の折り畳み / 展開」 にも
+              //   キーを割り当てられるようにする (= ユーザー要望)。
+              if (commandId == 'aiAssistant')
+                ListTile(
+                  leading: const Icon(Icons.unfold_less_rounded,
+                      color: Color(0xFF80CBC4)),
+                  title: Text(provider.t('shortcuts.assignAiCollapse'),
+                      style: const TextStyle(color: Colors.white)),
+                  subtitle: Text(
+                    () {
+                      final cur =
+                          _currentBindingFor(_kToggleAiPanelCollapseId);
+                      return cur.isEmpty
+                          ? provider.t('shortcuts.assignNone')
+                          : cur;
+                    }(),
+                    style: const TextStyle(
+                        color: Color(0xFF4FC3F7),
+                        fontSize: 11,
+                        fontFamily: 'monospace'),
+                  ),
+                  onTap: () {
+                    Navigator.of(sctx).pop();
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (!mounted) return;
+                      _showShortcutAssignForButton(
+                          context, _kToggleAiPanelCollapseId);
+                    });
+                  },
+                ),
               // ── 開き方 (全画面 / 左右分割 / フローティング) ──
               //    URL を開くだけのボタンにだけ出す (= ユーザー要望)。
               //    ★ 見出しと選択肢を同じ行に並べて縦を詰める (= ユーザー要望:
@@ -14465,6 +14526,15 @@ class _MindMapScreenState extends State<MindMapScreen>
         if (k != null) return provider.t(k);
       }
     }
+    // ★ ヘッダーに置けない命令 (取り消し / AI 画面の折り畳み など) も
+    //   名前で出す (= ユーザー要望のキー割り当ての窓と、 ぶつかった相手の
+    //   知らせで id がそのまま出ていた)。
+    for (final c in _assignableCommandDefs) {
+      if (c['id'] == commandId) {
+        final k = c['labelKey'] as String? ?? '';
+        if (k.isNotEmpty) return provider.t(k);
+      }
+    }
     return commandId;
   }
 
@@ -14737,6 +14807,46 @@ class _MindMapScreenState extends State<MindMapScreen>
                   });
                 },
               ),
+              // ── ショートカットキーを設定 (= ユーザー要望: 各機能ボタンから
+              //    割り当てられるように)。 デスクトップの右クリックの項目と
+              //    同じ入口を通す。 ──
+              tile(
+                icon: Icons.keyboard_alt_rounded,
+                iconColor: const Color(0xFFFFB347),
+                title: provider.t('shortcuts.assignTitle'),
+                subtitle: () {
+                  final cur =
+                      _currentBindingFor(_shortcutIdForButton(commandId));
+                  return cur.isEmpty ? provider.t('shortcuts.assignNone') : cur;
+                }(),
+                onTap: () {
+                  Navigator.of(sctx).pop();
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (!mounted) return;
+                    _showShortcutAssignForButton(context, commandId);
+                  });
+                },
+              ),
+              if (commandId == 'aiAssistant')
+                tile(
+                  icon: Icons.unfold_less_rounded,
+                  iconColor: const Color(0xFF80CBC4),
+                  title: provider.t('shortcuts.assignAiCollapse'),
+                  subtitle: () {
+                    final cur = _currentBindingFor(_kToggleAiPanelCollapseId);
+                    return cur.isEmpty
+                        ? provider.t('shortcuts.assignNone')
+                        : cur;
+                  }(),
+                  onTap: () {
+                    Navigator.of(sctx).pop();
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (!mounted) return;
+                      _showShortcutAssignForButton(
+                          context, _kToggleAiPanelCollapseId);
+                    });
+                  },
+                ),
               // ② 色を変更する
               tile(
                 icon: Icons.palette_rounded,
@@ -14818,19 +14928,71 @@ class _MindMapScreenState extends State<MindMapScreen>
   ///   られたカスタムアイコンの上にカーソルが乗ったらカレンダー
   ///   (ctrl+shift+c)とか後ろに括弧書きでショートカットキーを表示して
   ///   欲しい」 への対応用ヘルパー。
+  /// AI 画面を「アイコンに畳む / 広げる」 命令の id (= ユーザー要望)。
+  static const String _kToggleAiPanelCollapseId = 'toggleAiPanelCollapse';
+
+  /// 一部のヘッダーボタン commandId は `_commandDefs` の id と異なる
+  /// (= 同じ動作だが別 ID)。 対応表を 1 か所に置く。
+  static const Map<String, String> _kButtonToShortcutId = <String, String>{
+    'calendar': 'toggleCalendar',
+    'themeMode': 'toggleTheme',
+    'shortcuts': 'openShortcuts',
+  };
+
+  String _shortcutIdForButton(String commandId) =>
+      _kButtonToShortcutId[commandId] ?? commandId;
+
+  /// 割り当てを保存する (ショートカット一覧の編集と同じ作法)。
+  /// 既定と同じ / 空なら「自分で決めた分」 を捨てる。
+  void _saveKeyBindingFor(String id, String newKey, String defaultKey) {
+    setState(() {
+      if (newKey.isEmpty || newKey == defaultKey) {
+        _customKeyBindings.remove(id);
+      } else {
+        _customKeyBindings[id] = newKey;
+      }
+    });
+    _persistCustomKeyBindings();
+  }
+
+  /// その命令にいま効いているキー ('' = 割り当て無し)。
+  String _currentBindingFor(String id) {
+    for (final cmd in _assignableCommandDefs) {
+      if (cmd['id'] == id) {
+        return (_customKeyBindings[id] ?? (cmd['defaultKey'] as String? ?? ''))
+            .trim();
+      }
+    }
+    return (_customKeyBindings[id] ?? '').trim();
+  }
+
+  String _defaultKeyFor(String id) {
+    for (final cmd in _assignableCommandDefs) {
+      if (cmd['id'] == id) return (cmd['defaultKey'] as String? ?? '').trim();
+    }
+    return '';
+  }
+
+  /// ボタンの右クリック / 長押しから、 そのボタンのキーを決める
+  /// (= ユーザー要望「各機能ボタンを右クリックした際にショートカットキーを
+  /// 設定できる項目を追加して欲しい」)。
+  ///
+  /// ★ 入口はここ 1 つ。 デスクトップの右クリック (`_showCustomItemContextMenu`)
+  ///   と、 触る端末の長押し (`_showUnifiedMobileButtonMenu`) の両方から呼ぶ。
+  void _showShortcutAssignForButton(BuildContext ctx, String commandId) {
+    final provider = context.read<MindMapProvider>();
+    final id = _shortcutIdForButton(commandId);
+    final defaultKey = _defaultKeyFor(id);
+    _showKeyBindingEditor(ctx, id, _commandLabel(provider, id), defaultKey,
+        _currentBindingFor(id), (k) => _saveKeyBindingFor(id, k, defaultKey));
+  }
+
   String? _getCommandShortcut(String commandId) {
     // キーボードショートカットの案内は Windows/macOS/Linux 専用。
     // この共通入口で止めることで、新規ページ作成メニューやカスタムボタンの
     // ツールチップへ Ctrl/Shift 等がモバイルでも混入するのを防ぐ。
     if (!_isDesktop) return null;
-    // 一部のヘッダーボタン commandId は _commandDefs での id 名と
-    // 異なる (= 同じ動作だが別 ID)。 対応表を持つ。
-    const buttonToShortcutId = <String, String>{
-      'calendar': 'toggleCalendar',
-      'themeMode': 'toggleTheme',
-      'shortcuts': 'openShortcuts',
-    };
-    final shortcutId = buttonToShortcutId[commandId] ?? commandId;
+    final shortcutId = _shortcutIdForButton(commandId);
     for (final cmd in _commandDefs) {
       if (cmd['id'] == shortcutId) {
         final binding =
@@ -64771,6 +64933,13 @@ class _MindMapScreenState extends State<MindMapScreen>
                 }
               }
             }
+          } else if (commandId == _kToggleAiPanelCollapseId) {
+            // ★ = ユーザー要望「AI 画面をアイコンとして折り畳む / 展開する
+            //   機能にもショートカットキーを割り当てられるように」。
+            //   出していない / 浮かせていない時は何もしない。
+            if (!_McpChatDialogState.toggleCollapseOfLivePanel()) {
+              _showLockToast(provider.t('cmd.toggleAiPanelCollapse'));
+            }
           } else if (commandId == 'cutMode') {
             // Ctrl+Shift+V: 裁断モードの切替
             setState(() {
@@ -83471,11 +83640,19 @@ class _MindMapScreenState extends State<MindMapScreen>
       //      側の判定 (720px) と同じ数を使う。
       final MindMapPage? cellPage = _pageShownInSplitCell(provider, k);
       final String cellType = cellPage?.pageType ?? '';
-      final bool ownsTopBar = toolId == null &&
+      final bool cellOwnsBar = toolId == null &&
           embedded == null &&
           (cellType == 'markdown' ||
               cellType == 'paint' ||
               cellType == 'document');
+      // ★ = ユーザー報告「マークダウンのページ名が画面分割した際に本文と
+      //   被る」。 自前の帯を持つセルでは、 札をその帯の上へ逃がしている
+      //   (48 / 84) のに、 本体の帯を隠す (Zen) と**自前の帯ごと消える**ので、
+      //   逃がした先がそのまま本文の上になっていた。 帯が無い間は、 札の
+      //   逃げ場が無いので出さない (帯を出せば戻る)。 Zen は「何も重ねずに
+      //   読み書きしたい」 という指定でもあるので、 消す方が筋が通る。
+      final bool ownsTopBar = cellOwnsBar && !_zenChromeHidden;
+      final bool barlessOwner = cellOwnsBar && _zenChromeHidden;
       final bool narrowTopBar = MediaQuery.of(context).size.width < 720;
       final double pageBadgeTop =
           ownsTopBar ? (narrowTopBar ? 84.0 : 48.0) : 6.0;
@@ -83487,7 +83664,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           //    押すとこのペインで起動 / 長押しで削除 = ユーザー要望) ──
           // 左上のページ名とボタンは、 ヘッダーの「ページ名を隠す」 で
           // まとめて消せる (= ユーザー要望: 気になる人がいるので)。
-          if (paneBtns.isNotEmpty && !_hidePaneHeaders)
+          if (paneBtns.isNotEmpty && !_hidePaneHeaders && !barlessOwner)
             Positioned(
               left: 6,
               top: paneBtnTop,
@@ -83510,7 +83687,11 @@ class _MindMapScreenState extends State<MindMapScreen>
           //   道具は自前の見出しを持っているので、 札はその上に重なるだけ。
           //   Web (🌐) の札は、 埋め込んだページを閉じる / 浮かせる唯一の
           //   入口なので残す。
-          if (!_hidePaneHeaders && toolId == null && embedded == null)
+          if (!_hidePaneHeaders &&
+              toolId == null &&
+              embedded == null &&
+              // 自前の帯が消えている間は、 札が本文に重なるので出さない。
+              !barlessOwner)
           Positioned(
             left: 6,
             top: pageBadgeTop,
@@ -111170,6 +111351,14 @@ class _MindMapScreenState extends State<MindMapScreen>
     },
     // マップメモを開く (= ユーザー要望: ショートカット割り当て)。
     {'id': 'mapMemo', 'labelKey': 'hdr.mapMemo', 'defaultKey': 'Ctrl+Shift+Y'},
+    // ★ = ユーザー要望「AI 画面をアイコンとして折り畳む / 展開する機能にも
+    //   ショートカットキーを割り当てられるように」。 既定は持たない
+    //   (= 割り当てたい人だけが後から決める)。
+    {
+      'id': _kToggleAiPanelCollapseId,
+      'labelKey': 'cmd.toggleAiPanelCollapse',
+      'defaultKey': '',
+    },
     // 開いているページ (マインドマップ/ガント/お絵かき/ギャラリー) の名前を変更
     //   (= ユーザー要望: 名前を付けるショートカット)。
     {
@@ -112363,25 +112552,39 @@ class _MindMapScreenState extends State<MindMapScreen>
       context: ctx,
       builder: (dctx) => StatefulBuilder(builder: (dctx, setEd) {
         String? conflictMsg;
+        // ★ = ユーザー要望「既にそのショートカットキーが割り当てられている
+        //   場合は、 割り当てられている側のショートカットキーを変更できる
+        //   項目も出して欲しい」。 ぶつかった**相手の id** を覚えておく
+        //   (固定キーとぶつかった時は相手が居ないので空のまま)。
+        String? conflictId;
 
         /// 入力キーが他コマンドと重複していないかチェック
         /// 重複していればコマンド名（翻訳済み）を返す
+        ///
+        /// ★ 見るのは [_assignableCommandDefs] (= ヘッダーのボタンや
+        ///   お気に入りに割り当てた分も含む)。 以前は静的な `_commandDefs`
+        ///   だけを見ていたので、 ボタンに割り当てたキーとぶつかっても
+        ///   「空いています」 と言って**黙って二重に割り当てて**いた。
         String? _checkConflict(String inputKey) {
+          conflictId = null;
           if (inputKey.isEmpty) return null;
           final normalized = _normalizeShortcutCombo(inputKey);
           if (_nonAssignableShortcutCombos.contains(normalized)) {
             return provider.t('shortcuts.fixedKeyLabel');
           }
-          for (final cmd in _commandDefs) {
+          for (final cmd in _assignableCommandDefs) {
             final otherId = cmd['id']! as String;
             if (otherId == commandId) continue; // 自分自身はスキップ
             final otherKey = _normalizeShortcutCombo(
-                (_customKeyBindings[otherId] ?? (cmd['defaultKey']! as String))
+                (_customKeyBindings[otherId] ??
+                        (cmd['defaultKey'] as String? ?? ''))
                     .trim());
+            if (otherKey.isEmpty) continue;
             if (otherKey == normalized) {
-              final lk = cmd['labelKey']! as String;
+              conflictId = otherId;
+              final lk = cmd['labelKey'] as String? ?? '';
               return lk.isEmpty
-                  ? _commandLabel(provider, cmd['id']! as String)
+                  ? _commandLabel(provider, otherId)
                   : provider.t(lk);
             }
           }
@@ -112402,6 +112605,27 @@ class _MindMapScreenState extends State<MindMapScreen>
           }
           onSave(inputKey);
           Navigator.pop(dctx);
+        }
+
+        /// ぶつかった相手の割り当てを、 その場で変えに行く
+        /// (= ユーザー要望)。 戻ってきたら、 空いたかどうかを見直す。
+        void editConflictingOne() {
+          final otherId = conflictId;
+          if (otherId == null || otherId.isEmpty) return;
+          final otherDefault = _defaultKeyFor(otherId);
+          _showKeyBindingEditor(
+              dctx,
+              otherId,
+              _commandLabel(provider, otherId),
+              otherDefault,
+              _currentBindingFor(otherId), (k) {
+            _saveKeyBindingFor(otherId, k, otherDefault);
+            // 相手が空いたなら、 こちらの赤い注意は消す。
+            if (!dctx.mounted) return;
+            setEd(() {
+              conflictMsg = _checkConflict(ctrl.text.trim());
+            });
+          });
         }
 
         return AlertDialog(
@@ -112483,20 +112707,54 @@ class _MindMapScreenState extends State<MindMapScreen>
                   ? Padding(
                       key: const ValueKey('conflict'),
                       padding: const EdgeInsets.only(top: 8),
-                      child: Row(children: [
-                        const Icon(Icons.error_outline_rounded,
-                            color: Colors.redAccent, size: 14),
-                        const SizedBox(width: 6),
-                        Expanded(
-                          child: Text(
-                            provider
-                                .t('keyEdit.conflict')
-                                .replaceAll('{name}', conflictMsg ?? ''),
-                            style: const TextStyle(
-                                color: Colors.redAccent, fontSize: 11),
-                          ),
-                        ),
-                      ]),
+                      child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Row(children: [
+                              const Icon(Icons.error_outline_rounded,
+                                  color: Colors.redAccent, size: 14),
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: Text(
+                                  provider
+                                      .t('keyEdit.conflict')
+                                      .replaceAll('{name}', conflictMsg ?? ''),
+                                  style: const TextStyle(
+                                      color: Colors.redAccent, fontSize: 11),
+                                ),
+                              ),
+                            ]),
+                            // ★ = ユーザー要望「割り当てられている側の
+                            //   ショートカットキーを変更できる項目も出して」。
+                            //   ここから相手の割り当てを直に変えられる
+                            //   (空けば、 そのまま保存できる)。
+                            if ((conflictId ?? '').isNotEmpty)
+                              Align(
+                                alignment: Alignment.centerLeft,
+                                child: TextButton.icon(
+                                  onPressed: editConflictingOne,
+                                  icon: const Icon(Icons.swap_horiz_rounded,
+                                      size: 15, color: Color(0xFFFFB347)),
+                                  label: Text(
+                                    provider
+                                        .t('keyEdit.changeOther')
+                                        .replaceAll(
+                                            '{name}', conflictMsg ?? ''),
+                                    style: const TextStyle(
+                                        color: Color(0xFFFFB347),
+                                        fontSize: 11.5),
+                                  ),
+                                  style: TextButton.styleFrom(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 6),
+                                    minimumSize: Size.zero,
+                                    tapTargetSize:
+                                        MaterialTapTargetSize.shrinkWrap,
+                                  ),
+                                ),
+                              ),
+                          ]),
                     )
                   : const SizedBox(key: ValueKey('empty'), height: 4),
             ),
@@ -292457,6 +292715,26 @@ class _McpChatDialogState extends State<_McpChatDialog>
   //     (天気) とはぶつからない。
   static final List<_McpChatDialogState> _livePanels =
       <_McpChatDialogState>[];
+
+  /// 今出している AI 画面を「アイコンに畳む / 広げる」。
+  ///
+  /// ★ = ユーザー要望「AI 画面をアイコンとして折り畳む / 展開する機能にも
+  ///   ショートカットキーを割り当てられるように」。 本体 (マップの画面) は
+  ///   この欄に手が届かないので、 静的な入口をここに 1 つ置く。
+  /// ★ 畳めるのは**浮かせている窓**の中に居る欄だけ (畳む先の窓が要る)。
+  ///   分割ペインや全画面で出している時は何もしない。
+  /// 受け取れた時だけ true (= 受け取れなければ、 キーは他の役へ渡す)。
+  static bool toggleCollapseOfLivePanel() {
+    for (final p in _livePanels.reversed) {
+      if (!p.mounted) continue;
+      final win =
+          p.context.findAncestorStateOfType<_FloatingPanelWindowState>();
+      if (win == null) continue;
+      p._setCollapsed(!p._collapsed);
+      return true;
+    }
+    return false;
+  }
 
   bool _onPanelHotkey(KeyEvent e) {
     if (e is! KeyDownEvent || !mounted) return false;
