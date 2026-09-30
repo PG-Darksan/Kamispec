@@ -2634,11 +2634,21 @@ class AutomationRunState {
   final int? finishedAtMs;
   final String? error;
 
+  /// 終わった (= 実行枠が空いた) か。
+  ///
+  /// ★ `cancelling` は**まだ終わっていない**。 止める合図は届いたが、 走って
+  ///   いる手順が枠を手放すまでは追跡を続ける (= 不具合報告 2026-09-30
+  ///   「cancel 済みの長時間待機が実行枠を占有し続ける」。 以前は止めた
+  ///   合図の時点で cancelled + finished を返していたので、 画面上は
+  ///   停止済みに見えるのに次の依頼が全部断られていた)。
   bool get isFinished =>
       phase == 'done' ||
       phase == 'failed' ||
       phase == 'cancelled' ||
       phase == 'refused';
+
+  /// 止める合図は届いたが、 まだ枠を手放していない。
+  bool get isCancelling => phase == 'cancelling';
 
   AutomationRunState copyWith({
     String? phase,
@@ -2699,6 +2709,16 @@ final ValueNotifier<AutomationRunState?> automationRunForAssistant =
 /// 画面の「停止」 と**同じ道**で止める (止め方を 2 本にしないため)。
 final ValueNotifier<String?> automationCancelRequest =
     ValueNotifier<String?>(null);
+
+/// 「実行枠だけを初期化して」 の合図 (値 = 合図の番号)。
+///
+/// ★ = 不具合報告 2026-09-30「cancel 済みの長時間待機が実行枠を占有し続けて
+///   再停止もできない」。 ふつうの中止で枠が空かない時の最後の手段。
+///   待ちと外のブラウザとのつながりを捨て、 実行中の印を下ろすだけで、
+///   **保存済みの手順や他の機能の状態は触らない** (アプリの再起動を
+///   求めないで済むように)。
+final ValueNotifier<int?> automationForceResetRequest =
+    ValueNotifier<int?>(null);
 
 /// ショートカット起動でボタンの開き方が「フローティング」 の時に開く URL。
 /// 本体を立ち上げないために main 側で解決する (screen 側の対応表の写し)。
@@ -4175,6 +4195,13 @@ void main(List<String> args) async {
       }
     } catch (_) {}
   }
+  // ── 浮かぶ部品の文言も表示言語で出す ──
+  //    = ユーザー報告「メモのヘルプテキストが日本語設定なのに英語になって
+  //    いる」。 [FloatL10n] は別プロセスの窓のために作った静的な表で、
+  //    サブ窓の入口でしか読み込んでいなかった。 本体の中に埋め込んだメモ
+  //    ([FloatingMemoView]) も同じ表を引くので、 ここでも読んでおく。
+  //    起動を待たせたくないので待たない (メモを開く頃には読み終わる)。
+  unawaited(FloatL10n.load());
   runApp(const MyApp());
 }
 
@@ -4766,6 +4793,12 @@ class _MemoWindowAppState extends State<_MemoWindowApp> with WindowListener {
   }
 
   Future<void> _load() async {
+    // ── 表示言語を読み直す (= ユーザー報告: メモの説明文が日本語設定でも
+    //    英語で出る) ──
+    //    この画面は本体アプリの中にも埋め込まれる ([FloatingMemoView])。
+    //    別プロセスの窓と違って本体の入口は [FloatL10n.load] を通らないので、
+    //    開くたびにここで読む。 設定で言語を変えた後もこれで追従する。
+    await FloatL10n.load();
     final raw = await loadFloatingMemoText();
     if (!mounted) return;
     final parsed = parseFloatingMemoBooks(raw);
@@ -5543,7 +5576,11 @@ class _MemoWindowAppState extends State<_MemoWindowApp> with WindowListener {
       // ★ この窓は「常に手前」 なので、 持ち主を指定しないとフォルダ選択が
       //   窓の後ろに隠れ、 固まったように見える (= ユーザー報告)。
       //   選んでいる間だけ手前固定を外し、 終わったら戻す。
-      final wasPinned = _pinned;
+      // ★ 埋め込みで動いている時の「常に手前」 は入れ物の窓 (= 本体アプリの
+      //   窓) の設定なので、 ここで外すと**本体の窓**が手前固定のまま戻らな
+      //   くなる (= ユーザー要望でメモをアプリ内でも同じ画面で開くように
+      //   したので、 この道を通るようになった)。 埋め込みの時は触らない。
+      final wasPinned = _pinned && !widget.embedded;
       if (wasPinned) {
         try {
           await windowManager.setAlwaysOnTop(false);
@@ -5824,6 +5861,16 @@ class _MemoWindowAppState extends State<_MemoWindowApp> with WindowListener {
       await _openBrowserAi(query: text);
       return;
     }
+    // ★ アプリの中に**埋め込んで**動いている時は本体と同じプロセスなので、
+    //   窓ごしの頼み (invokeMethod(0, …)) は自分自身宛になって返ってこない
+    //   (= ユーザー要望でメモをアプリ内でも同じ画面で開くようにしたので、
+    //   この道を通るようになった)。 _askMain が「埋め込みなら本体の受け口を
+    //   直に / サブ窓なら窓ごし / 単体なら 127.0.0.1」 と使い分ける。
+    //   本体側は値を返さないので、 成否は見分けられない (知らせは出さない)。
+    if (widget.embedded) {
+      await _askMain('openFloatingAi', text.trim());
+      return;
+    }
     try {
       await DesktopMultiWindow.invokeMethod(0, 'openFloatingAi', text.trim());
     } catch (_) {
@@ -5928,6 +5975,19 @@ class _MemoWindowAppState extends State<_MemoWindowApp> with WindowListener {
   /// プロセスなので 127.0.0.1 越しに頼む (= ユーザー報告: 単体で開いたメモ
   /// から「マップに追加」 すると「追加できるページがありません」 と出る)。
   Future<String> _askMain(String method, [dynamic args]) async {
+    // ★ アプリの中に**埋め込んで**動いている時は本体と同じプロセスなので、
+    //   窓ごしの頼み (invokeMethod(0, …)) は自分自身宛になって返ってこない。
+    //   本体が置いている受け口を直に呼ぶ (= ユーザー要望でメモをアプリ内でも
+    //   同じ画面で開くようにしたので、「マップに追加」 等がここを通る)。
+    if (widget.embedded) {
+      final bridge = floatingMemoBridge;
+      if (bridge == null) return '';
+      try {
+        return await bridge(method, args);
+      } catch (_) {
+        return '';
+      }
+    }
     if (!widget.standalone) {
       try {
         final r = await DesktopMultiWindow.invokeMethod(0, method, args);
@@ -6379,9 +6439,30 @@ class _MemoWindowAppState extends State<_MemoWindowApp> with WindowListener {
             onExit: (_) => setState(() => _headerHover = false),
             child: GestureDetector(
             behavior: HitTestBehavior.opaque,
-            onPanStart: (_) => _dragger.start(),
-            onPanUpdate: (d) =>
-                _dragger.update(d, View.of(context).devicePixelRatio),
+            // ── 帯の「何もない所」 を押すとボタン類を隠す / 戻す ──
+            //    (= ユーザー要望: 専用の「非表示にする」 ボタンは置かず、
+            //     何もない所を押したら隠れ、 隠れている間は帯の好きな所を
+            //     押したら戻るように)。 マークダウンの画面と同じ作り。
+            //    ★ ボタンの上を押した時は、 そちらが先に受け取るので
+            //      ここへは来ない (子の当たり判定が勝つ)。
+            //    ★ 帯の高さは隠しても 34 のまま (= 細くすると狙いづらい)。
+            onTap: () {
+              // Web / AI を出している間は隠す物が無い (下のボタン類は全て
+              //   `!_webMode && !_aiMode` で消えている)。 押しても見た目が
+              //   変わらないのに控えだけ変わると混乱するので何もしない。
+              if (_webMode || _aiMode) return;
+              // ignore: discarded_futures
+              _toggleChrome();
+            },
+            // ★ アプリの中に**埋め込んで**使う時 (= ユーザー要望: メモを
+            //   アプリ内でも同じ形で開く) は、 この帯を掴んでも動かさない。
+            //   _WinDragger は windowManager を動かすので、 そのままだと
+            //   本体アプリの窓ごと動いてしまう。 入れ物 (浮かぶ窓 / 分割
+            //   ペイン) の帯が掴む所を持っているので、 そちらで動かす。
+            onPanStart: widget.embedded ? null : (_) => _dragger.start(),
+            onPanUpdate: widget.embedded
+                ? null
+                : (d) => _dragger.update(d, View.of(context).devicePixelRatio),
             child: Container(
               height: 34,
               color: const Color(0xFF23233A),
@@ -6439,7 +6520,13 @@ class _MemoWindowAppState extends State<_MemoWindowApp> with WindowListener {
                   ),
                 const SizedBox(width: 6),
                 Expanded(
-                  child: (_chromeHidden && !_webMode && !_aiMode)
+                  // ★ 題は帯いっぱいに広げない (= ユーザー要望: 帯の「何も
+                  //   ない所」 を押すと隠れる作りにしたので、 押せる余白を
+                  //   右に残す)。 題そのものを押した時は今までどおり
+                  //   メモ帳の切替メニューが出る。
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: (_chromeHidden && !_webMode && !_aiMode)
                       // 隠している時は題も出さない (= ユーザー要望)。
                       //   帯そのものは窓を掴んで動かすために残す。
                       ? const SizedBox.shrink()
@@ -6492,7 +6579,7 @@ class _MemoWindowAppState extends State<_MemoWindowApp> with WindowListener {
                                       ]),
                                 ),
                               );
-                            }),
+                            })),
                 ),
                 // 箇条書き ⇔ フリーメモの切替 (= ユーザー要望)。
                 if (!_webMode && !_aiMode && !_chromeHidden)
@@ -6658,36 +6745,17 @@ class _MemoWindowAppState extends State<_MemoWindowApp> with WindowListener {
                       _clearAllItems();
                     },
                   ),
-                // ── 目のボタン: 上のボタン類と下の 3 つをまとめて隠す ──
-                //    (= ユーザー要望: メモのアイコンや文字、 AI などの
-                //     ボタンも一緒に消えるように)。
-                //    ★ 出し方の決まり (= ユーザー要望):
-                //      ・「非表示にする」 ボタンは**いつでも**出しておく。
-                //      ・「表示に戻す」 ボタンはヘッダーにカーソルが乗った
-                //        時だけ出す (隠した意味が薄れないように)。
-                //    ★ Web / AI に切り替えている間も出す (= ユーザー要望:
-                //      切り替えたら表示/非表示ボタンが無くなるのが気になる)。
-                if (!_chromeHidden || _headerHover)
-                  IconButton(
-                    padding: EdgeInsets.zero,
-                    constraints:
-                        const BoxConstraints(minWidth: 26, minHeight: 26),
-                    tooltip: _chromeHidden
-                        ? FloatL10n.t('memo.showFooter')
-                        : FloatL10n.t('memo.hideFooter'),
-                    icon: Icon(
-                        // ★ = ユーザー要望「目のアイコン以外にしてほしい」。
-                        //   このアプリで 「隠す / 戻す」 に使っている二重矢印
-                        //   (ヘッダー非表示・ Zen モードの札・ 分割パネルの
-                        //    隠した帯と同じ物) に揃える。
-                        _chromeHidden
-                            ? Icons.keyboard_double_arrow_down_rounded
-                            : Icons.keyboard_double_arrow_up_rounded,
-                        size: 15,
-                        color: _chromeHidden
-                            ? Colors.white38
-                            : const Color(0xFF80CBC4)),
-                    onPressed: _toggleChrome,
+                // ── 隠している間の目印 (= ユーザー要望: 「ヘッダーボタンを
+                //    非表示にするボタン」 は置かず、 何もない所を押して隠す) ──
+                //    押せる帯だと分かるように、 カーソルが乗っている間だけ
+                //    小さな矢印を出す (押す所はこの帯ぜんぶ)。
+                //    ★ ただの絵で当たり判定を持たないので、 ここを押しても
+                //      帯の onTap が受け取ってボタン類が戻る。
+                if (_chromeHidden && _headerHover)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 4),
+                    child: Icon(Icons.keyboard_double_arrow_down_rounded,
+                        size: 15, color: Colors.white38),
                   ),
                 // ── ブラウザ AI 表示中: どの AI にするか切り替える ──
                 //    (= ユーザー要望: 切り替えた後にモデルの切り替えが
@@ -7384,7 +7452,7 @@ Future<void> _bootAgentCliWindow(List<String> args) async {
       size: Size(fw ?? 980, fh ?? 760),
       center: px == null || py == null,
       // runApp より前なので t() が使えない。 'cli.title' を変えたらここも。
-      title: 'Claude Code / Codex CLI',
+      title: 'Claude Code / Codex / Antigravity',
     );
     unawaited(windowManager.waitUntilReadyToShow(opts, () async {
       if (px != null && py != null) {

@@ -43,9 +43,6 @@ const double kJevEvidenceMin = 0.55;
 /// 振り分けを人へ回す確信度の床 (patterns/intent-routing)。
 const double kJevRouteConfidenceFloor = 0.5;
 
-/// 広告と見なす確率の床。 organic を消す方が害が大きいので高めに取る。
-const double kJevAdNoulMin = 0.75;
-
 /// 1 回の choice に入れられる候補の数 (公式上限)。
 const int kJevMaxChoiceOptions = 255;
 
@@ -310,25 +307,7 @@ class JevTemplates {
         ),
       };
 
-  // ── 2. Google 検索の広告判定 ──────────────────────────────
-  /// 検索結果の塊が広告かどうか。 1 回に複数塊をまとめて聞く。
-  ///
-  /// 塊は state に `[[b3]] 本文…` の形で並べ、 塊ごとに noul を 1 本立てる。
-  static Map<String, JevQuestion> adBlocks(List<String> blockIds) => {
-        for (final id in blockIds)
-          'ad_$id': JevQuestion.noul(
-            'Is the block marked [[$id]] a paid advertisement rather than an '
-            'organic search result?',
-            whenTrue:
-                'It is a sponsored listing, shopping unit, or promoted product '
-                '(often labelled Sponsored / 広告 / スポンサー / PR)',
-            whenFalse:
-                'It is an ordinary search result, a knowledge panel, a related '
-                'question, or site navigation',
-          ),
-      };
-
-  // ── 3. フォルダー内検索の絞り込み ─────────────────────────
+  // ── 2. フォルダー内検索の絞り込み ─────────────────────────
   /// 候補のどれに答えがあるか + そもそも答えがあるか
   /// (公式レシピ cookbooks/semantic_find と同じ形)。
   static Map<String, JevQuestion> semanticFind({
@@ -376,7 +355,7 @@ class JevTemplates {
     return 'exclude';
   }
 
-  // ── 4. 書籍検索の並べ替え ─────────────────────────────────
+  // ── 3. 書籍検索の並べ替え ─────────────────────────────────
   /// 探している本はどれか + 候補の中に有るか。
   static Map<String, JevQuestion> bookPick({
     required String query,
@@ -393,6 +372,23 @@ class JevTemplates {
           'candidates?',
           whenTrue: 'One of them is clearly the book being sought',
           whenFalse: 'None of them matches',
+        ),
+      };
+
+  // ── 4. フラッシュカードの採点 ─────────────────────────────
+  /// 打った答えが模範解答と合っているか。
+  ///
+  /// ★ 正誤はこの Yes 確率だけで決める (生成 AI は正誤判定には呼ばない)。
+  ///   kJevFoundNoul 以上を正解、 それ未満 (はっきりしない中間も) を不正解と
+  ///   見る。 誤答の理由は 「理由を見る」 を押した時に生成 AI が作る。
+  static Map<String, JevQuestion> cardGrade() => {
+        'is_correct': JevQuestion.noul(
+          "Does the learner's answer state the same thing as the reference "
+          'answer for this flashcard?',
+          whenTrue: 'It gives the same fact or conclusion, allowing for '
+              'wording, spelling, word order and level of detail',
+          whenFalse: 'It is a different answer, only partly right, or it '
+              'misses the key point',
         ),
       };
 }

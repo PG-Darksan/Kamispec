@@ -60,7 +60,13 @@ List<_UnpackedFile> _unpackTgz(List<int> bytes) {
 ///   それは「契約している分を使うので AI の残高は減りません」 という
 ///   この画面の前提と食い違う (API キーは使った分だけ課金される)。
 ///   種別そのものは、 控えの読み書き等で参照が残っているので消さない。
-enum AgentCliKind { claude, codex, gemini }
+/// ★ Antigravity CLI (`agy`) は**出す**。 素で起こすとブラウザが開いて
+///   サインインが始まる形で、 Gemini CLI で引っかかっていた「CLI 自身が
+///   127.0.0.1 の待ち受けを立てる」 には当たらない。
+/// ★ 並びは**末尾に足す**。 控え (prefs) は番号ではなく `kind.name` の文字で
+///   書いている (cliAiKind / cliModelByKind / cliReasoningByKind / アカウント
+///   の控え) ので、 足しても今ある控えが別の CLI へずれる事は無い。
+enum AgentCliKind { claude, codex, gemini, antigravity }
 
 /// 1 つの CLI の呼び方。
 ///
@@ -109,6 +115,17 @@ class AgentCliSpec {
       exeNames: ['codex.cmd', 'codex.exe', 'codex.ps1', 'codex'],
       installHint: 'npm i -g @openai/codex',
       loginArgs: ['login'],
+    ),
+    AgentCliSpec(
+      kind: AgentCliKind.antigravity,
+      label: 'Antigravity CLI',
+      // Windows の導入先は %LOCALAPPDATA%\agy\bin ([_search] に足してある)。
+      exeNames: ['agy.cmd', 'agy.exe', 'agy.ps1', 'agy'],
+      // ★ npm では入らない。 公式の入れ方をそのまま出す (PowerShell)。
+      //   `-g ` を含まないので [npmPackage] は空 = npm 頼みの道には落ちない。
+      installHint: 'irm https://antigravity.google/cli/install.ps1 | iex',
+      // ★ loginArgs は**空**。 `login` のような下位命令は無く、 素で起こすと
+      //   ブラウザが開いてサインインが始まる (codex の `login` とは違う)。
     ),
     // ★ Gemini CLI は出さない (理由は AgentCliKind の覚書)。
   ];
@@ -230,6 +247,10 @@ class AgentCli {
     _inflight.clear();
     _npmPath = null;
     _npmSearched = false;
+    // ★ モデルの一覧も聞き直せるようにする (= 入れた直後に押すボタンなので、
+    //   さっきまで入っていなかった CLI をもう 1 度聞きに行く)。 取れている
+    //   控え ([_modelsFetchedAt]) は残すので、 札は消えない。
+    _modelsTriedThisRun.clear();
     // 宛名は読み直す (控えの値は残す = 読み直すまでの間も札が消えない)。
     _nameLoads.clear();
   }
@@ -292,6 +313,12 @@ class AgentCli {
   }
 
   static Future<List<AgentCliFound>> findAll() async {
+    // ★ CLI の一覧を出す場面に来た = モデルの一覧も見せる場面。
+    //   控えが 1 日より古ければ、 ここで裏の取り直しを始める
+    //   (= ユーザー要望「codex 等の使うモデル設定が最新でない、
+    //   自動的に最新になるようにして欲しい」)。 待たないので、 この
+    //   関数の返りは今までどおり早い。
+    unawaited(maybeRefreshModels());
     final out = <AgentCliFound>[];
     for (final s in AgentCliSpec.all) {
       out.add(await find(s.kind));
@@ -307,6 +334,9 @@ class AgentCli {
       if ((env['APPDATA'] ?? '').isNotEmpty) '${env['APPDATA']}${sep}npm',
       if ((env['LOCALAPPDATA'] ?? '').isNotEmpty)
         '${env['LOCALAPPDATA']}${sep}Programs',
+      // Antigravity CLI (`agy`) の既定の置き場 (PATH に入る前でも当たる)。
+      if ((env['LOCALAPPDATA'] ?? '').isNotEmpty)
+        '${env['LOCALAPPDATA']}${sep}agy${sep}bin',
       if (home.isNotEmpty) ...[
         '$home$sep.local${sep}bin',
         '$home$sep.bun${sep}bin',
@@ -637,6 +667,10 @@ class AgentCli {
           '$home$sep.gemini${sep}oauth_creds.json',
           '$home$sep.config${sep}gemini${sep}oauth_creds.json',
         ],
+      // ★ Antigravity CLI (`agy`) が控えをどこへ置くかは公表されていない。
+      //   当てずっぽうの道を並べて「要ログイン」 と言い切るのは嘘になるので、
+      //   ここでは見ない (下で null = 分からない を返す)。
+      AgentCliKind.antigravity => const <String>[],
     };
     for (final c in candidates) {
       try {
@@ -650,6 +684,12 @@ class AgentCli {
     if (kind == AgentCliKind.gemini && geminiApiKeyForCli.isNotEmpty) {
       return true;
     }
+    // ★ Antigravity CLI は控えの置き場が公表されていないので、 false
+    //   (= 要ログイン) と言い切らずに null (= 分からない) を返す。 入って
+    //   いるのに「ログインしてください」 と出し続けるのが一番たちが悪い。
+    //   実際に使えるかは走らせた結果に任せる ([pickForPrompt] は利用者が
+    //   この相手を名指しで選んだ時だけ、 分からない物も選ぶ)。
+    if (kind == AgentCliKind.antigravity) return null;
     return false;
   }
 
@@ -741,6 +781,10 @@ class AgentCli {
             }
           }
           return null;
+        case AgentCliKind.antigravity:
+          // ★ `agy` の控えの形は公表されていない。 読み違えて他人の宛名を
+          //   出すくらいなら、 分からないままにする (札は今までの文言)。
+          return null;
       }
     } catch (_) {
       return null;
@@ -824,8 +868,12 @@ class AgentCli {
   ///
   /// Claude Code は取り込んだ後の据え付け (postinstall) で本体を置く作りなので、
   /// 書庫を開いただけでは動かない。 そこだけ除く。
+  /// ★ npm の書庫が無い相手 ([AgentCliSpec.npmPackage] が空。 Antigravity CLI
+  ///   は公式の導入命令で入れる) も除く。 出すと押せてしまうが、 中で包名が
+  ///   空なので黙って何も起きない。
   static bool canInstallWithoutNpm(AgentCliKind kind) =>
-      kind != AgentCliKind.claude;
+      kind != AgentCliKind.claude &&
+      AgentCliSpec.of(kind).npmPackage.isNotEmpty;
 
   /// npm を使わずに入れる。 入口のファイルの道を返す (失敗は null)。
   static Future<String?> installWithoutNpm(
@@ -1590,6 +1638,7 @@ class AgentCli {
         if (k.name == want) k,
       AgentCliKind.claude,
       AgentCliKind.codex,
+      AgentCliKind.antigravity,
       AgentCliKind.gemini,
     ];
     final seen = <AgentCliKind>{};
@@ -1604,7 +1653,13 @@ class AgentCli {
         //     捨てて「使える CLI が見つかりません」 にしない)。
         final exe = (f.runExe ?? '').toLowerCase();
         if (exe.endsWith('.ps1')) continue;
-        if (f.installed && f.loggedInHint == true) {
+        // ★ ログインの有無が**分からない**相手 (= 控えの置き場が公表されて
+        //   いない Antigravity CLI) は、 利用者が名指しで選んだ時だけ選ぶ。
+        //   おまかせの順番では今までどおり「済み」 と分かる物だけを使う
+        //   (= 黙って動かない相手へ回して何も返らないのを避ける)。
+        final okToUse = f.loggedInHint == true ||
+            (f.loggedInHint == null && k.name == want);
+        if (f.installed && okToUse) {
           lastPickKind = f.spec.kind;
           return f;
         }
@@ -1703,7 +1758,34 @@ class AgentCli {
   static String defaultModelLabel(AgentCliKind kind) =>
       '指定しない (${AgentCliSpec.of(kind).label} の設定のまま)';
 
-  static List<({String id, String label})> modelChoices(AgentCliKind kind) {
+  /// 選べるモデルの一覧。
+  ///
+  /// ★ = ユーザー要望「codex 等の使うモデル設定が最新でない、 自動的に
+  ///   最新になるようにして欲しい」。 取り寄せた一覧 ([fetchedModels]) が
+  ///   あれば**そちらを優先**し、 無い / 取れなかった時だけ決め打ちへ落ちる
+  ///   ([_builtinModelChoices])。 選べる物が空になる事は無い。
+  /// ★ [selected] にいま選んでいる id を渡すと、 それが新しい一覧から消えて
+  ///   いた時に「見つかりません」 の札として先頭に足す。 黙って別のモデルへ
+  ///   移さないための物 (移すと、 気付かないまま違う相手で動く)。
+  static List<({String id, String label})> modelChoices(AgentCliKind kind,
+      {String selected = ''}) {
+    final got = fetchedModels[kind] ?? const <({String id, String label})>[];
+    final base = got.isNotEmpty ? got : _builtinModelChoices(kind);
+    final sel = selected.trim();
+    if (sel.isEmpty) return base;
+    for (final e in base) {
+      if (e.id == sel) return base;
+    }
+    final name = prettyModel(sel);
+    return <({String id, String label})>[
+      (id: sel, label: '${name.isEmpty ? sel : name} (見つかりません)'),
+      ...base,
+    ];
+  }
+
+  /// 決め打ちの一覧 (取り寄せられない / まだ取れていない時の落としどころ)。
+  static List<({String id, String label})> _builtinModelChoices(
+      AgentCliKind kind) {
     switch (kind) {
       // ★ = ユーザー要望「指定しないの項目は消して」。 選ばない状態
       //   (cliAiModelChoice が空) は残るが、 一覧には出さない。
@@ -1732,7 +1814,239 @@ class AgentCli {
           const (id: 'gemini-2.5-pro', label: '2.5 Pro'),
           const (id: 'gemini-2.5-flash', label: '2.5 Flash'),
         ];
+      case AgentCliKind.antigravity:
+        // ★ 一覧は `agy models` で取れる筈 ([refreshModels])。 取れた物を
+        //   優先するのは [modelChoices] の仕事になったので、 ここは取れな
+        //   かった時の名前だけ。 公式の文書に出ている 1 つを置く (知らない
+        //   名前をでっち上げない)。
+        return [
+          const (id: 'gemini-3.5-flash-medium', label: '3.5 Flash Medium'),
+        ];
     }
+  }
+
+  /// 取り寄せたモデルの一覧 (取れるまでは空)。
+  ///
+  /// ★ [modelChoices] は画面の組み立て中に何度でも呼ばれるので、 そこから
+  ///   外のプログラムを起こしてはいけない。 取り寄せは [maybeRefreshModels]
+  ///   / [refreshModels] から行う (= 小さなプロセスを短時間に沢山起こす形は、
+  ///   セキュリティソフトが真っ先に疑う = [find] の覚書)。
+  static final Map<AgentCliKind, List<({String id, String label})>>
+      fetchedModels = <AgentCliKind, List<({String id, String label})>>{};
+
+  /// 一覧が入れ替わった事を画面へ知らせる札 (裏で取り直せた時に動く)。
+  static final ValueNotifier<int> modelsRevision = ValueNotifier<int>(0);
+
+  /// 控えの持ち時間。 AI のモデル一覧 (`models_fetch_gemini_ts` など) と
+  /// 同じ作法で 1 日 1 回にそろえる。
+  static const Duration _kModelsCacheTtl = Duration(hours: 24);
+
+  static Future<void>? _modelCacheLoad;
+  static final Map<AgentCliKind, DateTime> _modelsFetchedAt =
+      <AgentCliKind, DateTime>{};
+  static final Set<AgentCliKind> _modelsInFlight = <AgentCliKind>{};
+  static final Set<AgentCliKind> _modelsTriedThisRun = <AgentCliKind>{};
+
+  static String _modelsCacheKey(AgentCliKind k) => 'cached_cli_models_${k.name}';
+  static String _modelsTsKey(AgentCliKind k) => 'cli_models_fetch_${k.name}_ts';
+
+  /// 「モデルの一覧を出す命令」 が有る CLI と、 その命令。
+  ///
+  /// ★ 無い相手を当てずっぽうで叩かない。 Claude Code には一覧の下位命令が
+  ///   無く、 `claude models` と打つと **`models` を指示文として受け取って
+  ///   会話を始めてしまう** (実測。 お金もかかる)。 Gemini CLI にも一覧を
+  ///   出す口は無い。 この 2 つは決め打ちの一覧のまま。
+  static const Map<AgentCliKind, List<String>> _modelListArgs =
+      <AgentCliKind, List<String>>{
+    // 「モデルの一覧を JSON で出す」。 `codex debug --help` に載っている。
+    AgentCliKind.codex: <String>['debug', 'models'],
+    AgentCliKind.antigravity: <String>['models'],
+  };
+
+  /// 裏で勝手に聞きに行ってよい相手。
+  ///
+  /// ★ **実機で「確かに一覧が出て、 すぐ終わる」 と確かめた物だけ**入れる。
+  ///   Antigravity CLI は入れていない: `agy models` の出力をまだ見ておらず、
+  ///   しかも [AgentCliSpec.all] の覚書のとおり `login` のような下位命令
+  ///   すら無い CLI なので、 `models` も指示文として読まれる恐れがある
+  ///   (= `claude models` で実際に起きた事)。 実機で確かめてから足す事。
+  ///   それまでは決め打ちの 1 つのまま = 今までと同じ (取り込みは元から
+  ///   一度も動いていなかった)。
+  static const Set<AgentCliKind> _autoListModels = <AgentCliKind>{
+    AgentCliKind.codex,
+  };
+
+  /// prefs の控えを [fetchedModels] へ戻す (起動後 1 回だけ働く)。
+  ///
+  /// ★ 2 か所から同時に呼ばれても読み込みは 1 回。 走っている物があれば
+  ///   それを待たせる (先に空のまま返すと、 控えがまだ入っていないのに
+  ///   「古い」 と見なして CLI を起こしてしまう)。
+  static Future<void> loadModelCache() => _modelCacheLoad ??= _loadModelCache();
+
+  static Future<void> _loadModelCache() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      var got = false;
+      for (final k in AgentCliKind.values) {
+        final raw = p.getString(_modelsCacheKey(k)) ?? '';
+        if (raw.isNotEmpty) {
+          try {
+            final d = jsonDecode(raw);
+            if (d is List) {
+              final out = <({String id, String label})>[];
+              for (final e in d) {
+                if (e is! Map) continue;
+                final id = '${e['id'] ?? ''}'.trim();
+                if (id.isEmpty) continue;
+                final label = '${e['label'] ?? ''}'.trim();
+                out.add(
+                    (id: id, label: label.isEmpty ? prettyModel(id) : label));
+              }
+              if (out.isNotEmpty) {
+                fetchedModels[k] = out;
+                got = true;
+              }
+            }
+          } catch (_) {}
+        }
+        final ts = p.getInt(_modelsTsKey(k));
+        if (ts != null) {
+          _modelsFetchedAt[k] = DateTime.fromMillisecondsSinceEpoch(ts);
+        }
+      }
+      if (got) modelsRevision.value++;
+    } catch (e) {
+      debugPrint('loadModelCache: $e');
+    }
+  }
+
+  /// CLI の一覧を出す場面で呼ぶ。 控えが 1 日より古い相手だけ裏で取り直す。
+  ///
+  /// ★ 起動のたびに毎回は走らせない ([_kModelsCacheTtl])。
+  /// ★ 待たないので一覧の表示は止まらない。 取れたら [modelsRevision] が
+  ///   動いて、 出している側が組み直す。
+  /// ★ 取れなかった相手は、 この起動中はもう叩かない (入っていない CLI を
+  ///   画面を開くたびに探しに行かせない)。 入れ直した直後は [forget] が
+  ///   この印を落とすので、 もう 1 度だけ聞きに行く。
+  static Future<void> maybeRefreshModels() async {
+    if (!supported) return;
+    await loadModelCache();
+    final now = DateTime.now();
+    for (final k in _autoListModels) {
+      final at = _modelsFetchedAt[k];
+      if (at != null && now.difference(at) < _kModelsCacheTtl) continue;
+      if (!_modelsTriedThisRun.add(k)) continue;
+      unawaited(refreshModels(k));
+    }
+  }
+
+  /// その CLI にモデルの一覧を聞いて [fetchedModels] と prefs へ入れる。
+  ///
+  /// 聞ける口がある相手は [_modelListArgs] の 2 つだけ。
+  /// 取れなかった時は黙って何もしない (決め打ちの一覧に戻るだけ)。
+  ///
+  /// ★ 入っていない / 応答しない CLI で固まらないよう、 待ち時間に上限を
+  ///   付けてある (30 秒)。 入っていない CLI は [find] が即返すので、
+  ///   そもそもプロセスが立たない。
+  static Future<void> refreshModels(AgentCliKind kind) async {
+    if (!supported) return;
+    final listArgs = _modelListArgs[kind];
+    if (listArgs == null) return;
+    // 同じ相手を二重に叩かない。
+    if (!_modelsInFlight.add(kind)) return;
+    try {
+      final f = await find(kind);
+      final exe = f.runExe;
+      if (!f.installed || exe == null || exe.isEmpty) return;
+      final accEnv = accountEnvironment(kind);
+      final r = await Process.run(
+        exe,
+        <String>[...f.launchPrefixArgs, ...listArgs],
+        runInShell: f.needsShell,
+        environment:
+            accEnv.isEmpty ? null : {...Platform.environment, ...accEnv},
+        stdoutEncoding: const Utf8Codec(allowMalformed: true),
+      ).timeout(const Duration(seconds: 30));
+      final text = '${r.stdout}';
+      final out = kind == AgentCliKind.codex
+          ? _parseCodexModels(text)
+          : _parseModelsFromText(text);
+      if (out.isEmpty) return;
+      fetchedModels[kind] = out;
+      _modelsFetchedAt[kind] = DateTime.now();
+      modelsRevision.value++;
+      try {
+        final p = await SharedPreferences.getInstance();
+        await p.setString(
+            _modelsCacheKey(kind),
+            jsonEncode(<Map<String, String>>[
+              for (final e in out) {'id': e.id, 'label': e.label},
+            ]));
+        await p.setInt(
+            _modelsTsKey(kind), DateTime.now().millisecondsSinceEpoch);
+      } catch (_) {}
+    } catch (e) {
+      debugPrint('refreshModels($kind) failed: $e');
+    } finally {
+      _modelsInFlight.remove(kind);
+    }
+  }
+
+  /// `codex debug models` の返事 (JSON) からモデルを拾う。
+  ///
+  /// 形は `{"models":[{"slug":…, "display_name":…, "visibility":"list"|"hide",
+  /// "priority":1, …}]}`。 `hide` の物 (内部用) は出さない。 並びは
+  /// `priority` の小さい順 = codex 自身が出す順。
+  /// ★ 飾りの行が前後に付く版でも読めるよう、 最初の `{` から最後の `}` まで
+  ///   を読む。 読めなければ空 (= 決め打ちの一覧に戻る)。
+  static List<({String id, String label})> _parseCodexModels(String text) {
+    final out = <({String id, String label})>[];
+    try {
+      final i = text.indexOf('{');
+      final j = text.lastIndexOf('}');
+      if (i < 0 || j <= i) return out;
+      final d = jsonDecode(text.substring(i, j + 1));
+      if (d is! Map) return out;
+      final list = d['models'];
+      if (list is! List) return out;
+      final rows = <({String id, String label, num prio})>[];
+      final seen = <String>{};
+      for (final e in list) {
+        if (e is! Map) continue;
+        if ('${e['visibility'] ?? 'list'}' == 'hide') continue;
+        final id = '${e['slug'] ?? ''}'.trim();
+        if (id.isEmpty || !seen.add(id)) continue;
+        final pretty = prettyModel(id);
+        final name = pretty.isNotEmpty ? pretty : '${e['display_name'] ?? id}';
+        final p = e['priority'];
+        rows.add((id: id, label: name, prio: p is num ? p : 9999));
+      }
+      rows.sort((a, b) => a.prio.compareTo(b.prio));
+      for (final row in rows) {
+        out.add((id: row.id, label: row.label));
+      }
+    } catch (_) {}
+    return out;
+  }
+
+  /// 飾りのある一覧 (`agy models`) から「名前らしい物」 だけを拾う。
+  ///
+  /// ★ 出し方 (飾りの帯・見出し・説明) は版で変わるので、 行ごとに拾う。
+  ///   読めなければ空のまま (= 決め打ちの一覧に戻る)。
+  static List<({String id, String label})> _parseModelsFromText(String text) {
+    final re = RegExp(r'^[A-Za-z][A-Za-z0-9.]*(?:-[A-Za-z0-9.]+)+$');
+    final out = <({String id, String label})>[];
+    final seen = <String>{};
+    for (final line in text.split('\n')) {
+      for (final w in line.trim().split(RegExp(r'[\s,|]+'))) {
+        final id = w.trim();
+        if (id.length < 3 || id.length > 64) continue;
+        if (!re.hasMatch(id)) continue;
+        if (!seen.add(id)) continue;
+        out.add((id: id, label: prettyModel(id)));
+      }
+    }
+    return out;
   }
 
   /// 種類ごとに選んだモデル (prefs の控えを画面から入れてもらう)。
@@ -1766,6 +2080,7 @@ class AgentCli {
   ///   ・codex … `-c model_reasoning_effort="<low|medium|high|xhigh|max>"`
   ///     (`minimal` は今どのモデルも受け付けない。 `ultra` は luna に無い
   ///      ので出さない — codex 0.155.1 の `debug models` で確かめた)
+  ///   ・Antigravity CLI … `--effort <low|medium|high>` (この 3 つだけ)
   ///   ・Gemini CLI … 指定する口が無いので空 (欄そのものを出さない)。
   static List<String> reasoningChoices(AgentCliKind kind) {
     switch (kind) {
@@ -1773,6 +2088,9 @@ class AgentCli {
         return const ['low', 'medium', 'high', 'xhigh', 'max'];
       case AgentCliKind.codex:
         return const ['low', 'medium', 'high', 'xhigh', 'max'];
+      // Antigravity CLI は `--effort` が low / medium / high の 3 つ。
+      case AgentCliKind.antigravity:
+        return const ['low', 'medium', 'high'];
       case AgentCliKind.gemini:
         return const <String>[];
     }
@@ -1964,6 +2282,21 @@ class AgentCli {
             for (final ip in images) ...['-i', ip],
             if (m.isNotEmpty) ...['-m', m],
             '-',
+          ],
+        // ★ Antigravity CLI (`agy`) は 1 回走って終わる形 (`-p`)。
+        //   指示は他と同じく標準入力から渡す (引数に載せると長い文が
+        //   Windows の上限に当たる。 この版が引数でしか受け取れない時は、
+        //   `agy` の使い方の案内がそのまま画面に出るので気付ける)。
+        // ★ JSON では受け取らない。 下の読み取りは Claude Code の形
+        //   (`result` / `usage` / `modelUsage`) 専用なので、 別の形の JSON を
+        //   渡されると中身が空に見える。 素の文で受ける。
+        AgentCliKind.antigravity => <String>[
+            '-p',
+            // 会話の続きから (同じ作業フォルダーの直前の会話に繋ぐ)。
+            if (continuing) '--continue',
+            if (m.isNotEmpty) ...['--model', m],
+            // 推論の強さ … low / medium / high。
+            if (effort.isNotEmpty) ...['--effort', effort],
           ],
         AgentCliKind.gemini => <String>[
             '-p',
@@ -2535,6 +2868,15 @@ class AgentCli {
             ptySafePath(d),
           ],
         ];
+      case AgentCliKind.antigravity:
+        // ★ 画面で選んだモデルと推論の強さだけを渡す。 任せ方 (砂箱 / 承認)
+        //   の旗は公式の文書で確かめられていないので**でっち上げない**
+        //   (知らない旗を渡すと `agy` がその場で断って端末が開かなくなる)。
+        return <String>[
+          if (modelFor(kind).isNotEmpty) ...['--model', modelFor(kind)],
+          if (reasoningFor(kind).isNotEmpty)
+            ...['--effort', reasoningFor(kind)],
+        ];
       case AgentCliKind.gemini:
         // Gemini CLI は `--approval-mode`。
         final extra = outsideReadDirs(kind).map(ptySafePath).toList();
@@ -2566,6 +2908,9 @@ class AgentCli {
         return const <String>['login', '--device-auth'];
       case AgentCliKind.claude:
       case AgentCliKind.gemini:
+      // ★ Antigravity CLI に `login` のような下位命令は無い。 素で起こすと
+      //   ブラウザが開いてサインインが始まる (= loginArgs も空)。
+      case AgentCliKind.antigravity:
         return const <String>[];
     }
   }
@@ -2602,7 +2947,18 @@ class AgentCli {
         AgentCliKind.claude => 'CLAUDE_CONFIG_DIR',
         AgentCliKind.codex => 'CODEX_HOME',
         AgentCliKind.gemini => 'GEMINI_CLI_HOME',
+        // ★ Antigravity CLI に設定の置き場を差し替える環境変数があるかは
+        //   確かめられていない。 当てずっぽうの名前を渡すと「切り替えた
+        //   つもりで既定のまま」 という一番たちの悪い嘘になるので、 空。
+        AgentCliKind.antigravity => '',
       };
+
+  /// 垢を分けられる相手か (= 設定の置き場を差し替える環境変数がある物)。
+  ///
+  /// ★ 画面はこれが false の相手に「アカウントを足す」 を出さない事。
+  ///   出しても置き場を指せないので、 切り替えたつもりで既定のまま動く。
+  static bool supportsAccounts(AgentCliKind kind) =>
+      accountEnvVar(kind).isNotEmpty;
 
   /// 既定のアカウント (= CLI 自身の置き場) の id。
   static const String kDefaultAccountId = '';
@@ -2783,6 +3139,10 @@ class AgentCli {
         ? activeAccountDir(kind)
         : accountDirFor(kind, accountId);
     if (dir.isEmpty) return const <String, String>{};
+    // ★ 置き場を差し替える環境変数を持たない相手 ([accountEnvVar] が空) には
+    //   何も渡さない。 空の名前の環境変数は作れないうえ、 フォルダーだけ
+    //   作って「切り替えたつもり」 になるのを防ぐ。
+    if (accountEnvVar(kind).isEmpty) return const <String, String>{};
     try {
       final d = Directory(dir);
       if (!d.existsSync()) d.createSync(recursive: true);
@@ -2849,7 +3209,11 @@ class AgentCli {
       AgentCliKind.claude => '$home$sep.claude',
       AgentCliKind.codex => '$home$sep.codex',
       AgentCliKind.gemini => '$home$sep.gemini',
+      // ★ Antigravity CLI の置き場は分からない (垢を分ける道も出さないので
+      //   ここへは来ない)。 空なら何もしない。
+      AgentCliKind.antigravity => '',
     };
+    if (src.isEmpty) return;
     for (final n in const ['AGENTS.md', 'CLAUDE.md', 'GEMINI.md']) {
       try {
         final f = File('$src$sep$n');

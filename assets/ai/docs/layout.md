@@ -29,24 +29,47 @@ flowchart TD
     C["C. 文字を編集した時<br/>updateNodeTitle → _computeAutoSizeForText<br/>→ _resolveOverlapsAround"] --> C1["(【6】)"]
     D["D. 枝が増減した時<br/>reflowSiblingSubtrees / makeRoomForRect<br/>/ _compactSiblingsAfterDelete"] --> D1["(【3】【4】)"]
     E["E. 全体整列した時<br/>autoLayoutTree"] --> E1["(【7】)"]
-    F["F. AI / MCP が置いた時<br/>mcpAddNode"] --> F1["基準位置にそのまま置く (【0-F】)"]
+    F["F. AI / MCP が置いた時<br/>mcpAddNode / mcpArrangeNewNodes"] --> F1["空いている所へ散らして置く (【0-F】)"]
 ```
 
 A〜D は「局所的に最小限だけ動かす」。E だけが全ノードを並べ直す。
 
-### 【0-F】AI / MCP ツールで作った時 — **重なり回避は一切しない**
+### 【0-F】AI / MCP ツールで作った時 — **散らして置くが、押しのけはしない**
 
-`mcpAddNode` は座標を渡されなければ `mcpReferenceFor(pageId)`
-(そのページの基準位置。既定 10000,10000) に**そのまま置くだけ**で、
-空き場所探しも押しのけも重なり判定も行わない。座標なしで n 個作れば
-**n 個が完全に重なる**。
+座標 (`x` / `y`) を**どちらも**省いた時の置き場所は 2 段で決まる。
+どちらの段も「既にある物の上に乗せない」ところまでで、押しのけ
+(`pushSurroundingNodes`) や埋もれ解消は一切呼ばない。
 
-散らすのは `tidy_page` (`mcpTidyPage` → `autoLayoutTree` +
-`_alignMiddleChildren` + `_spreadLooseNodes`) を呼んだ時だけ。
+**単体形式** (`add_node` を 1 件で呼ぶ / 配列の各要素を作る瞬間) —
+`mcpAddNode` は `mcpFreeSpotOn(page)` を使う。X はそのページの基準位置
+(`mcpReferenceFor` = 記録済みの基準位置 → 画面中央 → 10000,10000)、
+Y は「基準位置の Y」と「今あるノードの下端 + 40」の大きい方。
+格納されて隠れているノード (`hiddenInContainer`) は数えない。
+→ 座標なしで n 個作っても**重ならず、下へ 1 列に積まれる**。
+
+**一括形式** (`nodes` 配列) — 全件を作り終えた後、`x` も `y` も書かれて
+いなかった物だけを `mcpArrangeNewNodes` が置き直す (`normal` ページ以外は
+何もしない)。規則は 3 通り:
+
+| 相手 | 置き場所 |
+|---|---|
+| 親がある子 (`parentId` / `parentIndex` で繋いだ物) | X = 親の右端 + **280**、Y = **並べ終わった**兄弟の下端 + 40 (兄弟が居なければ親と同じ Y) |
+| 親がなく子を持つ物 (= この呼び出しで根になった物) | 動かさない (単体形式で置いた場所のまま) |
+| 親も子もない物 (= 孤立した根) | `mcpFreeSpotOn(page, ignore: {自分})` で 1 つずつ下へ |
+
+- 兄弟の Y を積む時、**まだ並べていない**同時作成の兄弟は数えない
+  (仮の置き場を基準にすると下へ下へと押し出されるため)。
+- `x` / `y` を書いた要素はそのまま尊重し、書かなかった兄弟だけ並べる。
+
+**整列 (`tidy_page`) は別物**。`mcpTidyPage` → `autoLayoutTree` +
+`_alignMiddleChildren` + `_applySingleChildStraightLines` +
+`_spreadLooseNodes` で**ページ全体**を組み直す。
 アプリ内の AI アシスタントは応答の最後に自動で呼ぶが (`_tidyTouched`、
 対象は add_node / add_image_node / add_table_node / connect_nodes を
 使ったページのみ)、外部の MCP クライアントは自分で呼ぶ必要がある。
-`add_node` の戻り値に `note` が付いていたら、それが合図。
+1 件ずつ足した後にページ全体を整えたい時だけ呼ぶこと
+(`add_node` の `note` は「親の右へ並べた」という報告で、
+tidy_page の催促ではない)。
 
 なお `mcpAddTableNode` / `mcpAddFileNode` は挙動が違う:
 表は座標省略時に `_spreadLooseNodes` を呼び、ファイルのタイルは

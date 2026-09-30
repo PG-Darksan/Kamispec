@@ -869,7 +869,34 @@ class ChannelVideoQueue {
   ChannelVideoQueue({required this.videoIds, required this.titles});
 }
 
+/// ごみ箱へ送った添付の控え (= 継続検証 230 前半: 添付を消して取り消すと
+/// タイルだけ戻り、 実体はごみ箱に残って開けないタイルになっていた)。
+///
+/// ★ Windows のごみ箱から**戻す**公開された道は無い (shell の「元に戻す」 は
+///   COM の文脈メニュー経由で、 アプリから安全に叩けない)。 そこで、
+///   ごみ箱へ送る**前**にアプリの控え置き場へ写しを取り、 取り消しでは
+///   その写しを元の場所へ戻す。 ごみ箱側はそのまま残るので
+///   「ごみ箱へ送った」 という返事は嘘にならない。
+class _McpTrashedFile {
+  _McpTrashedFile(this.originalPath, this.stagedPath, this.wasAppCreated);
+
+  /// 元あった場所 (ここへ戻す)。
+  final String originalPath;
+
+  /// 控え置き場に取った写し。
+  final String stagedPath;
+
+  /// 元々「アプリが作った物」 の控えに載っていたか。
+  /// ★ 載っていなかった物 (= 利用者が持って来たファイル) を戻す時に
+  ///   印を付けてはいけない。 付けると、 次からアプリが勝手に消せる物と
+  ///   見なされる。
+  final bool wasAppCreated;
+}
+
 class _PageSnapshot {
+  /// この控えへ戻る時、 一緒に元の場所へ戻す実体ファイル。
+  /// ★ タイルだけ戻して実体を置き去りにしないための欄 (= 継続検証 230 前半)。
+  final List<_McpTrashedFile> trashedFiles = <_McpTrashedFile>[];
   final Map<String, MindMapNode> nodes;
   final List<NodeConnection> connections;
   final Map<String, Set<String>> namedGroups;
@@ -1674,10 +1701,16 @@ String _toFullWidthDigits(String s) {
 /// 短い文書を勝手に割らないよう、 [headingMinChars] 文字以上で、 同じ高さの
 /// 見出しが [headingMinSections]〜[headingMaxSections] 個ある時に限る。
 /// [force] が true なら長さの条件を外す (= はっきり「分けて」 と言われた時)。
+/// [keepLeadingText] が true の時だけ、 最初の区切りより**前**にある本文も
+/// 1 区画 (名前は空) として先頭に持つ (= 継続検証 197「概要本文 →
+/// <<<PAGE: 詳細>>> → … と書くと概要が保存されない」)。 画面側は AI に
+/// 区切りを必ず書かせているので既定は false のまま (前置きの挨拶で 1 枚
+/// 増やさない)。 CLI/MCP は「全文を渡す」 約束なので true で通す。
 List<({String name, String text})> splitMarkdownIntoTabs(
   String body, {
   bool byHeadingWhenNoMarker = false,
   bool force = false,
+  bool keepLeadingText = false,
   int headingMinChars = 3000,
   int headingMinSections = 3,
   int headingMaxSections = 12,
@@ -1712,6 +1745,15 @@ List<({String name, String text})> splitMarkdownIntoTabs(
   }
   if (marks.isNotEmpty) {
     final out = <({String name, String text})>[];
+    // ★ = 継続検証 197「write_markdown split:tabs で最初のマーカー前の本文が
+    //   消える」。 区画の切り出しは marks[i].line + 1 から始まるので、
+    //   1 つ目のマーカーより**前**の行はどこにも入らず捨てられていた。
+    //   前書きも 1 区画として持つ (名前は空 = 今開いているタブの名前を
+    //   そのまま使う合図。 割り振り側は 1 枚目を今のタブへ入れる)。
+    if (keepLeadingText) {
+      final lead = srcLines.sublist(0, marks.first.line).join('\n').trim();
+      if (lead.isNotEmpty) out.add((name: '', text: lead));
+    }
     for (var i = 0; i < marks.length; i++) {
       final endLine =
           i + 1 < marks.length ? marks[i + 1].line : srcLines.length;
@@ -5327,6 +5369,9 @@ class MindMapProvider extends ChangeNotifier {
     _redoStacks[id]!
         .add(_PageSnapshot.from(currentPage, groups, cells: _shelfCells));
     _applySnapshot(snap, id);
+    // ★ = 継続検証 230 前半 (画面の Ctrl+Z 側)。 タイルを戻したら、 一緒に
+    //   ごみ箱へ送った実体も元の場所へ戻す。 戻せない物はごみ箱に残る。
+    _mcpRestoreTrashedFiles(snap.trashedFiles);
     _saveToStorage();
     _saveNamedGroups(); // 付箋状態も永続化
     notifyListeners();
@@ -5349,7 +5394,8 @@ class MindMapProvider extends ChangeNotifier {
   /// ★ 本文が prefs にある種別 (paint / document / videoEditor) の履歴は
   ///   画面側の widget が持っているので、 ここでは戻せない。 呼ぶ側が
   ///   [canUndoPage] を見て断る。
-  Future<bool> mcpUndoPage(String pageId) async {
+  Future<bool> mcpUndoPage(String pageId,
+      {Map<String, Object?>? outcome}) async {
     final page = mcpPageById(pageId);
     if (page == null) return false;
     final stack = _undoStacks[pageId];
@@ -5365,6 +5411,20 @@ class MindMapProvider extends ChangeNotifier {
         .add(_PageSnapshot.from(page, _namedGroups[pageId] ?? {},
             cells: _shelfCells));
     _applySnapshotToPage(snap, page, pageId);
+    // ★ = 継続検証 230 前半。 タイルと実体を 1 つの取り消しで戻す。
+    //   戻せなかった物は黙って済ませず、 呼ぶ側へ渡して明示させる。
+    final restoredFiles = <String>[];
+    final unrestoredFiles = <Map<String, Object?>>[];
+    _mcpRestoreTrashedFiles(
+        snap.trashedFiles, restoredFiles, unrestoredFiles);
+    if (outcome != null) {
+      if (restoredFiles.isNotEmpty) {
+        outcome['filesRestored'] = restoredFiles;
+      }
+      if (unrestoredFiles.isNotEmpty) {
+        outcome['filesNotRestored'] = unrestoredFiles;
+      }
+    }
     _saveNamedGroups();
     // ★ 遅れて保存させない。 応答を返した後に書き込みが走ると、 続けて
     //   出した指示の結果へ被さる (レポートの「予測困難な状態」)。
@@ -10175,6 +10235,19 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Padrão',
       'ru': 'По умолчанию',
     },
+    // メモ画面から、 アプリの外の窓 (パソコン) / OS オーバーレイ (スマホ) へ
+    //   移す釦の名前。
+    'memo.toOutsideWindow': {
+      'ja': 'アプリの外の窓に出す',
+      'en': 'Open in outside window',
+      'zh': '在应用外的窗口打开',
+      'ko': '앱 외부 창으로 내보내기',
+      'es': 'Abrir en una ventana externa',
+      'fr': 'Ouvrir dans une fenêtre externe',
+      'de': 'In externem Fenster öffnen',
+      'pt': 'Abrir em janela externa',
+      'ru': 'Открыть в отдельном окне',
+    },
     'memo.titleGlobal': {
       'ja': 'メモ: 全体',
       'en': 'Memo: Global',
@@ -10352,6 +10425,28 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Keine Karten',
       'pt': 'Nenhum cartão',
       'ru': 'Нет карточек',
+    },
+    'flash.reason': {
+      'ja': '理由を見る',
+      'en': 'Explain why',
+      'zh': '查看理由',
+      'ko': '이유 보기',
+      'es': 'Ver el motivo',
+      'fr': 'Voir la raison',
+      'de': 'Grund anzeigen',
+      'pt': 'Ver o motivo',
+      'ru': 'Показать причину',
+    },
+    'flash.reasonMaking': {
+      'ja': '理由を作成中…',
+      'en': 'Explaining…',
+      'zh': '正在生成理由…',
+      'ko': '이유 생성 중…',
+      'es': 'Generando el motivo…',
+      'fr': 'Génération de la raison…',
+      'de': 'Grund wird erstellt…',
+      'pt': 'Gerando o motivo…',
+      'ru': 'Формируется причина…',
     },
     'flash.noUnfiledCards': {
       'ja': '未分類のカードはありません',
@@ -19393,6 +19488,130 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Raciocinio',
       'ru': 'Рассуждение',
     },
+    // ── 会社ごとの細かい指定 (= ユーザー要望: 推論レベルがアバウト過ぎる) ──
+    //   ★ 値の名前は言い換えない (上の 3 段階と同じ考え方)。 送っている
+    //     パラメータ名そのもの (reasoning_effort / verbosity /
+    //     budget_tokens / thinkingBudget) を画面に出す。
+    'ai.fineTitle': {
+      'ja': '細かく決める',
+      'en': 'Fine control',
+      'zh': '精细设置',
+      'ko': '세부 설정',
+      'es': 'Ajuste fino',
+      'fr': 'Reglage fin',
+      'de': 'Feineinstellung',
+      'pt': 'Ajuste fino',
+      'ru': 'Точная настройка',
+    },
+    'ai.fineNote': {
+      'ja': '未設定の間は上の 3 段階で決まります。'
+          'ここで決めた値は、その会社に頼む時だけ使われます。',
+      'en': 'While unset, the three levels above decide. What you set here is '
+          'used only for that provider.',
+      'zh': '未设置时按上面的三档决定。此处的值仅用于该提供商。',
+      'ko': '설정하지 않으면 위의 3단계로 결정됩니다. 여기 값은 해당 업체에만 쓰입니다.',
+      'es': 'Si no se define, deciden los tres niveles de arriba.',
+      'fr': 'Sans valeur ici, les trois niveaux ci-dessus decident.',
+      'de': 'Ohne Wert hier entscheiden die drei Stufen oben.',
+      'pt': 'Sem valor aqui, os tres niveis acima decidem.',
+      'ru': 'Если не задано, решают три уровня выше.',
+    },
+    'ai.fineDefault': {
+      'ja': '既定にまかせる',
+      'en': 'Leave to default',
+      'zh': '交给默认',
+      'ko': '기본값에 맡김',
+      'es': 'Dejar por defecto',
+      'fr': 'Laisser par defaut',
+      'de': 'Standard verwenden',
+      'pt': 'Deixar padrao',
+      'ru': 'По умолчанию',
+    },
+    'ai.fineAuto': {
+      'ja': '自動',
+      'en': 'Auto',
+      'zh': '自动',
+      'ko': '자동',
+      'es': 'Auto',
+      'fr': 'Auto',
+      'de': 'Auto',
+      'pt': 'Auto',
+      'ru': 'Авто',
+    },
+    'ai.fineOff': {
+      'ja': '切',
+      'en': 'Off',
+      'zh': '关',
+      'ko': '끄기',
+      'es': 'Apagado',
+      'fr': 'Desactive',
+      'de': 'Aus',
+      'pt': 'Desligado',
+      'ru': 'Выкл',
+    },
+    'ai.fineByNumber': {
+      'ja': '数で決める',
+      'en': 'Set a number',
+      'zh': '指定数值',
+      'ko': '숫자로 지정',
+      'es': 'Indicar un numero',
+      'fr': 'Indiquer un nombre',
+      'de': 'Zahl angeben',
+      'pt': 'Indicar um numero',
+      'ru': 'Задать число',
+    },
+    'ai.fineTokens': {
+      'ja': 'トークン',
+      'en': 'tokens',
+      'zh': 'token',
+      'ko': '토큰',
+      'es': 'tokens',
+      'fr': 'jetons',
+      'de': 'Tokens',
+      'pt': 'tokens',
+      'ru': 'токенов',
+    },
+    'ai.fineHintGemini': {
+      'ja': 'thinkingConfig.thinkingBudget に乗せます。'
+          '-1 = 自動、0 = 切。代行では上限 24576 トークンで切り詰めます。',
+      'en': 'Sent as thinkingConfig.thinkingBudget. -1 = auto, 0 = off. '
+          'The relay caps it at 24576 tokens.',
+      'zh': '作为 thinkingConfig.thinkingBudget 发送。-1 自动，0 关闭，代行上限 24576。',
+      'ko': 'thinkingConfig.thinkingBudget 으로 보냅니다. -1 자동, 0 끄기, 대행은 최대 24576.',
+      'es': 'Se envia como thinkingConfig.thinkingBudget. -1 auto, 0 apagado.',
+      'fr': 'Envoye comme thinkingConfig.thinkingBudget. -1 auto, 0 desactive.',
+      'de': 'Wird als thinkingConfig.thinkingBudget gesendet. -1 auto, 0 aus.',
+      'pt': 'Enviado como thinkingConfig.thinkingBudget. -1 auto, 0 desligado.',
+      'ru': 'Отправляется как thinkingConfig.thinkingBudget. -1 авто, 0 выкл.',
+    },
+    'ai.fineHintAnthropic': {
+      'ja': 'thinking.budget_tokens に乗せます。'
+          '1024 以上で、本文の枠より小さい必要があります。'
+          '足りない時は付けずに送ります。',
+      'en': 'Sent as thinking.budget_tokens. Must be 1024 or more and smaller '
+          'than the reply budget; otherwise it is left off.',
+      'zh': '作为 thinking.budget_tokens 发送。需不少于 1024 且小于回复上限。',
+      'ko': 'thinking.budget_tokens 으로 보냅니다. 1024 이상이며 본문 한도보다 작아야 합니다.',
+      'es': 'Se envia como thinking.budget_tokens. Minimo 1024.',
+      'fr': 'Envoye comme thinking.budget_tokens. Minimum 1024.',
+      'de': 'Wird als thinking.budget_tokens gesendet. Mindestens 1024.',
+      'pt': 'Enviado como thinking.budget_tokens. Minimo 1024.',
+      'ru': 'Отправляется как thinking.budget_tokens. Минимум 1024.',
+    },
+    'ai.fineHintOpenai': {
+      'ja': 'reasoning_effort と verbosity に乗せます。'
+          'minimal と verbosity は新しい世代だけが受け取るので、'
+          '断られたモデルでは自動で外して投げ直します。',
+      'en': 'Sent as reasoning_effort and verbosity. Only newer models take '
+          'minimal and verbosity; if refused they are dropped and retried.',
+      'zh': '作为 reasoning_effort 与 verbosity 发送。仅新世代模型支持，被拒则自动去掉重试。',
+      'ko': 'reasoning_effort 와 verbosity 로 보냅니다. 최신 세대만 지원하며, 거부되면 빼고 재시도합니다.',
+      'es': 'Se envia como reasoning_effort y verbosity (solo modelos nuevos).',
+      'fr': 'Envoye comme reasoning_effort et verbosity (modeles recents).',
+      'de': 'Wird als reasoning_effort und verbosity gesendet (neue Modelle).',
+      'pt': 'Enviado como reasoning_effort e verbosity (modelos novos).',
+      'ru': 'Отправляется как reasoning_effort и verbosity (новые модели).',
+    },
     'mcp.reasoningNote': {
       'ja': '強いほど答えは良くなりやすい代わりに、考えた分もトークンとして'
           '掛かるので料金と待ち時間が伸びます。'
@@ -25178,16 +25397,57 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Voltar ao tamanho original',
       'ru': 'Вернуть исходный размер',
     },
+    // ★ = ユーザー要望「左端や右端だけを伸ばしたらアンバランスになるから、
+    //   右クリックで図を中央に持ってくる項目を作って欲しい」。
+    'md.diagramCenter': {
+      'ja': '中央に寄せる',
+      'en': 'Centre the diagram',
+      'zh': '将图居中',
+      'ko': '가운데로 맞추기',
+      'es': 'Centrar el diagrama',
+      'fr': 'Centrer le schéma',
+      'de': 'Diagramm zentrieren',
+      'pt': 'Centralizar o diagrama',
+      'ru': 'Выровнять по центру',
+    },
+    // ★ = ユーザー要望「アプリの表にして埋め込むのボタンは 分かりやすい
+    //   ように『編集』 ってボタンにして欲しい」。 押すとその表がアプリの
+    //   表になり、 そのまま直せる ようになる。
     'md.tableEmbed': {
-      'ja': 'アプリの表にして埋め込む',
-      'en': 'Embed as an app table',
-      'zh': '转换为应用表格并嵌入',
-      'ko': '앱의 표로 바꿔 넣기',
-      'es': 'Insertar como tabla de la app',
-      'fr': 'Intégrer comme tableau de l’app',
-      'de': 'Als App-Tabelle einbetten',
-      'pt': 'Inserir como tabela do app',
-      'ru': 'Встроить как таблицу приложения',
+      'ja': '編集',
+      'en': 'Edit',
+      'zh': '编辑',
+      'ko': '편집',
+      'es': 'Editar',
+      'fr': 'Modifier',
+      'de': 'Bearbeiten',
+      'pt': 'Editar',
+      'ru': 'Редактировать',
+    },
+    // ── 図 (mermaid) の右上に出る道具を隠す / 出す ──
+    //    (= ユーザー要望: マーメイド記法の図を右クリックしたら、 右上の
+    //     項目を非表示にする項目が出るようにして欲しい)
+    'md.diagramHideUi': {
+      'ja': '右上の項目を隠す',
+      'en': 'Hide the buttons on the diagram',
+      'zh': '隐藏右上角的按钮',
+      'ko': '오른쪽 위 버튼 숨기기',
+      'es': 'Ocultar los botones del diagrama',
+      'fr': 'Masquer les boutons du schéma',
+      'de': 'Schaltflächen am Diagramm ausblenden',
+      'pt': 'Ocultar os botões do diagrama',
+      'ru': 'Скрыть кнопки на схеме',
+    },
+    'md.diagramShowUi': {
+      'ja': '右上の項目を出す',
+      'en': 'Show the buttons on the diagram',
+      'zh': '显示右上角的按钮',
+      'ko': '오른쪽 위 버튼 표시',
+      'es': 'Mostrar los botones del diagrama',
+      'fr': 'Afficher les boutons du schéma',
+      'de': 'Schaltflächen am Diagramm einblenden',
+      'pt': 'Mostrar os botões do diagrama',
+      'ru': 'Показать кнопки на схеме',
     },
     'md.tableEmbedded': {
       'ja': 'アプリの表にしました',
@@ -25607,6 +25867,28 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Seitennamen in jedem Bereich anzeigen',
       'pt': 'Mostrar o nome da página em cada painel',
       'ru': 'Показать имя страницы в каждой панели',
+    },
+    'split.swapLeftRight': {
+      'ja': '左右を入れ替え',
+      'en': 'Swap left and right',
+      'zh': '左右互换',
+      'ko': '좌우 바꾸기',
+      'es': 'Intercambiar izquierda y derecha',
+      'fr': 'Permuter gauche et droite',
+      'de': 'Links und rechts tauschen',
+      'pt': 'Trocar esquerda e direita',
+      'ru': 'Поменять местами левую и правую',
+    },
+    'split.swapTopBottom': {
+      'ja': '上下を入れ替え',
+      'en': 'Swap top and bottom',
+      'zh': '上下互换',
+      'ko': '위아래 바꾸기',
+      'es': 'Intercambiar arriba y abajo',
+      'fr': 'Permuter haut et bas',
+      'de': 'Oben und unten tauschen',
+      'pt': 'Trocar cima e baixo',
+      'ru': 'Поменять местами верхнюю и нижнюю',
     },
     'split.forward': {
       'ja': '進む',
@@ -33763,47 +34045,6 @@ class MindMapProvider extends ChangeNotifier {
           'браузере. Не требует ни решения, ни сети. В Windows только '
           'скрывает — запросы всё равно уходят.',
     },
-    'jev.adBlockDeep': {
-      'ja': '判別が付かない枠も Jev に聞く',
-      'en': 'Ask Jev about blocks it cannot name',
-      'zh': '无法识别的区块交由 Jev 判断',
-      'ko': '판별이 안 되는 영역은 Jev에 묻기',
-      'es': 'Preguntar a Jev por los bloques dudosos',
-      'fr': 'Demander à Jev pour les blocs ambigus',
-      'de': 'Jev zu unklaren Blöcken befragen',
-      'pt': 'Perguntar ao Jev sobre blocos ambíguos',
-      'ru': 'Спрашивать Jev о неоднозначных блоках',
-    },
-    'jev.adBlockDeepHelp': {
-      'ja': '名前では広告と分からなかった塊だけ、 短い抜粋 (最大 12 件 x '
-          '200 字) を送って「広告か」 を聞きます。 広告の確率が 75% 以上の '
-          '塊だけ隠します (通常の結果を誤って消さないよう高めにしてあります)。 '
-          '検索結果のページでだけ聞きます。',
-      'en': 'For blocks that could not be recognised by name, sends a short '
-          'excerpt (at most 12 blocks x 200 chars) and asks whether it is an '
-          'ad. Only blocks at 75% or more are hidden - deliberately high so '
-          'ordinary results are not removed by mistake. Asked only on search '
-          'result pages.',
-      'zh': '仅对无法按名称识别的区块发送简短摘录（最多 12 个 x 200 字）询问'
-          '是否为广告，概率 ≥75% 才隐藏，仅在搜索结果页询问。',
-      'ko': '이름으로 판별되지 않은 영역만 짧은 발췌(최대 12건 x 200자)를 '
-          '보내 광고인지 묻고, 75% 이상일 때만 숨깁니다.',
-      'es': 'Para los bloques no reconocibles por nombre, envía un extracto '
-          'corto (máx. 12 x 200 caracteres) y pregunta si es anuncio. Solo se '
-          'ocultan los de 75% o más.',
-      'fr': 'Pour les blocs non reconnus par leur nom, envoie un court extrait '
-          '(12 blocs x 200 caractères au plus) et demande s il s agit d une '
-          'publicité. Seuls ceux à 75% ou plus sont masqués.',
-      'de': 'Sendet für nicht am Namen erkennbare Blöcke einen kurzen Auszug '
-          '(max. 12 x 200 Zeichen) und fragt, ob es Werbung ist. Nur ab 75% '
-          'wird verborgen.',
-      'pt': 'Para blocos não reconhecíveis pelo nome, envia um trecho curto '
-          '(máx. 12 x 200 caracteres) e pergunta se é anúncio. Só oculta a '
-          'partir de 75%.',
-      'ru': 'Для блоков, не узнаваемых по названию, отправляет короткий '
-          'фрагмент (не более 12 по 200 символов) и спрашивает, реклама ли '
-          'это. Скрывает только при 75% и выше.',
-    },
     'jev.usage': {
       'ja': 'Jev に聞いた回数',
       'en': 'Jev decisions used',
@@ -33814,6 +34055,220 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Genutzte Jev-Entscheidungen',
       'pt': 'Decisões do Jev usadas',
       'ru': 'Использовано решений Jev',
+    },
+    'jev.stopAll': {
+      'ja': 'Jev をすべて止める',
+      'en': 'Stop all Jev decisions',
+      'zh': '停止全部 Jev 判断',
+      'ko': 'Jev를 전부 멈추기',
+      'es': 'Detener todo Jev',
+      'fr': 'Tout arrêter dans Jev',
+      'de': 'Jev vollständig anhalten',
+      'pt': 'Parar tudo do Jev',
+      'ru': 'Остановить все решения Jev',
+    },
+    'jev.stopAllHelp': {
+      'ja': '入れると、 下の Jev の機能を全部止めます。 機能ごとの入切は '
+          'そのまま残るので、 これを切れば元の組み合わせへ戻ります。 通信も '
+          '判断も起きず、 すべていつもどおりの動きになります。 費用が気に '
+          'なる時や、 判断の結果を疑う時の非常停止です。',
+      'en': 'Turning this on stops every Jev feature below. Your individual '
+          'switches are kept, so turning it back off restores them. Nothing '
+          'is sent and nothing is decided — everything falls back to the '
+          'normal behaviour. Use it as an emergency stop when you worry '
+          'about cost or doubt a decision.',
+      'zh': '开启后会停止下方所有 Jev 功能。各项开关会保留，关闭本项即可恢复'
+          '原来的组合。不会发送任何内容，也不做任何判断，全部回到原有行为。'
+          '担心费用或怀疑判断结果时可作为紧急停止。',
+      'ko': '켜면 아래의 Jev 기능을 모두 멈춥니다. 개별 설정은 그대로 남으므로 '
+          '다시 끄면 원래 조합으로 돌아갑니다. 통신도 판단도 일어나지 않고 '
+          '모두 기존 동작이 됩니다. 비용이 걱정될 때나 판단 결과가 '
+          '의심스러울 때의 비상 정지입니다.',
+      'es': 'Al activarlo se detienen todas las funciones de Jev de abajo. Tus '
+          'interruptores individuales se conservan, así que al desactivarlo '
+          'vuelven. No se envía ni se decide nada: todo vuelve al '
+          'comportamiento normal.',
+      'fr': 'Activé, cela arrête toutes les fonctions Jev ci-dessous. Vos '
+          'réglages individuels sont conservés : en le désactivant, ils '
+          'reviennent. Rien n est envoyé ni décidé, tout revient au '
+          'comportement normal.',
+      'de': 'Aktiviert stoppt dies alle Jev-Funktionen unten. Ihre einzelnen '
+          'Schalter bleiben erhalten, beim Ausschalten kehren sie zurück. Es '
+          'wird nichts gesendet und nichts entschieden — alles verhält sich '
+          'wie gewohnt.',
+      'pt': 'Ativado, para todas as funções do Jev abaixo. Os seus '
+          'interruptores individuais são mantidos, por isso ao desativar '
+          'voltam. Nada é enviado nem decidido: tudo volta ao comportamento '
+          'normal.',
+      'ru': 'Включив это, вы останавливаете все функции Jev ниже. Отдельные '
+          'переключатели сохраняются, поэтому при отключении они вернутся. '
+          'Ничего не отправляется и не решается — всё работает как обычно.',
+    },
+    'jev.cardGrade': {
+      'ja': '答え合わせを Jev に任せる',
+      'en': 'Let Jev grade your answers',
+      'zh': '让 Jev 判定答案对错',
+      'ko': '정답 확인을 Jev에 맡기기',
+      'es': 'Que Jev corrija tus respuestas',
+      'fr': 'Laisser Jev corriger vos réponses',
+      'de': 'Jev die Antworten bewerten lassen',
+      'pt': 'Deixar o Jev corrigir as suas respostas',
+      'ru': 'Пусть Jev проверяет ответы',
+    },
+    'jev.cardGradeHelp': {
+      'ja': '暗記札や小テストで書いた答えを、 文字が同じかではなく意味が '
+          '合っているかで見ます。 書き方が違うだけの正解を取りこぼしません。 '
+          '送るのは正解と自分の答えの短い抜粋だけで、 判断が取れない時は '
+          '今までの文字合わせに戻ります。',
+      'en': 'Checks the answer you typed on a flashcard or quiz by meaning '
+          'instead of exact characters, so a correct answer worded '
+          'differently still counts. Only a short excerpt of the expected '
+          'answer and yours is sent; without a decision the old exact match '
+          'is used.',
+      'zh': '判定记忆卡或小测验的作答时看含义而非逐字相同，说法不同的正确答案'
+          '也能算对。只发送标准答案与你的作答的简短摘录；取不到判断时退回'
+          '原来的逐字比对。',
+      'ko': '암기 카드나 쪽지 시험의 답을 글자가 같은지가 아니라 뜻이 '
+          '맞는지로 봅니다. 표현만 다른 정답도 놓치지 않습니다. 보내는 것은 '
+          '정답과 내 답의 짧은 발췌뿐이고, 판단을 못 받으면 기존 글자 비교로 '
+          '돌아갑니다.',
+      'es': 'Revisa la respuesta que escribiste en una tarjeta o prueba por su '
+          'significado y no por coincidencia exacta, así una respuesta '
+          'correcta redactada de otro modo también cuenta. Solo se envía un '
+          'extracto corto.',
+      'fr': 'Vérifie la réponse saisie sur une carte ou un quiz par le sens et '
+          'non caractère par caractère : une bonne réponse formulée '
+          'autrement compte aussi. Seul un court extrait est envoyé.',
+      'de': 'Prüft Ihre Antwort auf einer Lernkarte oder im Test nach '
+          'Bedeutung statt Zeichen für Zeichen, damit eine anders '
+          'formulierte richtige Antwort ebenfalls zählt. Gesendet wird nur '
+          'ein kurzer Auszug.',
+      'pt': 'Verifica a resposta escrita num cartão ou teste pelo significado '
+          'e não carácter a carácter, para que uma resposta certa formulada '
+          'de outro modo também conte. Só é enviado um trecho curto.',
+      'ru': 'Проверяет ответ на карточке или в тесте по смыслу, а не '
+          'посимвольно, поэтому верный ответ другими словами тоже зачтётся. '
+          'Отправляется только короткий фрагмент.',
+    },
+    'jev.webRank': {
+      'ja': '検索結果を関連の高い順に並べる',
+      'en': 'Sort web results by relevance',
+      'zh': '按相关度排列搜索结果',
+      'ko': '검색 결과를 관련 순으로 정렬',
+      'es': 'Ordenar los resultados por relevancia',
+      'fr': 'Trier les résultats par pertinence',
+      'de': 'Suchergebnisse nach Relevanz sortieren',
+      'pt': 'Ordenar os resultados por relevância',
+      'ru': 'Сортировать результаты по релевантности',
+    },
+    'jev.webRankHelp': {
+      'ja': 'Web 検索の並びを、 探している事に近い順へ組み替えます。 送るのは '
+          '題名と要約の短い抜粋だけで、 ページの中身は送りません。 判断が '
+          '取れない時は検索元の並びのままにします。',
+      'en': 'Reorders web results so the ones closest to what you are looking '
+          'for come first. Only titles and short snippets are sent, never '
+          'the pages themselves. Without a decision the original order is '
+          'kept.',
+      'zh': '把网页搜索结果重新排成最贴近你要找内容的顺序。只发送标题与简短'
+          '摘要，不发送网页正文。取不到判断时保持原有顺序。',
+      'ko': '웹 검색 결과를 찾는 내용에 가까운 순서로 다시 배열합니다. 제목과 '
+          '짧은 요약만 보내고 페이지 본문은 보내지 않습니다. 판단을 못 '
+          '받으면 원래 순서를 유지합니다.',
+      'es': 'Reordena los resultados web para que primero aparezcan los más '
+          'cercanos a lo que buscas. Solo se envían títulos y fragmentos '
+          'cortos, nunca las páginas.',
+      'fr': 'Réordonne les résultats web pour placer en tête les plus proches '
+          'de votre recherche. Seuls les titres et de courts extraits sont '
+          'envoyés, jamais les pages.',
+      'de': 'Sortiert Webergebnisse so, dass die passendsten oben stehen. '
+          'Gesendet werden nur Titel und kurze Ausschnitte, niemals die '
+          'Seiten selbst.',
+      'pt': 'Reordena os resultados da Web para que os mais próximos do que '
+          'procura fiquem primeiro. Só são enviados títulos e trechos '
+          'curtos, nunca as páginas.',
+      'ru': 'Переупорядочивает результаты так, чтобы самые близкие к запросу '
+          'шли первыми. Отправляются только заголовки и короткие фрагменты, '
+          'но не сами страницы.',
+    },
+    'jev.fileFind': {
+      'ja': 'ファイル検索を近い順に並べる',
+      'en': 'Sort file search by closeness',
+      'zh': '文件搜索按贴近程度排序',
+      'ko': '파일 검색을 가까운 순으로 정렬',
+      'es': 'Ordenar la búsqueda de archivos por cercanía',
+      'fr': 'Trier la recherche de fichiers par proximité',
+      'de': 'Dateisuche nach Nähe sortieren',
+      'pt': 'Ordenar a procura de ficheiros por proximidade',
+      'ru': 'Сортировать поиск файлов по близости',
+    },
+    'jev.fileFindHelp': {
+      'ja': '題名がずれていても、 中身が近いファイルを上へ出します。 送るのは '
+          'ファイル名と先頭の短い抜粋だけです。 判断が取れない時は名前の '
+          '一致順のままにします。',
+      'en': 'Puts files whose contents match closest at the top even when the '
+          'name does not match. Only file names and a short leading excerpt '
+          'are sent. Without a decision the plain name order is kept.',
+      'zh': '即使文件名不一致，也把内容更贴近的文件排在前面。只发送文件名与'
+          '开头的简短摘录。取不到判断时保持按名称匹配的顺序。',
+      'ko': '이름이 어긋나도 내용이 가까운 파일을 위로 올립니다. 보내는 것은 '
+          '파일 이름과 앞부분의 짧은 발췌뿐입니다. 판단을 못 받으면 이름 '
+          '일치 순서를 유지합니다.',
+      'es': 'Coloca arriba los archivos cuyo contenido se parece más, aunque '
+          'el nombre no coincida. Solo se envían los nombres y un extracto '
+          'corto del inicio.',
+      'fr': 'Place en tête les fichiers dont le contenu correspond le mieux, '
+          'même si le nom diffère. Seuls les noms et un court extrait du '
+          'début sont envoyés.',
+      'de': 'Stellt Dateien mit inhaltlich passendem Text nach oben, auch '
+          'wenn der Name nicht passt. Gesendet werden nur Dateinamen und ein '
+          'kurzer Auszug vom Anfang.',
+      'pt': 'Coloca em cima os ficheiros cujo conteúdo é mais próximo, mesmo '
+          'que o nome não coincida. Só são enviados os nomes e um trecho '
+          'curto do início.',
+      'ru': 'Поднимает наверх файлы, чьё содержимое ближе к запросу, даже '
+          'если имя не совпадает. Отправляются только имена файлов и '
+          'короткий фрагмент начала.',
+    },
+    'jev.docQa': {
+      'ja': '質問に関係する所だけ AI へ渡す',
+      'en': 'Send only the relevant part to the AI',
+      'zh': '只把与问题相关的部分交给 AI',
+      'ko': '질문에 관련된 곳만 AI로 전달',
+      'es': 'Enviar a la IA solo la parte relevante',
+      'fr': 'Envoyer à l IA seulement la partie utile',
+      'de': 'Nur den passenden Teil an die KI geben',
+      'pt': 'Enviar à IA apenas a parte relevante',
+      'ru': 'Передавать ИИ только нужную часть',
+    },
+    'jev.docQaHelp': {
+      'ja': '長い書類に質問した時、 どの章が答えを持っているかを先に選び、 '
+          'その所だけを AI へ渡します。 全体を読ませないので、 費用も '
+          '待ち時間も減ります。 判断が取れない時は今までどおり全体を '
+          '渡します。',
+      'en': 'When you ask about a long document, it first picks which '
+          'sections hold the answer and sends only those to the AI. Not '
+          'reading the whole document cuts both cost and waiting. Without a '
+          'decision the whole document is sent as before.',
+      'zh': '对长文档提问时，先挑出可能含有答案的章节，只把那部分交给 AI，'
+          '不必通读全文，费用与等待都会减少。取不到判断时仍按原样发送全文。',
+      'ko': '긴 문서에 질문했을 때 답이 있는 장을 먼저 고르고 그 부분만 AI에 '
+          '전달합니다. 전체를 읽히지 않으므로 비용과 대기 시간이 '
+          '줄어듭니다. 판단을 못 받으면 지금처럼 전체를 전달합니다.',
+      'es': 'Cuando preguntas sobre un documento largo, primero elige qué '
+          'secciones contienen la respuesta y envía solo esas a la IA. Así '
+          'bajan el coste y la espera.',
+      'fr': 'Quand vous interrogez un long document, il choisit d abord les '
+          'sections qui contiennent la réponse et n envoie que celles-là. Le '
+          'coût et l attente diminuent.',
+      'de': 'Bei einer Frage zu einem langen Dokument wählt es zuerst die '
+          'Abschnitte mit der Antwort und sendet nur diese an die KI. Das '
+          'senkt Kosten und Wartezeit.',
+      'pt': 'Quando pergunta sobre um documento longo, escolhe primeiro as '
+          'secções que têm a resposta e envia só essas à IA. Isso reduz o '
+          'custo e a espera.',
+      'ru': 'При вопросе по длинному документу сначала выбирает разделы с '
+          'ответом и передаёт ИИ только их. Это снижает и стоимость, и '
+          'ожидание.',
     },
     // ── 書籍検索の画面 ──
     'book.title': {
@@ -55279,7 +55734,7 @@ class MindMapProvider extends ChangeNotifier {
       // ★ = ユーザー要望「PC内AI って表記じゃなくて CodexCLI と
       //   ClaudeCode って表記して欲しい」。
       'ja':
-          'Claude Code / Codex CLI',
+          'Claude Code / Codex / Antigravity',
       'en':
           'Use the AI tools installed on this PC',
       'zh':
@@ -55726,15 +56181,15 @@ class MindMapProvider extends ChangeNotifier {
     //   ClaudeCode って表記して欲しい」。 1 つを選ぶ欄は CLI の名前その物を
     //   出すようにしたので、 ここに残るのは「この下は CLI の話」という見出しだけ。
     'ai.modeCli': {
-      'ja': 'Claude Code / Codex CLI',
-      'en': 'Claude Code / Codex CLI',
-      'zh': 'Claude Code / Codex CLI',
-      'ko': 'Claude Code / Codex CLI',
-      'es': 'Claude Code / Codex CLI',
-      'fr': 'Claude Code / Codex CLI',
-      'de': 'Claude Code / Codex CLI',
-      'pt': 'Claude Code / Codex CLI',
-      'ru': 'Claude Code / Codex CLI',
+      'ja': 'Claude Code / Codex / Antigravity',
+      'en': 'Claude Code / Codex / Antigravity',
+      'zh': 'Claude Code / Codex / Antigravity',
+      'ko': 'Claude Code / Codex / Antigravity',
+      'es': 'Claude Code / Codex / Antigravity',
+      'fr': 'Claude Code / Codex / Antigravity',
+      'de': 'Claude Code / Codex / Antigravity',
+      'pt': 'Claude Code / Codex / Antigravity',
+      'ru': 'Claude Code / Codex / Antigravity',
     },
     'ai.modeCliBody': {
       'ja': '契約している分をそこで使うので、 AI の残高は減りません。',
@@ -55813,6 +56268,17 @@ class MindMapProvider extends ChangeNotifier {
       'de': 'Nichts gefunden.',
       'pt': 'Nada encontrado.',
       'ru': 'Nichego ne naydeno.',
+    },
+    'folderSearch.jevAbsent': {
+      'ja': 'この中には無さそうです。 一覧はそのまま出しています。',
+      'en': 'May not be in these files. The full list is shown.',
+      'zh': '答案可能不在这些文件里。列表仍全部显示。',
+      'ko': '이 파일들에는 없을 수 있습니다. 목록은 그대로 표시합니다.',
+      'es': 'Puede que no este en estos archivos. La lista sigue completa.',
+      'fr': 'Peut-etre pas dans ces fichiers. La liste reste complete.',
+      'de': 'Vielleicht nicht in diesen Dateien. Die Liste bleibt komplett.',
+      'pt': 'Talvez nao esteja nestes arquivos. A lista continua completa.',
+      'ru': 'Возможно, ответа нет в этих файлах. Список показан полностью.',
     },
     'hdr.openTerminal': {
       'ja': 'ターミナル',
@@ -56205,6 +56671,30 @@ class MindMapProvider extends ChangeNotifier {
       'ru':
           'По умолчанию',
     },
+    // ★ = ユーザー指摘「『アカウント既定』 という表記は辞めて欲しい。
+    //   何のアカウントでログインしているのか分からないから」。 宛名が
+    //   読めない置き場の札。 入っていないとは言い切らず、 こちらから
+    //   見分けが付かない事だけを書く。
+    'cli.accountUnknown': {
+      'ja':
+          'ログイン先は不明',
+      'en':
+          'Account unknown',
+      'zh':
+          '登录账号未知',
+      'ko':
+          '로그인 계정 불명',
+      'es':
+          'Cuenta desconocida',
+      'fr':
+          'Compte inconnu',
+      'de':
+          'Konto unbekannt',
+      'pt':
+          'Conta desconhecida',
+      'ru':
+          'Аккаунт неизвестен',
+    },
     'cli.accountAdd': {
       'ja':
           'アカウントを追加',
@@ -56384,6 +56874,29 @@ class MindMapProvider extends ChangeNotifier {
           'Abra e faça login',
       'ru':
           'Откройте и войдите',
+    },
+    // ★ 控えの置き場が公表されていない CLI (Antigravity など) 用。
+    //   入っているかどうかがこちらから分からないだけなので、
+    //   「ログインしてください」 とは言い切らない。
+    'cli.loginUnknown': {
+      'ja':
+          'ログインの状態は確かめられません',
+      'en':
+          'Sign-in status cannot be checked',
+      'zh':
+          '无法确认登录状态',
+      'ko':
+          '로그인 상태를 확인할 수 없습니다',
+      'es':
+          'No se puede comprobar el estado de la sesión',
+      'fr':
+          'Impossible de vérifier la connexion',
+      'de':
+          'Anmeldestatus nicht prüfbar',
+      'pt':
+          'Não é possível verificar o login',
+      'ru':
+          'Не удаётся проверить вход',
     },
     'cli.notFound': {
       'ja':
@@ -56681,6 +57194,7 @@ class MindMapProvider extends ChangeNotifier {
           '● 会話の履歴を消す … この画面のやり取りをまとめて消します\n'
           '● アプリの説明書を読む … 課金・同期・配置などの仕様を調べます\n'
           '● 開いている文書を編集する … テキストエディタの中身を読み書きします\n'
+          '● 前面のファイルを閉じる … 未保存の時は先に確認します\n'
           '● ページの名前を変える・並べ替える\n'
           '● フォルダーを作る・名前を変える・消す・ページを出し入れする\n'
           '● つないだ線だけを消す … ノードは残したまま線だけ外します\n'
@@ -56719,6 +57233,8 @@ class MindMapProvider extends ChangeNotifier {
           'Clear this conversation history\n'
           'Read the built-in app documentation (billing, sync, layout...)\n'
           'Read and edit the document open in the text editor\n'
+          'Close the file open on top (it asks first when there are unsaved '
+          'edits)\n'
           'Rename and reorder pages\n'
           'Create, rename and delete folders, and move pages in and out\n'
           'Remove just a connection, leaving both nodes in place\n'
@@ -68881,6 +69397,17 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Configurações de tamanho de fonte',
       'ru': 'Настройки размера шрифта',
     },
+    'ctx.syncSettings': {
+      'ja': '同期設定',
+      'en': 'Sync settings',
+      'zh': '同步设置',
+      'ko': '동기화 설정',
+      'es': 'Ajustes de sincronización',
+      'fr': 'Paramètres de synchronisation',
+      'de': 'Sync-Einstellungen',
+      'pt': 'Configurações de sincronização',
+      'ru': 'Настройки синхронизации',
+    },
     // ── 右クリックメニュー（ノード） ──
     'ctx.edit': {
       'ja': '編集',
@@ -77723,6 +78250,31 @@ class MindMapProvider extends ChangeNotifier {
     final prefs = await _prefsWithRetry();
     // Jev (判断補助) の入切。 既定は全部切。
     _loadJevSettings(prefs);
+    // ── 親スイッチ廃止の移行 (1 回だけ) ──
+    //   b443〜b445 は親 jevEnabled と子の旗の AND で効いていた。 親を切って
+    //   いる人の端末には、 一度入れて試した子の旗が true のまま残っている。
+    //   親を消すだけだと、 更新した瞬間に本人が触っていないのに
+    //   /ai/decision へ本文の断片が飛ぶ。 そこで親が切 (または未設定)
+    //   だった端末は、 子を全部切へ落として書き直す。 親を入れていた人は
+    //   そのまま残す。
+    if (!(prefs.getBool('jevFlagMigrationV1') ?? false)) {
+      final hadJevParent = prefs.getBool('jevEnabled') ?? false;
+      if (!hadJevParent) {
+        _jevRouteEnabled = false;
+        _jevSearchEnabled = false;
+        _jevBookEnabled = false;
+      }
+      _jevStopAll = false;
+      try {
+        if (!hadJevParent) {
+          await prefs.setBool('jevRoute', false);
+          await prefs.setBool('jevSearch', false);
+          await prefs.setBool('jevBook', false);
+        }
+        await prefs.setBool('jevStopAll', false);
+        await prefs.setBool('jevFlagMigrationV1', true);
+      } catch (_) {}
+    }
     aiDepth = prefs.getInt('aiDepth') ?? 1;
     aiChildMin = prefs.getInt('aiChildMin') ?? 5;
     aiChildMax = prefs.getInt('aiChildMax') ?? 8;
@@ -77752,6 +78304,19 @@ class MindMapProvider extends ChangeNotifier {
         }
       }
     } catch (_) {}
+    // 会社ごとの細かい指定 (= ユーザー要望)。 空 / 無し = 未設定 で、
+    //   その間は上の 3 段階から決まる (= 今までどおり)。
+    //   ★ prefs の方を正とする (設定の同期で「未設定に戻した」 も伝わる)。
+    final fe = prefs.getString('relayReasoningOpenai') ?? '';
+    _fineOpenaiEffort = openaiEffortLevels.contains(fe) ? fe : '';
+    final fv = prefs.getString('relayVerbosityOpenai') ?? '';
+    _fineOpenaiVerbosity = openaiVerbosityLevels.contains(fv) ? fv : '';
+    final fa = int.tryParse(prefs.getString('relayThinkingAnthropic') ?? '');
+    _fineAnthropicBudget =
+        (fa == null || fa < 0) ? null : math.min(fa, kThinkBudgetMax);
+    final fg = int.tryParse(prefs.getString('relayThinkingGemini') ?? '');
+    _fineGeminiBudget =
+        fg == null ? null : (fg < 0 ? -1 : math.min(fg, kThinkBudgetMax));
     _openTarget = prefs.getString('openTarget') ?? 'same';
     totalOutputTokens = prefs.getInt('totalOutputTokens') ?? 0;
     totalCostUsd = prefs.getDouble('totalCostUsd') ?? 0.0;
@@ -79732,8 +80297,11 @@ class MindMapProvider extends ChangeNotifier {
     'background',
     'split',
     'cutMode',
+    // ★ 'terminal' (端子) は 'insertShape' に纏めたので外した (= ユーザー
+    //   要望: 端子の挿入は図形の挿入に纏めて)。 保存済みの並び順に古い名札が
+    //   残っていても、 _menuOrderResolved が既定に無い名札を落とすので
+    //   読み込みは壊れない。
     'insertShape',
-    'terminal',
     'memoList',
     'attachFile',
     'createFile',
@@ -79743,7 +80311,10 @@ class MindMapProvider extends ChangeNotifier {
     'deleteSelected',
     'groupList',
     'basePosition',
-    'fontSize',
+    // ★ = ユーザー要望「右クリックの文字サイズ設定を消して同期設定を出す」。
+    //   やめた名札 ('fontSize') は _menuOrderResolved が「既定に無い名札」
+    //   として読み飛ばすので、 保存済みの控えに残っていても落ちない。
+    'syncSettings',
   ];
 
   final List<String> _nodeActionMenuOrder = [];
@@ -85157,6 +85728,9 @@ class MindMapProvider extends ChangeNotifier {
     'aiGrandchildMin', 'aiModelTier', 'aiProvider', 'anthropicModel',
     'deepseek_model', 'grok_model', 'openaiModel', 'openrouter_model',
     'openrouter_base_url', 'imageGenModel', 'relayModel', 'relayReasoning',
+    // 考える深さ (会社ごとの粗い 3 段階と、 会社ごとの細かい指定)。
+    'relayReasoningByProvider', 'relayReasoningOpenai', 'relayVerbosityOpenai',
+    'relayThinkingAnthropic', 'relayThinkingGemini',
     'slideImageSource', 'webImageLicense',
     'browser_ai_prefix', 'browser_ai_target',
     // 見た目
@@ -87753,6 +88327,152 @@ class MindMapProvider extends ChangeNotifier {
     } catch (_) {}
   }
 
+  // ── 会社ごとの細かい指定 (= ユーザー要望: 3 段階ではアバウト過ぎる) ──
+  //
+  // 上の 3 段階は「ふつうはこれで済む」 ための粗い刻み。 ここから先は
+  //   **その会社が実際に受け取れる形**をそのまま触る。 各社で形が違うので、
+  //   共通の 1 本には潰さない (潰すと嘘になる)。
+  //   ・openai    … reasoning_effort (minimal / low / medium / high) と
+  //                 verbosity (low / medium / high)
+  //   ・anthropic … thinking.budget_tokens (トークン数)。 本文の枠
+  //                 (max_tokens) より小さくないと断られ、 1024 未満は
+  //                 受け付けられないので、 その時は付けずに投げる。
+  //   ・gemini    … thinkingConfig.thinkingBudget
+  //                 (-1 = 自動 / 0 = 切 / それ以外はトークン数)
+  //
+  // ★ どれも「未設定」 (空 / null) を持つ。 未設定の間は今までどおり
+  //   [relayReasoning] の 3 段階から決まるので、 触らない人の動きは 1 つも
+  //   変わらない。
+  // ★ prefs の鍵は**会社ごとに分ける**。 1 本にまとめると、 モデルを
+  //   切り替えた時に別の会社向けの値が残って取り違える。
+  static const List<String> openaiEffortLevels = [
+    'minimal',
+    'low',
+    'medium',
+    'high'
+  ];
+  static const List<String> openaiVerbosityLevels = ['low', 'medium', 'high'];
+
+  /// 考える枠に入れられる上限 (トークン)。 これより大きい指定は切り詰める。
+  static const int kThinkBudgetMax = 32768;
+
+  String _fineOpenaiEffort = '';
+  String _fineOpenaiVerbosity = '';
+  int? _fineAnthropicBudget;
+  int? _fineGeminiBudget;
+
+  String get fineOpenaiEffort => _fineOpenaiEffort;
+  String get fineOpenaiVerbosity => _fineOpenaiVerbosity;
+  int? get fineAnthropicBudget => _fineAnthropicBudget;
+  int? get fineGeminiBudget => _fineGeminiBudget;
+
+  /// そのモデルの会社。 一覧に無い物は Gemini 扱い ([currentAiProvider] と
+  /// 同じ既定)。
+  String relayProviderOfModel(String modelId) {
+    for (final m in _relayModels) {
+      if (m is Map && '${m['id']}' == modelId) {
+        final p = '${m['provider'] ?? ''}'.trim();
+        if (p.isNotEmpty) return p;
+      }
+    }
+    return 'gemini';
+  }
+
+  /// その会社に細かい指定が入っているか (画面の印に使う)。
+  bool hasFineReasoning([String? providerId]) {
+    switch (providerId ?? currentAiProvider) {
+      case 'openai':
+        return _fineOpenaiEffort.isNotEmpty || _fineOpenaiVerbosity.isNotEmpty;
+      case 'anthropic':
+        return _fineAnthropicBudget != null;
+      case 'gemini':
+        return _fineGeminiBudget != null;
+    }
+    return false;
+  }
+
+  /// ChatGPT 向けの細かい指定。 空文字を渡すと「未設定」 に戻る。
+  Future<void> setFineOpenai({String? effort, String? verbosity}) async {
+    if (effort != null) {
+      _fineOpenaiEffort = openaiEffortLevels.contains(effort) ? effort : '';
+    }
+    if (verbosity != null) {
+      _fineOpenaiVerbosity =
+          openaiVerbosityLevels.contains(verbosity) ? verbosity : '';
+    }
+    notifyListeners();
+    try {
+      final p = await _prefsWithRetry();
+      await p.setString('relayReasoningOpenai', _fineOpenaiEffort);
+      await p.setString('relayVerbosityOpenai', _fineOpenaiVerbosity);
+    } catch (_) {}
+  }
+
+  /// Claude / Gemini 向けの考える枠 (トークン)。 null で「未設定」 に戻る。
+  ///   Gemini だけ -1 (自動) を受ける。
+  Future<void> setFineThinkingBudget(String providerId, int? tokens) async {
+    int? v = tokens;
+    if (v != null) {
+      v = (providerId == 'gemini' && v < 0)
+          ? -1
+          : math.min(math.max(v, 0), kThinkBudgetMax);
+    }
+    if (providerId == 'anthropic') {
+      _fineAnthropicBudget = v;
+    } else if (providerId == 'gemini') {
+      _fineGeminiBudget = v;
+    } else {
+      return;
+    }
+    notifyListeners();
+    try {
+      final p = await _prefsWithRetry();
+      await p.setString(
+          providerId == 'anthropic'
+              ? 'relayThinkingAnthropic'
+              : 'relayThinkingGemini',
+          v == null ? '' : '$v');
+    } catch (_) {}
+  }
+
+  /// その会社の細かい指定を丸ごと「未設定」 に戻す。
+  Future<void> clearFineReasoning([String? providerId]) async {
+    final pid = providerId ?? currentAiProvider;
+    if (pid == 'openai') {
+      await setFineOpenai(effort: '', verbosity: '');
+    } else {
+      await setFineThinkingBudget(pid, null);
+    }
+  }
+
+  /// 代行の要求に乗せる細かい指定 (何も無ければ空)。
+  ///
+  /// ★ 形は「会社名 + その会社の生のパラメータ」。 会社名を必ず添えるので、
+  ///   モデルを切り替えた直後に別の会社向けの値が混ざっても Worker 側で
+  ///   捨てられる。
+  /// ★ この欄を知らない古い Worker では丸ごと無視される (要求には今まで
+  ///   どおり 'reasoning' も入れる)。 = アプリだけ新しくしても壊れない。
+  Map<String, dynamic> relayReasoningFinePayload({String forModel = ''}) {
+    final pid =
+        forModel.isEmpty ? currentAiProvider : relayProviderOfModel(forModel);
+    final out = <String, dynamic>{};
+    if (pid == 'openai') {
+      if (_fineOpenaiEffort.isNotEmpty) out['effort'] = _fineOpenaiEffort;
+      if (_fineOpenaiVerbosity.isNotEmpty) {
+        out['verbosity'] = _fineOpenaiVerbosity;
+      }
+    } else if (pid == 'anthropic') {
+      if (_fineAnthropicBudget != null) {
+        out['thinkingBudget'] = _fineAnthropicBudget;
+      }
+    } else if (pid == 'gemini') {
+      if (_fineGeminiBudget != null) out['thinkingBudget'] = _fineGeminiBudget;
+    }
+    if (out.isEmpty) return const <String, dynamic>{};
+    out['provider'] = pid;
+    return out;
+  }
+
   /// 中継先に代行エンドポイントがあるか一度だけ確かめる。
   /// プランは問わない (= 前払いクレジット方式なので、 残高があれば誰でも使える)。
   Future<void> probeAiRelay({bool force = false}) async {
@@ -87843,32 +88563,45 @@ class MindMapProvider extends ChangeNotifier {
   // ★ 取れなかった時は必ず従来処理へ戻す。 判断が無いと止まる作りには
   //   しない。
 
-  /// 親スイッチ。 これが切なら下の 4 つも効かない。
-  bool _jevEnabled = false;
-  bool get jevEnabled => _jevEnabled;
+  /// 非常停止。 これを入れると下の機能は全部効かなくなる。 既定は切
+  /// (= 止めていない)。 機能ごとの旗が全部切なので、 これだけでは通信は
+  /// 起きない。
+  bool _jevStopAll = false;
+  bool get jevStopAll => _jevStopAll;
 
   /// プロンプトの振り分け (モデル + 考える深さ)。
   bool _jevRouteEnabled = false;
-  bool get jevRouteEnabled => _jevEnabled && _jevRouteEnabled;
-
-  /// Google 検索の広告落とし。
-  bool _jevAdBlockEnabled = false;
-  bool get jevAdBlockEnabled => _jevEnabled && _jevAdBlockEnabled;
+  bool get jevRouteEnabled => !_jevStopAll && _jevRouteEnabled;
 
   /// フォルダー内検索の絞り込み。
   bool _jevSearchEnabled = false;
-  bool get jevSearchEnabled => _jevEnabled && _jevSearchEnabled;
+  bool get jevSearchEnabled => !_jevStopAll && _jevSearchEnabled;
 
   /// 書籍検索の並べ替え。
   bool _jevBookEnabled = false;
-  bool get jevBookEnabled => _jevEnabled && _jevBookEnabled;
+  bool get jevBookEnabled => !_jevStopAll && _jevBookEnabled;
+
+  /// 暗記札・小テストの答え合わせ (文字合わせではなく意味で見る)。
+  bool _jevCardGradeEnabled = false;
+  bool get jevCardGradeEnabled => !_jevStopAll && _jevCardGradeEnabled;
+
+  /// Web 検索の結果を関連の高い順へ並べ替える。
+  bool _jevWebRankEnabled = false;
+  bool get jevWebRankEnabled => !_jevStopAll && _jevWebRankEnabled;
+
+  /// ファイル検索を中身の近い順へ並べ替える。
+  bool _jevFileFindEnabled = false;
+  bool get jevFileFindEnabled => !_jevStopAll && _jevFileFindEnabled;
+
+  /// 長い書類への質問で、 AI へ渡す章を先に選ぶ。
+  bool _jevDocQaEnabled = false;
+  bool get jevDocQaEnabled => !_jevStopAll && _jevDocQaEnabled;
 
   /// Google 検索の広告落とし。
   ///
-  /// ★ これは **Jev の親スイッチとは独立**。 1 段目 (名前で分かる広告を
-  ///   CSS で隠す) は通信も判断も要らないので、 外へ何も送りたくない人でも
-  ///   使えるようにしてある。 判別が付かない塊を Jev に聞く 2 段目だけが
-  ///   [jevAdBlockEnabled] を要る。
+  /// ★ **Jev は使わない**。 名前で分かる広告の枠 (広告用の CSS 選択子と、
+  ///   「スポンサー」「広告」 等の札が付いた塊) を差し込んだ JS で
+  ///   隠すだけなので、 判断も通信も起きない。 Jev の非常停止とも無関係。
   bool _adBlockEnabled = false;
   bool get adBlockEnabled => _adBlockEnabled;
 
@@ -87886,33 +88619,6 @@ class MindMapProvider extends ChangeNotifier {
   String? adBlockInstallJsOrNull() =>
       _adBlockEnabled ? googleAdBlockInstallJs() : null;
 
-  /// 判別が付かなかった塊を Jev に聞き、 広告だと言われた id を返す。
-  ///
-  /// [blocks] は `[{id, text}]`。 空 / 切っている時は空を返す。
-  Future<List<String>> jevPickAdBlocks(List<Map<String, String>> blocks) async {
-    if (!jevAdBlockEnabled || blocks.isEmpty) return const [];
-    // 1 回に聞く数は抑える (質問 1 本 = 塊 1 つ。 上限 12)。
-    final use = blocks.length > 12 ? blocks.sublist(0, 12) : blocks;
-    final ids = [for (final b in use) '${b['id']}'];
-    final sb = StringBuffer();
-    sb.writeln('Google search result blocks:');
-    for (final b in use) {
-      sb.writeln('[[${b['id']}]] ${b['text']}');
-    }
-    final d = await jevDecide(
-      feature: 'google_adblock',
-      state: sb.toString(),
-      questions: JevTemplates.adBlocks(ids),
-    );
-    if (d == null) return const [];
-    final out = <String>[];
-    for (final id in ids) {
-      final a = d['ad_$id'];
-      if (a?.noul != null && a!.noul! >= kJevAdNoulMin) out.add(id);
-    }
-    return out;
-  }
-
   // ═══ エージェント向けの検索 (トークンを抑える) ═════════════════
   //
   // = ユーザー要望「AI エージェントのフォルダー内検索に Jev を実装して
@@ -87928,6 +88634,26 @@ class MindMapProvider extends ChangeNotifier {
   // ★ 件数と抜粋の長さは**ここで**上限を掛ける。 MCP 側の打ち切り
   //   (_capToolResult) は JSON の途中で切るので、 それに頼ると壊れた
   //   JSON が AI へ渡る。
+
+  /// 検索結果などに出す要素の見出し。
+  ///
+  /// ★ = 継続検証 405「表セルの検索結果に表題が出ない」。 表は題名が空で、
+  ///   画面上の表題は caption に入っているので、 title をそのまま返すと
+  ///   同じ語を持つ表が 2 件並んだ時に両方空になり見分けが付かなかった。
+  ///   題名 → 見出し → 「表 (2行×2列)」 の順に名乗らせる。
+  static String mcpNodeLabel(MindMapNode n) {
+    final t = n.title.trim();
+    if (t.isNotEmpty) return t;
+    final cap = (n.caption ?? '').trim();
+    if (cap.isNotEmpty) return cap;
+    final td = n.tableData;
+    if (td != null) {
+      final rows = td.cells.length;
+      final cols = rows == 0 ? 0 : td.cells.first.length;
+      return '表 (${rows}行×${cols}列)';
+    }
+    return '';
+  }
 
   /// 要素の題名・メモから探す (ページをまたぐ)。
   ///
@@ -87968,10 +88694,15 @@ class MindMapProvider extends ChangeNotifier {
     // 本文がページ JSON の外にある種別。 読むのは prefs なので数を抑える。
     final bodyPages = <MindMapPage>[];
     final unsearched = <String>[];
+    // ★ = 継続検証 357 / 358 / 409。 ページ種類を切り替えて隠れた本文も後で
+    //   探すので、 範囲に入ったページを覚えておく (範囲の絞り方を二本に
+    //   増やさないため、 この 1 本から取る)。
+    final scopePages = <MindMapPage>[];
     const kMaxBodyReads = 60;
     for (final p in _pages) {
       if (scope == 'page' && p.id != cur.id) continue;
       if (scope == 'folder' && p.folderId != cur.folderId) continue;
+      scopePages.add(p);
       if (p.pageType == 'markdown' ||
           p.pageType == 'document' ||
           p.pageType == 'paint') {
@@ -88031,7 +88762,10 @@ class MindMapProvider extends ChangeNotifier {
           'pageId': p.id,
           'pageName': p.name,
           'nodeId': n.id,
-          'title': n.title,
+          // ★ = 継続検証 405。 無題の表は見出し / 「表 (2行×2列)」 で名乗る
+          //   (空文字だと、 同じセル語を持つ表が 2 件並んだ時に見分けが
+          //   付かなかった)。
+          'title': mcpNodeLabel(n),
           'snippet': where,
           'matchCount': count,
         });
@@ -88081,6 +88815,71 @@ class MindMapProvider extends ChangeNotifier {
         });
       }
     }
+    // ★ = 継続検証 357 / 358 / 409「ページ種類を切り替えた後の本文が
+    //   検索されない」。 種類を変えても本文は消えず、 戻せば読めるのに
+    //   「無い」 と返っていた (要素の題名は種類を変えても検索に残るので、
+    //   同じページで当たり方が食い違っていた)。 隠れている入れ物も探して、
+    //   当たったらどの種類に入っているかを添える。
+    // ★ 開く前に prefs の生の文字で当たりを確かめる。 [_readBodyPrefFresh]
+    //   を通さない読み方 (reload を呼ばない) なので、 隠れた入れ物が無い
+    //   ページには何の負担も掛からない。
+    SharedPreferences? hiddenPrefs;
+    try {
+      hiddenPrefs = await _prefsWithRetry();
+    } catch (_) {}
+    bool holdsNeedle(String key) {
+      final rawBody = hiddenPrefs?.getString(key) ?? '';
+      if (rawBody.isEmpty) return false;
+      if (rawBody.contains(q)) return true;
+      return needleRe.hasMatch(mcpSearchNormalize(rawBody));
+    }
+
+    if (hiddenPrefs != null) {
+      for (final p in scopePages) {
+        List<({String label, String text, String type})> hiddenParts;
+        try {
+          hiddenParts = await _mcpHiddenBodyTextsOf(p, holdsNeedle);
+        } catch (_) {
+          continue;
+        }
+        for (final part in hiddenParts) {
+          final f = part.text;
+          if (f.isEmpty) continue;
+          final hay = mcpSearchNormalize(f);
+          var count = 0;
+          var where = '';
+          for (final m in needleRe.allMatches(hay)) {
+            count++;
+            if (where.isEmpty) {
+              final from = (m.start - 40) < 0 ? 0 : m.start - 40;
+              final to = (m.start + snippetChars) > f.length
+                  ? f.length
+                  : m.start + snippetChars;
+              where = f
+                  .substring(from, to)
+                  .replaceAll(RegExp(r'\s+'), ' ')
+                  .trim();
+            }
+            if (count > 50) break;
+          }
+          if (count == 0) continue;
+          raw.add({
+            'pageId': p.id,
+            'pageName': p.name,
+            'nodeId': '',
+            'title': part.label,
+            'snippet': where,
+            'matchCount': count,
+            // ★ 今の種類では画面に出ない本文だという印。 言葉での説明は
+            //   MCP 側 (search_pages) が当たり全体へ 1 つ添える。 1 件ごとに
+            //   長い注意書きを付けると、 6000 字の打ち切り
+            //   (_capToolResult。 mind_map_screen.dart の caps) に当たって
+            //   JSON が壊れる。
+            'hiddenInPageType': part.type,
+          });
+        }
+      }
+    }
     if (raw.isEmpty) {
       // ★ 探せなかったページが在るなら absent ではなく unknown。 「無い」 と
       //   「見られなかった」 を言い分けないと、 AI が早々に諦める。
@@ -88097,6 +88896,13 @@ class MindMapProvider extends ChangeNotifier {
       final ac = a['pageId'] == cur.id ? 0 : 1;
       final bc = b['pageId'] == cur.id ? 0 : 1;
       if (ac != bc) return ac - bc;
+      // ★ 画面に出ている本文を、 隠れた本文より先に置く (= 継続検証
+      //   357 / 358 / 409 で隠れた入れ物も探すようにした分。 当たった数だけで
+      //   並べると、 書き込みの多い隠れた本文が上限を埋めて、 今そのまま
+      //   読める当たりが truncated の向こうへ押し出される)。
+      final ah = a['hiddenInPageType'] == null ? 0 : 1;
+      final bh = b['hiddenInPageType'] == null ? 0 : 1;
+      if (ah != bh) return ah - bh;
       return (b['matchCount'] as int).compareTo(a['matchCount'] as int);
     });
     final narrowed = await _jevNarrow(
@@ -88141,7 +88947,13 @@ class MindMapProvider extends ChangeNotifier {
       if (u >= 0x41 && u <= 0x5A) u += 0x20;
       b.writeCharCode(u);
     }
-    return b.toString();
+    // ★ ASCII 以外の大文字 (É / Ä / Я / Σ …) も小さくする。 ここを ASCII
+    //   だけにしていたので、 ファイル本文の検索が toLowerCase だった頃より
+    //   当たらなくなっていた (大小違いで見付からない)。 字数が変わる稀な
+    //   文字 (İ など) を含む時だけ、 位置がずれないよう元のままにする。
+    final folded = b.toString();
+    final lowered = folded.toLowerCase();
+    return lowered.length == folded.length ? lowered : folded;
   }
 
   /// 均した検索語から、 空白の並びを「1 つ以上の空白」 として扱う型を作る。
@@ -88182,8 +88994,12 @@ class MindMapProvider extends ChangeNotifier {
         for (var i = 0; i < papers.length; i++) {
           final t = papers[i];
           if (t is! Map) continue;
+          // ★ = 継続検証 239。 フリーノートは全バインダーぶん返るので、
+          //   同じタブ名が何冊にもある。 どの冊の紙かを名札に入れる。
+          final bn = '${t['binderName'] ?? ''}'.trim();
+          final pn = '${t['name'] ?? 'paper ${i + 1}'}';
           out.add((
-            label: '${t['name'] ?? 'paper ${i + 1}'}',
+            label: bn.isEmpty ? pn : '$bn / $pn',
             text: '${t['text'] ?? ''}',
           ));
         }
@@ -88192,13 +89008,13 @@ class MindMapProvider extends ChangeNotifier {
           if (side.trim().isNotEmpty) {
             out.add((label: 'side note', text: side));
           }
-          final pt = await mcpReadPaintItems(p.id);
-          final texts = (pt?['texts'] as List?) ?? const [];
-          final b = StringBuffer();
-          for (final t in texts) {
-            if (t is Map) b.writeln('${t['text'] ?? ''}');
-          }
-          if (b.isNotEmpty) out.add((label: 'sheet text', text: b.toString()));
+          // ★ = 継続検証 345 / 346「選んでいないタブ / バインダーに置いた
+          //   文字が横断検索で見つからない」。 [mcpReadPaintItems] は
+          //   「今の紙」 だけを読む道具なので、 検索がそれを使う限り、 隣の
+          //   タブや他の冊に置いた文字は必ず「無い」 と返っていた (文書の層は
+          //   継続検証 239 で全冊になったのに、 紙の文字だけが取り残されて
+          //   いた)。 全冊・全タブぶんを冊名 / タブ名付きで集める。
+          out.addAll(await _mcpPaintSheetTexts(p.id));
         }
         break;
       // ★ = 継続検証 167「検索対象と説明されている動画字幕を検索できない」。
@@ -88217,6 +89033,170 @@ class MindMapProvider extends ChangeNotifier {
         break;
       default:
         break;
+    }
+    return out;
+  }
+
+  /// フリーノートの紙に載っている文字を、 **全冊・全タブ**ぶん集める。
+  ///
+  /// ★ = 継続検証 345 / 346「選んでいないタブ / バインダーの文字が横断検索で
+  ///   見つからない」。 [mcpReadPaintItems] は「今の紙」 だけを読む道具なので、
+  ///   検索がそれを使う限り、 隣のタブや他の冊に置いた文字は必ず「無い」 と
+  ///   返っていた (文書の層は継続検証 239 で全冊になったのに、 紙の文字だけが
+  ///   取り残されていた)。 入れ物 (`paint_<pageId>`) を直に歩いて、 どの冊の
+  ///   どのタブかを名札に入れて返す。 読むだけなので、 画面で選んでいる
+  ///   冊 / タブは動かさない。
+  Future<List<({String label, String text})>> _mcpPaintSheetTexts(
+      String pageId) async {
+    final out = <({String label, String text})>[];
+    dynamic body;
+    try {
+      body = await _mcpPaintBody(pageId);
+    } catch (_) {
+      return out;
+    }
+    if (body == null) return out;
+    void addSheet(Map sheet, String where) {
+      final tl = sheet['t'];
+      if (tl is! List) return;
+      final b = StringBuffer();
+      for (final e in tl) {
+        if (e is! Map) continue;
+        // ★ 文字は 't'。 's' は**大きさ**なので、 そちらを先に見るとどの項目も
+        //   本文が "22.0" になる ([mcpReadPaintItems] と同じ約束)。
+        final s = '${e['t'] ?? e['text'] ?? ''}';
+        if (s.trim().isEmpty) continue;
+        b.writeln(s);
+      }
+      if (b.isEmpty) return;
+      out.add((
+        label: where.isEmpty ? 'sheet text' : '$where / sheet text',
+        text: b.toString(),
+      ));
+    }
+
+    final dynamic notes = body is Map ? body['notes'] : null;
+    if (notes is List && notes.isNotEmpty) {
+      for (var bi = 0; bi < notes.length; bi++) {
+        final note = notes[bi];
+        if (note is! Map) continue;
+        final bn = '${note['n'] ?? ''}'.trim();
+        final pages = note['pages'];
+        if (pages is! List) continue;
+        for (var i = 0; i < pages.length; i++) {
+          final sheet = pages[i];
+          if (sheet is! Map) continue;
+          final pn = '${sheet['n'] ?? ''}'.trim();
+          final nm = pn.isEmpty ? 'paper ${i + 1}' : pn;
+          addSheet(sheet, bn.isEmpty ? nm : '$bn / $nm');
+        }
+      }
+      return out;
+    }
+    // バインダーの無い古い形 (紙の並び、 または 1 枚だけ)。
+    List<dynamic> tabs = const [];
+    if (body is Map) {
+      if (body['pages'] is List) {
+        tabs = body['pages'] as List;
+      } else if (body['sheets'] is List) {
+        tabs = body['sheets'] as List;
+      }
+    }
+    if (tabs.isNotEmpty) {
+      for (var i = 0; i < tabs.length; i++) {
+        final sheet = tabs[i];
+        if (sheet is! Map) continue;
+        final pn = '${sheet['n'] ?? ''}'.trim();
+        addSheet(sheet, pn.isEmpty ? 'paper ${i + 1}' : pn);
+      }
+      return out;
+    }
+    final found = _mcpPaintSheetOf(body);
+    if (found.sheet.isNotEmpty) {
+      addSheet(found.sheet, '${found.sheet['n'] ?? ''}'.trim());
+    }
+    return out;
+  }
+
+  /// 今のページ種類では画面に出ない、 隠れた本文を探せる形で返す。
+  ///
+  /// ★ = 継続検証 357 / 358 / 409「ページ種類を切り替えた後の本文の検索が
+  ///   非対称」。 要素の題名はページ JSON にあるので種類を変えても検索に
+  ///   残るのに、 本文は種類ごとに別の入れ物 (`markdown_<id>` /
+  ///   `document_<id>` / `paint_<id>` / `videoEditor_<id>`) にあり、
+  ///   「今の種類の入れ物」 しか見ていなかった。 種類を戻せば読めるのに
+  ///   「無い」 と返るので、 隠れている入れ物も探して、 当たったら
+  ///   **どの種類に入っているか**を添える。
+  /// ★ [holdsNeedle] は「その入れ物の生の文字に探し物が入っているか」。
+  ///   当たらない入れ物は開かない (隠れた本文が無いページは素通り)。
+  ///   読むだけなので、 画面のページ種類 / 選択は動かさない。
+  Future<List<({String label, String text, String type})>>
+      _mcpHiddenBodyTextsOf(
+    MindMapPage p,
+    bool Function(String key) holdsNeedle,
+  ) async {
+    final out = <({String label, String text, String type})>[];
+    final t = p.pageType;
+    if (t != 'markdown' && holdsNeedle('markdown_${p.id}')) {
+      final md = await mcpReadMarkdown(p.id, anyPageType: true);
+      final tabs = (md?['tabs'] as List?) ?? const [];
+      for (var i = 0; i < tabs.length; i++) {
+        final e = tabs[i];
+        if (e is! Map) continue;
+        out.add((
+          label: '${e['name'] ?? 'tab ${i + 1}'}',
+          text: '${e['text'] ?? ''}',
+          type: 'markdown',
+        ));
+      }
+    }
+    // フリーノートは `document_<id>` を横のメモとして既に読むので、
+    // そちらを隠れ扱いで二重に数えない。
+    if (t != 'document' && t != 'paint' && holdsNeedle('document_${p.id}')) {
+      final doc = await mcpReadDocument(p.id, anyPageType: true);
+      final papers = (doc?['papers'] as List?) ?? const [];
+      for (var i = 0; i < papers.length; i++) {
+        final e = papers[i];
+        if (e is! Map) continue;
+        out.add((
+          label: '${e['name'] ?? 'paper ${i + 1}'}',
+          text: '${e['text'] ?? ''}',
+          type: 'document',
+        ));
+      }
+    }
+    if (t != 'paint' && holdsNeedle('paint_${p.id}')) {
+      final doc = await _mcpReadPaintDoc(p);
+      final papers = (doc?['papers'] as List?) ?? const [];
+      for (var i = 0; i < papers.length; i++) {
+        final e = papers[i];
+        if (e is! Map) continue;
+        final bn = '${e['binderName'] ?? ''}'.trim();
+        final pn = '${e['name'] ?? ''}'.trim();
+        final nm = pn.isEmpty ? 'paper ${i + 1}' : pn;
+        out.add((
+          label: bn.isEmpty ? nm : '$bn / $nm',
+          text: '${e['text'] ?? ''}',
+          type: 'paint',
+        ));
+      }
+      for (final s in await _mcpPaintSheetTexts(p.id)) {
+        out.add((label: s.label, text: s.text, type: 'paint'));
+      }
+    }
+    if (t != 'videoEditor' && holdsNeedle('videoEditor_${p.id}')) {
+      final ve = await mcpListVideoEditorItems(p.id, anyPageType: true);
+      final items = (ve?['items'] as List?) ?? const [];
+      for (final it in items) {
+        if (it is! Map) continue;
+        final txt = '${it['text'] ?? ''}';
+        if (txt.trim().isEmpty) continue;
+        out.add((
+          label: 'caption ${it['startMs'] ?? 0}ms',
+          text: txt,
+          type: 'videoEditor',
+        ));
+      }
     }
     return out;
   }
@@ -88243,6 +89223,10 @@ class MindMapProvider extends ChangeNotifier {
       found = await searchFilesInFolder(
         folderId,
         q,
+        // ★ = 継続検証 274 / 390 / 391。 folderId を省いた時は、 一覧の直下
+        //   だけでなく**全フォルダー**のページと、 どのフォルダーの連動
+        //   ディスクフォルダーも相手にする (道具の説明どおりに)。
+        allFolders: folderId == null,
         maxFiles: maxFiles,
         // 1 ファイルあたりの読む量も抑える (抜粋を出すには足りる)。
         maxCharsPerFile: 120000,
@@ -88252,7 +89236,11 @@ class MindMapProvider extends ChangeNotifier {
       return (hits: const <Map<String, Object?>>[], verdict: 'unknown');
     }
     if (found.isEmpty) {
-      return (hits: const <Map<String, Object?>>[], verdict: 'absent');
+      // ★ 上限に当たって読めなかったファイルがあるなら「無い」 とは言えない。
+      return (
+        hits: const <Map<String, Object?>>[],
+        verdict: lastFolderFileSearchSkipped > 0 ? 'unknown' : 'absent',
+      );
     }
     final rows = <Map<String, Object?>>[
       for (final h in found)
@@ -88308,8 +89296,13 @@ class MindMapProvider extends ChangeNotifier {
     // (= 無駄にページを読ませない。 0 件にはしない: 判断は保証ではない)。
     final limit = r.verdict == 'absent' ? 3 : maxHits;
     final ordered = <Map<String, Object?>>[];
+    // ★ 同じ行を 2 度入れない (= 並べ替えは順列のはずだが、 万一 id が
+    //   重なっても件数だけ埋まって顔ぶれが減る、 という形にしない。
+    //   不具合報告「並べ替えが候補を差し替える」 と同じ守り)。
+    final seen = <int>{};
     for (final i in r.order) {
-      if (i >= 0 && i < rows.length) ordered.add(rows[i]);
+      if (i < 0 || i >= rows.length || !seen.add(i)) continue;
+      ordered.add(rows[i]);
       if (ordered.length >= limit) break;
     }
     // ★ 実際に一致している物があるのに 'found' より下へ落とさない。
@@ -88387,25 +89380,24 @@ class MindMapProvider extends ChangeNotifier {
         headers: () => _relayHeaders(json: true),
       );
 
-  Future<void> setJevEnabled(bool v) => _setJevFlag('jevEnabled', v);
+  Future<void> setJevStopAll(bool v) => _setJevFlag('jevStopAll', v);
   Future<void> setJevRouteEnabled(bool v) => _setJevFlag('jevRoute', v);
-  Future<void> setJevAdBlockEnabled(bool v) => _setJevFlag('jevAdBlock', v);
   Future<void> setJevSearchEnabled(bool v) => _setJevFlag('jevSearch', v);
   Future<void> setJevBookEnabled(bool v) => _setJevFlag('jevBook', v);
+  Future<void> setJevCardGradeEnabled(bool v) => _setJevFlag('jevCardGrade', v);
+  Future<void> setJevWebRankEnabled(bool v) => _setJevFlag('jevWebRank', v);
+  Future<void> setJevFileFindEnabled(bool v) => _setJevFlag('jevFileFind', v);
+  Future<void> setJevDocQaEnabled(bool v) => _setJevFlag('jevDocQa', v);
 
   Future<void> _setJevFlag(String key, bool v) async {
     switch (key) {
-      case 'jevEnabled':
-        if (_jevEnabled == v) return;
-        _jevEnabled = v;
+      case 'jevStopAll':
+        if (_jevStopAll == v) return;
+        _jevStopAll = v;
         break;
       case 'jevRoute':
         if (_jevRouteEnabled == v) return;
         _jevRouteEnabled = v;
-        break;
-      case 'jevAdBlock':
-        if (_jevAdBlockEnabled == v) return;
-        _jevAdBlockEnabled = v;
         break;
       case 'jevSearch':
         if (_jevSearchEnabled == v) return;
@@ -88414,6 +89406,22 @@ class MindMapProvider extends ChangeNotifier {
       case 'jevBook':
         if (_jevBookEnabled == v) return;
         _jevBookEnabled = v;
+        break;
+      case 'jevCardGrade':
+        if (_jevCardGradeEnabled == v) return;
+        _jevCardGradeEnabled = v;
+        break;
+      case 'jevWebRank':
+        if (_jevWebRankEnabled == v) return;
+        _jevWebRankEnabled = v;
+        break;
+      case 'jevFileFind':
+        if (_jevFileFindEnabled == v) return;
+        _jevFileFindEnabled = v;
+        break;
+      case 'jevDocQa':
+        if (_jevDocQaEnabled == v) return;
+        _jevDocQaEnabled = v;
         break;
       default:
         return;
@@ -88426,17 +89434,251 @@ class MindMapProvider extends ChangeNotifier {
   }
 
   void _loadJevSettings(SharedPreferences prefs) {
-    _jevEnabled = prefs.getBool('jevEnabled') ?? false;
+    _jevStopAll = prefs.getBool('jevStopAll') ?? false;
     _jevRouteEnabled = prefs.getBool('jevRoute') ?? false;
-    _jevAdBlockEnabled = prefs.getBool('jevAdBlock') ?? false;
     _jevSearchEnabled = prefs.getBool('jevSearch') ?? false;
     _jevBookEnabled = prefs.getBool('jevBook') ?? false;
+    _jevCardGradeEnabled = prefs.getBool('jevCardGrade') ?? false;
+    _jevWebRankEnabled = prefs.getBool('jevWebRank') ?? false;
+    _jevFileFindEnabled = prefs.getBool('jevFileFind') ?? false;
+    _jevDocQaEnabled = prefs.getBool('jevDocQa') ?? false;
     _adBlockEnabled = prefs.getBool('adBlockEnabled') ?? false;
     _jevCalls = prefs.getInt('jevCalls') ?? 0;
     _jevSpentUsd = prefs.getDouble('jevSpentUsd') ?? 0.0;
   }
 
+  // ─── Jev の入切を AI (MCP) から読む・切り替える ─────────────────────────
+  //
+  // = ユーザー要望「MCP が Jev に対応しておらず、 Jev に関する質問に答えたり
+  //   できていない」。 同梱の説明書に Jev の章を足したうえで、 今の入切を
+  //   読む道と、 切り替える道を用意する。
+  //
+  // ★ 旗の名前は画面の i18n キー (`jev.route` など) の後ろ半分と揃える。
+  //   説明書の表を読んだ AI が、 そのまま渡せるようにするため。
+  static const Map<String, String> kJevFeatureFlagKeys = {
+    'route': 'jevRoute',
+    'search': 'jevSearch',
+    'book': 'jevBook',
+    'cardGrade': 'jevCardGrade',
+    'webRank': 'jevWebRank',
+    'fileFind': 'jevFileFind',
+    'docQa': 'jevDocQa',
+  };
+
+  /// 非常停止に覆われる前の**素の値**。
+  ///
+  /// `jevRouteEnabled` などの getter は停止中に必ず false を返すので、
+  /// 「停止を外したら何が生きるか」 はこちらで見る (読んだ AI が
+  /// 「全部切です」 と誤って答えないように)。
+  Map<String, bool> get _jevRawFlags => {
+        'route': _jevRouteEnabled,
+        'search': _jevSearchEnabled,
+        'book': _jevBookEnabled,
+        'cardGrade': _jevCardGradeEnabled,
+        'webRank': _jevWebRankEnabled,
+        'fileFind': _jevFileFindEnabled,
+        'docQa': _jevDocQaEnabled,
+      };
+
+  /// 今の入切と使った量 (読むだけ)。
+  Map<String, dynamic> mcpJevSettings() {
+    final raw = _jevRawFlags;
+    return {
+      'stopAll': _jevStopAll,
+      // 今 実際に効いている値 (非常停止中は全部 false)。
+      'features': {
+        for (final e in raw.entries) e.key: !_jevStopAll && e.value,
+      },
+      // 停止を外した時に生きる値。
+      'featuresRaw': raw,
+      // Google 検索の広告落とし (名前で分かる広告を CSS で隠すだけ)。
+      //   **Jev の機能ではない** ので、 非常停止にも代行の有無にも
+      //   左右されない。 入切は Google 検索の画面の中にある。
+      'adBlockCssStage': _adBlockEnabled,
+      // 代行 (Worker) の宛先が無い作りでは、 入れても判断は取れない。
+      'relayReady': relayApiBase.isNotEmpty,
+      // ★ 広告落としは Jev の旗ではないので、 旗の一覧 (features /
+      //   featuresRaw) には**絶対に入れない**。 読み間違えないよう明記する。
+      'adBlockNote': 'adBlockCssStage is NOT a Jev flag: it hides ads by CSS '
+          'name inside the Google search screen, makes no decision and sends '
+          'nothing out. set_jev_settings cannot change it. The Jev flags are '
+          'exactly the ${kJevFeatureFlagKeys.length} in "features".',
+      'usage': {
+        'calls': _jevCalls,
+        'spentUsd': _jevSpentUsd,
+        'lastModel': _jevLastModel,
+      },
+      // ★ = 不具合報告の「1 件以下なので呼ばなかった / 控えから返した /
+      //   上限で呼べなかった」 を区別できるようにする (開発者モードだけ)。
+      if (developerMode) 'lastDecision': jevLastDecisionInfo,
+    };
+  }
+
+  /// Jev の旗を切り替える。 渡さなかった物は変えない。
+  ///
+  /// ★ 外へ文の断片を送る機能なので、 **通信が始まる向きは必ず戻り値に出す**
+  ///   (`changed` / `userNotice`)。 旗を入れた時だけでなく、 非常停止を外して
+  ///   前の旗が生き返る時も並べる (AI が黙って通信を入れられないように)。
+  /// ★ 非常停止は**止める方向だけ自由**。 解除は [releaseStop] を明示した
+  ///   時だけ通す。
+  /// ★ 駄目な指定は**何も変えずに**断る (半分だけ当てて「成功」 と返すのが
+  ///   一番たちが悪い)。
+  ///
+  /// 戻りは `{'error': …}` か、 実際に変わった物の一覧。
+  Future<Map<String, dynamic>> mcpSetJevSettings(
+    Map<String, bool> features, {
+    bool? stopAll,
+    bool releaseStop = false,
+  }) async {
+    final unknown =
+        features.keys.where((k) => !kJevFeatureFlagKeys.containsKey(k)).toList();
+    if (unknown.isNotEmpty) {
+      return {
+        'error': 'unknown Jev flag(s): ${unknown.join(', ')}. The names are '
+            '${kJevFeatureFlagKeys.keys.join(' / ')}',
+      };
+    }
+    if (features.isEmpty && stopAll == null && !releaseStop) {
+      return {'error': 'nothing to change - pass at least one flag'};
+    }
+    if (releaseStop && stopAll == true) {
+      return {
+        'error': 'releaseStop:true and stopAll:true contradict each other. '
+            'Nothing was changed.',
+      };
+    }
+    // 「止める」 は自由、 「解除」 は明示だけ (= 勢いで通信を再開させない)。
+    if (stopAll == false && !releaseStop) {
+      return {
+        'error': 'stopAll:false on its own does NOT lift the emergency stop. '
+            'Lifting it lets Jev send fragments of the user\'s text out '
+            'again, so it has to be asked for on purpose: pass '
+            'releaseStop:true, and only when the user actually asked to lift '
+            'it. Nothing was changed.',
+      };
+    }
+    final before = _jevRawFlags;
+    final stopAfter = releaseStop ? false : (stopAll ?? _jevStopAll);
+    // 停止したまま機能を入れると「入れたのに何も起きない」 罠になるので、
+    //   何も変えずに断る。
+    final turningOn = [
+      for (final e in features.entries)
+        if (e.value && !(before[e.key] ?? false)) e.key,
+    ];
+    if (stopAfter && turningOn.isNotEmpty) {
+      return {
+        'error': 'the emergency stop is on, so turning '
+            '${turningOn.join(', ')} on would change nothing you can see. '
+            'Nothing was changed. Ask the user whether to lift the stop first '
+            '(releaseStop:true).',
+      };
+    }
+    final changed = <Map<String, dynamic>>[];
+    final unchanged = <String>[];
+    if (releaseStop || stopAll != null) {
+      if (_jevStopAll != stopAfter) {
+        changed.add({'name': 'stopAll', 'from': _jevStopAll, 'to': stopAfter});
+        await setJevStopAll(stopAfter);
+      } else {
+        unchanged.add('stopAll');
+      }
+    }
+    for (final e in features.entries) {
+      final was = before[e.key] ?? false;
+      if (was == e.value) {
+        unchanged.add(e.key);
+        continue;
+      }
+      changed.add({'name': e.key, 'from': was, 'to': e.value});
+      await _setJevFlag(kJevFeatureFlagKeys[e.key]!, e.value);
+    }
+    final turnedOn = [
+      for (final c in changed)
+        if (c['name'] != 'stopAll' && c['to'] == true) '${c['name']}',
+    ];
+    final stopReleased =
+        changed.any((c) => c['name'] == 'stopAll' && c['to'] == false);
+    // ★ 非常停止を外すと、 前から入っていた旗がそのまま生き返る。 こちらも
+    //   「通信が始まる」 側なので、 黙って通さず何が動き出すのかを並べる。
+    final liveNow = [
+      for (final e in _jevRawFlags.entries)
+        if (e.value) e.key,
+    ];
+    final notice = <String>[];
+    if (turnedOn.isNotEmpty) {
+      notice.add('Turned ON on the user\'s behalf: ${turnedOn.join(', ')}.');
+    }
+    if (stopReleased) notice.add('The emergency stop was lifted.');
+    if (notice.isNotEmpty && !_jevStopAll && liveNow.isNotEmpty) {
+      notice.add('Live from now on: ${liveNow.join(', ')} - these send short '
+          'fragments of the user\'s own text to Jev through the relay and '
+          'spend their AI credit.');
+    }
+    if (notice.isNotEmpty) notice.add('TELL THE USER exactly what changed.');
+    final notes = <String>[];
+    if (notice.isNotEmpty && !_jevStopAll) {
+      if (liveNow.isNotEmpty && relayApiBase.isEmpty) {
+        notes.add('the AI relay has no address in this build, so Jev cannot be '
+            'reached and the flags now live stay inert.');
+      }
+    }
+    return {
+      'changed': changed,
+      'unchanged': unchanged,
+      'stopAll': _jevStopAll,
+      if (notice.isNotEmpty) 'userNotice': notice.join(' '),
+      if (stopReleased) 'stopReleased': true,
+      if (notes.isNotEmpty) 'notes': notes,
+      'settings': mcpJevSettings(),
+    };
+  }
+
+  // ── 直近 1 回の判断の様子 (= 不具合報告の「検索成功と Jev 成功を
+  //    分けて確認できるようにする」)。 開発者モードだけが読む診断用。 ──
+
+  /// 直近に判断を頼んだ機能 ID。
+  String _jevLastFeature = '';
+
+  /// 直近の判断が控え (30 分キャッシュ) から返ったか。
+  bool _jevLastCached = false;
+
+  /// 直近に判断を**諦めた**理由 (空 = 諦めていない)。
+  String _jevLastSkipReason = '';
+
+  /// 直近の判断 1 回の請求額。
+  double _jevLastCostUsd = 0;
+
+  /// 判断を諦めた事を控える (従来処理へ戻した時の理由)。
+  void _jevSkip(String feature, String why) {
+    _jevLastFeature = feature;
+    _jevLastCached = false;
+    _jevLastSkipReason = why;
+  }
+
+  /// 例外から、 応答に載せられる短い理由を作る。
+  static String _jevShortReason(Object e) {
+    var s = '$e'.replaceFirst('Exception: ', '').trim();
+    // 改行や長い本文は診断としては邪魔なので 1 行へ縮める。
+    s = s.replaceAll(RegExp(r'\s+'), ' ');
+    if (s.length > 160) s = '${s.substring(0, 160)}…';
+    return s.isEmpty ? 'the decision could not be made' : s;
+  }
+
+  /// 直近の判断の様子 (診断用)。 応答へそのまま載せられる形。
+  Map<String, Object?> get jevLastDecisionInfo => {
+        if (_jevLastFeature.isNotEmpty) 'feature': _jevLastFeature,
+        'cached': _jevLastCached,
+        'fallback': _jevLastSkipReason.isNotEmpty,
+        if (_jevLastSkipReason.isNotEmpty) 'skippedReason': _jevLastSkipReason,
+        'costUsd': _jevLastCostUsd,
+        if (_jevLastModel.isNotEmpty) 'model': _jevLastModel,
+      };
+
   /// 判断を 1 回頼む。 使えない / 取れない時は null。
+  ///
+  /// ★ **投げない**。 上限・残高・未サインイン・代行障害・時間切れは全部
+  ///   null (= 従来処理へ戻す) にそろえる。 呼び出し側は「判断が無かった」
+  ///   だけを見ればよく、 例外を拾い忘れて道具ごと落ちる事が無くなる。
   ///
   /// [feature] は機能 ID (監査と控えの鍵に使う)。
   Future<JevDecision?> jevDecide({
@@ -88444,30 +89686,69 @@ class MindMapProvider extends ChangeNotifier {
     required String state,
     required Map<String, JevQuestion> questions,
   }) async {
-    if (!_jevEnabled) return null;
-    if (relayApiBase.isEmpty) return null;
-    if (state.trim().isEmpty || questions.isEmpty) return null;
+    if (_jevStopAll) {
+      _jevSkip(feature, 'emergency stop is on');
+      return null;
+    }
+    if (relayApiBase.isEmpty) {
+      _jevSkip(feature, 'the AI relay has no address in this build');
+      return null;
+    }
+    if (state.trim().isEmpty || questions.isEmpty) {
+      _jevSkip(feature, 'nothing to decide about');
+      return null;
+    }
     final key = jevCacheKey(
         featureId: feature, state: state, questions: questions);
     final hit = _jevCache[key];
     if (hit != null && DateTime.now().difference(hit.at) < _kJevCacheTtl) {
+      _jevLastFeature = feature;
+      _jevLastCached = true;
+      _jevLastSkipReason = '';
       return hit.d;
     }
     // Dev 枠の自己上限は判断でも見る (暴走で持ち出しにならないように)。
     //   判断 1 回は入力だけの課金で、 だいたい $0.0005 未満。
-    _guardDevSelfCap(estimatedUsd: 0.001);
+    //
+    // ★ = 不具合報告 2026-09-30「Jev 判断が開発者上限に当たると検索道具
+    //   全体が失敗する」。 ここは例外を投げる作りなので、 上限・残高切れ・
+    //   未サインインのどれでも `web_search` / `search_pages` /
+    //   `search_folder_files` が道具ごと落ちていた。 判断は**あくまで
+    //   下働き**なので、 取れない時は必ず null を返して従来処理へ戻す
+    //   (AGENTS.md の「判断が取れない時は必ず従来処理へ戻る」 の約束)。
     try {
-      await _ensureFreshToken();
-    } catch (_) {
-      // トークンが取れなければ判断はあきらめる (従来処理へ戻す)。
+      _guardDevSelfCap(estimatedUsd: 0.001);
+    } catch (e) {
+      _jevSkip(feature, _jevShortReason(e));
       return null;
     }
-    final d = await _jevClient.decide(
-      featureId: feature,
-      state: state,
-      questions: questions,
-    );
-    if (d == null) return null;
+    try {
+      await _ensureFreshToken();
+    } catch (e) {
+      // トークンが取れなければ判断はあきらめる (従来処理へ戻す)。
+      _jevSkip(feature, _jevShortReason(e));
+      return null;
+    }
+    JevDecision? d;
+    try {
+      d = await _jevClient.decide(
+        featureId: feature,
+        state: state,
+        questions: questions,
+      );
+    } catch (e) {
+      // 代行の障害・時間切れも同じ扱い (判断だけ諦める)。
+      _jevSkip(feature, _jevShortReason(e));
+      return null;
+    }
+    if (d == null) {
+      _jevSkip(feature, 'the relay returned no decision');
+      return null;
+    }
+    _jevLastFeature = feature;
+    _jevLastCached = d.cached;
+    _jevLastSkipReason = '';
+    _jevLastCostUsd = d.billedUsd;
     _jevLastModel = d.model;
     if (!d.cached) {
       _jevCalls += 1;
@@ -88522,11 +89803,42 @@ class MindMapProvider extends ChangeNotifier {
     };
   }
 
+  // ── 1 回の「依頼」 の間は振り分けを 1 度だけにする ──
+  //
+  // ★ = 不具合報告 2026-09-30「route 入時に自動操作の AI 依頼 1 件で Jev
+  //   判断が 2 回計上される」。 自動操作は 1 つの依頼を**何回かに分けて**
+  //   AI へ聞く (次の 1〜3 手 → 実行 → また聞く) ので、 聞いた回数だけ
+  //   振り分けの判断が走っていた。 利用者から見れば依頼は 1 件なので、
+  //   依頼の間は最初の判断を使い回す (途中で階層が揺れない利点もある)。
+  int _jevRouteScopeDepth = 0;
+  ({String model, String reasoning, String why})? _jevRouteScoped;
+
+  /// 「ここからここまでが 1 件の依頼」 の始まり。 入れ子にしても良い。
+  void beginJevRouteScope() {
+    if (_jevRouteScopeDepth == 0) _jevRouteScoped = null;
+    _jevRouteScopeDepth++;
+  }
+
+  /// 依頼の終わり。 使い回していた判断を捨てる。
+  void endJevRouteScope() {
+    if (_jevRouteScopeDepth > 0) _jevRouteScopeDepth--;
+    if (_jevRouteScopeDepth == 0) _jevRouteScoped = null;
+  }
+
   /// この 1 回に使うモデルと考える深さを決める。
   ///
   /// 返り値の model / reasoning が空なら「いつもの設定のまま」。
   /// 判断が取れない・確信が低い時は必ず空を返す (無理に選ばせない)。
   Future<({String model, String reasoning, String why})> jevRoutePrompt(
+      String prompt) async {
+    final scoped = _jevRouteScoped;
+    if (_jevRouteScopeDepth > 0 && scoped != null) return scoped;
+    final decided = await _jevRoutePrompt(prompt);
+    if (_jevRouteScopeDepth > 0) _jevRouteScoped = decided;
+    return decided;
+  }
+
+  Future<({String model, String reasoning, String why})> _jevRoutePrompt(
       String prompt) async {
     const none = (model: '', reasoning: '', why: '');
     if (!jevRouteEnabled) return none;
@@ -88616,7 +89928,7 @@ class MindMapProvider extends ChangeNotifier {
       order: [for (var i = 0; i < candidates.length; i++) i],
       verdict: 'unknown',
     );
-    if (!_jevEnabled || candidates.isEmpty) return fallback;
+    if (_jevStopAll || candidates.isEmpty) return fallback;
     final n = candidates.length > kJevMaxChoiceOptions
         ? kJevMaxChoiceOptions
         : candidates.length;
@@ -88655,6 +89967,289 @@ class MindMapProvider extends ChangeNotifier {
     return (order: order, verdict: verdict);
   }
 
+  // ── 4. 資料の追加質問で「要る所」 だけ渡す ──────────────────
+  //
+  // = ユーザー要望: 資料の Q&A は質問 1 回ごとに本文 (最大 6 万字) を
+  //   丸ごと prompt へ入れていた。 本文を刻んで質問に近い順へ並べ、
+  //   上位だけを渡す。
+  //
+  // ★ 迷ったら全文。 Jev が切 / 判断が取れない / 本文が短い / 結局ほぼ
+  //   全部になる時は **今までどおり全文**を返す。 上位だけにして答えが
+  //   出なくなるのが一番悪い。
+
+  /// 断片 1 つの目安の長さ。
+  static const int _kJevPassageChars = 1500;
+
+  /// 絞った後に渡す本文の上限。 ここを超えない所まで上から取る。
+  static const int _kJevPassageBudget = 12000;
+
+  /// 採否を聞く断片の数の上限 (断片 1 つ = 判断 1 回なので切る)。
+  static const int _kJevPassageGateMax = 4;
+
+  /// 本文を、 段落の切れ目を優先して [chars] 前後の断片へ刻む。
+  List<String> jevSplitPassages(String body, {int chars = _kJevPassageChars}) {
+    final t = body.trim();
+    if (t.isEmpty) return const [];
+    // 空行で段落に割り、 極端に長い段落だけを字数で割る。
+    final parts = <String>[];
+    for (final para in t.split(RegExp(r'\n[ \t]*\n'))) {
+      final one = para.trim();
+      if (one.isEmpty) continue;
+      if (one.length <= chars * 2) {
+        parts.add(one);
+        continue;
+      }
+      for (var i = 0; i < one.length; i += chars) {
+        parts.add(one.substring(i, math.min(i + chars, one.length)));
+      }
+    }
+    // 近い段落をまとめて [chars] 前後の塊にする。
+    final out = <String>[];
+    final buf = StringBuffer();
+    for (final one in parts) {
+      if (buf.isNotEmpty && buf.length + one.length + 2 > chars) {
+        out.add(buf.toString());
+        buf.clear();
+      }
+      if (buf.isNotEmpty) buf.write('\n\n');
+      buf.write(one);
+    }
+    if (buf.isNotEmpty) out.add(buf.toString());
+    return out;
+  }
+
+  /// 資料の本文から [question] に要る所だけを取り出す。
+  ///
+  /// 戻りはそのまま prompt へ入れてよい形。 絞れなかった時は [body] を
+  /// そのまま返す (= 今までどおりの動き)。
+  Future<String> jevNarrowDocPassages(String body, String question) async {
+    if (!jevDocQaEnabled) return body;
+    final t = body.trim();
+    final q = question.trim();
+    // 全部渡しても予算に収まる本文は、 刻んでも得が無い。
+    if (q.isEmpty || t.length <= _kJevPassageBudget) return body;
+    final passages = jevSplitPassages(t);
+    if (passages.length < 3) return body;
+    // 断片の数だけ state が伸びるので、 抜粋の長さを数で割って抑える。
+    var snip = 16000 ~/ passages.length;
+    if (snip < 200) snip = 200;
+    if (snip > 700) snip = 700;
+    final ranked = await jevRankCandidates(
+      feature: 'doc_qa',
+      query: q,
+      candidates: passages,
+      snippetChars: snip,
+    );
+    // 判断が取れていない (= 並べ替わっていない) 時と、 「どこにも無さそう」
+    // と言われた時は全文へ戻す。 後者は上位の並びが当てにならないので、
+    // 絞るより全部見せた方が答えが出る。
+    if (ranked.verdict == 'unknown' || ranked.verdict == 'absent') return body;
+    final order = ranked.order;
+    if (order.length != passages.length) return body;
+    if (!order.every((i) => i >= 0 && i < passages.length)) return body;
+    // 上から予算いっぱいまで取る。
+    final picked = <int>[];
+    var used = 0;
+    for (final i in order) {
+      final len = passages[i].length;
+      if (picked.isNotEmpty && used + len > _kJevPassageBudget) break;
+      picked.add(i);
+      used += len;
+    }
+    // 結局ほぼ全部なら絞れていない。
+    if (picked.isEmpty || picked.length >= passages.length) return body;
+    // 採否の関門 ([JevTemplates.passageGate] の 4 本の noul)。
+    // ★ 落とすのは「差し込み (injection)」 か「全く関わらない」 と出た時だけ。
+    //   [JevTemplates.routePassage] は根拠が薄いだけの断片も 'exclude' に
+    //   するが、 それで上位を間引くと下位の断片が残って逆に悪くなるので、
+    //   ここでは見ない。 1 位も決して外さない。
+    final gate = picked.length < _kJevPassageGateMax
+        ? picked.length
+        : _kJevPassageGateMax;
+    if (gate >= 2) {
+      final verdicts = await Future.wait([
+        for (var k = 1; k < gate; k++)
+          jevDecide(
+            feature: 'doc_qa_gate',
+            state: '--- query ---\n${_jevClip(q, 400)}\n'
+                '--- excerpt ---\n${_jevClip(passages[picked[k]], 1200)}',
+            questions: JevTemplates.passageGate(),
+          ),
+      ]);
+      for (var k = gate - 1; k >= 1; k--) {
+        final d = verdicts[k - 1];
+        // 取れなければ残す (安全側)。
+        if (d == null) continue;
+        final inj = d['injection']?.noul ?? 0.0;
+        final rel = d['is_relevant']?.noul ?? 1.0;
+        if (inj > kJevInjectionMax || rel < kJevRelevantMin) {
+          picked.removeAt(k);
+        }
+      }
+    }
+    if (picked.isEmpty) return body;
+    // 資料の順に戻して並べる。 抜粋だと分かるように番号を付け、 「抜粋の
+    // 外にも記載があるかも」 と伝えておく (抜粋だけを見て 「記載が
+    // ありません」 と言い切らせないため)。
+    picked.sort();
+    final sb = StringBuffer()
+      ..writeln('(以下は本文のうち質問に関わる所の抜粋です。 抜粋の外にも'
+          '記載があるかもしれないので、 見当たらない時は 「抜粋には'
+          '見当たりません」 と書いてください。)')
+      ..writeln();
+    for (final i in picked) {
+      sb.writeln('【抜粋 ${i + 1}/${passages.length}】');
+      sb.writeln(passages[i]);
+      sb.writeln();
+    }
+    return sb.toString().trimRight();
+  }
+
+
+  // ── 4. フラッシュカードの採点の足切り ─────────────────────
+  //
+  // 生成 AI の採点は 1 枚ごとに待ち時間と費用がかかる。 旗が入っている時は
+  // 正誤をここ (判断だけ) で決めて即答し、 生成 AI は 「理由を見る」 を
+  // 押された時だけ呼ぶ。
+
+  /// 打った答えが合っているかを判断専用モデルだけで決める。
+  ///
+  /// true = 正解 / false = 不正解 / null = 旗が切・比べる物が無い・判断が
+  /// 取れない (= 呼ぶ側は今までどおり生成 AI の採点へ回す)。 外へ送るのは
+  /// 設問 + 模範解答 + 打った答え だけで、 長い物は [_jevClip] で切る。
+  Future<bool?> jevCardVerdict({
+    required String front,
+    required String back,
+    required String answer,
+  }) async {
+    if (!jevCardGradeEnabled) return null;
+    final a = answer.trim();
+    final b = back.trim();
+    // 模範解答が空のカードは比べる物が無い (判断へ回す意味も無い)。
+    if (a.isEmpty || b.isEmpty) return null;
+    final sb = StringBuffer()
+      ..writeln('Flashcard question: ${_jevClip(front, 600)}')
+      ..writeln('Reference answer: ${_jevClip(b, 600)}')
+      ..writeln('Learner answer: ${_jevClip(a, 600)}');
+    final d = await jevDecide(
+      feature: 'flashcard_grade',
+      state: sb.toString(),
+      questions: JevTemplates.cardGrade(),
+    );
+    final n = d?['is_correct']?.noul;
+    if (n == null) return null;
+    // 正解と言い切れるのは kJevFoundNoul 以上だけ (フォルダー内検索の
+    // 'found' と同じ作法)。 はっきりしない中間 (kJevAbsentNoul 〜
+    // kJevFoundNoul) は不正解側へ寄せる: 覚えていない札を 「正解」 にして
+    // 見逃す方が、 学ぶ上での取りこぼしが大きいため。 取り違えても
+    // 「理由を見る」 で生成 AI が採点し直すので行き止まりにはならない。
+    return n >= kJevFoundNoul;
+  }
+
+  // ── 5. Web 検索の並べ替えと空振り止め ─────────────────────
+
+  /// 直近の web 並べ替えの様子 (診断用。 `web_search` の応答に載せる)。
+  ///
+  /// ★ = 不具合報告 2026-09-30「webRank が検索結果を並べ替えるだけでなく
+  ///   候補を差し替える」。 並べ替えが顔ぶれを変えていないかを**呼んだ側
+  ///   からも確かめられる**ようにする。 検索が成功した事と Jev の判断が
+  ///   成功した事を分けて見られるよう、 諦めた理由もここへ入れる。
+  Map<String, Object?> _jevWebRankLast = const {};
+  Map<String, Object?> get jevWebRankLastInfo => _jevWebRankLast;
+
+  /// `web_search` の結果を関連の高い順に並べ替える。
+  ///
+  /// [rows] は `[{title, url}]`。
+  ///
+  /// ★ 出来るのは**並べ替えだけ**。 URL を足す事も減らす事もしない
+  ///   (= 不具合報告)。 判断が返した並びは必ず検分し、 範囲外・重複・
+  ///   抜けがあれば直してから使う (抜けた候補は元の順で後ろへ回す)。
+  ///   「この一覧に答えは無い」 と言われた時も件数は減らさず、
+  ///   `narrowedTo` として**助言だけ**返す (= 無駄に web_fetch させない。
+  ///   ただし消してしまうと、 判断の間違いが取り返せない)。
+  /// 使えない / 取れない時は [rows] のまま。
+  Future<List<Map<String, String>>> jevRankWebResults(
+    String query,
+    List<Map<String, String>> rows, {
+    int narrowTo = 3,
+  }) async {
+    String idOf(int i) => '${rows[i]['url'] ?? ''}';
+    final inputIds = [for (var i = 0; i < rows.length; i++) idOf(i)];
+    if (!jevWebRankEnabled) {
+      _jevWebRankLast = {
+        'applied': false,
+        'skippedReason': _jevStopAll
+            ? 'the emergency stop is on'
+            : 'the webRank flag is off',
+      };
+      return rows;
+    }
+    if (rows.length <= 1) {
+      _jevWebRankLast = {
+        'applied': false,
+        'skippedReason': 'only ${rows.length} result(s) - nothing to sort',
+      };
+      return rows;
+    }
+    final r = await jevRankCandidates(
+      feature: 'web_search',
+      query: query,
+      candidates: [
+        for (final h in rows) '${h['title'] ?? ''} — ${h['url'] ?? ''}'
+      ],
+      snippetChars: 220,
+    );
+    if (_jevLastSkipReason.isNotEmpty) {
+      // 判断だけ取れなかった。 検索結果はそのまま返す (道具は落とさない)。
+      _jevWebRankLast = {
+        'applied': false,
+        'fallbackUsed': true,
+        'skippedReason': _jevLastSkipReason,
+        'inputResultIds': inputIds,
+      };
+      return rows;
+    }
+    // ── 並びの検分 (順列である事を保証する) ──
+    final seen = <int>{};
+    final out = <Map<String, String>>[];
+    var clean = true;
+    for (final i in r.order) {
+      if (i < 0 || i >= rows.length || !seen.add(i)) {
+        clean = false; // 範囲外 / 重複 = 判断の出力がおかしい
+        continue;
+      }
+      out.add(rows[i]);
+    }
+    // 判断が触れなかった候補は**捨てずに**元の順で後ろへ。
+    for (var i = 0; i < rows.length; i++) {
+      if (seen.contains(i)) continue;
+      clean = false;
+      out.add(rows[i]);
+    }
+    _jevWebRankLast = {
+      'applied': true,
+      'reordered': true,
+      'rankingValidated': clean,
+      if (!clean)
+        'rankingRepaired': 'the decision returned an order that was not a '
+            'clean permutation of the input, so the missing results were put '
+            'back at the end. No result was dropped or added.',
+      'verdict': r.verdict,
+      if (r.verdict == 'absent' && rows.length > narrowTo)
+        'narrowedTo': narrowTo,
+      if (r.verdict == 'absent')
+        'narrowNote': 'Jev thinks the answer is not in this list. The list is '
+            'returned in full anyway - the top $narrowTo are the only ones '
+            'worth fetching.',
+      'inputResultIds': inputIds,
+      'rankedResultIds': [for (final h in out) '${h['url'] ?? ''}'],
+      'model': _jevLastModel,
+      'cached': _jevLastCached,
+    };
+    // 顔ぶれと件数は必ず同じ (念のための最後の砦)。
+    return out.length == rows.length ? out : rows;
+  }
+
   /// [modelOverride] / [reasoningOverride] … この 1 回だけモデルと考える
   /// 深さを変える (空 = いつもの設定)。
   ///
@@ -88680,6 +90275,13 @@ class MindMapProvider extends ChangeNotifier {
     if ((uid == null || uid.isEmpty) && !devKeyed) {
       throw Exception(t('relay.needSignIn'));
     }
+    // 会社ごとの細かい指定 (= ユーザー要望: 3 段階ではアバウト過ぎる)。
+    //   ★ この 1 回だけ深さを指定された時 (Jev の振り分け) は、 その指示を
+    //     細かい設定で上書きしない。
+    final fineReasoning = reasoningOverride.isEmpty
+        ? relayReasoningFinePayload(
+            forModel: modelOverride.isEmpty ? _relayModel : modelOverride)
+        : const <String, dynamic>{};
     final res = await http
         .post(
           Uri.parse('$base/ai/generate'),
@@ -88698,6 +90300,10 @@ class MindMapProvider extends ChangeNotifier {
             // 考える深さ (= ユーザー要望: 推論レベルの設定)。
             'reasoning':
                 reasoningOverride.isEmpty ? relayReasoning : reasoningOverride,
+            // 会社ごとの細かい指定 (= ユーザー要望)。 上の 'reasoning' は
+            //   今までどおり必ず送るので、 この欄を知らない古い Worker でも
+            //   動きは変わらない (知らない欄は読まれずに捨てられる)。
+            if (fineReasoning.isNotEmpty) 'reasoningFine': fineReasoning,
             // 構造化 (JSON) の生成は長くなるので、 呼び出し側が上限を指定する。
             //   指定が無ければ代行サーバー側の既定 (4096) を使う。
             if (maxTokens != null) 'maxTokens': maxTokens,
@@ -89129,7 +90735,8 @@ class MindMapProvider extends ChangeNotifier {
     return AgentCli.lastPickKind ?? AgentCliKind.claude;
   }
 
-  /// その CLI の名前 (`Claude Code` / `Codex CLI`)。
+  /// その CLI の名前 (`Claude Code` / `Codex CLI` / `Antigravity CLI` …
+  /// = [AgentCliSpec.all] の札)。
   String get cliAiKindLabel => AgentCliSpec.of(cliAiKindEnum).label;
 
   String get cliAiLabel {
@@ -89291,6 +90898,10 @@ class MindMapProvider extends ChangeNotifier {
       } catch (_) {}
     }
     _pushCliChoices();
+    // ★ モデルの一覧の控えも戻す (= ユーザー要望「使うモデル設定が
+    //   自動的に最新になるように」)。 prefs を読むだけで、 CLI は起こさない
+    //   (取り直しは CLI の画面を開いた時 = [AgentCli.maybeRefreshModels])。
+    await AgentCli.loadModelCache();
     if (changed) notifyListeners();
   }
 
@@ -91600,9 +93211,12 @@ youtube_url (任意), link_url (任意), image_url (任意) を持てる。
     // ── プロンプト組立 ──
     // テキスト系なら本文を埋め込む (60K 文字に切り詰め済みのものを使う)。
     // これまでの Q&A 履歴も含めて、文脈の継続性を保つ。
-    final contentPart = (ctx.textContent != null && ctx.textContent!.isNotEmpty)
-        ? '--- 資料の内容 ---\n${ctx.textContent}\n\n'
+    // Jev の「要る所だけ渡す」 が入なら、 本文を刻んで質問に近い上位だけへ
+    // 絞る。 切 / 判断が取れない時は今までどおり全文が返る。
+    final docBody = (ctx.textContent != null && ctx.textContent!.isNotEmpty)
+        ? await jevNarrowDocPassages(ctx.textContent!, cleanQ)
         : '';
+    final contentPart = docBody.isEmpty ? '' : '--- 資料の内容 ---\n$docBody\n\n';
 
     String historyPart = '';
     if (ctx.qaHistory.isNotEmpty) {
@@ -92479,6 +94093,12 @@ $cleanQ
     };
     if (isReasoning) {
       body['max_completion_tokens'] = maxTokensOverride ?? 4096;
+      // 考える深さ (= ユーザー要望: 会社ごとの細かい指定)。 自分の鍵で直に
+      //   叩く経路。 o 系が受けるのは low / medium / high だけなので、
+      //   'minimal' (新しい世代だけが受ける値) は送らない。
+      if (const ['low', 'medium', 'high'].contains(_fineOpenaiEffort)) {
+        body['reasoning_effort'] = _fineOpenaiEffort;
+      }
     } else {
       body['temperature'] = 0.7;
       body['max_tokens'] = maxTokensOverride ?? 2048;
@@ -92864,24 +94484,40 @@ $cleanQ
       generationConfig['responseMimeType'] = 'application/json';
     }
 
-    final http.Response res;
+    // ── 考える枠 (= ユーザー要望: 会社ごとの細かい指定) ──
+    //   自分の鍵で直に叩く経路。 未設定なら今までどおり何も付けない。
+    //   受け付けないモデルもあるので、 断られたら外して投げ直す
+    //   (代行 Worker の askG と同じ作り)。
+    final thinkBudget = _fineGeminiBudget;
+    Future<http.Response> sendG(bool withThinking) => http
+        .post(
+          Uri.parse(url),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'contents': [
+              {
+                'parts': [
+                  {'text': effectivePrompt}
+                ]
+              }
+            ],
+            'generationConfig': <String, dynamic>{
+              ...generationConfig,
+              if (withThinking && thinkBudget != null)
+                'thinkingConfig': {'thinkingBudget': thinkBudget},
+            },
+          }),
+        )
+        .timeout(timeoutOverride ?? Duration(seconds: isProTier ? 120 : 60));
+
+    http.Response res;
     try {
-      res = await http
-          .post(
-            Uri.parse(url),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'contents': [
-                {
-                  'parts': [
-                    {'text': effectivePrompt}
-                  ]
-                }
-              ],
-              'generationConfig': generationConfig,
-            }),
-          )
-          .timeout(timeoutOverride ?? Duration(seconds: isProTier ? 120 : 60));
+      res = await sendG(true);
+      if (res.statusCode == 400 &&
+          thinkBudget != null &&
+          res.body.contains('hinking')) {
+        res = await sendG(false);
+      }
     } on TimeoutException {
       if (modelIndex + 1 < models.length) {
         debugPrint('Gemini タイムアウト ($model) → 次のモデルへフォールバック');
@@ -93948,6 +95584,9 @@ $cleanQ
     _loadMcpCreatedFiles();
     // 控えを入れる前に作った物を拾うため、 アプリの書類フォルダーも覚える。
     _loadAppDocsDir();
+    // 内部用の写し (取り消し用) の置き場。 書類フォルダーは利用者の物
+    //   (Windows では OneDrive の同期先) なので、 そこには置かない。
+    _loadAppSupportDir();
     _loadChannelFilterSettings();
     _loadChannelQueues();
     _loadAutoSyncPageIds();
@@ -104378,6 +106017,10 @@ $cleanQ
     final deletedPage = _pages[index];
     final deletedId = deletedPage.id;
     _lastDeletedPageUndo = _captureDeletedPageUndo(deletedPage, index);
+    // ★ = 継続検証 230 前半 (ページ削除の双子)。 控えは 1 つだけなので、
+    //   新しい削除が始まったら前の分の受け皿は空にする (残った写しは
+    //   控え置き場の掃除で片付く)。
+    _deletedPageTrashed.clear();
     _markPageDeletedForStorage(deletedId);
     _pages.removeAt(index);
     // ★ clamp より先に白紙を置く。 0 枚だと上限が -1 になり、
@@ -104410,6 +106053,9 @@ $cleanQ
       ..lastModifiedAt = DateTime.now().toUtc();
     _pageDeletionTombstones.remove(pageId);
     _pages.insert(insertAt, restored);
+    // ★ = 継続検証 230 前半 (ページ削除の双子)。 ページを戻したら、
+    //   一緒にごみ箱へ送った実体も元の場所へ戻す。
+    _mcpRestoreTrashedFiles(_deletedPageTrashed);
     // ★ 削除の時に自動で足した白紙がまだ手つかずなら片付ける
     //   (= 点検で発見: 最後の 1 枚を消して Ctrl+Z すると 2 枚になっていた)。
     final blankId = _autoBlankPageId;
@@ -105281,20 +106927,40 @@ $cleanQ
   /// 一度読んだ本文の控え (道筋 + 更新日時 + 大きさ が同じなら読み直さない)。
   final Map<String, String> _fileTextCache = {};
 
+  /// 直前の [searchFilesInFolder] が上限に当たって読まなかったファイルの数。
+  ///
+  /// 0 より大きい時は「無かった」 と言い切れない (= 継続検証 274 の直しで、
+  /// folderId 省略時の相手が全フォルダーへ広がったため)。 呼んだ直後に読む。
+  int _lastFolderFileSearchSkipped = 0;
+  int get lastFolderFileSearchSkipped => _lastFolderFileSearchSkipped;
+
   /// フォルダーの中のファイルを横断して本文を探す。
   ///
   /// [folderId] null = 一覧の直下 (フォルダーに入っていないページ)。
+  /// [allFolders] true = [folderId] を無視して**全部**を見る。 フォルダーの
+  ///   中のページも、 フォルダーの外のページも、 どのフォルダーの連動
+  ///   ディスクフォルダーも相手にする。
+  ///   ★ = 継続検証 274 / 390 / 391。 MCP の `search_folder_files` で
+  ///     folderId を省くと、 ここへ null が来て「一覧の直下だけ」 が相手に
+  ///     なっていた。 そのためフォルダーの中のページに貼ったファイルは
+  ///     いつも absent で、 ページをフォルダーから出すと見付かる、 という
+  ///     筋の通らない振る舞いになっていた。
   Future<List<FolderFileHit>> searchFilesInFolder(
     String? folderId,
     String query, {
+    bool allFolders = false,
     bool includeLinkedDir = true,
     int maxFiles = 400,
     int maxCharsPerFile = 400000,
     void Function(int done, int total, String fileName)? onProgress,
     bool Function()? isCancelled,
   }) async {
-    final q = query.trim().toLowerCase();
-    if (q.isEmpty) return const <FolderFileHit>[];
+    // ★ = 動作検証 継続検証 224/225「利用者が見る値のままでは探せない」。
+    //   全角/半角・大小の違いと、 空白・タブ・改行の違いを吸収した形で探す
+    //   (search_pages と同じ物差しを使い回す。 二本目を作らない)。
+    final needle = mcpSearchNormalize(query).trim();
+    if (needle.isEmpty) return const <FolderFileHit>[];
+    final needleRe = _searchNeedleRegExp(needle);
 
     // ── 探す相手を集める ──
     final seen = <String>{};
@@ -105314,7 +106980,11 @@ $cleanQ
           (pageId: pageId, pageName: pageName, nodeId: nodeId, path: p));
     }
 
-    for (final page in pagesInFolder(folderId)) {
+    // ★ allFolders は _pages をそのまま相手にする (pagesInFolder は
+    //   folderId が一致するページしか返さないので、 null では一覧の直下
+    //   だけになってしまう = 継続検証 390/391)。
+    final scope = allFolders ? _pages : pagesInFolder(folderId);
+    for (final page in scope) {
       for (final n in page.nodes.values) {
         final ap = (n.attachmentPath ?? '').trim();
         if (ap.isEmpty) continue;
@@ -105322,15 +106992,28 @@ $cleanQ
       }
     }
     // 連動しているディスクのフォルダーも見る。
-    if (includeLinkedDir && folderId != null) {
-      final f = _folders.where((e) => e.id == folderId).firstOrNull;
-      final dirPath = (f?.linkedDirPath ?? '').trim();
-      if (dirPath.isNotEmpty) {
+    // ★ ページの添付を先に入れてあるので、 上限に当たった時に削られるのは
+    //   こちら側 (= 頼まれた物に近い方を残す)。
+    if (includeLinkedDir) {
+      final Iterable<MindMapFolder> dirs = allFolders
+          ? _folders
+          : (folderId == null
+              ? const <MindMapFolder>[]
+              : _folders.where((e) => e.id == folderId));
+      for (final f in dirs) {
+        final dirPath = (f.linkedDirPath ?? '').trim();
+        if (dirPath.isEmpty) continue;
         for (final path in _listFilesForSearch(dirPath, maxFiles)) {
-          add('', f?.name ?? '', '', path);
+          add('', f.name, '', path);
         }
       }
     }
+    // ★ = 継続検証 274 の直しに伴う歯止め。 相手を全フォルダーへ広げると
+    //   上限に当たる事があり、 読まなかったファイルがあるのに「無かった」 と
+    //   言い切ってしまう。 何件置いて行ったかを控えて、 呼ぶ側が 'unknown'
+    //   と答えられるようにする。
+    _lastFolderFileSearchSkipped =
+        targets.length > maxFiles ? targets.length - maxFiles : 0;
     if (targets.length > maxFiles) targets.removeRange(maxFiles, targets.length);
 
     // ── 1 件ずつ読んで探す ──
@@ -105349,19 +107032,21 @@ $cleanQ
         continue;
       }
       if (text.isEmpty) continue;
-      final lower = text.toLowerCase();
-      var idx = lower.indexOf(q);
-      if (idx < 0) continue;
-      final first = idx;
-      var count = 0;
-      while (idx >= 0 && count < 999) {
+      // 均した本文 (字数を変えない置き換えなので、 当たった位置は元の本文の
+      // 位置とそのまま対応する = 抜粋を切り出す時にずれない)。
+      final norm = mcpSearchNormalize(text);
+      final it = needleRe.allMatches(norm).iterator;
+      if (!it.moveNext()) continue;
+      final first = it.current.start;
+      final hitLen = it.current.end - it.current.start;
+      var count = 1;
+      while (count < 999 && it.moveNext()) {
         count++;
-        idx = lower.indexOf(q, idx + q.length);
       }
       final from = first - 40 < 0 ? 0 : first - 40;
-      final to = first + q.length + 40 > text.length
+      final to = first + hitLen + 40 > text.length
           ? text.length
-          : first + q.length + 40;
+          : first + hitLen + 40;
       hits.add(FolderFileHit(
         pageId: t.pageId,
         pageName: t.pageName,
@@ -105433,14 +107118,76 @@ $cleanQ
     } catch (_) {}
     final hit = _fileTextCache[stamp];
     if (hit != null) return hit;
-    final text =
+    final raw =
         await TalkReference.extractFileText(path, maxChars: maxChars) ?? '';
+    // ★ = 動作検証 継続検証 224。 CSV は RFC 4180 の書き方なので、 生のまま
+    //   だと引用符が 2 つ重なり (セルの値 `値"2` はファイル上 `"値""2"`)、
+    //   利用者が見る値では見付からなかった。 セルへ解いてから探す。
+    final text = _isCsvPath(path) ? _csvToSearchText(raw) : raw;
     // 控えが増えすぎないように、 古い物から捨てる。
     if (_fileTextCache.length > 120) {
       _fileTextCache.remove(_fileTextCache.keys.first);
     }
     _fileTextCache[stamp] = text;
     return text;
+  }
+
+  /// CSV か (tsv は引用符の決まりが無いので生のまま扱う)。
+  static bool _isCsvPath(String path) {
+    final i = path.lastIndexOf('.');
+    return i >= 0 && path.substring(i + 1).toLowerCase() == 'csv';
+  }
+
+  /// CSV を RFC 4180 で解いて、 「探すための本文」 にする。
+  ///
+  /// ★ セルの区切りは半角空白 1 つ、 行の区切りは改行、 `""` は引用符 1 つに
+  ///   戻す。 セルの中の改行はそのまま置いておく ([mcpSearchNormalize] が
+  ///   空白と同じ物として扱うので、 「改行 値3」 でも当たる)。
+  /// ★ ゆるく解く: 値の途中に出て来る `"` は字として扱う (手で書いた CSV で
+  ///   区切りを飲み込まないように)。
+  static String _csvToSearchText(String raw) {
+    if (raw.isEmpty) return '';
+    const quote = 0x22; // "
+    const comma = 0x2C; // ,
+    const cr = 0x0D;
+    const lf = 0x0A;
+    final out = StringBuffer();
+    final cell = StringBuffer();
+    var quoted = false;
+    void endCell(int sep) {
+      out.write(cell.toString());
+      out.writeCharCode(sep);
+      cell.clear();
+    }
+
+    for (var i = 0; i < raw.length; i++) {
+      final c = raw.codeUnitAt(i);
+      if (quoted) {
+        if (c != quote) {
+          cell.writeCharCode(c);
+        } else if (i + 1 < raw.length && raw.codeUnitAt(i + 1) == quote) {
+          cell.writeCharCode(quote); // "" = 引用符 1 つ
+          i++;
+        } else {
+          quoted = false;
+        }
+        continue;
+      }
+      if (c == quote && cell.isEmpty) {
+        quoted = true;
+      } else if (c == comma) {
+        endCell(0x20);
+      } else if (c == lf) {
+        endCell(lf);
+      } else if (c == cr) {
+        // \r\n は次の \n で切る (単独の \r も行の区切り)。
+        if (i + 1 >= raw.length || raw.codeUnitAt(i + 1) != lf) endCell(lf);
+      } else {
+        cell.writeCharCode(c);
+      }
+    }
+    out.write(cell.toString());
+    return out.toString();
   }
 
   /// 指定フォルダーに所属するページのリスト（ページ並び順を保持）
@@ -106197,7 +107944,15 @@ $cleanQ
   List<Map<String, String>> get mcpCommands => _mcpCommands;
 
   /// 実行係 (画面が登録する)。
-  void Function(String id)? _mcpCommandRunner;
+  ///
+  /// ★ = 継続検証 251「画面を開かない操作コマンドが『画面を開いた』 と
+  ///   返す」。 その場で終わる操作は「何が起きたか」 (取り消しの行き先 /
+  ///   変わった後の拡大率) を返してもらう。 画面を開く物は null。
+  Map<String, Object?>? Function(String id)? _mcpCommandRunner;
+
+  /// 直前の [mcpRunCommand] で画面が返した細目 (無ければ null)。
+  Map<String, Object?>? _mcpLastCommandDetail;
+  Map<String, Object?>? get mcpLastCommandDetail => _mcpLastCommandDetail;
 
   /// AI からは動かさない機能。
   ///
@@ -106213,8 +107968,8 @@ $cleanQ
   ///   mcp_server.dart の説明文と assets/ai/ も**必ず**揃える。
   static const Set<String> _mcpBlockedCommands = <String>{};
 
-  void registerMcpCommands(
-      List<Map<String, String>> commands, void Function(String id) runner) {
+  void registerMcpCommands(List<Map<String, String>> commands,
+      Map<String, Object?>? Function(String id) runner) {
     // ★ = 検証レポート「利用者専用コマンドの分類が不統一」。
     //   以前は利用者専用の機能を一覧から**落として**いたので、
     //   呼ぶ側は正しい綴りを知りようがなく、 あて推量の id
@@ -106253,14 +108008,36 @@ $cleanQ
     return f(id, probe);
   }
 
+  /// 「今、 画面に何が出ているか」 を答える受け口 (画面側が登録する)。
+  ///
+  /// ★ = 機能追加案 継続検証190「アプリ自身を安全に検証できる UI テスト
+  ///   モード」の**読む側だけ**。 合成クリックは入れない (= このアプリ自身を
+  ///   叩くのは利用者の本物のページを壊す恐れがあるため、 run_automation で
+  ///   既に断っている)。 出ている物を答えるだけなら何も壊さない。
+  Map<String, Object?> Function()? _mcpScreenState;
+
+  void registerMcpScreenState(Map<String, Object?> Function() f) =>
+      _mcpScreenState = f;
+
+  Map<String, Object?> mcpScreenState() {
+    final f = _mcpScreenState;
+    if (f == null) {
+      return {'error': 'the screen is not ready yet - try again in a moment'};
+    }
+    return f();
+  }
+
   /// 機能名 (id) を実行する。 知らない id なら false。
   bool mcpRunCommand(String id) {
     final runner = _mcpCommandRunner;
+    // ★ = 継続検証 251。 前回の細目を持ち越さない (持ち越すと、 別の操作の
+    //   結果を今の返事に付けてしまう)。
+    _mcpLastCommandDetail = null;
     if (runner == null) return false;
     // 一覧には出すが、 利用者専用の機能は AI からは動かさない。
     if (_mcpBlockedCommands.contains(id)) return false;
     if (!_mcpCommands.any((c) => c['id'] == id)) return false;
-    runner(id);
+    _mcpLastCommandDetail = runner(id);
     return true;
   }
 
@@ -106589,19 +108366,95 @@ $cleanQ
     }
   }
 
-  void mcpTidyPage(String pageId) {
+  /// マップを自動整列する。 **1 つも変わらなければ false** (= 保存もせず、
+  /// 取り消し履歴も積まない)。
+  ///
+  /// ★ = 継続検証 280「無変更の tidy_page が取り消し履歴を 1 手消費する
+  ///   (2 回目の整列は座標も線も変えないのに tidied と返り、 Ctrl+Z が空振り
+  ///   する)」。 [mcpTidyGallery] と同じ手順で、 先に控えを取って**試しに**
+  ///   並べ、 変わった時だけ控えを積み直して残す。
+  bool mcpTidyPage(String pageId) {
     final idx = _pages.indexWhere((e) => e.id == pageId);
-    if (idx < 0) return;
+    if (idx < 0) return false;
     final page = _pages[idx];
-    if (page.nodes.length < 2) return;
-    if (page.pageType != null && page.pageType != 'normal') return;
+    if (page.nodes.length < 2) return false;
+    if (page.pageType != null && page.pageType != 'normal') return false;
+    // 並べる前の座標と、 aroundNodes で作った囲みの枠を控える。
+    final before = {
+      for (final e in page.nodes.entries) e.key: e.value.position
+    };
+    final decoBefore = {
+      for (final d in page.decorations) d.id: <Offset>[d.start, d.end]
+    };
+    // ★ 整列は座標だけでなく**線**も触る ([_optimizeConnectionAnchors] が
+    //   端子の向きを中心座標から引き直し、 [_applySingleChildStraightLines]
+    //   が lineStyle を 'straight' にする)。 座標だけ見ていると、 既に並んで
+    //   いる地図で線だけが変わった時に「変化なし」 と答えてしまい、 書き換え
+    //   だけが保存されずに残る。 NodeConnection の == は fromId / toId しか
+    //   見ないので、 比べる所は自分で書く。
+    final connBefore = List<NodeConnection>.of(page.connections);
+    _mcpTidyPageBody(page, idx);
+    bool connChanged() {
+      if (page.connections.length != connBefore.length) return true;
+      for (var i = 0; i < connBefore.length; i++) {
+        final was = connBefore[i];
+        final now = page.connections[i];
+        if (was.fromId != now.fromId ||
+            was.toId != now.toId ||
+            was.fromAnchor != now.fromAnchor ||
+            was.toAnchor != now.toAnchor ||
+            was.lineStyle != now.lineStyle) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    final changed =
+        page.nodes.entries.any((e) => before[e.key] != e.value.position) ||
+            page.decorations.any((d) {
+              final was = decoBefore[d.id];
+              return was != null && (was[0] != d.start || was[1] != d.end);
+            }) ||
+            connChanged();
+    // 1 つも変わらない = 保存も控えも触らない (利用者の Ctrl+Z を空振りで
+    //   食わせない)。 今の姿は並べる前と同じなので後始末は要らない。
+    if (!changed) return false;
+    // 控えは**並べる前**の姿で積む (戻さないと、 取り消しても整列後の形が
+    //   返る。 [mcpTidyGallery] と同じ手順)。
+    for (final e in page.nodes.entries) {
+      final was = before[e.key];
+      if (was != null) e.value.position = was;
+    }
+    for (final d in page.decorations) {
+      final was = decoBefore[d.id];
+      if (was == null) continue;
+      d.start = was[0];
+      d.end = was[1];
+    }
+    page.connections
+      ..clear()
+      ..addAll(connBefore);
+    _pushUndoForPage(pageId);
+    _mcpTidyPageBody(page, idx);
+    page.lastModifiedAt = DateTime.now();
+    _saveToStorage();
+    notifyListeners();
+    _requestMcpFocus(pageId);
+    return true;
+  }
+
+  /// 整列の本体 (控え / 保存 / 通知をしない)。 [mcpTidyPage] が「試しに並べて
+  /// 比べる」 ために 2 度呼ぶので、 同じ入力からは必ず同じ結果になる並びだけを
+  /// 置く (座標は木の形と基準位置だけから決まる)。
+  void _mcpTidyPageBody(MindMapPage page, int idx) {
     final keep = _currentPageIndex;
     _currentPageIndex = idx;          // autoLayoutTree は現在ページを見る
     try {
       // ★ (10000,10000) 決め打ちだと、 基準位置 (既定 900,900) を中央に
       //   して開く画面と食い違い、 開き直した時に何も無い所が映って
       //   いた (= ユーザー報告)。 そのページの基準位置に合わせる。
-      autoLayoutTree(referencePos: mcpReferenceFor(pageId));
+      autoLayoutTree(referencePos: mcpReferenceFor(page.id), commit: false);
     } catch (e) {
       debugPrint('mcpTidyPage failed: $e');
     }
@@ -106617,10 +108470,6 @@ $cleanQ
     // autoLayoutTree 内でも更新するが、上の MCP 専用補正がその後に動くため
     // ここでもう一度合わせる。
     _reflowNodeBoundDecorations(page);
-    page.lastModifiedAt = DateTime.now();
-    _saveToStorage();
-    notifyListeners();
-    _requestMcpFocus(pageId);
   }
 
   /// ギャラリー (bookshelf) の整列 (= AI アシスタントの tidy_page 用)。
@@ -106630,17 +108479,23 @@ $cleanQ
   /// と言われて整列されない)。 mcpTidyPage には入れない — あちらは AI が
   /// 触った全ページへ毎回自動で掛かるため、 ギャラリーの意図的な配置まで
   /// 勝手に詰め直してしまう。 こちらは明示的に頼まれた時だけ呼ばれる。
-  /// 動いた件数を返す (0 = 既に整列済みで何もしなかった)。
-  int mcpTidyGallery(String pageId) {
+  /// 変わった件数を返す (0 = 既に整列済みで何もしなかった)。 動いた数と大きさ
+  /// を揃えた数の内訳、 揃えた後のタイル寸法は [outcome] に入れる (= 継続検証
+  /// 285「無変更と返しながらタイルの高さが変わる」)。
+  int mcpTidyGallery(String pageId, {Map<String, Object?>? outcome}) {
     final page = mcpPageById(pageId);
     if (page == null || page.pageType != 'bookshelf') return 0;
     if (page.nodes.isEmpty) return 0;
     // ★ = 継続検証 175「変化のない整列が成功扱いになり、 取り消し履歴を
-    //   消費する」。 並べる**前**の座標を控えて、 1 件も動かないなら
+    //   消費する」。 並べる**前**の姿を控えて、 1 件も変わらないなら
     //   保存も控えも触らない (利用者の Ctrl+Z を空振りで食わせない)。
-    final before = {
-      for (final e in page.nodes.entries) e.key: e.value.position
-    };
+    // ★ = 継続検証 285「無変更・保存なしと返しながらタイルの高さが変わる
+    //   (80.2 → 209)」。 控えるのは座標だけでなく**要素まるごと**。
+    //   _arrangeAsBookshelfBody は copyWith で幅 / 高さ / 表紙の比率まで揃え
+    //   直すので、 マス目が同じでも見た目は変わる。 「変わったか」 の判定に
+    //   寸法を入れ、 控えを積む前に寸法も戻す (戻さないと、 取り消しても
+    //   整列後の大きさが残る)。
+    final before = {for (final e in page.nodes.entries) e.key: e.value};
     // マス目も控える (整列はマス目そのものを詰め直すため)。
     final cellsBefore = {
       for (final e in _shelfCells.entries) e.key: List<int>.of(e.value)
@@ -106648,11 +108503,20 @@ $cleanQ
     // 試しに並べてから比べる。 動かないなら元へ戻して何も残さない。
     repackShelfCellsRowMajor(page);
     _arrangeAsBookshelfBody(page);
-    final moved = [
-      for (final e in page.nodes.entries)
-        if (before[e.key] != e.value.position) e.key
-    ];
-    if (moved.isEmpty) {
+    final movedIds = <String>[];
+    final resizedIds = <String>[];
+    for (final e in page.nodes.entries) {
+      final was = before[e.key];
+      if (was == null) continue;
+      if (was.position != e.value.position) movedIds.add(e.key);
+      if (was.width != e.value.width ||
+          was.height != e.value.height ||
+          was.visualHeight != e.value.visualHeight) {
+        resizedIds.add(e.key);
+      }
+    }
+    final changedIds = <String>{...movedIds, ...resizedIds};
+    if (changedIds.isEmpty) {
       return 0;
     }
     // ★ 裏のページを整えても控えは**そのページ**へ積む (= 動作検証の不具合
@@ -106661,9 +108525,8 @@ $cleanQ
     //   ([_PageSnapshot.shelfCells])。
     //   並べ直しは既に済んでいるので、 控えを積む前に**並べる前**の
     //   座標とマス目へ戻す (戻さないと、 取り消しても整列後の形が返る)。
-    for (final e in page.nodes.entries) {
-      final was = before[e.key];
-      if (was != null) e.value.position = was;
+    for (final e in before.entries) {
+      page.nodes[e.key] = e.value;
     }
     _shelfCells
       ..clear()
@@ -106676,7 +108539,20 @@ $cleanQ
     _saveToStorage();
     notifyListeners();
     _requestMcpFocus(pageId);
-    return moved.length;
+    if (outcome != null) {
+      outcome['moved'] = movedIds.length;
+      outcome['resized'] = resizedIds.length;
+      // 揃えた後のタイル寸法 (ギャラリーのタイルは全て同寸)。
+      double w = 0;
+      double h = 0;
+      for (final n in page.nodes.values) {
+        if (n.width > w) w = n.width;
+        if (n.visualHeight > h) h = n.visualHeight;
+      }
+      outcome['tileWidth'] = double.parse(w.toStringAsFixed(1));
+      outcome['tileHeight'] = double.parse(h.toStringAsFixed(1));
+    }
+    return changedIds.length;
   }
 
   /// 子が奇数個の親は、 真ん中の子を親とちょうど同じ高さに揃える
@@ -107199,10 +109075,17 @@ $cleanQ
   //   面接練習で動いている取得部 (鍵不要) をそのまま使う。
 
   /// Web を検索して [{title, url}] を返す。
+  ///
+  /// ★ 返す直前に Jev で並べ替える ('jevWebRank' が入っている時だけ)。
+  ///   変わるのは AI が次に web_fetch する先の順番だけで、 取得そのものは
+  ///   従来どおり。 判断が取れなければ検索結果の順のまま返す。
   Future<List<Map<String, String>>> mcpWebSearch(String query,
-          {int limit = 8}) =>
-      TalkReference.searchWeb(query,
-          limit: limit, lang: _appLanguage == 'ja' ? 'ja' : 'en');
+      {int limit = 8}) async {
+    final hits = await TalkReference.searchWeb(query,
+        limit: limit, lang: _appLanguage == 'ja' ? 'ja' : 'en');
+    // ★ 1 件以下でも通す (諦めた理由を診断へ残すため。 中で並べ替えはしない)。
+    return jevRankWebResults(query, hits);
+  }
 
   /// URL を 1 本読んで本文テキストにする。 危ない宛先は断る。
   Future<Map<String, dynamic>> mcpWebFetch(String url,
@@ -107487,7 +109370,10 @@ $cleanQ
     //   消した後は自動で白紙が 1 枚置かれる。
     deletePage(i);
     for (final p in attachments) {
-      final r = await mcpDisposeAttachmentFile(p, disposeFiles);
+      // ★ = 継続検証 230 前半。 ページ削除の取り消し (Ctrl+Z) でも実体を
+      //   戻せるように、 写しを取る経路へ乗せる。
+      final r = await mcpDisposeAttachmentFile(p, disposeFiles,
+          pageDeleted: true);
       disposed?.add({'path': p, ...r});
     }
     return null;
@@ -107567,13 +109453,22 @@ $cleanQ
     for (final id in page.nodes.keys.toList()) {
       final n = page.nodes[id];
       if (n == null) continue;
-      // 既に控えが在るなら触らない (往復を繰り返しても最初の寸法を守る)。
-      if (n.preShelfWidth != null) continue;
+      // 既に控えが在る項目は守る (往復を繰り返しても最初の寸法/座標を返す)。
+      // ★ = 継続検証 244。 寸法の控えだけ在って座標の控えが無い物 (この版より
+      //   前にギャラリーへ変えたページ / ギャラリー内で複製した物) にも座標を
+      //   付けたいので、 早い continue ではなく項目ごとに `??` で埋める。
+      if (n.preShelfWidth != null &&
+          n.preShelfX != null &&
+          n.preShelfY != null) {
+        continue;
+      }
       page.nodes[id] = n.copyWith(
-        preShelfWidth: n.width,
-        preShelfHeight: n.height,
-        preShelfClampHeight: n.clampHeight,
-        preShelfAspectRatio: n.attachmentAspectRatio,
+        preShelfWidth: n.preShelfWidth ?? n.width,
+        preShelfHeight: n.preShelfHeight ?? n.height,
+        preShelfClampHeight: n.preShelfClampHeight ?? n.clampHeight,
+        preShelfAspectRatio: n.preShelfAspectRatio ?? n.attachmentAspectRatio,
+        preShelfX: n.preShelfX ?? n.position.dx,
+        preShelfY: n.preShelfY ?? n.position.dy,
       );
     }
   }
@@ -107589,14 +109484,27 @@ $cleanQ
       {Map<String, Object?>? outcome}) {
     var restored = 0;
     var kept = 0;
+    var movedBack = 0;
     for (final id in page.nodes.keys.toList()) {
       final n = page.nodes[id];
       if (n == null) continue;
+      // ★ = 継続検証 244。 座標の控えも返す。 copyWith の position は
+      //   `position ?? this.position` なので、 null を渡せば「触らない」。
+      final px = n.preShelfX;
+      final py = n.preShelfY;
+      final Offset? wasPos = (px != null && py != null) ? Offset(px, py) : null;
       if (n.preShelfWidth == null || n.preShelfHeight == null) {
-        if (n.clampHeight) {
-          page.nodes[id] = n.copyWith(clampHeight: false);
-          kept++;
+        // 寸法の控えが無くても、 座標の控えだけ在るなら位置は返す。
+        if (n.clampHeight || wasPos != null) {
+          page.nodes[id] = n.copyWith(
+            clampHeight: false,
+            position: wasPos,
+            preShelfX: null,
+            preShelfY: null,
+          );
         }
+        if (n.clampHeight) kept++;
+        if (wasPos != null) movedBack++;
         continue;
       }
       page.nodes[id] = n.copyWith(
@@ -107605,16 +109513,26 @@ $cleanQ
         height: n.preShelfHeight!.clamp(14.0, 4000.0),
         clampHeight: n.preShelfClampHeight ?? false,
         attachmentAspectRatio: n.preShelfAspectRatio,
+        position: wasPos, // null = 触らない (座標の控えが無い古いページ)
         preShelfWidth: null,
         preShelfHeight: null,
         preShelfClampHeight: null,
         preShelfAspectRatio: null,
+        preShelfX: null,
+        preShelfY: null,
       );
       restored++;
+      if (wasPos != null) movedBack++;
     }
+    // ★ = 継続検証 244「囲み図形が旧座標に取り残される」。 ギャラリーの間は
+    //   囲みを動かす所が無い (_arrangeAsBookshelfBody は装飾に触らない) ので、
+    //   通常マップへ戻した今の座標で作り直す。 手で動かした図形は
+    //   [dragDecorationBy] が aroundNodeIds を空にしているため巻き込まない。
+    _reflowNodeBoundDecorations(page);
     if (outcome != null) {
       outcome['restoredSizes'] = restored;
       if (kept > 0) outcome['keptGallerySize'] = kept;
+      if (movedBack > 0) outcome['restoredPositions'] = movedBack;
     }
     return restored;
   }
@@ -107715,18 +109633,33 @@ $cleanQ
   ({String path, String name, String kind})? get frontDocument =>
       _frontDocument;
 
+  /// その画面を閉じる手 (エディタが [setFrontDocument] と一緒に預ける)。
+  ///
+  /// ★ = 継続検証 412「前面のファイル閲覧画面を MCP から閉じられない」。
+  ///   未保存の確認まではエディタ側の仕事なので、 返り値は「本当に閉じたか」。
+  ///   分割ペインや浮遊窓に埋めてある時は消す route が無いので null。
+  Future<bool> Function()? _frontDocumentCloser;
+
   /// エディタが開いた / 閉じた時に呼ぶ。 [path] が空なら「閉じた」。
   /// 閉じる時は、 自分が最後に登録した物と同じ時だけ消す (別のエディタが
   /// 後から開いている時に、 古い方の後始末で消してしまわないように)。
   void setFrontDocument(
-      {required String path, String name = '', String kind = ''}) {
+      {required String path,
+      String name = '',
+      String kind = '',
+      Future<bool> Function()? closer}) {
     final p = path.trim();
     if (p.isEmpty) {
       if (_frontDocument == null) return;
       _frontDocument = null;
+      _frontDocumentCloser = null;
       notifyListeners();
       return;
     }
+    // ★ 同じファイルを開き直した時は、 中身が同じでも「閉じ方」 は新しい
+    //   画面の物へ入れ替える (古い手はもう死んでいる)。 下の早期 return の
+    //   前に置くこと。
+    _frontDocumentCloser = closer;
     if (_frontDocument?.path == p) return;
     _frontDocument = (path: p, name: name.isEmpty ? p : name, kind: kind);
     notifyListeners();
@@ -107735,8 +109668,61 @@ $cleanQ
   void clearFrontDocument(String path) {
     if (_frontDocument?.path == path.trim()) {
       _frontDocument = null;
+      _frontDocumentCloser = null;
       notifyListeners();
     }
+  }
+
+  /// 前面のファイル閲覧画面だけを閉じる (= 継続検証 412 / 機能追加案)。
+  ///
+  /// ★ 相手は [frontDocument] が指している 1 枚だけ。 run_app_command が
+  ///   開いた機能画面は [mcpCloseCommand] の担当で、 ここでは触らない。
+  /// ★ 未保存の編集がある時は、 エディタ側の確認が通らない限り閉じない。
+  ///   閉じなかった時は理由を返す (= 「閉じました」 と言わせないため)。
+  Future<Map<String, Object?>> mcpCloseForegroundFile() async {
+    final fd = _frontDocument;
+    if (fd == null) {
+      return {
+        'error': 'no_file_open: no file editor is on top right now, so there '
+            'was nothing to close. Call describe_screen to see what is open.'
+      };
+    }
+    final file = {
+      'name': fd.name,
+      'kind': fd.kind,
+      'path': mcpNormalizePath(fd.path),
+    };
+    final behind = _pages.isEmpty
+        ? null
+        : {'pageId': currentPage.id, 'name': currentPage.name};
+    final closer = _frontDocumentCloser;
+    if (closer == null) {
+      return {
+        'closed': false,
+        'reason': 'notClosableFromHere',
+        'file': file,
+        if (behind != null) 'pageBehind': behind,
+        'note': 'that file is embedded in a split pane, so it has no window '
+            'of its own to close - change the pane with set_split_view '
+            'instead. Nothing was closed.',
+      };
+    }
+    final done = await closer();
+    if (!done) {
+      return {
+        'closed': false,
+        'reason': 'unsavedEditsKept',
+        'file': file,
+        'note': 'it is STILL OPEN - the file has unsaved edits and the user '
+            'was asked and kept it (or the screen had already gone). Do not '
+            'say you closed it.',
+      };
+    }
+    return {
+      'closed': true,
+      'file': file,
+      if (behind != null) 'pageBehind': behind,
+    };
   }
 
   /// AI の下ごしらえに載せるページ一覧 (= 調査報告 BUG-30
@@ -107885,6 +109871,7 @@ $cleanQ
   }
 
   List<Map<String, dynamic>> mcpListPages() {
+    var orderNo = 0;
     final out = <Map<String, dynamic>>[
       for (final p in _pages)
         {
@@ -107893,6 +109880,12 @@ $cleanQ
           'type': p.pageType,
           'nodeCount': p.nodes.length,
           'isCurrent': p.id == currentPage.id,
+          // ★ = 機能追加案 継続検証211「正規のページ順を取得できるように」。
+          //   この一覧は**開いているページを必ず先頭**へ寄せるので、 返した
+          //   並びをそのまま「元の順」 の控えには使えなかった (並べ替えを
+          //   試して戻す検証が出来ない)。 本当の保存順を番号で添える。
+          //   reorder_pages へ渡す時は、 この番号で並べ直してから渡す。
+          'orderIndex': orderNo++,
           // どのフォルダーに入っているか (null = フォルダーの外)。
           'folderId': p.folderId,
           'lastModified': p.lastModifiedAt.toIso8601String(),
@@ -107980,6 +109973,20 @@ $cleanQ
     if (_isLocalFileRef(bg) && !File(bg).existsSync()) {
       json['brokenBackground'] = bg;
     }
+    // ★ = 継続検証 191 / 236「重ね順 3 の図形だけ layer が返らない」。
+    //   保存側は既定 (3) のとき鍵を書かない作り (旧バージョンとの互換維持:
+    //   MapDecoration.toJson / NodeConnection.toJson / MindMapNode.toJson)。
+    //   そのまま返すと 3 だけ読めず、 「重ね順の割り当てに失敗した」 ように
+    //   見えていた。 保存は触らず、 読む口で既定値を展開する (= 添付の道筋を
+    //   返す時だけ揃えるのと同じ作法)。 図形だけでなく要素・つなぎ線も同じ
+    //   省略をしているので一緒に直す。
+    for (final key in const ['nodes', 'connections', 'decorations']) {
+      final list = json[key];
+      if (list is! List) continue;
+      for (final e in list) {
+        if (e is Map<String, dynamic>) e['layer'] ??= 3;
+      }
+    }
     return json;
   }
 
@@ -108038,13 +110045,19 @@ $cleanQ
     //   種類を変える方 (mcpSetPageType) は理由を返して断るのに、 作る方だけ
     //   すり替えていたので、 大小文字の間違いで別のページが増えていた。
     //   同じ列挙で検査し、 大小文字だけの違いは正しい綴りへ均す。
+    // ★ = 不具合報告 2026-09-30「create_page の automation 拒否文が画面上の
+    //   実在種別と矛盾する」。 自動操作は画面の ＋ メニューから作れる
+    //   **本物の種別**なのに、 ここに無いため「そんな種別はない」 と
+    //   答えていた。 作れないのではなく**入口が無かった**だけなので、
+    //   画面と同じ道 (addAutomationPage) をここからも使えるようにする。
     const known = {
       'normal',
       'bookshelf',
       'paint',
       'videoEditor',
       'document',
-      'markdown'
+      'markdown',
+      'automation',
     };
     final asked = type.trim();
     final t = known.firstWhere(
@@ -108058,6 +110071,11 @@ $cleanQ
     }
     if (!canCreatePageType(t)) {
       outcome?['reason'] = 'plan_or_quota';
+      return null;
+    }
+    // 自動操作はパソコン版 + Pro 以上だけ (画面側と同じ線引き)。
+    if (t == 'automation' && !canUseAutomationPage) {
+      outcome?['reason'] = 'automation_unavailable';
       return null;
     }
     if (name != null) {
@@ -108092,6 +110110,9 @@ $cleanQ
         break;
       case 'markdown':
         addMarkdownPage(name: name, folderId: dest);
+        break;
+      case 'automation':
+        addAutomationPage(name: name, folderId: dest);
         break;
       default:
         addPage(name: name, folderId: dest);
@@ -108386,6 +110407,11 @@ $cleanQ
     String? text,
     String? memo,
     String? imagePath,
+    // ★ = 機能追加案 継続検証237「ギャラリーへリンク・YouTube を直接
+    //   追加できるように」。 通す物は add_node と同じ物差し (http/https
+    //   だけ、 YouTube の視聴 URL は動画タイル)。
+    String? url,
+    Map<String, Object?>? outcome,
   }) {
     final page = mcpPageById(pageId);
     if (page == null) return null;
@@ -108412,13 +110438,50 @@ $cleanQ
       position: mcpReferenceFor(pageId),
       color: _childColor(),
     );
+    // ★ = 機能追加案 継続検証192「画像ギャラリーにもメモを持たせる」。
+    //   以前は else if だったので、 絵と一緒に渡されたメモが**捨てられて**
+    //   いた。 メモは種別に関わらず先に入れる (種別は下で決まる)。
+    if (memo != null && memo.isNotEmpty) node.memoText = memo;
     if (imagePath != null && imagePath.isNotEmpty) {
       node.contentType = NodeContentType.attachment;
       node.attachmentPath = imagePath;
       node.attachmentName = _baseName(imagePath);
-    } else if (memo != null && memo.isNotEmpty) {
+    } else if (node.memoText != null && node.memoText!.isNotEmpty) {
       node.contentType = NodeContentType.memo;
-      node.memoText = memo;
+    }
+    // ★ = 機能追加案 継続検証237。 URL はリンクタイル / 動画タイルにする。
+    //   通し方は mcpAddNode と同じ (開けない物はリンクにしない)。
+    final glLink = (url ?? '').trim();
+    if (glLink.isNotEmpty) {
+      if (!mcpIsUsableLink(glLink)) {
+        if (outcome != null) {
+          outcome['requestedUrl'] = glLink;
+          outcome['storedAs'] =
+              (node.memoText ?? '').isEmpty && node.attachmentPath == null
+                  ? 'memo'
+                  : 'dropped';
+          outcome['reason'] = 'unsupported_scheme: only http(s) links can be '
+              'opened from a tile, so it was NOT made clickable';
+        }
+        if ((node.memoText ?? '').isEmpty && node.attachmentPath == null) {
+          node.contentType = NodeContentType.memo;
+          node.memoText = glLink;
+        }
+      } else if (_isYoutubeVideoUrl(glLink)) {
+        node.youtubeUrl = glLink;
+        // 絵のタイルは添付のまま (表紙の描き方が添付を見ているため)。
+        if (node.attachmentPath == null) {
+          node.contentType = NodeContentType.youtube;
+        }
+        outcome?['tileKind'] = 'youtube';
+      } else {
+        node.linkUrl = glLink;
+        if (node.attachmentPath == null &&
+            (node.memoText ?? '').isEmpty) {
+          node.contentType = NodeContentType.link;
+        }
+        outcome?['tileKind'] = 'link';
+      }
     }
     page.nodes[node.id] = node;
     _arrangeAsBookshelfBody(page); // 棚のマス目へ収める
@@ -108690,9 +110753,13 @@ $cleanQ
     final page = mcpPageById(pageId);
     if (page == null || page.pageType != 'paint') return null;
     // 空白だけの段落は入れない (= 文書ページ側と同じ作法)。
+    // ★ = 継続検証 238「配列形式だけ前後空白を失う」。 前後の空白は**残す**
+    //   (字下げが消えるため)。 ただし末尾の改行だけは落とす —— この下で
+    //   '\n' を足すので、 残すと足すたびに空行が増える。 \r も一緒に落とす
+    //   (CRLF で送られた時、 裸の \r が insert に焼き付くのを防ぐ)。
     final wanted = [
       for (final t in texts)
-        if (t.trim().isNotEmpty) t.trimRight(),
+        if (t.trim().isNotEmpty) t.replaceFirst(RegExp(r'[\r\n]+$'), ''),
     ];
     if (wanted.isEmpty) {
       return (wrote: 0, binder: 0, tab: 0, tabName: '');
@@ -109550,6 +111617,14 @@ $cleanQ
     double? size,
     int? colorValue,
     List<String>? usedSheets,
+    /// 実際に置いた座標・大きさ (紙の中へ丸めた**後**) を入れて返す受け皿。
+    ///
+    /// ★ = 継続検証 222「add_paint_text の補正値が応答に出ない」。 x / y / size
+    ///   は黙って紙の中へ丸めているのに、 応答は written だけだったので、
+    ///   呼んだ側は言われた場所・大きさで置けたと思い込み、 紙の端に極端な
+    ///   文字を作っても読み戻すまで気付けなかった。 'x' / 'y' / 'size' /
+    ///   'paperWidth' / 'paperHeight' / 'lineHeight' / 'wrapWidth' を返す。
+    Map<String, Object?>? placedOut,
   }) async {
     final wanted = [
       for (final l in lines)
@@ -109718,6 +111793,20 @@ $cleanQ
           }
           // 段落の途中で切る時も、 折り返しで入れた行の切れ目で切る。
           final take = lines.length <= room ? lines.length : room;
+          // ★ = 継続検証 222。 最初に置けた所が「実際の座標」。 紙が尽きて
+          //   次のタブへ送られると left / cursor / paper が変わるので、
+          //   1 個目だけを控える (呼んだ側がここを利用者に伝える)。
+          if (placedOut != null && placedOut.isEmpty) {
+            placedOut['x'] = left;
+            placedOut['y'] = cursor;
+            placedOut['size'] = fontSize;
+            placedOut['paperWidth'] = paper.$1;
+            placedOut['paperHeight'] = paper.$2;
+            placedOut['lineHeight'] = lineH;
+            // 折り返しに使える幅 (x を大きくすると細くなる → 1 文字ずつ
+            // 折り返す原因。 これも黙っていると気付けない)。
+            placedOut['wrapWidth'] = maxW;
+          }
           texts.add({
             'x': left,
             'y': cursor,
@@ -109784,9 +111873,15 @@ $cleanQ
   //      古いままになり得る。 こちらから確かめる術は無いので、 見たままを返す。
 
   /// マークダウンページの中身を読む (タブ束ごと)。
-  Future<Map<String, dynamic>?> mcpReadMarkdown(String pageId) async {
+  /// ★ [anyPageType] は「ページ種類を問わず入れ物を読む」 (= 継続検証
+  ///   357 / 358 / 409。 種類を切り替えても本文は `markdown_<id>` に残るので、
+  ///   横断検索が隠れた本文を読み返すのに使う)。 既定は false なので、
+  ///   道具から呼ぶ時の振る舞いは変わらない。
+  Future<Map<String, dynamic>?> mcpReadMarkdown(String pageId,
+      {bool anyPageType = false}) async {
     final page = mcpPageById(pageId);
-    if (page == null || page.pageType != 'markdown') return null;
+    if (page == null) return null;
+    if (!anyPageType && page.pageType != 'markdown') return null;
     try {
       final prefs = await _prefsWithRetry();
       final raw = _mcpMarkdownWriteThrough[page.id] ??
@@ -109830,14 +111925,28 @@ $cleanQ
   }
 
   /// 文書ページ (とフリーノートの文書モード) の本文を紙ごとに読む。
-  Future<Map<String, dynamic>?> mcpReadDocument(String pageId) async {
+  /// [binder] を渡すと、 フリーノートの**その 1 冊**だけを読む
+  /// (省くと全バインダー。 = 継続検証 239)。
+  /// ★ [anyPageType] は「ページ種類を問わず入れ物を読む」 (= 継続検証
+  ///   357 / 358 / 409。 横断検索が、 種類を切り替えて隠れた本文を読み返す
+  ///   のに使う)。 既定は false なので、 道具から呼ぶ時の振る舞いは
+  ///   変わらない。
+  Future<Map<String, dynamic>?> mcpReadDocument(String pageId,
+      {int? binder, bool anyPageType = false}) async {
     final page = mcpPageById(pageId);
     if (page == null) return null;
-    if (page.pageType != 'document' && page.pageType != 'paint') return null;
+    if (page.pageType != 'document' &&
+        page.pageType != 'paint' &&
+        !anyPageType) {
+      return null;
+    }
     // ★ = 動作検証の不具合「フリーノートの文書追記がタブごとに分かれない」。
-    //   フリーノートの本文は**紙 (タブ) ごと**なので、 今開いている
-    //   バインダーのタブを 1 枚 1 枚返す (書く側と同じ見方)。
-    if (page.pageType == 'paint') return _mcpReadPaintDoc(page);
+    //   フリーノートの本文は**紙 (タブ) ごと**なので、 タブを 1 枚 1 枚
+    //   返す (書く側と同じ見方)。
+    // ★ = 継続検証 239「選択中のバインダーだけ返る」。 既定で全バインダー。
+    if (page.pageType == 'paint') {
+      return _mcpReadPaintDoc(page, onlyBinder: binder);
+    }
     try {
       final prefs = await _prefsWithRetry();
       // ★ = 動作検証レポート 2026-09-24。 書いた直後でも、 ページ JSON 保存の
@@ -109883,11 +111992,17 @@ $cleanQ
   /// フリーノートの文書レイヤーを「タブ 1 枚 = 紙 1 枚」 として読む。
   ///
   /// ★ = 動作検証の不具合「フリーノートの文書追記がタブごとに分かれない」。
-  ///   本文は紙 (タブ) ごとの `'doc'` に入っているので、 今開いている
-  ///   バインダーのタブを順に返す。 `appendsTo` は選んでいるタブ。
+  ///   本文は紙 (タブ) ごとの `'doc'` に入っているので、 タブを 1 枚 1 枚
+  ///   返す。 `appendsTo` は選んでいるタブ。
   ///   昔 `document_<pageId>` へ書いた分は `pageSideNote` として添える
   ///   (読めなくなる物を作らないため)。
-  Future<Map<String, dynamic>?> _mcpReadPaintDoc(MindMapPage page) async {
+  ///
+  /// ★ = 継続検証 239「read_document がフリーノートの選択中バインダーだけ
+  ///   返す」。 既定で**全バインダー**を返す ([onlyBinder] を渡された時だけ
+  ///   1 冊に絞る)。 読むだけなので、 画面で選んでいるバインダー / タブは
+  ///   動かさない。
+  Future<Map<String, dynamic>?> _mcpReadPaintDoc(MindMapPage page,
+      {int? onlyBinder}) async {
     try {
       String plain(dynamic delta) {
         if (delta is! List) return '';
@@ -109901,14 +112016,54 @@ $cleanQ
       final body = await _mcpPaintBody(page.id);
       final sel = _mcpPaintSel(body);
       final papers = <Map<String, Object?>>[];
+      // ★ = 継続検証 239「read_document がフリーノートの選択中バインダーだけ
+      //   返す」。 バインダーは何冊でも作れるので、 選んでいる 1 冊しか
+      //   返さないと残りの本文は読み返す道が無い (= list_paint_tabs は全冊を
+      //   返すのに、 こちらだけ食い違っていた。 ページ内検索も
+      //   [_mcpBodyTextsOf] 経由でここを通るので、 他の冊に書いた言葉を
+      //   「無い」 と答えていた)。 読むだけなので画面の選択は動かさず、
+      //   全冊・全タブを binderIndex / binderName 付きで並べる。
+      //   [onlyBinder] を渡された時だけ 1 冊に絞る。
+      final binderInfo = <Map<String, Object?>>[];
+      var sawNotes = false;
+      var totalBinders = 0;
+      var selTabCount = -1;
       List? tabs;
       if (body is Map) {
         final notes = body['notes'];
         if (notes is List && notes.isNotEmpty) {
-          var ni = sel.binder;
-          if (ni < 0 || ni >= notes.length) ni = 0;
-          final note = notes[ni];
-          if (note is Map && note['pages'] is List) tabs = note['pages'] as List;
+          sawNotes = true;
+          totalBinders = notes.length;
+          for (var bi = 0; bi < notes.length; bi++) {
+            final note = notes[bi];
+            if (note is! Map) continue;
+            final rawPages = note['pages'];
+            final List? pages = rawPages is List ? rawPages : null;
+            final count = pages?.length ?? 0;
+            // 書き足す先 (今開いている冊) のタブ数は、 絞られても覚える。
+            if (bi == sel.binder) selTabCount = count;
+            if (onlyBinder != null && bi != onlyBinder) continue;
+            final bName = '${note['n'] ?? ''}';
+            binderInfo.add({
+              'index': bi,
+              'name': bName,
+              'selected': bi == sel.binder,
+              'tabCount': count,
+            });
+            if (pages == null) continue;
+            for (var i = 0; i < pages.length; i++) {
+              final t = pages[i];
+              if (t is! Map) continue;
+              papers.add({
+                'binderIndex': bi,
+                'binderName': bName,
+                'index': i,
+                'name': '${t['n'] ?? ''}',
+                'selected': bi == sel.binder && i == sel.tab,
+                'text': plain(t['doc']),
+              });
+            }
+          }
         } else if (body['pages'] is List) {
           tabs = body['pages'] as List;
         } else if (body['sheets'] is List) {
@@ -109925,7 +112080,8 @@ $cleanQ
             'text': plain(t['doc']),
           });
         }
-      } else if (body != null) {
+        // ★ バインダーの無い古い形は、 紙の並びがそのままタブの並び。
+      } else if (!sawNotes && body != null) {
         // 昔の 1 枚だけの形。
         final found = _mcpPaintSheetOf(body);
         if (found.sheet.isNotEmpty) {
@@ -109950,16 +112106,38 @@ $cleanQ
           }
         }
       } catch (_) {}
+      // 書き足す先は「今選んでいる冊の、 今選んでいるタブ」。
+      // ★ papers は全冊ぶん並んでいるので、 番号は**その冊の中**のタブ番号
+      //   として返す (= append_document_text / select_paint_tab が受け取る
+      //   番号と同じ)。 検算も、 全体の件数ではなくその冊のタブ数で行う。
+      if (selTabCount < 0) selTabCount = papers.length;
       var appendsTo = sel.tab;
-      if (appendsTo < 0 || appendsTo >= papers.length) {
-        appendsTo = papers.isEmpty ? 0 : 0;
-      }
+      if (appendsTo < 0 || appendsTo >= selTabCount) appendsTo = 0;
       return {
         'pageId': page.id,
         // ★ どの単位で持っているか。 'sheet' = タブごと (今の作り)。
         'scope': 'sheet',
         'binder': sel.binder,
         'appendsTo': appendsTo,
+        // ★ = 継続検証 239。 binders を**必ず**添える (絞った時に何も
+        //   添えないと、 範囲外の番号を渡された事に気付けず「本文が無い」 と
+        //   読まれる)。 冊の総数は絞っても本当の数を返す。
+        if (sawNotes) ...{
+          'binderCount': totalBinders,
+          'binders': binderInfo,
+          // ★ 何が返っているのかを取り違えられないように言い切る
+          //   (「今の冊だけ」 と思われると読み落としになる)。
+          'scopeNote': onlyBinder == null
+              ? 'every binder and every tab is listed - each paper carries '
+                  'binderIndex / binderName. "binder" + "appendsTo" is where '
+                  'append_document_text would write (the open tab); call '
+                  'select_paint_tab first to write anywhere else. Reading '
+                  'did not change what is open.'
+              : 'only binder $onlyBinder of $totalBinders is listed (you '
+                  'asked for it) - omit "binder" to get every binder. '
+                  '"binder" + "appendsTo" is where append_document_text '
+                  'would write (the open tab).',
+        },
         'papers': papers,
         if (side.trim().isNotEmpty) 'pageSideNote': side,
       };
@@ -110093,9 +112271,15 @@ $cleanQ
     }
   }
 
-  Future<Map<String, dynamic>?> mcpListVideoEditorItems(String pageId) async {
+  /// ★ [anyPageType] は「ページ種類を問わず入れ物を読む」 (= 継続検証
+  ///   357 / 358 / 409。 横断検索が、 種類を切り替えて隠れた字幕を読み返す
+  ///   のに使う)。 既定は false なので、 道具から呼ぶ時の振る舞いは
+  ///   変わらない。
+  Future<Map<String, dynamic>?> mcpListVideoEditorItems(String pageId,
+      {bool anyPageType = false}) async {
     final page = mcpPageById(pageId);
-    if (page == null || page.pageType != 'videoEditor') return null;
+    if (page == null) return null;
+    if (!anyPageType && page.pageType != 'videoEditor') return null;
     try {
       final prefs = await _prefsWithRetry();
       // ★ 控えではなく読み直して確かめる (書いた直後に空で返る口を塞ぐ)。
@@ -110167,8 +112351,16 @@ $cleanQ
   ///   実状態**。 [outcome] に 'pageTabs' (ページ全体のタブ数) /
   ///   'wroteTabs' (この呼び出しで書いたタブ数) / 'wroteTo' (書いた先の名前)
   ///   / 'otherTabsKept' を入れる。
-  /// [clear] を true にすると、 空の本文で**明示的に空ページへ戻す**
+  /// ★ = 継続検証 197。 数は「分けようとした数」 ではなく**保存する中身**を
+  ///   読み直して数える。 'writtenChars' (タブに入った本文の文字数。 区切り行
+  ///   と区画の間の空行は保存しないので、 渡した長さより必ず小さい) と
+  ///   'droppedLines' (どのタブにも入らなかった本文の行数) も入れる。
+  /// [clear] を true にすると、 **今あるタブを全部捨ててから**書く。
+  ///   本文と組み合わせれば「このページを渡した本文だけにする」、 空の本文と
+  ///   組み合わせれば**明示的に空ページへ戻す**
   ///   (= 継続検証 171「空内容の保存が拒否されるので入門本文を抑止できない」)。
+  ///   ★ 全消去は必ず**書き込みより前**に置く (= 継続検証 190 / 199。 後ろに
+  ///   置いていたので、 この呼び出しで書いた本文まで巻き添えで消えていた)。
   Future<int> mcpWriteMarkdown(String pageId, String text,
       {bool append = false,
       bool? split,
@@ -110232,7 +112424,30 @@ $cleanQ
       //   注意書きに頼らず、 ここで断る。
       if ('${tabs[sel]['url'] ?? ''}'.trim().isNotEmpty) {
         debugPrint('mcpWriteMarkdown: refused - tab $sel is a web tab');
+        // ★ 断った理由を呼ぶ側へ渡す。 これが無いと「保存できなかった」 と
+        //   いう見当違いの原因が返っていた。 clear:true でもここで断るのは
+        //   わざと (下の全消去は人が作った Web タブまで捨ててしまう)。
+        outcome?['reason'] = 'web_tab_selected';
+        outcome?['tabName'] = '${tabs[sel]['name'] ?? ''}';
+        outcome?['tabUrl'] = '${tabs[sel]['url'] ?? ''}';
         return 0;
+      }
+      // ★ = 継続検証 190 / 199「clear:true を付けると本文が消える」。
+      //   全消去は**書き込みより前**に済ませる。 以前はここから下で本文を
+      //   組み終えた**後**に消していたので、 この呼び出しで書いた本文まで
+      //   巻き添えで捨てられ、 応答だけ成功 (written / wroteTabs) に見えて
+      //   いた。 clear は「今あるタブを全部捨ててから書く」 の意味。
+      //   (= 継続検証 171。 空の本文と組み合わせた時だけ、 明示的に空ページ
+      //    へ戻す働きになる。 保存される形は従来と同じ。)
+      if (clear) {
+        tabs
+          ..clear()
+          ..add({
+            'id': 'md${DateTime.now().microsecondsSinceEpoch}',
+            'name': '1',
+            'text': '',
+          });
+        sel = 0;
       }
       // ★ 側欄の「複数タブに分ける」 と**同じ**切り分けを通す (= ユーザー
       //   要望。 二重実装にしない)。 末尾へ足す時と split:false の時は
@@ -110240,8 +112455,20 @@ $cleanQ
       final parts = (append || split == false)
           ? <({String name, String text})>[]
           : splitMarkdownIntoTabs(body,
-              byHeadingWhenNoMarker: true, force: split == true);
-      if (parts.length > 1) {
+              byHeadingWhenNoMarker: true,
+              force: split == true,
+              // ★ = 継続検証 197。 CLI が渡すのは「全文」 なので、 最初の
+              //   区切りより前の本文も捨てずに 1 区画として持つ。
+              keepLeadingText: true);
+      // ★ 区切りが 1 つだけ (前書き無し) の時も parts は 1 件になる。 件数
+      //   だけで見ると else へ落ち、 `<<<PAGE:…>>>` の行が本文に残った上に
+      //   タブ名も付かなかった。 「切り分けが効いたか」 は件数ではなく
+      //   **渡された本文と中身が変わったか**で見る (区切りが無い時の
+      //   splitMarkdownIntoTabs は body をそのまま 1 件で返すので、
+      //   分けていない時にこれが true になることはない)。
+      final splitApplied = parts.length > 1 ||
+          (parts.length == 1 && parts.first.text != body);
+      if (splitApplied) {
         // ★ 前に**この仕組みが**足したタブは、 同じ文書を書き直した時に
         //   古い写しが積み上がるので先に外す (= ユーザー要望「崩れた下書きが
         //   そのまま残らないように」 と同じ筋)。 印の付いた id の物だけ、
@@ -110276,28 +112503,78 @@ $cleanQ
         tabs[sel]['text'] =
             append ? (cur.isEmpty ? add : '$cur\n\n$add') : body;
       }
-      // ★ = 継続検証 171。 明示的な「空にする」 だけは受ける。
-      if (clear) {
-        tabs
-          ..clear()
-          ..add({
-            'id': 'md${DateTime.now().microsecondsSinceEpoch}',
-            'name': '1',
-            'text': '',
-          });
-        sel = 0;
-      }
+      final encoded = jsonEncode({'v': 2, 'sel': sel, 'tabs': tabs});
       if (outcome != null) {
-        outcome['pageTabs'] = tabs.length;
-        outcome['wroteTabs'] = parts.length > 1 ? parts.length : 1;
+        // ★ = 継続検証 197「最初の区切り前の本文が消えるのに成功と返る」。
+        //   数える相手は「分けようとした区画の数」 ではなく**これから保存
+        //   する中身そのもの**。 書く JSON を読み直し、 **渡された本文の行**が
+        //   本当に入っているかを数え合わせて応答へ返す。
+        final saved = <String>[];
+        try {
+          final j = jsonDecode(encoded);
+          if (j is Map && j['tabs'] is List) {
+            for (final e in (j['tabs'] as List)) {
+              if (e is Map) saved.add('${e['text'] ?? ''}');
+            }
+          }
+        } catch (_) {
+          // 読み直せない時は数え合わせを諦め、 今までどおりの数を返す。
+        }
+        // 書いたのは、 分けた時は各区画、 それ以外は渡された本文そのもの。
+        //   (末尾へ足す時に「タブ全体の長さ」 を書いた量と言わないため。)
+        final want = (splitApplied ? [for (final p in parts) p.text] : [body])
+            .map((s) => s.trim())
+            .where((s) => s.isNotEmpty)
+            .toList();
+        final total = saved.isEmpty ? tabs.length : saved.length;
+        final wrote =
+            want.isEmpty ? (parts.length > 1 ? parts.length : 1) : want.length;
+        outcome['pageTabs'] = total;
+        outcome['wroteTabs'] = wrote;
         outcome['wroteTo'] = '${tabs[sel]['name'] ?? ''}';
-        final wrote = parts.length > 1 ? parts.length : 1;
-        if (!append && tabs.length > wrote) {
-          outcome['otherTabsKept'] = tabs.length - wrote;
+        outcome['writtenChars'] = want.fold<int>(0, (a, b) => a + b.length);
+        // ★ 取りこぼしの数え合わせは**渡された本文**と突き合わせる。
+        //   旧: parts (= 自分で組んだ中間結果) と saved を比べていたが、
+        //   saved はその parts から組んだ物なので必ず一致し、 安全網は
+        //   原理的に発火しなかった (= 197 型の欠落をそのまま見逃す)。
+        //   行単位で「本文の行が、 保存する中身のどこかに在るか」 を見る。
+        //   空行と区切り行 (<<<PAGE:…>>>) は本文ではない (区切りはタブ名に
+        //   なる)。 囲みの中の区切りもどきは saved に残るので誤報しない。
+        final savedLines = <String>{
+          for (final s in saved)
+            for (final ln in s.split('\n'))
+              if (ln.trim().isNotEmpty) ln.trim()
+        };
+        final markerRe = RegExp(r'^<<<PAGE:\s*.+?\s*>>>$');
+        var missing = 0;
+        for (final ln in body.split('\n')) {
+          final t = ln.trim();
+          if (t.isEmpty || markerRe.hasMatch(t)) continue;
+          if (!savedLines.contains(t)) missing++;
+        }
+        if (missing > 0) {
+          outcome['droppedLines'] = missing;
+        }
+        if (!append && wrote > 0 && total > wrote) {
+          outcome['otherTabsKept'] = total - wrote;
         }
       }
-      final encoded = jsonEncode({'v': 2, 'sel': sel, 'tabs': tabs});
-      await prefs.setString(key, encoded);
+      // ★ = 継続検証 190 / 199 の後始末。 保存に失敗したら成功件数を返さない
+      //   (返り値 0 → 呼ぶ側が「保存できなかった」 と伝える)。 透過キャッシュも
+      //   汚さないので、 直後の read_markdown と応答が食い違わない。
+      if (!await prefs.setString(key, encoded)) {
+        debugPrint('mcpWriteMarkdown: prefs save failed for $key');
+        return 0;
+      }
+      // ★ = 継続検証 171「clear:true で空へ戻しても入門本文が復活する」。
+      //   書いた (空にした) 中身は道具が決めた物なので、 画面側の「書き方の
+      //   見本」 は以後差し込ませない。 これが無いと、 まだ一度も開いて
+      //   いないページを clear:true で空にした後、 最初に開いた時に
+      //   _MarkdownPageView._load() が空のタブ 1 枚を見て見本を入れ、
+      //   道具が返した cleared:true と食い違っていた。
+      //   鍵を直書きせず既にある入口を通す (自前の try/catch を持つので、
+      //   ここでつまずいても保存済みの本文を「失敗」 と言い換えない)。
+      await _mcpSuppressMarkdownStarter(id);
       // 成功を返す前にメモリ側も更新し、直後の read が古い遅延保存や
       // SharedPreferences の可視化タイミングに左右されないようにする。
       _mcpMarkdownWriteThrough[id] = encoded;
@@ -110484,6 +112761,15 @@ $cleanQ
       final dur = durationMs ?? 4000;
       final base = DateTime.now().microsecondsSinceEpoch;
       final count = k == 1 ? words.length : 1;
+      // ★ = 動作検証 継続検証 200「24 時間上限が追加と更新で一致しない」。
+      //   上限の検査が書き換え側にしか無く、 足す側は同じ値をそのまま
+      //   保存していた。 まとめ形は後ろへ並べて置くので、 最後の字幕の
+      //   終わり (dur * count) で見る。
+      if (mcpVideoTimelineRangeError(start, dur * count) != null) {
+        debugPrint('mcpAddVideoEditorItems: 24 時間を超えるので足しません '
+            '(start=$start dur=$dur count=$count)');
+        return const [];
+      }
       final ids = <String>[];
       for (var i = 0; i < count; i++) {
         final id = 'mcp${base + i}';
@@ -110760,9 +113046,147 @@ $cleanQ
   ///   nodeCount が 0 になり、 空ページに見える」。 本文はページ JSON の外に
   ///   あるので nodeCount では数えられない。 種別ごとの数え方をここに集める。
   ///   戻り値は必ず `{hasContent, ...}`。 数えられない時は hasContent:false。
+  /// 今の種類からは**見えていない**が、 ページが抱えたままの中身。
+  ///
+  /// ★ = 機能追加案 継続検証202「ページ種類の裏側に保持された内容を確認
+  ///   できる表示」。 種類を往復しても各層は消えないのに、 今の種類から
+  ///   見えないので「消えた」 ように映る。 何がどれだけ残っているかを返し、
+  ///   「戻せば出てくる」 と言えるようにする。
+  Future<Map<String, Object?>> mcpHiddenContentOf(MindMapPage page) async {
+    final out = <String, Object?>{};
+    final ty = page.pageType ?? 'normal';
+    // 要素 (ノード) は マップ / ギャラリー でしか描かれない。
+    if (ty != 'normal' && ty != 'bookshelf' && page.nodes.isNotEmpty) {
+      out['normal'] = page.nodes.length;
+    }
+    try {
+      final prefs = await _prefsWithRetry();
+      bool has(String key) {
+        final v = prefs.getString(key);
+        return v != null && v.trim().isNotEmpty && v.trim() != '{}';
+      }
+
+      if (ty != 'markdown' && has('markdown_${page.id}')) {
+        out['markdown'] = true;
+      }
+      if (ty != 'paint' && has('paint_${page.id}')) out['paint'] = true;
+      if (ty != 'document' && has('document_${page.id}')) {
+        out['document'] = true;
+      }
+      if (ty != 'videoEditor' && has('videoEditor_${page.id}')) {
+        out['videoEditor'] = true;
+      }
+    } catch (_) {}
+    return out;
+  }
+
+  /// 自動操作ページの手順を読む。
+  ///
+  /// ★ = 不具合報告 2026-09-30「automation ページの read_page が必ず
+  ///   失敗する read_document を案内する」。 手順はページ JSON の外
+  ///   (prefs `webAutomationSteps_v1_<pageId>`) にあるので、 read_page は
+  ///   裏のマップ層しか返せなかった。 利用者が画面で見ている物を
+  ///   読む道をここに作る。
+  Future<Map<String, Object?>> mcpReadAutomationPage(String pageId) async {
+    final page = mcpPageById(pageId);
+    if (page == null) {
+      return {
+        'error': 'no page has the id "$pageId" - call list_pages and use an '
+            'id from it.',
+      };
+    }
+    if ((page.pageType ?? 'normal') != 'automation') {
+      return {
+        'error': '"${page.name}" is a "${page.pageType ?? 'normal'}" page, '
+            'not an automation ("自動操作") page. call list_pages and pick '
+            'one whose type is "automation".',
+      };
+    }
+    final steps = <Map<String, Object?>>[];
+    var read = false;
+    try {
+      final prefs = await _prefsWithRetry();
+      final raw = prefs.getString('webAutomationSteps_v1_$pageId') ?? '';
+      if (raw.isNotEmpty) {
+        final m = jsonDecode(raw);
+        final list = (m is Map ? m['steps'] : null);
+        if (list is List) {
+          read = true;
+          for (final e in list) {
+            if (e is Map) {
+              steps.add(_mcpAutomationStep(Map<String, dynamic>.from(e)));
+            }
+          }
+        }
+      } else {
+        read = true; // 鍵が無い = 手順をまだ 1 つも作っていない
+      }
+    } catch (_) {}
+    return {
+      'pageId': page.id,
+      'name': page.name,
+      'pageType': 'automation',
+      'stepCount': steps.length,
+      'steps': steps,
+      if (!read)
+        'note': 'the saved steps of this page could not be read, so this is '
+            'NOT proof that the page is empty - tell the user rather than '
+            'saying it has no steps.',
+      if (read && steps.isEmpty)
+        'note': 'this automation page really has no steps saved yet.',
+      'runNote': 'run_automation hands its instruction to the SHARED '
+          'automation panel, not to this page. Running it does not use these '
+          'steps and may rebuild what the panel holds.',
+    };
+  }
+
+  /// 保存された 1 手を、 読んで分かる形へ (既定のままの項は省く)。
+  static Map<String, Object?> _mcpAutomationStep(Map<String, dynamic> j) {
+    final kids = <Map<String, Object?>>[];
+    final raw = j['children'];
+    if (raw is List) {
+      for (final c in raw) {
+        if (c is Map) {
+          kids.add(_mcpAutomationStep(Map<String, dynamic>.from(c)));
+        }
+      }
+    }
+    int intOf(String k) => (j[k] as num?)?.toInt() ?? 0;
+    double dblOf(String k) => (j[k] as num?)?.toDouble() ?? 0;
+    String strOf(String k) => '${j[k] ?? ''}'.trim();
+    return {
+      'kind': strOf('kind'),
+      if (strOf('text').isNotEmpty) 'text': strOf('text'),
+      if (strOf('selector').isNotEmpty) 'selector': strOf('selector'),
+      if (strOf('scrollDir').isNotEmpty) 'scrollDir': strOf('scrollDir'),
+      if (strOf('account').isNotEmpty) 'account': strOf('account'),
+      if (intOf('durationMs') != 0) 'durationMs': intOf('durationMs'),
+      if (intOf('count') != 0) 'count': intOf('count'),
+      if (intOf('intervalMs') != 0) 'intervalMs': intOf('intervalMs'),
+      if (dblOf('x') != 0 || dblOf('y') != 0)
+        'at': [dblOf('x'), dblOf('y')],
+      if (j['submit'] == true) 'submit': true,
+      if (j['bp'] == true) 'breakpoint': true,
+      if (strOf('expectFile').isNotEmpty) 'expectFile': strOf('expectFile'),
+      if (kids.isNotEmpty) 'children': kids,
+    };
+  }
+
   Future<Map<String, Object?>> mcpPageContentStats(String pageId) async {
     final page = mcpPageById(pageId);
     if (page == null) return {'hasContent': false};
+    // 今の種類から見えない中身 (= 種類を戻せば出てくる物)。
+    final hidden = await mcpHiddenContentOf(page);
+    Map<String, Object?> withHidden(Map<String, Object?> m) => hidden.isEmpty
+        ? m
+        : {
+            ...m,
+            'hiddenContent': hidden,
+            'hiddenNote': 'this page ALSO holds content that the current '
+                'page kind does not draw (see hiddenContent). It is not '
+                'lost - set_page_type back to that kind shows it again. '
+                'Say so instead of letting the user think it was deleted.',
+          };
     try {
       switch (page.pageType) {
         case 'markdown':
@@ -110772,11 +113196,11 @@ $cleanQ
           for (final t in tabs) {
             if (t is Map) chars += '${t['text'] ?? ''}'.length;
           }
-          return {
+          return withHidden({
             'hasContent': chars > 0 || tabs.length > 1,
             'tabCount': tabs.length,
             'textLength': chars,
-          };
+          });
         case 'document':
           final doc = await mcpReadDocument(page.id);
           final papers = (doc?['papers'] as List?) ?? const [];
@@ -110784,11 +113208,11 @@ $cleanQ
           for (final t in papers) {
             if (t is Map) chars += '${t['text'] ?? ''}'.length;
           }
-          return {
+          return withHidden({
             'hasContent': chars > 0,
             'paperCount': papers.length,
             'textLength': chars,
-          };
+          });
         case 'paint':
           final pt = await mcpReadPaintItems(page.id);
           final texts = (pt?['texts'] as List?) ?? const [];
@@ -110803,7 +113227,7 @@ $cleanQ
             return d is String ? d.length : 0;
           }();
           final hasDoc = pt?['hasDocumentLayer'] == true;
-          return {
+          return withHidden({
             'hasContent': texts.isNotEmpty ||
                 strokes > 0 ||
                 shapes > 0 ||
@@ -110813,19 +113237,31 @@ $cleanQ
             'textCount': texts.length,
             if (hasDoc) 'hasDocumentLayer': true,
             if (docChars > 0) 'documentTextLength': docChars,
-          };
+          });
         case 'videoEditor':
           final ve = await mcpListVideoEditorItems(page.id);
           final items = (ve?['items'] as List?) ?? const [];
-          return {
+          return withHidden({
             'hasContent': items.isNotEmpty,
             'timelineItemCount': items.length,
-          };
+          });
+        // ★ = 不具合報告の「automation の扱いが MCP で不統一」。
+        //   一覧でも手順の数を数える (手順だけのページを「空」と
+        //   言わないように)。
+        case 'automation':
+          final au = await mcpReadAutomationPage(page.id);
+          final st = (au['steps'] as List?) ?? const [];
+          return withHidden({
+            'hasContent': st.isNotEmpty,
+            'automationStepCount': st.length,
+            'readNote': 'call read_automation_page to see these steps '
+                '(read_page only reports the hidden mind-map layer).',
+          });
         default:
-          return {
+          return withHidden({
             'hasContent': page.nodes.isNotEmpty,
             'itemCount': page.nodes.length,
-          };
+          });
       }
     } catch (_) {
       return {'hasContent': false};
@@ -111205,6 +113641,46 @@ $cleanQ
       final d = await getApplicationDocumentsDirectory();
       _appDocsDirCache = d.path;
     } catch (_) {}
+    // 取り消しの写しの掃除は 「次に写しを取る時」 にしか走らないので、
+    //   以後添付を消さない人の所では写しが永久に残る。 起動時に 1 度片付ける。
+    //   ★ 掃除のためだけにフォルダーは作らない (在る時だけ触る)。
+    final root = _appDocsDirCache;
+    if (root == null || root.isEmpty) return;
+    final stage = Directory('$root/mcp_trash');
+    try {
+      if (!stage.existsSync()) return;
+    } catch (_) {
+      return;
+    }
+    _mcpSweepStagedDir(stage);
+  }
+
+  /// 取り消し用の写しなど、 **利用者に見せない物**の置き場。
+  /// ★ 書類フォルダー (_appDocsDirCache) は Windows では
+  ///   `C:\Users\<利用者>\Documents` そのもの (path_provider_windows は
+  ///   アプリ専用の下位フォルダーを作らない) で、 OneDrive の同期先に
+  ///   なっている事が多い。 内部用の一時ファイルをそこへ置くと、
+  ///   利用者のクラウドへ最大 64MB の写しが上がってしまう。
+  String? _appSupportDirCache;
+
+  Future<void> _loadAppSupportDir() async {
+    try {
+      final d = await getApplicationSupportDirectory();
+      _appSupportDirCache = d.path;
+    } catch (_) {}
+    // 書類フォルダー側 (_loadAppDocsDir) と同じく、 今の置き場も
+    //   起動時に 1 度片付ける。 どちらが先に埋まるかは決まっていないので、
+    //   それぞれが自分の根だけを見る。
+    //   ★ 掃除のためだけにフォルダーは作らない (在る時だけ触る)。
+    final root = _appSupportDirCache;
+    if (root == null || root.isEmpty) return;
+    final stage = Directory('$root/mcp_trash');
+    try {
+      if (!stage.existsSync()) return;
+    } catch (_) {
+      return;
+    }
+    _mcpSweepStagedDir(stage);
   }
 
   /// [strict] を true にすると、 控え ([_mcpCreatedFiles]) に載っている物だけを
@@ -111332,8 +113808,230 @@ $cleanQ
   /// ★ 完全削除は**絶対にしない**。 ごみ箱へ送れない環境では消さずに理由を
   ///   返す (画面と違って、 利用者に確かめる窓を出せないため)。
   /// ★ 他のタイルがまだ使っているファイルには触らない。
+  // ── ごみ箱へ送った添付を「取り消しで戻す」 ための控え ────────────────
+  //    = 継続検証 230 前半「生成ファイル付き添付の削除を取り消すと壊れた
+  //      タイルだけ戻る」。 ごみ箱から戻す道が無いので、 送る前に写しを取る。
+
+  /// ページ削除 (mcpDeletePage) の取り消し用の受け皿。
+  /// ★ _DeletedPageUndoRecord は const なので欄を足せない。 ページ削除の
+  ///   控えは 1 つだけ (_lastDeletedPageUndo) なので、 ここで受ける。
+  final List<_McpTrashedFile> _deletedPageTrashed = <_McpTrashedFile>[];
+
+  /// 写しを取る上限。 これより大きい物は写さない (= 利用者の動画を
+  /// 2 GB 二重に置かない)。 写さなかった時は「戻せない」 と明示する。
+  static const int _kMcpUndoStageMaxBytes = 64 * 1024 * 1024;
+
+  /// 写しの名前を一意にする連番。
+  /// ★ 時刻だけでは足りない。 Windows の DateTime.now() は 1ms 程度しか
+  ///   刻まないので、 一括削除のループでは microsecondsSinceEpoch が同じ値に
+  ///   なる。 名前が衝突すると 2 件目の写しが 1 件目を上書きし、 取り消しで
+  ///   **別のファイルの中身が入ったタイル**が戻る (気付けない壊れ方)。
+  int _mcpStageSeq = 0;
+
+  /// 控え置き場。 作れなければ null (= 写しを取らない)。
+  Directory? _mcpUndoStageDir() {
+    // ★ 置き場は**アプリ専用フォルダー** (_appSupportDirCache)。
+    //   書類フォルダー (_appDocsDirCache) は Windows では利用者の
+    //   `Documents` そのもので、 OneDrive の同期先になっている事が多い。
+    //   ここへ置くのは内部用の一時ファイル (1 件あたり最大 64MB) なので、
+    //   利用者のクラウドへ上げてはいけない。
+    //   起動直後などで support 側がまだ埋まっていない時だけは、 写しを
+    //   取れない (= 取り消しで戻せない) よりましなので書類側を使う。
+    final root = _appSupportDirCache ?? _appDocsDirCache;
+    if (root == null || root.isEmpty) return null;
+    final d = Directory('$root/mcp_trash');
+    try {
+      if (!d.existsSync()) d.createSync(recursive: true);
+    } catch (_) {
+      return null;
+    }
+    _mcpSweepStagedDir(d);
+    // 前の版が書類フォルダーへ作った置き場を片付ける。 移した後は誰も
+    //   掃除しなくなるため。 空になったらフォルダーごと消す。
+    final legacy = _appDocsDirCache;
+    if (legacy != null && legacy.isNotEmpty && legacy != root) {
+      final old = Directory('$legacy/mcp_trash');
+      try {
+        if (old.existsSync()) {
+          _mcpSweepStagedDir(old);
+          if (old.listSync().isEmpty) old.deleteSync();
+        }
+      } catch (_) {}
+    }
+    return d;
+  }
+
+  /// 取り消されずに残った写しを片付ける (7 日)。 名前の頭に付けた時刻で
+  ///   判断する (写した時のファイル時刻は環境で当てにならない)。
+  void _mcpSweepStagedDir(Directory d) {
+    try {
+      final cutoff = DateTime.now().subtract(const Duration(days: 7));
+      for (final e in d.listSync()) {
+        if (e is! File) continue;
+        final ts = int.tryParse(_baseName(e.path).split('_').first) ?? 0;
+        if (ts == 0) continue; // 自分が付けた名前でない物は触らない
+        if (DateTime.fromMicrosecondsSinceEpoch(ts).isBefore(cutoff)) {
+          try {
+            e.deleteSync();
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+  }
+
+  /// ごみ箱へ送る直前に写しを取り、 取り消し履歴へ結び付ける。
+  /// 戻り値 = 写しの道筋 (空 = 取り消しでは戻せない)。
+  String _mcpStageForUndo(
+      String filePath, String undoPageId, bool pageDeleted) {
+    // ごみ箱へ送れない環境では、 そもそも消さないので写しも要らない
+    //   (取ってから捨てるのは、 大きいファイルの無駄な複写になる)。
+    if (!RecycleBin.isSupported) return '';
+    // 受け皿が無い所では写しを取らない (取っても戻す道が無い)。
+    List<_McpTrashedFile>? sink;
+    if (pageDeleted) {
+      sink = _lastDeletedPageUndo == null ? null : _deletedPageTrashed;
+    } else if (undoPageId.isNotEmpty && _undoBatchDepth == 0) {
+      // ★ その削除で積まれた控え (= 今の一番新しい 1 枚) へ結ぶ。
+      //   mcpDeleteNode は coalesceKey で短い間の削除を 1 枚にまとめるので、
+      //   一括削除でも同じ 1 枚に全部集まる。
+      //   まとめ (バッチ) の最中は控えが積まれないため、 古い 1 枚へ
+      //   誤って結ばないよう何もしない (= 戻せないと返事する)。
+      final st = _undoStacks[undoPageId];
+      if (st != null && st.isNotEmpty) sink = st.last.trashedFiles;
+    }
+    if (sink == null) return '';
+    try {
+      final f = File(filePath);
+      if (f.lengthSync() > _kMcpUndoStageMaxBytes) return '';
+      final dir = _mcpUndoStageDir();
+      if (dir == null) return '';
+      // 名前 = <時刻>_<連番>_<元の名前>。 先頭は掃除が読む時刻、 連番は
+      //   同じ時刻に複数写した時の衝突避け。
+      final to = '${dir.path}/${DateTime.now().microsecondsSinceEpoch}'
+          '_${_mcpStageSeq++}_${_baseName(filePath)}';
+      f.copySync(to);
+      sink.add(_McpTrashedFile(
+          filePath, to, mcpFileWasCreatedHere(filePath, strict: true)));
+      return to;
+    } catch (_) {
+      return '';
+    }
+  }
+
+  /// 上書きの直前に、 今あるファイルの写しを 1 つだけ控える。
+  ///
+  /// = 動作検証 継続検証385「添付ファイルの同名上書きがページの Undo 対象外」。
+  ///   create_document_file を同じ名前で呼ぶとディスクの中身が入れ替わるのに、
+  ///   ページの取り消し (undo_page / Ctrl+Z) はページの中身 (タイル) しか
+  ///   戻さないので、 前の版へ帰る道が無かった。
+  ///
+  /// ★ 置き場は削除の控えと**同じ** [_mcpUndoStageDir] (アプリ専用フォルダー)。
+  ///   新しい置き場は作らない。 7 日で同じ掃除機が片付ける。
+  /// ★ 取り消し履歴 (_PageSnapshot.trashedFiles) には**結ばない**。
+  ///   [_mcpRestoreTrashedFiles] は「同じ道筋にファイルが既に在る時は上書き
+  ///   しない」 決まりで動いている (= 削除を取り消した後に同じ名前で作り直された
+  ///   物を壊さないため)。 上書きの戻しは必ずその状況なので、 結んでも戻らない
+  ///   のに「戻した」 と答えてしまう。 ここは写しの道筋を返すだけにして、
+  ///   戻すかどうかは利用者に決めてもらう。
+  /// ★ 写しから書き戻せるのは txt / md / csv まで。 xlsx / docx / pptx / pdf は
+  ///   read_device_file が**抜き出した文字**しか返さないので、 それを元に
+  ///   create_document_file を呼ぶと表や版面が落ちる。 その種類は道筋を
+  ///   利用者へ渡すだけにさせる (道具の説明でそう釘を刺してある)。
+  ///
+  /// 戻り値 = 写しの道筋 (空 = 控えられなかった = 前の版へは戻せない)。
+  String mcpStagePreviousVersion(String filePath) {
+    final v = filePath.trim();
+    if (v.isEmpty) return '';
+    try {
+      final f = File(v);
+      if (!f.existsSync()) return '';
+      // 大きい物は写さない (削除の控えと同じ上限。 利用者の動画を二重に置かない
+      //   ため)。 写せなかった事は呼ぶ側が明示する。
+      if (f.lengthSync() > _kMcpUndoStageMaxBytes) return '';
+      final dir = _mcpUndoStageDir();
+      if (dir == null) return '';
+      final to = '${dir.path}/${DateTime.now().microsecondsSinceEpoch}'
+          '_${_mcpStageSeq++}_${_baseName(v)}';
+      f.copySync(to);
+      // 読み返して書き戻せるように、 **この 1 ファイルだけ**許しておく
+      //   (フォルダーごと許すと、 消した他の添付の写しまで読めてしまう)。
+      _mcpAllowedReadFiles.add(to);
+      return to;
+    } catch (_) {
+      return '';
+    }
+  }
+
+  /// ごみ箱へ送れなかった時に、 取った写しを捨てる。
+  void _mcpDropStagedForUndo(String stagedPath) {
+    if (stagedPath.trim().isEmpty) return;
+    _deletedPageTrashed.removeWhere((e) => e.stagedPath == stagedPath);
+    for (final st in _undoStacks.values) {
+      for (final s in st) {
+        s.trashedFiles.removeWhere((e) => e.stagedPath == stagedPath);
+      }
+    }
+    try {
+      File(stagedPath).deleteSync();
+    } catch (_) {}
+  }
+
+  /// 取り消しで、 ごみ箱へ送った添付を元の場所へ戻す。
+  /// 戻せた物を [restored]、 戻せなかった物とその理由を [failed] へ入れる。
+  void _mcpRestoreTrashedFiles(List<_McpTrashedFile> recs,
+      [List<String>? restored, List<Map<String, Object?>>? failed]) {
+    if (recs.isEmpty) return;
+    for (final r in recs) {
+      try {
+        final dst = File(r.originalPath);
+        if (dst.existsSync()) {
+          // 既に在る = 同じ名前で作り直された。 上書きはしない。
+          if (r.wasAppCreated) mcpNoteCreatedFile(r.originalPath);
+          restored?.add(r.originalPath);
+          try {
+            File(r.stagedPath).deleteSync();
+          } catch (_) {}
+          continue;
+        }
+        final src = File(r.stagedPath);
+        if (!src.existsSync()) {
+          failed?.add({
+            'path': r.originalPath,
+            'reason': 'the undo copy is no longer there. The file is still in '
+                'the recycle bin - the user has to restore it from there',
+          });
+          continue;
+        }
+        dst.parent.createSync(recursive: true);
+        try {
+          src.renameSync(r.originalPath);
+        } catch (_) {
+          // ドライブが違うと rename は通らない。
+          src.copySync(r.originalPath);
+          try {
+            src.deleteSync();
+          } catch (_) {}
+        }
+        // 「アプリが作った物」 の印を戻す (元から載っていた物だけ)。
+        if (r.wasAppCreated) mcpNoteCreatedFile(r.originalPath);
+        restored?.add(r.originalPath);
+      } catch (e) {
+        failed?.add({
+          'path': r.originalPath,
+          'reason': 'could not be put back ($e). It is still in the recycle '
+              'bin - the user has to restore it from there',
+        });
+      }
+    }
+    recs.clear();
+  }
+
+  /// [undoPageId] を渡すと、 そのページの取り消し履歴で実体まで戻せるように
+  /// 写しを控える (= 継続検証 230 前半)。 ページを丸ごと消した時は
+  /// [pageDeleted] を true にする (控えの置き場所が別枠のため)。
   Future<Map<String, Object?>> mcpDisposeAttachmentFile(
-      String filePath, String mode) async {
+      String filePath, String mode,
+      {String undoPageId = '', bool pageDeleted = false}) async {
     final v = filePath.trim();
     if (v.isEmpty || mode == 'no') {
       return {'fileKept': true, 'reason': 'only the tile was removed'};
@@ -111366,11 +114064,27 @@ $cleanQ
             'user before removing it',
       };
     }
+    // ★ = 継続検証 230 前半。 ごみ箱へ送る**前**に、 取り消しで戻せる写しを
+    //   控え置き場へ取る。 ごみ箱から戻す道は無いので、 これが唯一の手。
+    final stagedPath = _mcpStageForUndo(v, undoPageId, pageDeleted);
     final r = await RecycleBin.send([v]);
     if (r == RecycleResult.recycled) {
       _mcpCreatedFiles.remove(v);
-      return {'fileRecycled': true, 'path': v};
+      return {
+        'fileRecycled': true,
+        'path': v,
+        // ★ 取り消しで実体まで戻るかを**必ず**言う。 黙っていたので、
+        //   タイルだけ戻って開けないタイル (brokenAttachment) になっていた。
+        'undoRestoresFile': stagedPath.isNotEmpty,
+        if (stagedPath.isEmpty)
+          'undoNote': 'undo will bring the TILE back but NOT this file - it '
+              'stays in the recycle bin, so the tile would not open. If the '
+              'user undoes, tell them to restore it from the recycle bin '
+              '(it was at: $v).',
+      };
     }
+    // 送れなかった = 戻す控えも要らない。
+    _mcpDropStagedForUndo(stagedPath);
     return {
       'fileKept': true,
       'reason': r == RecycleResult.unsupported
@@ -111390,12 +114104,40 @@ $cleanQ
     return (page.nodes[nodeId]?.attachmentPath ?? '').trim();
   }
 
-  String? mcpDeleteNode(String pageId, String nodeKey) {
+  /// [compact] が true (既定) なら、 画面の削除と同じく消した跡を詰める。
+  /// 位置を動かしたくない時だけ false (= 道具の `compact:false`)。
+  String? mcpDeleteNode(String pageId, String nodeKey,
+      {bool compact = true}) {
     final page = mcpPageById(pageId);
     if (page == null) return null;
     // 部分一致は使わない (無い物は無いと答える)。
     final nodeId = _resolveNodeIdIn(page, nodeKey, fuzzy: false) ?? nodeKey;
     if (!page.nodes.containsKey(nodeId)) return null;
+    // ★ = 継続検証 257「MCP で子要素を消しても兄弟の空きが詰まらない」。
+    //   画面の削除 ([deleteNode]) は跡を詰めるのに、 ここだけ消した分の
+    //   空きが残っていた。 同じ後始末を通す。
+    //   下ごしらえ (親の控えと「生きている線が切れるか」 の判定) は、
+    //   線を消す**前**にやること。 どちらも現在ページを見る作りなので、
+    //   その間だけそのページへ合わせる (= [mcpTidyPage] と同じ作法)。
+    //   引くのは引数の pageId でなく [page] の id ([mcpPageById] は
+    //   空の pageId を「今開いているページ」 と読むので、 pageId で引くと
+    //   見付からず、 詰め直しだけが黙って飛んでいた)。
+    final pgIdx = _pages.indexWhere((e) => e.id == page.id);
+    final keepIdx = _currentPageIndex;
+    final wantCompact = compact &&
+        pgIdx >= 0 &&
+        (page.pageType == null || page.pageType == 'normal');
+    var compactParents = const <String>{};
+    var tearsEdge = false;
+    if (wantCompact) {
+      _currentPageIndex = pgIdx;
+      try {
+        compactParents = _parentsOfNodesForCompact({nodeId});
+        tearsEdge = _deletionTearsEdge({nodeId});
+      } finally {
+        _currentPageIndex = keepIdx;
+      }
+    }
     // ★ 消す前に控える (= 「テスト」 を含むノードを消して、 と頼んだら
     //   関係ないノードまで巻き込まれた時に戻せるように)。 AI の削除だけは
     //   取り消せる形にしておく。 画面の Ctrl+Z (元に戻す) で戻る。
@@ -111403,6 +114145,18 @@ $cleanQ
     final removed = page.nodes.remove(nodeId);
     page.connections
         .removeWhere((c) => c.fromId == nodeId || c.toId == nodeId);
+    // 空いた隙間を詰める。 線が 1 本も切れていない (= 孤立した要素を
+    //   消しただけ) なら何も動かさない (画面の削除と同じ判定)。
+    if (wantCompact && tearsEdge) {
+      _currentPageIndex = pgIdx;
+      try {
+        _compactSiblingsAfterDelete(compactParents);
+      } catch (e) {
+        debugPrint('mcpDeleteNode の詰め直しに失敗: $e');
+      } finally {
+        _currentPageIndex = keepIdx;
+      }
+    }
     // ★ ギャラリーは画面の削除 ([deleteNode]) と同じ後始末をする。
     //   マス目の控えを手放し、 格子の控えを捨ててから並べ直さないと、
     //   +ボックスが無いのに行/列の掴みだけ残り、 詰め直しも走らない。
@@ -111439,8 +114193,11 @@ $cleanQ
   /// ★ 消す / 書き換える経路では必ず false にする (= 動作確認で判明:
   ///   「秋分の日」 というノードを消して、 と頼まれた時に、 部分一致で
   ///   「秋」 のノードが選ばれて消えていた。 無い物は「無い」 と答えるのが
-  ///   正しく、 近い名前の別ノードを消すのは事故)。 線を引く時だけは
-  ///   多少ゆるく引けた方が良いので既定のまま。
+  ///   正しく、 近い名前の別ノードを消すのは事故)。
+  /// ★ = 継続検証 232。 線を引く経路 (connect_nodes) も部分一致を止めた。
+  ///   道具の側で fuzzy: false に引き当ててから **id で** mcpConnectNodes を
+  ///   呼ぶので、 既定が true のままでも部分一致は通らない。 ここの既定に
+  ///   頼っているのは id を渡す内部呼び出しだけ (戻さない事)。
   String? _resolveNodeIdIn(MindMapPage page, String key, {bool fuzzy = true}) {
     final k = key.trim();
     if (k.isEmpty) return null;
@@ -111455,10 +114212,24 @@ $cleanQ
     for (final e in page.nodes.entries) {
       if (norm(e.value.title) == nk) return e.key;
     }
+    // ★ = 継続検証 259。 add_table_node の "title" は画面上の表題 (=
+    //   caption) に入り、 保存上の title は空のままなので、 題名だけを見て
+    //   いると置いた直後の表を消す事も繋ぐ事も出来なかった。 題名で当たら
+    //   なかった時だけ見出しも見る (題名の方が必ず勝つ)。
+    for (final e in page.nodes.entries) {
+      if ((e.value.caption ?? '').trim() == k) return e.key;
+    }
+    for (final e in page.nodes.entries) {
+      if (norm(e.value.caption ?? '') == nk) return e.key;
+    }
     if (!fuzzy) return null;
     for (final e in page.nodes.entries) {
       final t = norm(e.value.title);
       if (t.isNotEmpty && (t.contains(nk) || nk.contains(t))) return e.key;
+    }
+    for (final e in page.nodes.entries) {
+      final c = norm(e.value.caption ?? '');
+      if (c.isNotEmpty && (c.contains(nk) || nk.contains(c))) return e.key;
     }
     return null;
   }
@@ -111492,12 +114263,32 @@ $cleanQ
         if (norm(e.value.title) == nk) e.key
     ];
     if (loose.isNotEmpty) return loose;
+    // ★ = 継続検証 259。 見出し (caption) も名前解決の対象にしたので、
+    //   ここも同じ順で足す (上の注釈どおり _resolveNodeIdIn と揃える)。
+    final capExact = [
+      for (final e in page.nodes.entries)
+        if ((e.value.caption ?? '').trim() == k) e.key
+    ];
+    if (capExact.isNotEmpty) return capExact;
+    final capLoose = [
+      for (final e in page.nodes.entries)
+        if (norm(e.value.caption ?? '') == nk) e.key
+    ];
+    if (capLoose.isNotEmpty) return capLoose;
     if (!fuzzy) return const [];
-    return [
+    final fuzzyTitle = [
       for (final e in page.nodes.entries)
         if (norm(e.value.title).isNotEmpty &&
             (norm(e.value.title).contains(nk) ||
                 nk.contains(norm(e.value.title))))
+          e.key
+    ];
+    if (fuzzyTitle.isNotEmpty) return fuzzyTitle;
+    return [
+      for (final e in page.nodes.entries)
+        if (norm(e.value.caption ?? '').isNotEmpty &&
+            (norm(e.value.caption ?? '').contains(nk) ||
+                nk.contains(norm(e.value.caption ?? ''))))
           e.key
     ];
   }
@@ -111509,7 +114300,14 @@ $cleanQ
     if (page == null) return const [];
     return [
       for (final e in page.nodes.entries)
-        {'id': e.key, 'title': e.value.title}
+        {
+          'id': e.key,
+          'title': e.value.title,
+          // ★ = 継続検証 259。 表は題名が空で見出しだけを持つ事がある。
+          //   一覧に出さないと、 指し方を言い直せない。
+          if ((e.value.caption ?? '').trim().isNotEmpty)
+            'caption': (e.value.caption ?? '').trim(),
+        }
     ];
   }
 
@@ -111838,18 +114636,35 @@ $cleanQ
     //   なる」。 空白だけは空文字に均す (= 文字を消したのと同じ扱い)。
     final String? newText =
         text == null ? null : (text.trim().isEmpty ? '' : text);
-    _pushUndoForPage(pageId, coalesceKey: 'mcpDecoUpdate:$pageId');
-    page.decorations[i] = page.decorations[i].copyWith(
-      kind: k,
-      colorRgb: colorRgb == null ? null : (colorRgb & 0xFFFFFF),
-      strokeWidth: stroke,
-      text: newText,
-      // ★ = 継続検証 181「文字だけ直すと塗りつぶしが解除される」。
-      //   MapDecoration.copyWith の filled は noChange 印を使う仕組みなので、
-      //   null をそのまま渡すと「塗りを消す」 の意味になっていた。
-      filled: filled ?? MapDecoration.noChange,
-      layer: layer?.clamp(1, 5),
-    );
+    final cur = page.decorations[i];
+    final int? newColor = colorRgb == null ? null : (colorRgb & 0xFFFFFF);
+    final int? newLayer = layer?.clamp(1, 5);
+    // ★ = 継続検証 261 / 306 / 364 / 365 / 368「今と同じ値で更新しても (値を
+    //   1 つも指定しなくても) updated と返り、 取り消し履歴を 1 手食う」。
+    //   比べるのは**丸めた後**の値 (線幅 -1 と 0 はどちらも下限 0.5 なので、
+    //   元が 0.5 なら変更なし)。 塗りは「昔の絵は種類から決める」 ので
+    //   [MapDecoration.isFilled] と比べる (読み返した filled をそのまま渡し
+    //   直しても履歴を食わないように)。 update_node と同じ扱いに揃える。
+    final bool unchanged = (k == null || k == cur.kind) &&
+        (newColor == null || newColor == cur.colorRgb) &&
+        (stroke == null || stroke == cur.strokeWidth) &&
+        (newText == null || newText == cur.text) &&
+        (filled == null || filled == cur.isFilled) &&
+        (newLayer == null || newLayer == cur.layer);
+    if (!unchanged) {
+      _pushUndoForPage(pageId, coalesceKey: 'mcpDecoUpdate:$pageId');
+      page.decorations[i] = cur.copyWith(
+        kind: k,
+        colorRgb: newColor,
+        strokeWidth: stroke,
+        text: newText,
+        // ★ = 継続検証 181「文字だけ直すと塗りつぶしが解除される」。
+        //   MapDecoration.copyWith の filled は noChange 印を使う仕組みなので、
+        //   null をそのまま渡すと「塗りを消す」 の意味になっていた。
+        filled: filled ?? MapDecoration.noChange,
+        layer: newLayer,
+      );
+    }
     if (outcome != null) {
       final d = page.decorations[i];
       outcome['kind'] = d.kind.name;
@@ -111865,7 +114680,12 @@ $cleanQ
         outcome['requestedStrokeWidth'] = strokeWidth;
         outcome['strokeWidthClamped'] = true;
       }
+      // 丸めた後が今と同じなら、 呼ぶ側が「変更なし」 と答えられるよう印を
+      //   立てる (= 継続検証 261 / 306 / 364 / 365 / 368)。
+      if (unchanged) outcome['unchanged'] = true;
     }
+    // 何も変わらないなら保存も通知もしない (控えも積んでいない)。
+    if (unchanged) return true;
     page.lastModifiedAt = DateTime.now();
     _saveToStorage();
     notifyListeners();
@@ -111942,18 +114762,14 @@ $cleanQ
         }
         // ★ = 継続検証 150「開始時刻と長さに実用上無制限の巨大値を保存
         //   できる」。 扱える尺 (24 時間) を超える指定は断る。
-        const maxMs = 24 * 60 * 60 * 1000;
+        // ★ = 継続検証 200「同じ上限が追加側に無く、 追加は通るのに更新だけ
+        //   断られる」。 手書きの検査を [mcpVideoTimelineRangeError] へ寄せ、
+        //   足す側と同じ物差しにした (文面はそのまま)。
         final s = startMs ?? ((list[i] as Map)['s'] as num?)?.toInt() ?? 0;
         final d = durationMs ?? ((list[i] as Map)['d'] as num?)?.toInt() ?? 0;
-        if ((startMs != null && startMs > maxMs) ||
-            (durationMs != null && durationMs > maxMs) ||
-            s + d > maxMs) {
-          return {
-            'ok': false,
-            'reason': 'the timeline holds at most 24 hours '
-                '($maxMs ms): startMs + durationMs would be ${s + d} ms. '
-                'Nothing was changed.',
-          };
+        final rangeErr = mcpVideoTimelineRangeError(s, d);
+        if (rangeErr != null) {
+          return {'ok': false, 'reason': '$rangeErr Nothing was changed.'};
         }
         final m = Map<String, dynamic>.from(list[i] as Map);
         if (layer != null) m['l'] = layer.clamp(0, 5);
@@ -112182,10 +114998,36 @@ $cleanQ
     return cur == want;
   }
 
-  bool mcpMovePageToFolder(String pageId, String? folderId) {
-    if (!_pages.any((p) => p.id == pageId)) return false;
+  /// [applied] は**採番で名前が変わった時だけ**、 実際に入った名前が入る
+  /// (mcpRenamePage の applied は常に入れるので、 そこだけ作法が違う)。
+  bool mcpMovePageToFolder(String pageId, String? folderId,
+      {List<String>? applied}) {
+    final i = _pages.indexWhere((p) => p.id == pageId);
+    if (i < 0) return false;
     if (folderId != null && !_folders.any((f) => f.id == folderId)) {
       return false;
+    }
+    // ★ = 継続検証 249「移動だけ同一フォルダー内の完全同名を許す」。
+    //   新規作成 (mcpCreatePage) と改名 (mcpRenamePage) は同じフォルダーの
+    //   中の同名を採番するのに、 移動だけその規則を通らないので、 移動先に
+    //   名前が完全一致するページが 2 枚並んでいた (= 名前で指すと
+    //   ambiguousName になり、 名前を受け付ける道具が当てられなくなる)。
+    //   行き先が変わる時だけ、 作成・改名と同じ採番規則へ通す。
+    //   名前は [movePageToFolder] の保存より前に入れて 1 回で書き切る
+    //   (renamePage は「利用者が自分で付けた名前」 の印を立て、
+    //    renamePageAuto は「自動で付けた名前」 の印を立ててしまうので、
+    //    どちらも通さない = 採番は命名のやり直しでは無い)。
+    //   一括移動は 1 枚ずつここを通るので、 先に移った物が次の枚の候補名に
+    //   入る (= 束で渡しても重複しない)。
+    if (!mcpPageIsInFolder(pageId, folderId)) {
+      final unique = mcpUniqueName(_pages[i].name, [
+        for (final p in _pages)
+          if (p.id != pageId && p.folderId == folderId) p.name
+      ]);
+      if (unique != _pages[i].name) {
+        _pages[i].name = unique;
+        applied?.add(unique);
+      }
     }
     movePageToFolder(pageId, folderId);
     return true;
@@ -112624,8 +115466,12 @@ $cleanQ
         int rowCount = 0;
         // ★ 数えるのはこのページの要素だけ (全ページ分を数えると、 別の
         //   ギャラリーの要素で「満杯」 と誤判定していた)。
+        // ★ 表紙に隠れている要素も数えない (= 隠れている間もマス目の控えを
+        //   残す作りにしたため [_ensureShelfCells])。 数に入れると空いている
+        //   行を「満杯」 と誤判定して、 要らない行を挿し込んでしまう。
         _shelfCells.forEach((id, c) {
-          if (!currentPage.nodes.containsKey(id)) return;
+          final n = currentPage.nodes[id];
+          if (n == null || n.hiddenInContainer != null) return;
           if (c[1] == pc[1]) rowCount++;
         });
         if (pc[0] + 1 < cols && rowCount < cols) {
@@ -112682,12 +115528,18 @@ $cleanQ
   ///   autoLayoutTree が全ノードの anchorMode を fourWay に変えてしまう」。
   ///   接続点の向きは利用者が 1 つずつ選んでいる事があるので、 既定では
   ///   **触らない**。 揃えたい時だけ true を渡す。
-  void autoLayoutTree({Offset? referencePos, bool normalizeAnchors = false}) {
+  /// ★ = 継続検証 280「変化のない整列が成功扱いになり、 取り消し履歴を 1 手
+  ///   消費する」。 [commit] を false にすると控え (undo) も保存も通知もしない。
+  ///   「試しに並べて、 変わった時だけ残す」 呼び方 ([mcpTidyPage]) 用。
+  void autoLayoutTree(
+      {Offset? referencePos,
+      bool normalizeAnchors = false,
+      bool commit = true}) {
     final nodeMap = currentPage.nodes;
     final conns = currentPage.connections;
     if (nodeMap.isEmpty) return;
 
-    _pushUndo();
+    if (commit) _pushUndo();
 
     final Offset ref = referencePos ?? const Offset(900, 900);
 
@@ -112736,6 +115588,11 @@ $cleanQ
     final subtreeH = <String, double>{};
     final subtreeW = <String, double>{};
     final visited = <String>{};
+    // ★ = 継続検証 279。 幅の計算 ([calcW]) には輪の見張りが**全く無く**、
+    //   A→B→C→A があると自分へ戻って来て止まらない (積み上げが溢れる)。
+    //   高さの [visited] は先に走る [calcH] が全部入れてしまうので
+    //   使い回せない。 幅用に別の控えを持つ。
+    final visitedW = <String>{};
 
     // 子間の合計ギャップ（同グループ連続は狭いギャップ）
     double gapBetween(String kidA, String kidB) {
@@ -112794,8 +115651,14 @@ $cleanQ
     double calcH(String id) {
       if (subtreeH.containsKey(id)) return subtreeH[id]!;
       if (visited.contains(id)) {
-        subtreeH[id] = 42.0;
-        return 42.0;
+        // ★ = 継続検証 279「循環する線と長いメモがあるマップを自動整列すると
+        //   要素が重なる」。 輪を打ち切る時に 42 (1 行ぶん) を返していたので、
+        //   メモや画像で背の高い要素に必要な高さが確保されず、 次の兄弟が
+        //   食い込んでいた。 輪の先へは進まないまま、 その要素自身の
+        //   描画高さで打ち切る。
+        final loopH = nodeMap[id]?.visualHeight ?? 42.0;
+        subtreeH[id] = loopH;
+        return loopH;
       }
       visited.add(id);
       final node = nodeMap[id];
@@ -112828,6 +115691,13 @@ $cleanQ
 
     double calcW(String id) {
       if (subtreeW.containsKey(id)) return subtreeW[id]!;
+      // ★ = 継続検証 279。 輪を打ち切る (数え終わった物は subtreeW に
+      //   入るので、 ここへ来るのは今たどっている途中の輪だけ)。
+      if (!visitedW.add(id)) {
+        final loopW = nodeMap[id]?.width ?? 160.0;
+        subtreeW[id] = loopW;
+        return loopW;
+      }
       final node = nodeMap[id];
       if (node == null) {
         subtreeW[id] = 160.0;
@@ -112863,10 +115733,17 @@ $cleanQ
     //     隣のツリーとの距離を確保する（_pushOutOfForeignGroups の過剰作動を防ぐ）
     const double groupPadAllowance = 60.0; // pad(28) + 余裕(32)
     final Map<String, bool> treeContainsGroupMember = {};
+    // ★ = 継続検証 279。 輪 (A→B→C→A) があると、 childrenOf を辿る
+    //   この先の再帰が戻って来られず、 整列そのものが失敗していた
+    //   (答えを控えるのは再帰から戻った後なので、 控えでは輪を切れない)。
+    //   今たどっている途中の枝を覚えて、 戻ってきた所で打ち切る
+    //   (枝分かれして再び合流するだけの形は輪でないので影響しない)。
+    final groupMemberOnPath = <String>{};
     bool treeHasGroupMember(String rid) {
       if (treeContainsGroupMember.containsKey(rid)) {
         return treeContainsGroupMember[rid]!;
       }
+      if (!groupMemberOnPath.add(rid)) return false;
       bool has = nodeGroupKey.containsKey(rid);
       if (!has) {
         for (final kid in childrenOf[rid] ?? const <String>[]) {
@@ -112876,6 +115753,7 @@ $cleanQ
           }
         }
       }
+      groupMemberOnPath.remove(rid);
       treeContainsGroupMember[rid] = has;
       return has;
     }
@@ -112924,9 +115802,15 @@ $cleanQ
         blockMargin * (rowCount - 1).clamp(0, double.infinity);
 
     // ── 4. ノードを配置 ──
-    void layoutNode(String id, double x, double y, double slotH) {
+    void layoutNode(String id, double x, double y, double slotH,
+        [Set<String> ancestors = const {}]) {
       final node = nodeMap[id];
       if (node == null) return;
+      // ★ = 継続検証 279。 輪 (A→B→C→A) があるとここが自分へ戻って来て
+      //   止まらず、 整列が丸ごと失敗して (重なったままの) 配置が残っていた。
+      //   今たどってきた先祖だけを見て打ち切る。 枝分かれして再び合流する
+      //   形は先祖でないので、 これまでの配置は変わらない。
+      if (ancestors.contains(id)) return;
       final nodeY = y + (slotH - node.visualHeight) / 2;
       nodeMap[id] = node.copyWith(
         // ここで各ノードを 0 に丸めると、大きなツリーの上側にある別々の
@@ -113010,7 +115894,7 @@ $cleanQ
       for (int i = 0; i < kids.length; i++) {
         final kid = kids[i];
         final kidH = calcH(kid);
-        layoutNode(kid, childX, childY, kidH);
+        layoutNode(kid, childX, childY, kidH, {...ancestors, id});
         childY += kidH;
         if (i + 1 < kids.length) childY += gapBetween(kid, kids[i + 1]);
       }
@@ -113041,7 +115925,9 @@ $cleanQ
     // 孤立ノード（どのツリーにも属さない）を下に並べる
     final laidOut = <String>{};
     void collectLaid(String id) {
-      laidOut.add(id);
+      // ★ = 継続検証 279。 輪があると戻って来て止まらない。 既に数えた
+      //   物はそこで打ち切る (集合へ入れるだけなので、 結果は変わらない)。
+      if (!laidOut.add(id)) return;
       for (final kid in childrenOf[id] ?? []) {
         collectLaid(kid);
       }
@@ -113118,8 +116004,10 @@ $cleanQ
     // ノード位置が確定した後、aroundNodes で作られた囲みも追従させる。
     _reflowNodeBoundDecorations(currentPage);
 
-    _saveToStorage();
-    notifyListeners();
+    if (commit) {
+      _saveToStorage();
+      notifyListeners();
+    }
   }
 
   /// 名前付きグループのメンバーで、他のメンバーから大きく離れた位置にあるものを
@@ -114929,7 +117817,12 @@ $cleanQ
     final page = currentPage;
     final byRow = <int, List<MapEntry<String, List<int>>>>{};
     for (final e in _shelfCells.entries) {
-      if (!page.nodes.containsKey(e.key)) continue;
+      final n = page.nodes[e.key];
+      // ★ 表紙に隠れている要素は押しのけの相手にしない (= 隠れている間も
+      //   マス目の控えを残す作りにしたため [_ensureShelfCells])。 見えない
+      //   要素にぶつかって表のタイルが横へ逃げると、 展開・収納のたびに
+      //   並びが変わってしまう。
+      if (n == null || n.hiddenInContainer != null) continue;
       byRow.putIfAbsent(e.value[1], () => []).add(e);
     }
     byRow.forEach((row, entries) {
@@ -114994,9 +117887,14 @@ $cleanQ
     // 行ごとにグループ化し、 その行内の列だけを左詰めする。
     // ★ **このページの要素だけ**を並べ替える (前は全ページの控えを
     //   ひとまとめに詰め直していたので、 他のギャラリーが崩れていた)。
+    // ★ 表紙に隠れている要素は数えない。 隠れている間もマス目の控えを残す
+    //   作りにしたので ([_ensureShelfCells])、 数に入れると見えない要素の
+    //   分だけ表の要素が右へずれる。 控えはそのままにして、 詰める対象から
+    //   だけ外す。
     final byRow = <int, List<MapEntry<String, List<int>>>>{};
     for (final e in _shelfCells.entries) {
-      if (!page.nodes.containsKey(e.key)) continue;
+      final n = page.nodes[e.key];
+      if (n == null || n.hiddenInContainer != null) continue;
       byRow.putIfAbsent(e.value[1], () => []).add(e);
     }
     bool changed = false;
@@ -115093,6 +117991,27 @@ $cleanQ
   ///   どれになったのか呼ぶ側から確かめられない。 丸めてから保存する。
   static const double kVideoCaptionMinFont = 6.0;
   static const double kVideoCaptionMaxFont = 200.0;
+
+  /// 動画エディターのタイムラインが扱える長さの上限 (24 時間)。
+  static const int kVideoTimelineMaxMs = 24 * 60 * 60 * 1000;
+
+  /// 開始時刻と長さが上限に収まるか見る。 溢れる時だけ理由を返す。
+  ///
+  /// ★ = 動作検証 継続検証 200「24 時間上限が追加と更新で一致しない
+  ///   (startMs:86399000 + durationMs:2000 が**追加では保存され**、 同じ値へ
+  ///   の**更新は断られる**)」。 検査が [mcpEditVideoEditorItem] の中に手書き
+  ///   されていたのが原因。 足す側と直す側の両方からここを呼んで、 物差しを
+  ///   1 つにする。
+  static String? mcpVideoTimelineRangeError(int startMs, int durationMs) {
+    if (startMs <= kVideoTimelineMaxMs &&
+        durationMs <= kVideoTimelineMaxMs &&
+        startMs + durationMs <= kVideoTimelineMaxMs) {
+      return null;
+    }
+    return 'the timeline holds at most 24 hours '
+        '($kVideoTimelineMaxMs ms): startMs + durationMs would be '
+        '${startMs + durationMs} ms.';
+  }
 
   /// 図形 (装飾) の線の太さの範囲。
   /// ★ = 動作検証 継続検証 107 / 181「線幅へ負の値を保存できる」。 0 以下は
@@ -115216,14 +118135,18 @@ $cleanQ
     // ── 表紙 (格納コンテナ) に隠れているメンバーはセルを占有しない ──
     // (= ユーザー要望: 動画を格納したブロックを移動させると、 隠れている動画が
     //   見えないセルを占有してしまい「周りに要素がないのに +ボックスにならない」
-    //   バグが出ていた。 隠れメンバーには絶対にセルを割り当てず、 念のため過去に
-    //   付いてしまった stale なセルも掃除する)。
-    _shelfCells.removeWhere((id, _) {
-      final n = page.nodes[id];
-      return n != null && n.hiddenInContainer != null;
-    });
+    //   バグが出ていた。 隠れメンバーには絶対に新しいセルを割り当てない)。
+    // ★ ただしマス目の控えは**消さない** (= ユーザー報告「ギャラリーページで
+    //   子要素を展開・収納を繰り返すとレイアウトが崩れる」)。 消すと次に出す
+    //   時に元の場所が分からず、 左上の空きから配り直されて並びが毎回
+    //   入れ替わっていた。 控えを残しても**数に入れない**限り枠は食わない
+    //   ので、 空いた所は今までどおり +ボックスに戻る
+    //   ([bookshelfFrontierCells] / [_buildShelfGrid] / [_normalizeShelfCells]
+    //   / [_shelfGridRows] はいずれも隠れている要素を除いて数えている)。
     final occ = <String>{};
     for (final id in page.nodes.keys) {
+      // 隠れているメンバーは枠を占有しない (控えだけ残す = 上の覚書)。
+      if (page.nodes[id]?.hiddenInContainer != null) continue;
       final c = _shelfCells[id];
       if (c != null) occ.add('${c[0]},${c[1]}');
     }
@@ -115312,6 +118235,70 @@ $cleanQ
       changed = true;
     }
     if (changed) _saveShelfCells();
+  }
+
+  /// 表紙から出した要素を、 収納する前に居た**元のマス目**へ返す。
+  ///
+  /// ★ = ユーザー報告「ギャラリーページで子要素を展開・収納を繰り返すと
+  ///   レイアウトが崩れる」。 以前は出すたびに [bookshelfFrontierCells] の
+  ///   先頭 (= 一番左上の空き) へ順に置き直していたので元の場所には戻らず、
+  ///   繰り返すたびに左上へ寄って並びが入れ替わっていた。 枠が全部埋まって
+  ///   いると空きが無く、 全員が (0,0) に重なりもした。
+  ///   隠れている間もマス目の控えを残す作りにしたので ([_ensureShelfCells])、
+  ///   空いていればそこへ返し、 塞がっていた物だけを空きへ逃がす。 手で
+  ///   動かした他のタイルは 1 マスも触らない。
+  ///   ※ 呼ぶ前に [ids] の `hiddenInContainer` を外しておくこと (= 列数を
+  ///     数える [_shelfEffectiveCols] を、 直後の整列と同じ値にするため)。
+  void _restoreShelfCellsForIds(MindMapPage page, Iterable<String> ids) {
+    if (page.pageType != 'bookshelf') return;
+    final want = ids.toSet();
+    final cols = _shelfEffectiveCols(page);
+    // 今埋まっているマス目 (= 表に出ている、 戻す対象以外の要素)。
+    final occ = <String>{};
+    for (final e in page.nodes.entries) {
+      if (want.contains(e.key)) continue;
+      if (e.value.hiddenInContainer != null) continue;
+      final c = _shelfCells[e.key];
+      if (c != null && c.length >= 2) occ.add('${c[0]},${c[1]}');
+    }
+    // 元の場所が空いている物から先に確定させ、 残りだけ空きへ逃がす。
+    final pending = <String>[];
+    for (final id in want) {
+      if (!page.nodes.containsKey(id)) continue;
+      final c = _shelfCells[id];
+      if (c == null || c.length < 2) {
+        pending.add(id);
+        continue;
+      }
+      final key = '${c[0]},${c[1]}';
+      if (c[0] < 0 ||
+          c[0] >= cols ||
+          c[1] < 0 ||
+          c[1] >= kShelfUsableRows ||
+          occ.contains(key)) {
+        pending.add(id);
+        continue;
+      }
+      occ.add(key);
+    }
+    // 元の場所が塞がっていた物 (表紙が居座っている等) は、 覚えていた所の
+    //   **近く**から空きを探す。 見つからなければ左上から探し直す。
+    for (final id in pending) {
+      final c = _shelfCells[id];
+      int fromCol = 0;
+      int fromRow = 0;
+      if (c != null && c.length >= 2) {
+        fromCol = c[0];
+        fromRow = c[1];
+      }
+      if (fromRow < 0 || fromRow >= kShelfUsableRows) fromRow = 0;
+      final free = _nextFreeShelfCell(occ,
+              fromCol: fromCol, fromRow: fromRow, gridCols: cols) ??
+          _nextFreeShelfCell(occ, gridCols: cols);
+      if (free == null) break;
+      _shelfCells[id] = [free[0], free[1]];
+      occ.add('${free[0]},${free[1]}');
+    }
   }
 
   /// ギャラリーの「+ボックス」 セル群 (= ユーザー要望: +ボックスが勝手に増えず、
@@ -115952,7 +118939,12 @@ $cleanQ
     if (row < 0) row = 0;
     for (final entry in _shelfCells.entries) {
       if (entry.key == draggedId) continue;
-      if (!page.nodes.containsKey(entry.key)) continue;
+      // ★ 表紙に隠れている要素は入れ替えの相手にしない (= 隠れている間も
+      //   マス目の控えを残す作りにしたため [_ensureShelfCells])。 見えない
+      //   相手と入れ替えると、 空いている +ボックスへ置いたはずが枠に
+      //   はまらなくなる。
+      final n = page.nodes[entry.key];
+      if (n == null || n.hiddenInContainer != null) continue;
       if (entry.value[0] == col && entry.value[1] == row) return entry.key;
     }
     return null;
@@ -116143,7 +119135,10 @@ $cleanQ
     String? occupantId;
     for (final entry in _shelfCells.entries) {
       if (entry.key == nodeId) continue;
-      if (!page.nodes.containsKey(entry.key)) continue;
+      // ★ 表紙に隠れている要素は入れ替えの相手にしない (理由は
+      //   [shelfSwapTargetAt] と同じ。 判定を 2 か所で揃える)。
+      final n = page.nodes[entry.key];
+      if (n == null || n.hiddenInContainer != null) continue;
       if (entry.value[0] == col && entry.value[1] == row) {
         occupantId = entry.key;
         break;
@@ -116434,6 +119429,10 @@ $cleanQ
     //   そのセルから、 無ければ (0,0) から探し始める。
     final occ = <String>{};
     for (final id in currentPage.nodes.keys) {
+      // ★ 表紙に隠れている要素は枠を占有しない (= 隠れている間もマス目の
+      //   控えを残す作りにしたため [_ensureShelfCells])。 数に入れると
+      //   空いている +ボックスへ動画が入らなくなる。
+      if (currentPage.nodes[id]?.hiddenInContainer != null) continue;
       final c = _shelfCells[id];
       if (c != null) occ.add('${c[0]},${c[1]}');
     }
@@ -116735,18 +119734,25 @@ $cleanQ
       }
     }
 
-    // ★ ギャラリーでは、 隠した要素が置かれていた枠を空ける
-    //   (= ユーザー報告: 親要素に子要素を収納すると、 子要素が配置されて
-    //   いたブロックがおかしくなる)。 隠れている要素の枠を残したままだと、
-    //   誰も居ないのに列と行が確保され続け、 空いた所が +ブロックにも
-    //   戻らなかった。 表紙は先頭の要素が居た枠へ置く。
+    // ★ ギャラリーでは、 隠した要素が置かれていた枠を「数えない」 ことで
+    //   空ける (= ユーザー報告: 親要素に子要素を収納すると、 子要素が配置
+    //   されていたブロックがおかしくなる)。 隠れている要素を枠の数に入れて
+    //   いると、 誰も居ないのに列と行が確保され続け、 空いた所が +ブロック
+    //   にも戻らなかった。 表紙は先頭の要素が居た枠へ置く。
     //   ※ 詰め直し (compactShelfCells) はしない。 その場で +ブロックに
     //     戻す方が、 何がどこにあったか分かりやすい (表紙の作り方と同じ)。
+    // ★ メンバーのマス目は**消さずに読むだけ** (= ユーザー報告「展開・収納を
+    //   繰り返すとレイアウトが崩れる」)。 控えを残しておけば、 展開
+    //   ([unpackContainer] / [toggleBookshelfCover]) で元の場所へ返せる。
+    //   隠れている間は枠を数えないので、 空いた所は今までどおり +ブロックに
+    //   戻る ([_ensureShelfCells] の覚書)。
     if (currentPage.pageType == 'bookshelf') {
       List<int>? target;
       for (final id in valid) {
-        final c = _shelfCells.remove(id);
-        target ??= c == null ? null : List<int>.from(c);
+        final c = _shelfCells[id];
+        if (target == null && c != null && c.length >= 2) {
+          target = <int>[c[0], c[1]];
+        }
       }
       if (target == null) {
         final frontier = bookshelfFrontierCells();
@@ -116783,10 +119789,9 @@ $cleanQ
     target = [target[0], target[1]];
     final coverId = createContainerFromNodes(valid);
     if (coverId == null) return null;
-    // 中の動画のセルを解放 (隠れている間はギャラリーの枠を占有しない)。
-    for (final id in valid) {
-      _shelfCells.remove(id);
-    }
+    // 中の動画のマス目は控えとして残す (隠れている間は枠を数えないので、
+    //   占有はしない)。 ★ 消すと展開した時に元の並びへ戻せない
+    //   (= ユーザー報告「展開・収納を繰り返すとレイアウトが崩れる」)。
     _shelfCells[coverId] = target;
     final n = currentPage.nodes[coverId];
     if (n != null) {
@@ -116827,12 +119832,10 @@ $cleanQ
     //   返す)。 配らないと全部が同じ所に重なって見える。
     if (currentPage.pageType == 'bookshelf') {
       _shelfCells.remove(containerId);
-      for (final id in ids) {
-        if (!nodeMap.containsKey(id)) continue;
-        final frontier = bookshelfFrontierCells();
-        _shelfCells[id] =
-            frontier.isNotEmpty ? List<int>.from(frontier.first) : <int>[0, 0];
-      }
+      // ★ 元のマス目へ返す (= ユーザー報告「展開・収納を繰り返すとレイアウト
+      //   が崩れる」)。 以前は左上の空きから順に置き直していたので、 出すたび
+      //   に並びが変わり、 枠が満杯だと全員が (0,0) に重なっていた。
+      _restoreShelfCellsForIds(currentPage, ids);
       _arrangeAsBookshelfBody(currentPage);
       _saveShelfCells();
     }
@@ -116866,21 +119869,28 @@ $cleanQ
       for (final id in ids) {
         final n = nodeMap[id]!;
         nodeMap[id] = n.copyWith(hiddenInContainer: coverId);
-        _shelfCells.remove(id);
+        // ★ マス目の控えは**消さない** (= ユーザー報告「展開・収納を繰り返す
+        //   とレイアウトが崩れる」)。 隠れている間は枠を数えないので、 空いた
+        //   所は見た目これまでどおり +ボックスに戻る ([_ensureShelfCells])。
       }
     } else {
-      // 展開する: メンバーを表示してフロンティアへ順次配置 (表紙は残す)。
+      // 展開する: メンバーを表示して、 収納する前に居た**元のマス目**へ返す
+      //   (表紙は残す)。
       for (final id in ids) {
         final n = nodeMap[id]!;
         nodeMap[id] = n.copyWith(hiddenInContainer: null);
       }
-      for (final id in ids) {
-        final frontier = bookshelfFrontierCells();
-        _shelfCells[id] =
-            frontier.isNotEmpty ? List<int>.from(frontier.first) : [0, 0];
-      }
-      compactShelfCells();
+      // 注: compactShelfCells() は呼ばない。 行ごとに左詰めするので、 手で
+      //   空けた隙間まで潰して並びが変わっていた (= 崩れの一因)。
+      _restoreShelfCellsForIds(page, ids);
     }
+    // ★ マス目を変えたら必ず並べ直す (= 崩れの本体)。 ここはタイルの座標を
+    //   計算し直しておらず、 マス目だけが動いて絵は古い座標のままだったので、
+    //   +ボックスと要素がかみ合わない見た目になっていた。 ページを開いた時の
+    //   [reflowBookshelf] は画面側の `_shelfCenteredPages` でページごとに
+    //   1 回しか走らないので、 ここで直さないと次の操作まで崩れたままだった。
+    //   格子の控え ([_shelfGridCache]) もこの中で組み直される。
+    _arrangeAsBookshelfBody(page);
     _saveShelfCells();
     _saveToStorage();
     notifyListeners();
@@ -119516,8 +122526,32 @@ $cleanQ
     }
   }
 
-  /// ユーザーの回答を AI で採点する (正誤判定 + 解説) (= ユーザー要望)。
-  Future<({bool correct, String explanation})> judgeFlashcardAnswer(
+  /// ユーザーの回答を採点する (正誤判定)。
+  ///
+  /// ★ 'jevCardGrade' が入っている時は、 判断専用モデルだけで正誤を決めて
+  ///   即返す (= ユーザー要望: 判定は速く、 理由は押した時だけ)。 解説は空で
+  ///   返して `canExplain` を立てる → 画面は 「理由を見る」 の釦を出し、
+  ///   押された時に [gradeFlashcardAnswerByAi] で解説を作る。
+  /// ★ 旗が切 / 判断が取れない時は今までどおり生成 AI の採点へ回すので、
+  ///   取りこぼしは無い (その時は解説も一緒に返る = `canExplain` は false)。
+  /// ★ 採点画面は 2 つ (ページ毎の _showFlashcardStudy と全体版の
+  ///   _FlashcardStudyDialog) あるが、 どちらもこの 1 本を呼ぶ。
+  Future<({bool correct, String explanation, bool canExplain})>
+      judgeFlashcardAnswer(String front, String back, String userAnswer) async {
+    final v =
+        await jevCardVerdict(front: front, back: back, answer: userAnswer);
+    if (v != null) return (correct: v, explanation: '', canExplain: true);
+    final r = await gradeFlashcardAnswerByAi(front, back, userAnswer);
+    return (correct: r.correct, explanation: r.explanation, canExplain: false);
+  }
+
+  /// 生成 AI に採点させる (正誤 + 解説)。 「理由を見る」 からもここを呼ぶ。
+  ///
+  /// ★ 判断専用モデルが 「不正解」 と言った札でも、 こちらが 「正解」 と
+  ///   見れば正誤の表示も直る (= 判断の取りこぼしを生成 AI が拾う)。 正誤を
+  ///   自動で控えている所は無い (間違えた問題フォルダーは人が押した時だけ
+  ///   動く) ので、 表示が変わっても記録と食い違わない。
+  Future<({bool correct, String explanation})> gradeFlashcardAnswerByAi(
       String front, String back, String userAnswer) async {
     final prompt = '次のフラッシュカードについて、 ユーザーの回答が正しいか判定して'
         'ください。\n問題(表): $front\n模範解答(裏): $back\nユーザーの回答: '
@@ -122759,6 +125793,10 @@ $example
       final occ = <String>{};
       for (final id in target.nodes.keys) {
         if (moved.contains(id)) continue;
+        // ★ 表紙に隠れている要素は枠を占有しない (= 隠れている間もマス目の
+        //   控えを残す作りにしたため [_ensureShelfCells])。 数に入れると
+        //   渡って来た要素が空いている +ボックスを飛ばして置かれる。
+        if (target.nodes[id]?.hiddenInContainer != null) continue;
         final c = _shelfCells[id];
         if (c != null) occ.add('${c[0]},${c[1]}');
       }
@@ -123089,6 +126127,15 @@ $example
         preShelfHeight: node.preShelfHeight,
         preShelfClampHeight: node.preShelfClampHeight,
         preShelfAspectRatio: node.preShelfAspectRatio,
+        // ★ = 継続検証 244。 座標の控えも連れて行くが、 複製は貼り付け分ずらして
+        //   置くので控えも同じだけずらす (そのまま写すと、 通常マップへ戻した時に
+        //   複製が元の要素へ完全に重なる)。
+        preShelfX: node.preShelfX == null
+            ? null
+            : (node.preShelfX! + pasteOffset.dx).clamp(0.0, 19000.0),
+        preShelfY: node.preShelfY == null
+            ? null
+            : (node.preShelfY! + pasteOffset.dy).clamp(0.0, 19000.0),
       );
       newIds.add(newId);
     }

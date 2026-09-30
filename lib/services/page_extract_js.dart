@@ -105,13 +105,12 @@ const String consoleHookJs = '(function(){'
 
 // ─── Google 検索の広告落とし ─────────────────────────────────────────
 //
-// = ユーザー要望「google 検索に Jev を導入して広告ブロックする機能」。
+// = ユーザー要望「google 検索の広告ブロック」。
 //
-// ★ 2 段構え。
-//   1 段目 (無料・即時): 名前で分かる広告の入れ物を CSS で隠す。 通信も
-//      判断も要らないので、 Jev を切っていてもここだけは効く。
-//   2 段目 (Jev): 1 段目で判別できなかった塊だけを取り出して
-//      「これは広告か」 を聞き、 返ってきた物を隠す。
+// ★ Jev (判断) は使わない。 名前で分かる広告だけを 2 通りの網で拾う。
+//   (a) 広告専用の CSS 選択子 (#tads / [data-text-ad] / .pla-unit など)。
+//   (b) 「スポンサー」「広告」 等の札が付いた塊を文字で探し、 親ごと隠す。
+//   どちらも通信も判断も要らないので、 外へ何も送りたくない人でも使える。
 //
 // ★ なぜ CSS で隠すだけか: webview_windows 0.2.2 には**要求を止める口が
 //   無い** (contentBlockers は flutter_inappwebview 側だけの機能)。
@@ -163,7 +162,7 @@ String googleAdBlockInstallJs({bool labelHunt = true}) {
   ]);
   return '(function(){try{'
       'var SEL=$sel, SID=$styleId, LABELS=$labels, HUNT=${labelHunt ? 1 : 0};'
-      // ── 1 段目: CSS で隠す ──
+      // ── 名前で分かる枠を CSS で隠す ──
       'function style(){'
       ' var e=document.getElementById(SID);'
       ' if(e) return;'
@@ -216,47 +215,4 @@ const String googleAdBlockRemoveJs = '(function(){try{'
     'if(e&&e.parentNode) e.parentNode.removeChild(e);'
     'var m=document.querySelectorAll("[data-mmad-hide]");'
     'for(var i=0;i<m.length;i++) m[i].removeAttribute("data-mmad-hide");'
-    'var k=document.querySelectorAll("[data-mmad]");'
-    'for(var i=0;i<k.length;i++) k[i].removeAttribute("data-mmad");'
     'return "ok";}catch(e){return "err:"+e;}})();';
-
-/// 判別が付かなかった塊を取り出す JS。 戻りは JSON 文字列
-/// `[{"id":"a3","text":"…"}]`。
-///
-/// ★ 送るのは**塊ごとの短い抜粋だけ**。 ページ全体は送らない。
-/// ★ 既に隠した物・既に見た物 (data-mmad) は出さないので、 同じ塊で
-///   何度も課金しない。
-String googleAdCandidatesJs({int maxBlocks = 12, int chars = 200}) {
-  return '(function(){try{'
-      'var MAX=$maxBlocks, CH=$chars;'
-      'var root=document.querySelector("#search,#rso,#main")||document.body;'
-      'if(!root) return "[]";'
-      'var seen=0,out=[];'
-      'var blocks=root.querySelectorAll("[data-hveid],.g");'
-      'for(var i=0;i<blocks.length&&out.length<MAX;i++){'
-      ' var b=blocks[i];'
-      ' if(b.getAttribute("data-mmad")) continue;'
-      ' if(b.getAttribute("data-mmad-hide")==="1") continue;'
-      // 入れ子になった内側の塊は見ない (親だけを 1 件として扱う)。
-      ' if(b.parentElement&&b.parentElement.closest'
-      '  &&b.parentElement.closest("[data-hveid],.g")) continue;'
-      ' var t=(b.innerText||b.textContent||"").trim()'
-      '  .replace(/\\s+/g," ");'
-      ' if(t.length<12) continue;'
-      ' seen++;'
-      ' var id="a"+seen;'
-      ' b.setAttribute("data-mmad",id);'
-      ' out.push({id:id,text:t.slice(0,CH)});}'
-      'return JSON.stringify(out);}catch(e){return "[]";}})();';
-}
-
-/// Jev が「広告」 と言った塊を隠す JS。
-String googleAdApplyJs(List<String> adIds) {
-  final ids = jsonEncode(adIds);
-  return '(function(){try{'
-      'var IDS=$ids;'
-      'for(var i=0;i<IDS.length;i++){'
-      ' var e=document.querySelector("[data-mmad=\\""+IDS[i]+"\\"]");'
-      ' if(e) e.setAttribute("data-mmad-hide","1");}'
-      'return "ok";}catch(e){return "err:"+e;}})();';
-}

@@ -130,10 +130,10 @@ flowchart TD
 | `set_page_type` | 中身を残したまま種類を変える (`create_page` と同じ 6 種類)<br/>★ `markdown` ページの本文は `write_markdown` で書く。ファイルとして欲しいと言われた時だけ `create_document_file` の `md` |
 | `set_header_buttons` | ヘッダーにボタンを並べる。`replace: true` で総入れ替え<br/>戻り値 `{header, ignored, blocked}`。`ignored` = この端末に無い id、`blocked` = **今は空** (どちらも置かれていない)。クラウド同期 (`sync`) も置ける |
 | `clear_chat_history` | AI アシスタントの会話履歴を消す (実行中の依頼は残る)。全消去のみで部分削除は不可 |
-| `tidy_page` | マインドマップを自動整列で並べ直す (`mcpTidyPage`)。normal ページ限定・Ctrl+Z で戻せる |
+| `tidy_page` | マインドマップを自動整列で並べ直す (`mcpTidyPage`)。normal / ギャラリー (bookshelf) ページ・Ctrl+Z で戻せる<br/>★ 1 つも変わらない時は `tidied:false, unchanged:true` (保存も取り消し履歴も使わない)。**念のための 2 度目**は要らない<br/>★ ギャラリーはタイルの大きさも揃える (= 変化に数える) |
 
 > ★ **戻り値で確かめる道具**: `read_page` は先頭に `nodeCount` / `connectionCount` を返す。
-> `add_node` は `nodeIds` / `unlinked` / `note` (重なっているので tidy_page を呼べ)、
+> `add_node` は `nodeIds` / `unlinked` / `note` (座標なしの新ノードを親の右へ並べた報告。tidy_page の催促ではない)、
 > `update_node` は `applied` (実際に当てた title / memo / x / y / color / url) と
 > `ignored` (渡されなかった項目) を返すので、**確かめるための `read_page` は要らない**。
 > `connect_nodes` は `fromId` / `toId`、`delete_node` は `deleted` (題名・互換) と
@@ -143,8 +143,20 @@ flowchart TD
 
 > ★ **題名で指せるが、あいまい一致はしない**: 消す (`delete_node`) と
 > 書き換える (`update_node`) は id か**完全一致の題名**のみ (大小文字と空白は無視)。
-> 部分一致で近い別ノードを巻き込む事故があったため。線を引く `connect_nodes` だけは
-> 従来どおり部分一致も使う。
+> 部分一致で近い別ノードを巻き込む事故があったため。線を引く `connect_nodes` と
+> 線を消す `disconnect_nodes` も同じで、完全一致しない指定は `node_not_found` で
+> 断られる (`connect_nodes` は惜しい題名を `candidates` に添える) (= 継続検証 232)。
+
+> ★ **完全一致でも題名が複数のノードに当たる時は、1 件目を選ばずに断って候補 id を返す**。
+> `delete_node` (1 件ずつでも `nodes` の一括でも) / `update_node` / `connect_nodes` /
+> `disconnect_nodes` に加えて、`add_node` の `parentId` と `add_decoration` の
+> `aroundNodes` も同じ (= 継続検証 278 / 373〜377 / 381)。
+> `code` に `ambiguous_name` が入るのは `disconnect_nodes` と `delete_node` の一括形だけで、
+> 他は断り文 (または `failed` / `unlinked` の `reason`) に候補 id が並ぶ。
+> `aroundNodes` だけは「1 つでも当たれば囲む」用の複数指定なので、曖昧だった
+> **その指定だけ**を落として他は囲み、`aroundAmbiguous` で返す (図形は描かれる)。
+> `add_node` の返事には、実際に繋いだ親の id が `linked` (`{index, nodeId, parentId}`)
+> で入る。題名で指した時は、返ってきた id を報告する。
 
 > ★ **`add_image_node` にだけ一括形が無い**。画像は 1 枚ずつ呼ぶ。
 
@@ -157,7 +169,7 @@ flowchart TD
 | `add_node` | ノード追加。**バッチ形が推奨**<br/>`nodes: [{title, memo?, url?, color?, parentIndex?, parentId?}]`<br/>`parentIndex` は同じ配列内の先に作ったノードの 0 始まり番号で、同時に接続線も引く → 中心 + 子をまとめて 1 回で作れる。座標は省略推奨 |
 | `update_node` | title / memo / 位置の更新。戻りに `applied` と `ignored` が付く |
 | `disconnect_nodes` | 線を外す。外せない時は札で理由が分かれる: `node_not_found` (打ち間違い。`unknown` に該当分) / `not_connected` (両方あるが線が無い = もう切れている。何度呼んでも同じ) (= 2026-09-25 不具合 8) |
-| `delete_node` | ノードと接続線を削除。戻りに `deletedItems` (id / title / caption / contentType) |
+| `delete_node` | ノードと接続線を削除。戻りに `deletedItems` (id / title / caption / contentType)<br/>★ 既定で画面の削除と同じく**跡を詰める** (残った兄弟が上へ寄る。孤立ノードを消した時は何も動かない)。位置を保ちたい時だけ `compact: false` |
 | `connect_nodes` | 接続。**バッチ形推奨** `connections: [{fromId, toId, label?}]` |
 | `add_image_node` | 画像ノード。`imageBase64`+`fileName` か `imagePath`。画像を渡さず `prompt` だけ書くと AI が描いて置く (= `generate_image`)。`pageId` 省略 = 今開いているページ |
 | `generate_image` | **AI に絵を描かせてページの上に置く**。`prompt` / `pageId`(省略 = 今開いているページ) / `title`。「〜の絵を描いて」「画像を生成して」はこれ (**背景ではない**)。種類に応じて 画像ノード / タイル / 紙の上の画像 / 本文末尾の `![](…)` / タイムラインの画像 として置かれ、どれで置いたかが `placedOn` で返る。絵 1 枚分のクレジットを消費 |
@@ -189,13 +201,13 @@ flowchart TD
 | `delete_paint_item` | タブ (紙) 1 枚、または `binder` だけ渡してバインダーごと消す。最後の 1 枚 / 最後のバインダーは消せない<br/>★ 取り消せない。消すのは**利用者に頼まれた物**か、自分が作業用に作ったタブだけ |
 | `append_document_text` | ノート (paint / document) の末尾に段落を追記。`texts` で一括<br/>★ `markdown` ページには使えない (`write_markdown` を使う) |
 | `write_markdown` | マークダウン (markdown) ページの本文を書く。`text` に**まるごと 1 回**で渡す (見出し・表・```mermaid も描ける)<br/>既定は総入れ替え。`append: true` で末尾に足す。書き終えるとそのページが開いた状態になる<br/>★ マークダウンのページは**タブ**を複数持てる。長い資料は各部分の先頭に `<<<PAGE: タブ名>>>` の行を置くとタブごとに分かれる (1 つ目は今のタブ、残りは後ろへ追加)。1 枚目を目次にして `[タブ名](tab:タブ名)` でリンクする。区切りが無くても長い文書は見出しで自動分割。`split: "single"` で 1 枚に固定、`split: "tabs"` で短い文書も分割、`append` 時は分割しない。返事の `tabs` が書いたタブ数<br/>★ 改行は**本物の改行**で書く (`\n` という 2 文字を書かない)。行頭でしか効かない記法が全部死ぬ |
-| `add_video_editor_item` | 動画エディターのタイムラインへ。`kind` = text / video / image。`startMs` 省略でそのレイヤーの末尾、`durationMs` 既定 4000、`layer` 0 が最背面<br/>★ `texts` に並べれば**まとめて 1 回の書き込み**で入る。戻りは `{itemIds, requested, persisted}` で、`persisted` が保存できた数 (3 件渡して 2 件しか残らない不具合を直した = 2026-09-25 不具合 9)<br/>★ 置いた物を動かす・時間を変える・消すのは `update_video_editor_item` (できる。以前「無い」と書いてあったのは誤り) |
+| `add_video_editor_item` | 動画エディターのタイムラインへ。`kind` = text / video / image。`startMs` 省略でそのレイヤーの末尾 (`texts` の時は**先頭字幕の開始時刻**で、以降は `durationMs` ずつ後ろへ並ぶ = 無視されない)、`durationMs` 既定 4000、`startMs + durationMs` は 24 時間 (86400000 ms) まで (追加も更新も同じ物差し)、`fontSize` は 6〜200 へ丸める (返事に保存後の値と `clamped` が付く)、`layer` 0 が最背面<br/>★ `texts` に並べれば**まとめて 1 回の書き込み**で入る。戻りは `{itemIds, requested, persisted}` で、`persisted` が保存できた数 (3 件渡して 2 件しか残らない不具合を直した = 2026-09-25 不具合 9)<br/>★ 置いた物を動かす・時間を変える・消すのは `update_video_editor_item` (できる。以前「無い」と書いてあったのは誤り) |
 
 ### ファイル作成
 
 | ツール | 説明 |
 |---|---|
-| `create_document_file` | 本物の文書ファイルを作って保存し、ページに貼る<br/>`kind` = xlsx / csv → `rows`<br/>docx / txt / md / pdf → `title` + `paragraphs` (pdf は `rows` も可)<br/>pptx → `slides:[{title, bullets:[…]}]`<br/>`pageId` は normal か bookshelf を渡すこと (paint / videoEditor はファイルタイルを持てない)<br/>★ **同じ `pageId` + 同じ `fileName` で呼ぶと上書き**。既にあるファイルの中身を入れ替え、タイルは増やさない (戻り値 `replaced: true`)。作った物を直す時はこれを使う<br/>★ 毎回まるごと書き直すので、渡さなかった中身は消える |
+| `create_document_file` | 本物の文書ファイルを作って保存し、ページに貼る<br/>`kind` = xlsx / csv → `rows`<br/>docx / txt / md / pdf → `title` + `paragraphs` (pdf は `rows` も可)<br/>pptx → `slides:[{title, bullets:[…]}]`<br/>`pageId` は normal か bookshelf を渡すこと (paint / videoEditor はファイルタイルを持てない)<br/>★ **同じ `pageId` + 同じ `fileName` で呼ぶと上書き**。既にあるファイルの中身を入れ替え、タイルは増やさない (戻り値 `replaced: true`)。作った物を直す時はこれを使う<br/>★ 毎回まるごと書き直すので、渡さなかった中身は消える<br/>★ `paragraphs` は**原文のまま**書かれる (前後の半角・全角空白は残り、`""` は空行になる)<br/>★ **上書きは取り消せない**。`undo_page` / Ctrl+Z はページのタイルしか戻さないので、ディスクの中身は戻らない。書く直前の版を 7 日だけ控えるので、戻り値 `previousVersionPath` を使う (txt / md / csv なら読み返して同じ `fileName` で書き直せば戻る。xlsx / docx / pptx / pdf は `read_device_file` が抜き出した文字しか返さないので書き直しでは戻らず、道筋をそのまま利用者へ伝える)<br/>★ 戻り値 `nodeId` = ファイルが乗っているタイルの要素 id。`tileCreated: true` の時は**新しいタイルの id** なので、以後はそれで指す |
 
 ### 開いているテキストファイル
 
@@ -209,8 +221,8 @@ flowchart TD
 
 | ツール | 説明 |
 |---|---|
-| `search_pages` | ページの中の文字を探す (要素の題名 / メモ / 表のセル)。`pageId` を渡せばそのページだけ、省けばフォルダー内 / 全ページ<br/>★ 戻りの `verdict` は `found` (1 件以上あった) / `absent` (無かった) / `unknown` (探せなかった)。**1 件でも当たれば `found`** なので、`matchCount` と併せてそのまま報告する |
-| `search_folder_files` | 開いているフォルダーの**ファイルの中身**を探す (txt / md / csv / docx / xlsx / pptx / pdf)<br/>★ xlsx は数値セルも本文として探せる。`verdict` は `search_pages` と同じ意味 |
+| `search_pages` | ページの中の文字を探す (要素の題名 / メモ / 表のセル / PDF メモ / 本文)。`scope` は `all` (既定) / `folder` (開いているページのフォルダー) / `page` (開いているページ)<br/>★ 戻りの `verdict` は `found` (1 件以上あった) / `absent` (無かった) / `unknown` (探せなかった)。**1 件でも当たれば `found`** なので、`matchCount` と併せてそのまま報告する<br/>★ フリーノートは**全バインダー・全タブ**を探す (当たりの `title` が 冊名 / タブ名)。`hiddenInPageType` が付いた当たりは**今のページ種類では画面に出ない本文** (種類を切り替えれば読める) なので、そのまま「切り替えれば読める」と伝える |
+| `search_folder_files` | ページに貼ってあるファイルと連動フォルダーの**ファイルの中身**を探す (txt / md / csv / docx / xlsx / pptx / pdf)。`folderId` を省くと**全フォルダー + フォルダーの外**、渡せばそのフォルダーだけ。無い id は `folder_not_found` で断る (absent にはしない)<br/>★ xlsx は数値セルも本文として探せる。全角/半角・大小・空白の揺れは吸収する。`verdict` は `search_pages` と同じ意味 (`unknown` = 読み切れなかったので「無い」とは言えない) |
 
 ### 自動操作 (PC そのものの操作)
 
@@ -230,12 +242,25 @@ flowchart TD
 | ツール | 説明 |
 |---|---|
 | `list_app_commands` | 起動できる機能の id + ラベル一覧 |
-| `run_app_command` | id を指定して機能を開く (例: flashcards / silentCamera / calendar / qrReader)<br/>★ 戻りに `screenId` と `closeable` が付く。閉じる時はその `screenId` を `close_app_command` へ |
-| `close_app_command` | `run_app_command` で開いた画面を閉じる。`id` を省くとここから開けた物を全部閉じて元の表示へ戻す<br/>★ 閉じられるのは**浮遊窓**と**分割ペインに埋めた道具**だけ。全画面のダイアログは `notOpen` に `reason: "fullScreenDialog"` で返る (利用者しか閉じられない)。閉じたと言わない |
+| `run_app_command` | id を指定して機能を開く (例: flashcards / silentCamera / calendar / qrReader)<br/>★ 戻りに `screenId` と `closeable` が付く。**`closeable: true` の時だけ** その `screenId` を `close_app_command` へ渡せる (`false` の時は `cannotClose` / `tracked: false` が付き、閉じられない → 呼ばない)<br/>★ 画面を開かない操作 (undo / redo / zoomIn5 / zoomOut5 / lockScale / lockH / lockV / cutMode / rangeSelect / selectAll / toggleBottomBar) は `launched: true` + `opensScreen: false` だけを返し `screenId` を付けない (= 継続検証 251)。undo / redo は `restored`、拡大率は `scalePercent` が付く。powerMode は選び札が出るので `needsUser` 扱い |
+| `close_app_command` | `run_app_command` で開いた画面を閉じる。`id` を省くとここから開けた物を全部閉じて元の表示へ戻す<br/>★ 閉じられるのは**浮遊窓** / **分割ペインに埋めた道具** / **計算機・ストップウォッチ・ポモドーロの浮遊ツール** / **パソコンの外部ツール窓** / **カレンダー表示** / **`run_app_command` が開けた全画面ダイアログ**。閉じられなかった物は `notOpen` に `reason` (`fullScreenDialog` / `notCurrentlyOpen` / `alreadyClosed`) が付く。閉じたと言わない |
+| `close_foreground_file` | **前面のファイル閲覧画面**だけを閉じる (xlsx・csv / pptx / docx / テキスト)。引数なし<br/>★ `closed: true` なら閉じた (`pageBehind` に背後のページ)。`closed: false` は**まだ開いている** — `reason` は `unsavedEditsKept` (未保存があり利用者が残した) か `notClosableFromHere` (分割ペインに埋まっている → `set_split_view` で変える)。`closed: true` 以外で「閉じました」と言わない |
 | `set_split_view` | 画面分割の形を決める (`quad` = 2×2 の 4 分割 / `leftRight` / `topBottom` / `off`) |
 
 > ★ **バッチ引数を用意した理由**: 1 件ずつのツールしか無いと AI が途中で取りこぼす
 > (4 個頼んで 1 個しか置かれない事故が実際に起きた)。
+
+### Jev (判断専用モデル) の入切
+
+| ツール | 説明 |
+|---|---|
+| `get_jev_settings` | 今の入切を読む (読むだけ)。`stopAll` (非常停止) / `features` (今 実際に効いている値) / `featuresRaw` (停止を外した時に生きる値) / `adBlockCssStage` (Google 検索の広告落とし。Jev は使わない・読むだけ) / `relayReady` / `usage` (回数・金額・最後に使われた版)<br/>★ **停止中は `features` と `featuresRaw` が食い違う**。「全部切です」と答える前に `featuresRaw` を見る |
+| `set_jev_settings` | 旗を切り替える。渡した物だけ変わる (`route` / `search` / `book` / `webRank` / `fileFind` / `docQa` / `cardGrade` / `stopAll` / `releaseStop`)<br/>★ 戻りの `changed` / `unchanged` / `userNotice` が**実際に何が変わったか**。頼んだ値ではなくこれを報告する<br/>★ 非常停止は**片道**。`stopAll: true` (止める) はいつでも通るが、`stopAll: false` 単独は断られる — 解除は `releaseStop: true` を明示した時だけ<br/>★ 停止を外すと、前から入っていた旗がそのまま生き返る。その時も `userNotice` に**何が動き出すか**が並ぶ (`stopReleased: true` も付く)<br/>★ 停止中に機能を入れようとしたら、黙って控えずに**断る** (「入れたのに何も起きない」を作らないため)<br/>★ 旗は真偽値で渡す。文字列の `"true"` / `"false"` は受け取り、それ以外の文字列 (`"yes"` など) は**何も変えずに**断る<br/>★ 知らない旗名が 1 つでも混ざっていたら、正しく書けた旗も含めて**要求全体を断る** (未知の名前は応答に並ぶ)。広告落とし (`adBlockCssStage`) は Jev の旗ではないので、ここでは変えられない (Google 検索の画面の中にある) |
+
+> ★ **判断そのものを呼ぶ道具 (`ask_jev` のような物) は置いていない**。Jev は文章を
+> 返さないので、choice / score にあたる判断はここを呼んでいる AI 自身が出せる。
+> わざわざ利用者の文を外へ出して財布を減らす値打ちが無い。判断を足したい時は、
+> 画面側の機能 (`JevTemplates` に質問文を足す) として作る。
 
 ---
 
@@ -581,12 +606,13 @@ stdio の MCP を設定できるので、 上の `mcp-remote` 経由で同じ形
 | `run_automation` | PC そのものを操作 (ブラウザを起動して打つ等) |
 | `read_device_file` | 端末の任意のファイルを読む |
 | `pick_user_file` | ファイル選択を開かせる |
-| `create_document_file` | ディスクへ書き出す (時に上書き) |
+| `create_document_file` | ディスクへ書き出す (時に上書き。上書きは取り消せない) |
 | `run_app_command` | アプリのボタンを任意に押せる |
 | `text_file_read` / `text_file_edit` / `text_file_status` | 開いているファイルの全文を読む・上書きする |
 | `generate_page_background` | 前払いの AI クレジットを使う (お金が減る) |
 | `cloud_sync` | 利用者のクラウドの月の枠を使う |
 | `get_dev_limits` / `set_dev_limits` | 試験用の上限を読む・書き換える |
+| `set_jev_settings` | Jev の入切 (入れると利用者の文の断片が外へ出て、AI クレジットも減る) |
 
 ### 開発者モードの時だけの道具
 
@@ -616,6 +642,29 @@ API の呼び出し上限を設定してテストできるように」。
 止まる時の文言は、 利用者に出る物とそっくり同じにしてある
 (`credit.insufficient`)。 開発者向けの言い回しにすると、 本番で何が出るのかを
 確かめられないため。
+
+### Jev の入切を AI に触らせる時の線引き
+
+Jev = 文章を作らない判断専用モデル (`choice` / `score` / `noul` しか返さない)。
+生成 AI の前に置く下ごしらえとして使っている。**既定は全部切**で、入切は
+**使う画面の中**にある (動作設定に一覧は無い)。設定画面にあるのは非常停止だけ。
+
+入れると利用者の文の断片が外 (代行 Worker → Jev) へ出て、AI クレジットも減る。
+そこで AI からの操作には線を引いてある。
+
+| 決め事 | なぜ |
+|---|---|
+| `set_jev_settings` は `kPowerfulTools` | 外部のプログラムからは「パソコンの操作も許す」を入れるまで一覧にも出ない。読む方 (`get_jev_settings`) は素通し |
+| 「全部入れる」のまとめ指定は無い | 旗を 1 つずつ名指しさせる。`all: true` のような近道を置くと事故が大きい |
+| 通信が始まる時は `userNotice` を返す | 旗を入れた時と、非常停止を外して前の旗が生き返る時。「利用者に代わって動き出した物」を必ず並べる。黙って入れさせない |
+| 非常停止は片道 | 止めるのは自由。解除は `releaseStop: true` を明示した時だけ |
+| 停止中の「入れる」は断る | 控えておくと、停止を外した瞬間に通信が始まる罠になる |
+| 駄目な指定は何も変えない | 半分だけ当てて「成功」と返さない |
+
+費用は生成 AI と同じ財布 (前払いの AI クレジット)。判断 1 回は入力だけの課金で
+$0.0005 未満。Worker 側でも月の上限を生成と同じ枠で数えている
+(`/ai/decision`)。判断が取れない時は必ず従来処理へ戻すので、
+「Jev が無いと止まる」事は無い。
 
 ### 安全のための検査
 

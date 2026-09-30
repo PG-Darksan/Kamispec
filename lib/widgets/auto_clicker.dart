@@ -38,7 +38,13 @@ class AutoClickerView extends StatefulWidget {
     required this.provider,
     this.onRequestClose,
     this.onPopOut,
+    this.hostHasCloseButton = false,
   });
+
+  /// 包んでいる側 (浮遊窓の帯など) が既に「閉じる」 を持っているか。
+  /// true なら自分では出さない (= ユーザー要望: × が 2 つあるのを上の
+  /// 1 つにまとめる)。 分割ペインには帯が無いので false のまま渡す事。
+  final bool hostHasCloseButton;
 
   /// パレットを常に手前の別窓へ送り出す (= ユーザー要望)。
   /// null なら出さない (モバイルなど、 別窓を作れない所)。
@@ -140,6 +146,16 @@ class _AutoClickerViewState extends State<AutoClickerView> {
   }
 
   String _t(String key) => widget.provider.t(key);
+
+  /// 別窓へ送り出す口を出すか (浮遊窓の帯には無いので、 ここにしか無い)。
+  bool get _showPopOut => widget.onPopOut != null;
+
+  /// 閉じる口を出すか。
+  /// ★ 包んでいる側が既に「閉じる」 を持っているなら出さない
+  ///   (= ユーザー要望: × が 2 つあるのを上の 1 つにまとめる)。
+  ///   分割ペインには帯が無いので、 そこでは必ず出る。
+  bool get _showClose =>
+      widget.onRequestClose != null && !widget.hostHasCloseButton;
 
   // ─── 位置を覚える ─────────────────────────────────────────────────────
   //
@@ -285,47 +301,49 @@ class _AutoClickerViewState extends State<AutoClickerView> {
       color: const Color(0xFF12121C),
       child: Column(children: [
         // 見出し
-        // ★ = ユーザー要望「ヘッダーの文字が入り切れていないから文字書かなく
-        //   ていい」。 窓は縦長の細いパレットなので、 8 文字の題名を置くと
-        //   必ず折り返して切れる。 絵柄だけ残し、 題名は道具の一覧 (hdr.
-        //   autoClicker) とヒントに任せる。
-        Container(
-          padding: const EdgeInsets.fromLTRB(8, 4, 4, 4),
-          decoration: const BoxDecoration(
-            border: Border(bottom: BorderSide(color: Colors.white12)),
-          ),
-          child: Row(children: [
-            Tooltip(
-              message: p.t('hdr.autoClicker'),
-              child: const Icon(Icons.ads_click_rounded,
-                  size: 18, color: Color(0xFF4DD0E1)),
+        // ★ = ユーザー要望「ヘッダーの文字が入り切れていない」「オートクリッ
+        //   カーのアイコン自体は意味がないから要らない」「閉じるボタンが
+        //   2 つあるから上のにまとめて欲しい」。
+        //   題名も絵柄も置かず、 残すのは**この枠にしか無い口**だけ:
+        //     ・別窓へ送り出す (浮遊窓の帯には無い)
+        //     ・閉じる — ただし包んでいる側が既に持っているなら出さない
+        //   どちらも要らない所では、 帯ごと出さない (空の 30px が残らない)。
+        if (_showPopOut || _showClose)
+          Container(
+            padding: const EdgeInsets.fromLTRB(8, 4, 4, 4),
+            decoration: const BoxDecoration(
+              border: Border(bottom: BorderSide(color: Colors.white12)),
             ),
-            const Spacer(),
-            // ★ = ユーザー要望「パレットが出てきて、 他の箇所がアクティブ
-            //   でも消えずに押せるみたいなものを想定していた」。 アプリの
-            //   中の枠は、 他のアプリを前に出すと一緒に後ろへ回ってしまう。
-            //   常に手前に居続ける**別の窓**へパレットだけを送り出す。
-            if (widget.onPopOut != null)
-              IconButton(
-                padding: EdgeInsets.zero,
-                constraints:
-                    const BoxConstraints(minWidth: 30, minHeight: 30),
-                tooltip: p.t('palette.popOut'),
-                icon: const Icon(Icons.open_in_new_rounded,
-                    size: 17, color: Color(0xFF4DD0E1)),
-                onPressed: widget.onPopOut,
-              ),
-            if (widget.onRequestClose != null)
-              IconButton(
-                padding: EdgeInsets.zero,
-                constraints:
-                    const BoxConstraints(minWidth: 30, minHeight: 30),
-                icon: const Icon(Icons.close_rounded,
-                    size: 18, color: Colors.white54),
-                onPressed: widget.onRequestClose,
-              ),
-          ]),
-        ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                // ★ = ユーザー要望「パレットが出てきて、 他の箇所がアクティブ
+                //   でも消えずに押せるみたいなものを想定していた」。 アプリの
+                //   中の枠は、 他のアプリを前に出すと一緒に後ろへ回ってしまう。
+                //   常に手前に居続ける**別の窓**へパレットだけを送り出す。
+                if (_showPopOut)
+                  IconButton(
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints(minWidth: 30, minHeight: 30),
+                    tooltip: p.t('palette.popOut'),
+                    icon: const Icon(Icons.open_in_new_rounded,
+                        size: 17, color: Color(0xFF4DD0E1)),
+                    onPressed: widget.onPopOut,
+                  ),
+                if (_showClose)
+                  IconButton(
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints(minWidth: 30, minHeight: 30),
+                    tooltip: p.t('btn.close'),
+                    icon: const Icon(Icons.close_rounded,
+                        size: 18, color: Colors.white54),
+                    onPressed: widget.onRequestClose,
+                  ),
+              ],
+            ),
+          ),
         Expanded(
           child: !autoClickerSupported
               ? Padding(

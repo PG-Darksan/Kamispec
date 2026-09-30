@@ -2803,7 +2803,10 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       try {
         final adJs = context.read<MindMapProvider>().adBlockInstallJsOrNull();
         if (adJs != null) {
-          await ctrl.addScriptToExecuteOnDocumentCreated(adJs);
+          // ★ 後で切られた時に外せるよう、 登録の id をタブに控える
+          //   (= ヘッダーの入切をその場で効かせるため)。
+          tab.adScriptId =
+              await ctrl.addScriptToExecuteOnDocumentCreated(adJs);
         }
       } catch (_) {}
       // ★ 自動操作から預かっている物があれば、 後から作ったタブにも
@@ -6382,14 +6385,9 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
               padding: const EdgeInsets.symmetric(horizontal: 10),
               color: const Color(0xFF1E1E2E),
               child: Row(children: [
-                // ★ = ユーザー要望「ヘッダーの文字は要らない」。 掴む帯なので
-                //   絵柄だけにして、 狭い幅でも札が隠れないようにする
-                //   (双子: lib/widgets/auto_clicker.dart の見出し)。
-                Tooltip(
-                  message: provider.t('hdr.autoClicker'),
-                  child: const Icon(Icons.ads_click_rounded,
-                      size: 15, color: Color(0xFF80CBC4)),
-                ),
+                // ★ = ユーザー要望「ヘッダーの文字は要らない」「アイコン自体も
+                //   意味がないから要らない」。 ここは掴む帯なので、 中身は
+                //   閉じるだけにする (双子: lib/widgets/auto_clicker.dart)。
                 const Spacer(),
                 InkWell(
                   borderRadius: BorderRadius.circular(16),
@@ -6409,6 +6407,8 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
               provider: provider,
               onRequestClose: () =>
                   setState(() => _autoClickerOpen = false),
+              // この枠は自前の帯に閉じるを持っている (= × を 2 つ出さない)。
+              hostHasCloseButton: true,
             ),
           ),
         ]),
@@ -6953,59 +6953,118 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   /// モバイル: 1 タブ分の InAppWebView。 keepAlive で切替時の状態を保持する。
   /// 広告落としを 1 枚の WebView へ当てる (モバイル用)。
   ///
-  /// 1 段目 (CSS) を入れてから、 判別が付かなかった塊だけを Jev に聞く。
-  /// 取れなければ 1 段目だけで終わる。
+  /// 名前で分かる広告 (広告用の CSS 選択子 + 「スポンサー」 等の札) を
+  /// 隠す JS を入れるだけ。 外へは何も送らない。
   Future<void> _applyAdBlock(iaw.InAppWebViewController c) async {
     if (!mounted) return;
     final prov = context.read<MindMapProvider>();
     final js = prov.adBlockInstallJsOrNull();
-    if (js == null) return;
-    try {
-      await c.evaluateJavascript(source: js);
-    } catch (_) {
+    if (js == null) {
+      // ★ 切っている時は、 前に隠した分を戻す (= 切ったのに戻らない対策。
+      //   このページには前の読み込みで入れた style / 見張りが残っている)。
+      try {
+        await c.evaluateJavascript(source: googleAdBlockRemoveJs);
+      } catch (_) {}
       return;
     }
-    if (!prov.jevAdBlockEnabled) return;
-    if (!_looksLikeSearchResults(_currentUrl)) return;
     try {
-      final raw = await c.evaluateJavascript(source: googleAdCandidatesJs());
-      final ids = await _classifyAdBlocks(prov, raw);
-      if (ids.isEmpty || !mounted) return;
-      await c.evaluateJavascript(source: googleAdApplyJs(ids));
+      await c.evaluateJavascript(source: js);
     } catch (_) {}
   }
 
-  /// 検索結果のページか (広告判定は結果ページだけで行う = 無駄に聞かない)。
-  bool _looksLikeSearchResults(String url) {
-    final u = url.toLowerCase();
-    if (!u.contains('/search')) return false;
-    return u.contains('google.');
+  /// 広告落とし (名前で分かる広告を CSS で隠す) の入切を切り替える。
+  ///
+  /// = ユーザー要望「設定の奥ではなく、 使う画面から入切できるように」。
+  /// ★ 切り替えたら [_reapplyAdBlockToOpenTabs] で **今 開いているページへ
+  ///   その場で当て直す**。 読み込み直しはしない (見ている所が消えるので)。
+  Future<void> _toggleAdBlock() async {
+    final prov = context.read<MindMapProvider>();
+    await prov.setAdBlockEnabled(!prov.adBlockEnabled);
+    if (!mounted) return;
+    await _reapplyAdBlockToOpenTabs();
   }
 
-  /// JS が返した候補 JSON を Jev へ渡して、 広告の id を得る。
-  Future<List<String>> _classifyAdBlocks(
-      MindMapProvider prov, Object? raw) async {
-    if (raw == null) return const [];
-    List<dynamic> list;
-    try {
-      final text = raw is String ? raw : '$raw';
-      if (text.trim().isEmpty || text.trim() == '[]') return const [];
-      final j = jsonDecode(text);
-      if (j is! List) return const [];
-      list = j;
-    } catch (_) {
-      return const [];
+  /// 今の広告落とし設定を、 開いている全タブへその場で当て直す。
+  ///
+  /// ★ 落とし穴: デスクトップの差し込みは
+  ///   `addScriptToExecuteOnDocumentCreated` (= タブを作る時にしか入らない)、
+  ///   モバイルは `onLoadStop` 頼み。 どちらも「今 見ているページ」 には
+  ///   後から当たらないので、 切り替えただけでは黙って効かない。
+  /// ★ まず [googleAdBlockRemoveJs] で必ず素へ戻す (style / 見張り /
+  ///   付けた目印を消す)。 入っていればその上で入れ直すので、
+  ///   入→切・切→入 のどちらも同じ道で片が付く。
+  /// ★ デスクトップは doc-created の登録も合わせる (入れた時は登録し、 切った
+  ///   時は id で外す)。 そうしないと **次に開くページ** でまた食い違う。
+  Future<void> _reapplyAdBlockToOpenTabs() async {
+    if (!mounted) return;
+    final prov = context.read<MindMapProvider>();
+    final install = prov.adBlockInstallJsOrNull(); // 切っている時は null
+    for (final t in _gsTabs) {
+      try {
+        if (_isDesktop) {
+          final c = t.winCtrl;
+          if (c == null || !t.winReady) continue;
+          final id = t.adScriptId;
+          if (install == null) {
+            if (id != null) {
+              t.adScriptId = null;
+              await c.removeScriptToExecuteOnDocumentCreated(id);
+            }
+          } else if (id == null) {
+            t.adScriptId =
+                await c.addScriptToExecuteOnDocumentCreated(install);
+          }
+          await c.executeScript(googleAdBlockRemoveJs);
+          if (install == null) continue;
+          await c.executeScript(install);
+        } else {
+          final c = t.iawCtrl;
+          if (c == null) continue;
+          await c.evaluateJavascript(source: googleAdBlockRemoveJs);
+          if (install == null) continue;
+          if (identical(t, _activeTab)) {
+            await _applyAdBlock(c);
+          } else {
+            await c.evaluateJavascript(source: install);
+          }
+        }
+      } catch (_) {}
     }
-    final blocks = <Map<String, String>>[];
-    for (final e in list) {
-      if (e is! Map) continue;
-      final id = '${e['id'] ?? ''}';
-      final text = '${e['text'] ?? ''}';
-      if (id.isEmpty || text.isEmpty) continue;
-      blocks.add({'id': id, 'text': text});
-    }
-    if (blocks.isEmpty) return const [];
-    return prov.jevPickAdBlocks(blocks);
+  }
+
+  /// 広告落としの項目 (入っている時は ✓)。 PC のヘッダーと「⋮」 で共用。
+  PopupMenuItem<String> _gsAdBlockItem({
+    required String value,
+    required IconData icon,
+    required bool on,
+    required String label,
+    bool enabled = true,
+  }) {
+    final color = on ? const Color(0xFF7FD8A0) : Colors.white38;
+    return PopupMenuItem<String>(
+      value: value,
+      height: 40,
+      enabled: enabled,
+      child: Row(children: [
+        Icon(
+            on
+                ? Icons.check_box_rounded
+                : Icons.check_box_outline_blank_rounded,
+            color: color,
+            size: 17),
+        const SizedBox(width: 8),
+        Icon(icon, color: color, size: 17),
+        const SizedBox(width: 8),
+        ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 220),
+          child: Text(label,
+              maxLines: 2,
+              style: TextStyle(
+                  color: enabled ? Colors.white : Colors.white38,
+                  fontSize: 13)),
+        ),
+      ]),
+    );
   }
 
   Widget _buildIawTabWebView(int i) {
@@ -8298,6 +8357,19 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         color: const Color(0xFFFFB347),
         onTap: _addCurrentPageToBookmarks,
       ),
+      // ── 広告を隠す (= ユーザー要望: 使う画面から入切できるように) ──
+      //    押した後はその場で当て直すので、 読み込み直しは要らない。
+      _mobileHeaderAction(
+        icon: provider.adBlockEnabled
+            ? Icons.block_rounded
+            : Icons.block_outlined,
+        label: '広告',
+        color: provider.adBlockEnabled
+            ? const Color(0xFF7FD8A0)
+            : Colors.white54,
+        tooltip: provider.t('jev.adBlock'),
+        onTap: () => _toggleAdBlock(),
+      ),
       // ── スクショ (= ユーザー要望: PDF ボタンは分かりにくいのでスクショに変更) ──
       if (!_isDesktop)
         _mobileHeaderAction(
@@ -8706,6 +8778,32 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                               ),
                           ],
                         ),
+                      // ── 広告を隠す (= ユーザー要望: 設定の奥ではなく、
+                      //    使う画面から入切できるように) ──
+                      if (!widget.minimalMode && !isMobileHeader)
+                        PopupMenuButton<String>(
+                          tooltip: provider.t('jev.adBlock'),
+                          icon: Icon(
+                            provider.adBlockEnabled
+                                ? Icons.block_rounded
+                                : Icons.block_outlined,
+                            color: provider.adBlockEnabled
+                                ? const Color(0xFF7FD8A0)
+                                : Colors.white54,
+                            size: 20,
+                          ),
+                          color: const Color(0xFF1E1E32),
+                          padding: const EdgeInsets.all(6),
+                          onSelected: (_) => _toggleAdBlock(),
+                          itemBuilder: (_) => [
+                            _gsAdBlockItem(
+                              value: 'adBlock',
+                              icon: Icons.block_rounded,
+                              on: provider.adBlockEnabled,
+                              label: provider.t('jev.adBlock'),
+                            ),
+                          ],
+                        ),
                       // ── DeepL を側パネルで開く (= ユーザー要望: PC のみ搭載。
                       //    モバイルはスペースが無いので非表示) ──
                       if (!widget.minimalMode && useHorizontal)
@@ -8832,6 +8930,10 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                               case 'autoCapture':
                                 _autoSwipeCaptureToPdf();
                                 break;
+                              // ── 広告を隠す (= ユーザー要望: 使う画面から) ──
+                              case 'adBlock':
+                                _toggleAdBlock();
+                                break;
                             }
                           },
                           itemBuilder: (_) => [
@@ -8852,6 +8954,14 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                             if (!_isDesktop)
                               _gsOverflowItem('autoCapture',
                                   Icons.burst_mode_rounded, '自動スクショ → PDF'),
+                            // ── 広告を隠す (= ユーザー要望: 設定の奥ではなく
+                            //    使う画面から入切できるように) ──
+                            _gsAdBlockItem(
+                              value: 'adBlock',
+                              icon: Icons.block_rounded,
+                              on: provider.adBlockEnabled,
+                              label: provider.t('jev.adBlock'),
+                            ),
                           ],
                         ),
                       // ── 「全画面表示」 ボタン (minimalMode 時のみ) ──
@@ -9342,6 +9452,8 @@ class _GsTab {
   //    再読み込みされないように。 IndexedStack で全タブを生かしておく) ──
   // デスクトップ (webview_windows)
   wv_win.WebviewController? winCtrl;
+  /// 広告落としの doc-created 登録の id (切った時に外すため。 未登録は null)。
+  String? adScriptId;
   bool winReady = false; // initialize 完了
   bool winInitStarted = false; // initialize 起動済み (二重起動防止)
   String? winError;

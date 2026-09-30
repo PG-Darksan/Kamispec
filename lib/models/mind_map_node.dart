@@ -942,6 +942,15 @@ class MindMapNode {
   bool? preShelfClampHeight;
   double? preShelfAspectRatio;
 
+  /// ギャラリー (棚) に並べる**前**の座標。 null = 控えが無い。
+  ///
+  /// ★ = 継続検証 244「マップ⇄ギャラリー往復で要素座標を失い図形が取り残され
+  ///   る」。 寸法 ([preShelfWidth] ほか) は控えていたのに座標は控えておらず、
+  ///   ギャラリーの格子座標がそのまま残っていた。 囲み図形 (aroundNodes) は
+  ///   ギャラリーの間は動かないため、 要素だけ格子へ飛んで図形が離れて残る。
+  double? preShelfX;
+  double? preShelfY;
+
   /// 描画レイヤー 1〜5 (既定 3)。 図形・接続線と同じ考え方で、 大きいほど
   /// 手前に描かれる (= ユーザー要望: レイヤーをノードやリンクにも適用)。
   int layer;
@@ -1004,6 +1013,8 @@ class MindMapNode {
     this.preShelfHeight,
     this.preShelfClampHeight,
     this.preShelfAspectRatio,
+    this.preShelfX,
+    this.preShelfY,
     this.layer = 3,
     this.shape,
     this.diagramSource,
@@ -1143,6 +1154,16 @@ class MindMapNode {
   int? _vhTitleLen, _vhMemoLen;
   bool? _vhClamp;
   double? _vhHintT, _vhHintM;
+  // ★ = 動作検証 継続検証 231「リンクを解除しても visualHeight がリンク
+  //   カードの値 (= +28px) のまま返る」。 覚えた答えの目印に**中身**が
+  //   入っていなかったので、 題名も幅も変えずに URL や添付だけ差し替えると
+  //   古い高さを返し続けていた (題名を直すと初めて 52 に戻っていた)。
+  //   これらは非 final で直に書き換わる (mcpUpdateNode / 添付の差し替え)
+  //   ため、 高さを左右する項目は**全部**目印に入れる。
+  //   _computeVisualHeight が読む物を増やしたら、 ここにも足すこと。
+  String? _vhYt, _vhLink, _vhAttach, _vhAttachThumb;
+  double? _vhAr;
+  NodeContentType? _vhType;
 
   double get visualHeight {
     // 前に出した答えが、 まだ通じるか。
@@ -1157,6 +1178,12 @@ class MindMapNode {
         _vhClamp == clampHeight &&
         _vhHintT == defaultTitleFontSizeHint &&
         _vhHintM == defaultMemoFontSizeHint &&
+        _vhYt == youtubeUrl &&
+        _vhLink == linkUrl &&
+        _vhAttach == attachmentPath &&
+        _vhAttachThumb == attachmentThumbPath &&
+        _vhAr == attachmentAspectRatio &&
+        _vhType == contentType &&
         tableData == null &&
         chartData == null) {
       return _vhCache!;
@@ -1174,6 +1201,12 @@ class MindMapNode {
       _vhClamp = clampHeight;
       _vhHintT = defaultTitleFontSizeHint;
       _vhHintM = defaultMemoFontSizeHint;
+      _vhYt = youtubeUrl;
+      _vhLink = linkUrl;
+      _vhAttach = attachmentPath;
+      _vhAttachThumb = attachmentThumbPath;
+      _vhAr = attachmentAspectRatio;
+      _vhType = contentType;
     }
     return v;
   }
@@ -1489,6 +1522,8 @@ class MindMapNode {
     Object? preShelfHeight = _sentinel,
     Object? preShelfClampHeight = _sentinel,
     Object? preShelfAspectRatio = _sentinel,
+    Object? preShelfX = _sentinel,
+    Object? preShelfY = _sentinel,
     int? layer,
     Object? shape = _sentinel,
     Object? diagramSource = _sentinel,
@@ -1564,6 +1599,8 @@ class MindMapNode {
       preShelfAspectRatio: preShelfAspectRatio == _sentinel
           ? this.preShelfAspectRatio
           : preShelfAspectRatio as double?,
+      preShelfX: preShelfX == _sentinel ? this.preShelfX : preShelfX as double?,
+      preShelfY: preShelfY == _sentinel ? this.preShelfY : preShelfY as double?,
       shape: shape == _sentinel ? this.shape : shape as String?,
       diagramSource: diagramSource == _sentinel
           ? this.diagramSource
@@ -1636,6 +1673,8 @@ class MindMapNode {
       if (preShelfHeight != null) 'preShelfH': preShelfHeight,
       if (preShelfClampHeight != null) 'preShelfClamp': preShelfClampHeight,
       if (preShelfAspectRatio != null) 'preShelfAr': preShelfAspectRatio,
+      if (preShelfX != null) 'preShelfX': preShelfX,
+      if (preShelfY != null) 'preShelfY': preShelfY,
       if (layer != 3) 'layer': layer,
       // ノード形状 (フローチャート記法)。 既定 (null/'rounded') は出さない。
       if (shape != null && shape != 'rounded') 'shape': shape,
@@ -1715,6 +1754,8 @@ class MindMapNode {
       preShelfHeight: (json['preShelfH'] as num?)?.toDouble(),
       preShelfClampHeight: json['preShelfClamp'] as bool?,
       preShelfAspectRatio: (json['preShelfAr'] as num?)?.toDouble(),
+      preShelfX: (json['preShelfX'] as num?)?.toDouble(),
+      preShelfY: (json['preShelfY'] as num?)?.toDouble(),
       layer: ((json['layer'] as num?)?.toInt() ?? 3).clamp(1, 5).toInt(),
       shape: json['shape'] as String?,
       diagramSource: json['diagramSource'] as String?,

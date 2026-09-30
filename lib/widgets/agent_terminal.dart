@@ -1877,7 +1877,7 @@ class AgentTerminalState extends State<AgentTerminal> {
                     // ★ 通し番号を鍵にする (位置を鍵にすると、 先頭が渡った
                     //   時に別の行の見た目を引き継いでしまう)。
                     key: ValueKey('cliQueue${item.id}'),
-                    padding: const EdgeInsets.only(bottom: 3),
+                    padding: const EdgeInsets.only(bottom: 3, right: 12), // 巻物のぶん
                     child: Row(children: [
                       ReorderableDragStartListener(
                         index: i,

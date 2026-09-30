@@ -1008,6 +1008,18 @@ class _NodeWidgetState extends State<NodeWidget> {
               _richFontSize / widget.defaultMemoFontSize.clamp(6.0, 28.0),
           linkColor: linkTextColor,
         );
+    // ★ = 機能追加案 継続検証192「画像ギャラリーにもメモを持たせる」。
+    //   絵のタイルは高さを固定していない (clampHeight=false) ので、 上の
+    //   判定に一度も入らず、「全文」 のボタンが出なかった ── つまり絵に
+    //   付けた説明や出典を読む手が無かった。 絵のタイルでメモがある時も
+    //   ボタンを出す (タイルの大きさは変えない)。
+    final bool _shelfCoverHasMemo = widget.isShelf &&
+        !node.clampHeight &&
+        widget.onShowFullText != null &&
+        node.tableData == null &&
+        hasAttachment &&
+        ((node.memoText ?? '').trim().isNotEmpty ||
+            (node.richText ?? '').trim().isNotEmpty);
     // ── 表ノードはタイトル/メモ/サムネイル等を持たない ──
     // totalH = タイトルバー (タイトル空時 14px、 タイトル有時はテキスト分膨らむ)
     //        + 表本体 (内容ベースの推定値) + 14 (下端パディング)。
@@ -2287,7 +2299,8 @@ class _NodeWidgetState extends State<NodeWidget> {
             //   長押し (= 並べ替えのドラッグ) を邪魔しないようにする。
             //   選択中はここに大きさ変更のつまみが出るので、 その時は隠す
             //   (重なるとつまみを掴めなくなる)。
-            if (_shelfTextClipped && !widget.showResizeHandles)
+            if ((_shelfTextClipped || _shelfCoverHasMemo) &&
+                !widget.showResizeHandles)
               Positioned(
                 right: 2,
                 bottom: 2,

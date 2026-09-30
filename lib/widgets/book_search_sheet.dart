@@ -155,8 +155,29 @@ class _BookSearchSheetState extends State<BookSearchSheet> {
               label: Text(provider.t('book.library'),
                   style: const TextStyle(fontSize: 12)),
             ),
-          IconButton(
-            icon: const Icon(Icons.close_rounded,
+            // ── 「並びを直す」 (Jev) の入切 (= ユーザー要望: 設定の奥ではなく
+            //    使う画面から。 押したらその場で探し直すので効果が見える) ──
+            IconButton(
+              icon: Icon(Icons.sort_rounded,
+                  color: provider.jevBookEnabled
+                      ? const Color(0xFFFFB74D)
+                      : Colors.white38,
+                  size: 19),
+              tooltip: provider.jevStopAll
+                  ? provider.t('jev.stopAll')
+                  : provider.t('jev.book'),
+              visualDensity: VisualDensity.compact,
+              onPressed: provider.jevStopAll
+                  ? null
+                  : () async {
+                      await provider.setJevBookEnabled(!provider.jevBookEnabled);
+                      if (!mounted) return;
+                      // 並べ替えは探す時に掛かるので、 その場で探し直す。
+                      await _run();
+                    },
+            ),
+            IconButton(
+              icon: const Icon(Icons.close_rounded,
                 color: Colors.white54, size: 20),
             onPressed: () => Navigator.of(context).maybePop(),
           ),

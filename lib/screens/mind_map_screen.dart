@@ -634,6 +634,24 @@ Widget pageListIcon(MindMapProvider provider, MindMapPage p,
   );
 }
 
+/// 「別のページに送る」 系の送り先一覧に出して良いページか。
+///
+/// ★ = ユーザー要望「別のページに送るを押したらページ一覧に表示されて
+///   いないページが表示されてしまい、 探すのが困難」。 判定はドロワーの
+///   ページ一覧 (`_buildDrawer` / `_drawerFlatItems`) とまったく同じ
+///   `isPageHidden` だけを使う。 別の規則を作らない (増やすと片方だけ直す
+///   事故が出る)。
+///
+/// ★ 「ごみ箱」 のページは全ページ分の丸ごとの写し (控えファイル) なので
+///   `provider.pages` には最初から居ない。 ここで外れるのは
+///   **非表示にしたページ**だけ。
+///
+/// ★ 「今開いているページに入れる」 のが目的の一覧 (ビューアの「ページに
+///   追加」 等) では、 現在ページだけはこの判定に関係なく必ず残す事。
+///   隠したページを開いている時に入れ先を失わないため。
+bool isPageSendTarget(MindMapProvider provider, MindMapPage p) =>
+    !provider.isPageHidden(p.id);
+
 /// このページに出すアイコン。 個別指定 → 種類の指定 → 元からの既定 の順。
 IconData pageIconFor(MindMapProvider provider, MindMapPage p, IconData fallback) {
   final i = provider.pageIconIndexFor(p.id, p.pageType);
@@ -1691,6 +1709,234 @@ String _aiProviderLabel(MindMapProvider provider, String id) {
 Future<void> _setAiEngineMode(MindMapProvider provider, String mode) =>
     provider.setAiEngine(mode);
 
+/// モデル選びの「細かく決める」 を開いているか。 開き直しても覚えておきたい
+/// ので、 画面の外に置く (上の [_aiPickerCollapsed] と同じ理由)。
+bool _aiFineTuneOpen = false;
+
+/// 会社ごとの細かい設定 (= ユーザー要望: 推論レベルがアバウト過ぎる。
+/// プロバイダーごとの細かい設定を当てられるように)。
+///
+/// ★ 出すのは**今選んでいる会社の刻みだけ**。 各社が実際に受け取れる形が
+///   違うので、 共通の 3 段階に潰すと嘘になる。
+///   ・ChatGPT … reasoning_effort (minimal / low / medium / high) と verbosity
+///   ・Claude  … thinking.budget_tokens (トークン数)
+///   ・Gemini  … thinkingConfig.thinkingBudget (-1 = 自動 / 0 = 切)
+/// ★ どれも「既定にまかせる」 を持つ。 その間は今までどおり上の 3 段階から
+///   決まるので、 触らない人の動きは 1 つも変わらない。
+/// ★ 値の名前は言い換えない (上の 3 段階と同じ考え方。 送っているパラメータ
+///   名そのものを出す)。
+class _AiFineTunePanel extends StatefulWidget {
+  const _AiFineTunePanel({required this.provider, this.onChanged});
+  final MindMapProvider provider;
+  final VoidCallback? onChanged;
+
+  @override
+  State<_AiFineTunePanel> createState() => _AiFineTunePanelState();
+}
+
+class _AiFineTunePanelState extends State<_AiFineTunePanel> {
+  final TextEditingController _tokens = TextEditingController();
+
+  /// 欄に入れ直す判断のための覚え (会社 + どの刻みを選んでいるか)。
+  /// ★ 打っている最中に書き戻すと文字送りが先頭へ飛ぶので、 ここが変わった
+  ///   時**かつ**中身が違う時だけ入れ直す。
+  String _seeded = '';
+
+  @override
+  void dispose() {
+    _tokens.dispose();
+    super.dispose();
+  }
+
+  Future<void> _set(Future<void> Function() op, {bool notify = true}) async {
+    await op();
+    if (!mounted) return;
+    setState(() {});
+    if (notify) widget.onChanged?.call();
+  }
+
+  Widget _chip(String label, bool on, VoidCallback tap) => ChoiceChip(
+        label: Text(label, style: const TextStyle(fontSize: 11.5)),
+        selected: on,
+        backgroundColor: const Color(0xFF2A2A44),
+        selectedColor: const Color(0xFF80CBC4),
+        disabledColor: const Color(0xFF2A2A44),
+        labelStyle: TextStyle(color: on ? Colors.black : Colors.white70),
+        onSelected: (_) => tap(),
+      );
+
+  Widget _paramLabel(String raw) => Padding(
+        padding: const EdgeInsets.only(top: 8, bottom: 4),
+        child: Text(raw,
+            style: const TextStyle(
+                color: Colors.white70,
+                fontSize: 11,
+                fontWeight: FontWeight.w700)),
+      );
+
+  Widget _hint(String text) => Padding(
+        padding: const EdgeInsets.only(top: 6),
+        child: Text(text,
+            style: const TextStyle(
+                color: Colors.white38, fontSize: 10.5, height: 1.4)),
+      );
+
+  /// ChatGPT … 段階の名前で決める (トークン数ではない)。
+  List<Widget> _openaiRows(MindMapProvider p) => [
+        _paramLabel('reasoning_effort'),
+        Wrap(spacing: 6, runSpacing: 6, children: [
+          _chip(p.t('ai.fineDefault'), p.fineOpenaiEffort.isEmpty,
+              () => _set(() => p.setFineOpenai(effort: ''))),
+          for (final lv in MindMapProvider.openaiEffortLevels)
+            _chip(lv, p.fineOpenaiEffort == lv,
+                () => _set(() => p.setFineOpenai(effort: lv))),
+        ]),
+        _paramLabel('verbosity'),
+        Wrap(spacing: 6, runSpacing: 6, children: [
+          _chip(p.t('ai.fineDefault'), p.fineOpenaiVerbosity.isEmpty,
+              () => _set(() => p.setFineOpenai(verbosity: ''))),
+          for (final lv in MindMapProvider.openaiVerbosityLevels)
+            _chip(lv, p.fineOpenaiVerbosity == lv,
+                () => _set(() => p.setFineOpenai(verbosity: lv))),
+        ]),
+      ];
+
+  /// Claude / Gemini … 考える枠をトークン数で決める。
+  List<Widget> _budgetRows(MindMapProvider p, String pid) {
+    final v = pid == 'anthropic' ? p.fineAnthropicBudget : p.fineGeminiBudget;
+    return [
+      _paramLabel(pid == 'anthropic'
+          ? 'thinking.budget_tokens'
+          : 'thinkingConfig.thinkingBudget'),
+      Wrap(spacing: 6, runSpacing: 6, children: [
+        _chip(p.t('ai.fineDefault'), v == null,
+            () => _set(() => p.setFineThinkingBudget(pid, null))),
+        // 自動 (-1) を受けるのは Gemini だけ。
+        if (pid == 'gemini')
+          _chip(p.t('ai.fineAuto'), v == -1,
+              () => _set(() => p.setFineThinkingBudget(pid, -1))),
+        _chip(p.t('ai.fineOff'), v == 0,
+            () => _set(() => p.setFineThinkingBudget(pid, 0))),
+      ]),
+      const SizedBox(height: 6),
+      Wrap(
+        spacing: 6,
+        runSpacing: 6,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          Text(p.t('ai.fineByNumber'),
+              style: const TextStyle(color: Colors.white54, fontSize: 11)),
+          SizedBox(
+            width: 92,
+            height: 34,
+            child: TextField(
+              controller: _tokens,
+              keyboardType: TextInputType.number,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              style: const TextStyle(color: Colors.white, fontSize: 12),
+              decoration: const InputDecoration(
+                isDense: true,
+                filled: true,
+                fillColor: Color(0xFF2A2A44),
+                contentPadding:
+                    EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                border: OutlineInputBorder(borderSide: BorderSide.none),
+              ),
+              onChanged: (s) {
+                final n = int.tryParse(s.trim());
+                // 空にしたら「既定にまかせる」 へ戻る (0 は上の「切」 で選ぶ)。
+                // ★ 打つたびに親まで作り直さない (notify: false)。
+                _set(
+                    () => p.setFineThinkingBudget(
+                        pid, (n == null || n <= 0) ? null : n),
+                    notify: false);
+              },
+            ),
+          ),
+          Text(p.t('ai.fineTokens'),
+              style: const TextStyle(color: Colors.white54, fontSize: 11)),
+        ],
+      ),
+    ];
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final p = widget.provider;
+    final pid = p.currentAiProvider;
+    // PC 内の CLI は各社の API を叩かないので、 ここに触る物は無い。
+    if (pid != 'openai' && pid != 'anthropic' && pid != 'gemini') {
+      return const SizedBox.shrink();
+    }
+    // 数の欄は、 刻みが変わった時だけ入れ直す (打っている最中は触らない)。
+    if (pid != 'openai') {
+      final v = pid == 'anthropic' ? p.fineAnthropicBudget : p.fineGeminiBudget;
+      final mode = v == null
+          ? 'd'
+          : v < 0
+              ? 'a'
+              : v == 0
+                  ? 'o'
+                  : 'n';
+      final key = '$pid|$mode';
+      if (_seeded != key) {
+        _seeded = key;
+        final want = mode == 'n' ? '$v' : '';
+        if (_tokens.text != want) _tokens.text = want;
+      }
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // ★ 既定は畳んでおく。 ふつうの人は上の 3 段階で済むので、 開けたい
+        //   人だけが開く (= 一覧が長くなり過ぎないように)。
+        InkWell(
+          onTap: () => setState(() => _aiFineTuneOpen = !_aiFineTuneOpen),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(
+                  _aiFineTuneOpen
+                      ? Icons.keyboard_arrow_down
+                      : Icons.keyboard_arrow_right,
+                  size: 16,
+                  color: const Color(0xFF80CBC4)),
+              const SizedBox(width: 2),
+              Text(p.t('ai.fineTitle'),
+                  style: const TextStyle(
+                      color: Color(0xFF80CBC4),
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w700)),
+              // 指定が入っている時は印を出す (畳んでいても気付けるように)。
+              if (p.hasFineReasoning(pid)) ...[
+                const SizedBox(width: 6),
+                Container(
+                    width: 6,
+                    height: 6,
+                    decoration: const BoxDecoration(
+                        color: Color(0xFFFFB74D), shape: BoxShape.circle)),
+              ],
+            ]),
+          ),
+        ),
+        if (_aiFineTuneOpen) ...[
+          if (pid == 'openai')
+            ..._openaiRows(p)
+          else
+            ..._budgetRows(p, pid),
+          _hint(p.t(pid == 'openai'
+              ? 'ai.fineHintOpenai'
+              : pid == 'anthropic'
+                  ? 'ai.fineHintAnthropic'
+                  : 'ai.fineHintGemini')),
+          _hint(p.t('ai.fineNote')),
+        ],
+      ],
+    );
+  }
+}
+
 Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
     {VoidCallback? onChanged,
     // ★ 浮遊窓 (root Overlay に挿した窓) の中から呼ぶ時は false。
@@ -1895,7 +2141,10 @@ Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
               //   しまっているので分けて」+「PC内AI って表記じゃなくて」。
               //   1 つの「PC内AI」の行だったのを、 CLI の種類ごとの行にして、
               //   それぞれの下に**その CLI のモデル**を並べる。
-              for (final k in const [AgentCliKind.claude, AgentCliKind.codex])
+                // ★ 並べる相手は呼び方の表 ([AgentCliSpec.all]) から取る。
+                //   決め打ちの一覧にすると、 CLI を足すたびにここを直し忘れる
+                //   (= Antigravity CLI を足した時に実際にそうなっていた)。
+                for (final k in AgentCliSpec.all.map((e) => e.kind))
                 ...() {
                   final on = provider.useCliAi && provider.cliAiKindEnum == k;
                   return <Widget>[
@@ -1957,7 +2206,11 @@ Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
                       Padding(
                         padding: const EdgeInsets.only(left: 30, bottom: 8),
                         child: Wrap(spacing: 6, runSpacing: 6, children: [
-                          for (final c in AgentCli.modelChoices(k))
+                          // ★ いま選んでいる物を渡す: 新しい一覧から消えていた
+                          //   時に「見つかりません」 の札として残る
+                          //   (= 黙って別のモデルへ移さない)。
+                          for (final c in AgentCli.modelChoices(k,
+                              selected: provider.cliModelFor(k.name)))
                             Builder(builder: (_) {
                               // ★ 選択は**この CLI の物**として覚える
                               //   (= ユーザー報告: luna を選んでも sol)。
@@ -2123,6 +2376,46 @@ Future<void> showAiModelDialog(BuildContext context, MindMapProvider provider,
             Align(
               alignment: Alignment.centerLeft,
               child: Text(provider.t('mcp.reasoningNote'),
+                  style: const TextStyle(
+                      color: Colors.white38, fontSize: 10.5, height: 1.4)),
+            ),
+            // ── 会社ごとの細かい指定 (= ユーザー要望: 上の 3 段階だけでは
+            //    アバウト過ぎる)。 3 段階はそのまま残し、 その下に畳んで
+            //    置く (ふつうは 3 段階で済むので、 開けたい人だけ開く)。 ──
+            Align(
+              alignment: Alignment.centerLeft,
+              child: _AiFineTunePanel(
+                  provider: provider, onChanged: onChanged),
+            ),
+            // ── Jev にモデルと考える深さをまかせる ──
+            //    ★ = ユーザー要望「切り替えは使う所に置く」。 ここが
+            //    モデルと考える深さを選ぶ画面なので、 「まかせる」 の入切も
+            //    ここに置く (設定画面まで戻らなくて済む)。
+            const Divider(color: Colors.white12, height: 20),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(provider.t('settings.groupJev'),
+                  style: const TextStyle(
+                      color: Color(0xFF80CBC4),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700)),
+            ),
+            const SizedBox(height: 2),
+            _CtxMenuToggle(
+              icon: Icons.alt_route_rounded,
+              label: provider.t('jev.route'),
+              color: const Color(0xFF4FC3F7),
+              checked: provider.jevRouteEnabled,
+              onTap: () async {
+                await provider.setJevRouteEnabled(!provider.jevRouteEnabled);
+                setD(() {});
+                onChanged?.call();
+              },
+            ),
+            const SizedBox(height: 2),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(provider.t('jev.routeHelp'),
                   style: const TextStyle(
                       color: Colors.white38, fontSize: 10.5, height: 1.4)),
             ),
@@ -6945,11 +7238,23 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 画面からはみ出す分は内側へ寄せる。 位置が取れない時は従来どおり中央。
   /// [inPane] を false にすると、 分割中でも画面全体を基準にする
   /// (= ドロワーなど、 ペインの外から開く物のため)。
+  /// ★ = ユーザー要望「ページ一覧からまとめて選択して Del などで削除する
+  ///   時に、 Enter でそのまま削除できるようにして欲しい」。
+  ///   [enterValue] を渡した窓だけ、 Enter / テンキー Enter を
+  ///   `Navigator.pop(dctx, enterValue)` に割り当てる。 渡さなければ
+  ///   今までどおりなので、 他の呼び出し元には影響しない。
+  ///
+  ///   削除ボタンに `autofocus: true` を付けるだけでは Space は効いても
+  ///   Enter がボタンまで届かない事があるため、 `CallbackShortcuts` で
+  ///   明示的に割り当てる。 焦点が下に無いと通らないので
+  ///   `Focus(autofocus: true)` と対で使う。
+  ///   Esc は Flutter の既定 (DismissIntent) が拾うので何もしない。
   Future<T?> _showNearDialogMain<T>(
       {required WidgetBuilder builder,
       double width = 480,
       double height = 400,
-      bool inPane = true}) {
+      bool inPane = true,
+      T? enterValue}) {
     final at = _lastGlobalPointerPos;
     return showDialog<T>(
       context: context,
@@ -7018,7 +7323,45 @@ class _MindMapScreenState extends State<MindMapScreen>
               child: ConstrainedBox(
                 constraints: BoxConstraints(maxHeight: maxH),
                 child: SingleChildScrollView(
-                  child: Builder(builder: builder),
+                  // ★ Enter で確定する窓だけ、 ここで割り当てる
+                  //   (= ユーザー要望)。 入力欄を持つ窓には渡さないこと。
+                  //
+                  // ★ CallbackShortcuts ではなく Focus の onKeyEvent にしてある理由
+                  //   (= 点検で判明した 2 つの事故を防ぐため):
+                  //   1. キーは primaryFocus から**祖先へ順に**配られるので、
+                  //      祖先で横取りすると Tab で「キャンセル」 へ移った後の
+                  //      Enter まで「削除」 になる。 この包みが**まだ焦点を
+                  //      持っている間だけ**確定し、 移った後はそのボタンに譲る。
+                  //   2. SingleActivator の includeRepeats は既定 true なので、
+                  //      Enter を押しっぱなしにすると 2 枚目の確認まで通る。
+                  //      押し下げ (KeyDownEvent) だけを見る。
+                  child: enterValue == null
+                      ? Builder(builder: builder)
+                      : Focus(
+                          autofocus: true,
+                          onKeyEvent: (node, event) {
+                            if (event is! KeyDownEvent) {
+                              return KeyEventResult.ignored;
+                            }
+                            if (!node.hasPrimaryFocus) {
+                              return KeyEventResult.ignored;
+                            }
+                            if (event.logicalKey != LogicalKeyboardKey.enter &&
+                                event.logicalKey !=
+                                    LogicalKeyboardKey.numpadEnter) {
+                              return KeyEventResult.ignored;
+                            }
+                            // 下の route を巻き込まないよう、 今一番上の窓の
+                            // 時だけ閉じる。
+                            final route = ModalRoute.of(dctx);
+                            if (route == null || !route.isCurrent) {
+                              return KeyEventResult.ignored;
+                            }
+                            Navigator.pop(dctx, enterValue);
+                            return KeyEventResult.handled;
+                          },
+                          child: Builder(builder: builder),
+                        ),
                 ),
               ),
             ),
@@ -12357,6 +12700,17 @@ class _MindMapScreenState extends State<MindMapScreen>
     //     した今 (= ユーザー要望)、 既定を実際の動きに合わせる。
     //   スマホは浮遊窓が無いので今までどおりダイアログ。
     if (commandId == 'aiAssistant') return _isDesktop ? 'floating' : 'full';
+    // ── メモの既定は「アプリ内のメモ画面」 (= ユーザー報告: 右クリックから
+    //    メモを開くと別ウィンドウが開く為、 立ち上がりが遅い) ──
+    //    パソコンのフローティングメモは desktop_multi_window のサブ窓ではなく
+    //    **自分自身をもう 1 つ立ち上げる別プロセス** (openExternalMemoProcess)
+    //    なので、 開くまで Flutter の起動が丸ごと 1 回走って待たされていた。
+    //    まずアプリ内のメモ画面 (_showMapMemoDialog) で開き、 その右上の
+    //    「アプリの外の窓に出す」 ボタンで今までどおり外の窓へ移せる。
+    //    ★ 自分で「フローティング」 を選んだ人は上の設定 (v) が先に効くので、
+    //      今までの動きのまま。
+    //    スマホは今までどおり OS のオーバーレイ (他アプリの上に出せる方)。
+    if (commandId == 'mapMemo') return _isDesktop ? 'full' : 'floating';
     // カレンダー / 予定表 / 無音カメラの既定も今までどおり全画面
     //   (分割 / フローティングは選んだ人だけ = ユーザー要望)。
     if (commandId == 'calendar' ||
@@ -13694,7 +14048,9 @@ class _MindMapScreenState extends State<MindMapScreen>
             ],
           ]),
         ),
-        for (final k in const [AgentCliKind.claude, AgentCliKind.codex])
+        // ★ 呼び方の表 ([AgentCliSpec.all]) から取る (決め打ちの一覧は
+        //   CLI を足した時に直し忘れる)。
+        for (final k in AgentCliSpec.all.map((e) => e.kind))
           PopupMenuItem<String>(
             value: 'mode:cli:${k.name}',
             height: 36,
@@ -28543,7 +28899,11 @@ class _MindMapScreenState extends State<MindMapScreen>
     final provider = context.read<MindMapProvider>();
     final curId = provider.currentPage.id;
     final targets = provider.pages
-        .where((p) => p.id != curId && p.pageType != 'videoEditor')
+        .where((p) =>
+            p.id != curId &&
+            p.pageType != 'videoEditor' &&
+            // 一覧に出していないページは送り先に出さない (= ユーザー要望)。
+            isPageSendTarget(provider, p))
         .toList();
     if (targets.isEmpty) {
       _appSnack(context,
@@ -29659,6 +30019,16 @@ class _MindMapScreenState extends State<MindMapScreen>
       MindMapProvider provider, TextEditingController ctrl,
       {required bool bounded}) {
     return StatefulBuilder(builder: (dctx, setD) {
+      // ★ = ユーザー要望「txt ファイルなどを開いた画面のページ切り替えでも、
+      //   ギャラリーページやマインドマップから開くのと同じページ一覧を出して
+      //   欲しい。 現状だとページ削除などが行えないから不便」。
+      //   一覧の中から名前の変更や削除ができるようにした以上、 その結果を
+      //   この場で映さないと消えた行が残り、 押すと別のページへ飛んでしまう。
+      //   本体の知らせで中身ごと建て直す。
+      // ★ 重ねて開いたファイルの上に出している時も同じ道を通る。 一覧の裏で
+      //   本体のページが変わっても `currentPage` は位置を丸めるので
+      //   (provider 側の実装)、 最後の 1 枚を消しても建て直しで壊れない。
+      dctx.watch<MindMapProvider>();
       final q = ctrl.text.trim().toLowerCase();
       // ★ 候補は「いま開いているフォルダーの中」 だけ
       //   (= ユーザー要望)。 Ctrl+1〜9 も一覧 (ドロワー) も既に
@@ -29786,25 +30156,67 @@ class _MindMapScreenState extends State<MindMapScreen>
               padding: const EdgeInsets.only(bottom: 12),
               children: [
                 for (final e in pages)
-                  ListTile(
-                    dense: true,
-                    selected: e.p.id == provider.currentPage.id,
-                    selectedTileColor: Colors.white10,
-                    leading: Icon(_pageTypeIcon(e.p.pageType),
-                        size: 18,
-                        color: e.p.id == provider.currentPage.id
-                            ? const Color(0xFFBA68C8)
-                            : Colors.white54),
-                    title: Text(e.p.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            color: Colors.white, fontSize: 13)),
-                    onTap: () {
-                      Navigator.pop(dctx);
-                      provider.switchPage(e.i);
-                    },
-                  ),
+                  // ★ = ユーザー要望「ギャラリーページやマインドマップから
+                  //   開くのと同じページ一覧にして欲しい。 現状だとページ削除
+                  //   などが行えない」。 行き先は引き出しの行と**同じ**
+                  //   `_showPageContextMenu` にする (名前の変更 / アイコン /
+                  //   書き出し / 公開 / 隠す / お気に入り / 削除…)。 一覧を
+                  //   二重に作らないので、 項目が増減しても片側だけ古くならない。
+                  // ★ `_showPageContextMenu` は本体の context と Overlay だけで
+                  //   完結しており引き出しに触らないので、 重ねて開いた別 route
+                  //   の上からでもそのまま出せる (showMenu は root Navigator へ
+                  //   積むので、 ファイルの画面とこの一覧の更に上に出る)。
+                  // ★ 削除はその中の `_confirmDeletePageAt` を通るので、
+                  //   今までどおり確認を挟み、 取り消しの道も変わらない。
+                  Builder(builder: (tctx) {
+                    // 引き出しの行 (_DrawerTile) と同じ 3 つの受け口
+                    // (右ボタン / 長押し / 「・・・」)。
+                    void openMenu(BuildContext anchor) =>
+                        _showPageContextMenu(anchor, provider, e.p, anchor);
+                    return GestureDetector(
+                      // ListTile の中の InkWell は左ボタンしか取らないので、
+                      // 右ボタンはここまで上がってくる (= 引き出しと同じ作り)。
+                      behavior: HitTestBehavior.opaque,
+                      onSecondaryTapUp: (_) => openMenu(tctx),
+                      child: ListTile(
+                        dense: true,
+                        selected: e.p.id == provider.currentPage.id,
+                        selectedTileColor: Colors.white10,
+                        // 携帯には右ボタンが無いので長押しでも出す
+                        // (引き出しと同じく ListTile 側に付けて、
+                        //  左タップとの取り合いを起こさない)。
+                        onLongPress: () => openMenu(tctx),
+                        leading: Icon(_pageTypeIcon(e.p.pageType),
+                            size: 18,
+                            color: e.p.id == provider.currentPage.id
+                                ? const Color(0xFFBA68C8)
+                                : Colors.white54),
+                        title: Text(e.p.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 13)),
+                        // 右ボタンや長押しに気付かなくても辿り着けるように、
+                        // 引き出しと同じ「・・・」 も置く。
+                        trailing: Builder(
+                          builder: (bctx) => IconButton(
+                            tooltip: provider.t('tooltip.openMenu'),
+                            padding: EdgeInsets.zero,
+                            iconSize: 16,
+                            constraints: const BoxConstraints(
+                                minWidth: 24, minHeight: 24),
+                            icon: const Icon(Icons.more_vert,
+                                color: Colors.white30, size: 16),
+                            onPressed: () => openMenu(bctx),
+                          ),
+                        ),
+                        onTap: () {
+                          Navigator.pop(dctx);
+                          provider.switchPage(e.i);
+                        },
+                      ),
+                    );
+                  }),
               ],
             ),
           ),
@@ -29894,6 +30306,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     var done = 0;
     var total = 0;
     var nowFile = '';
+    // Jev が「この中には無さそう」 と言ったか。 注意書きを 1 行出すだけで、
+    // 一覧の件数は減らさない (人が見る一覧なので勝手に隠さない)。
+    var jevAbsent = false;
 
     await _showNearDialogMain<void>(
       width: 560,
@@ -29910,6 +30325,7 @@ class _MindMapScreenState extends State<MindMapScreen>
             done = 0;
             total = 0;
             nowFile = '';
+            jevAbsent = false;
           });
           final found = await provider.searchFilesInFolder(
             fid,
@@ -29925,8 +30341,29 @@ class _MindMapScreenState extends State<MindMapScreen>
             isCancelled: () => cancelled,
           );
           if (!mounted) return;
+          // 探した言葉に近い順へ並べ替える (Jev)。
+          // ★ 件数は減らさない。 「無さそう」 と言われても隠さず、 注意書きを
+          //   1 行足すだけにする (人が見る一覧なので勝手に間引かない)。
+          var sorted = found;
+          var absent = false;
+          if (provider.jevFileFindEnabled && found.length >= 2) {
+            final r = await provider.jevRankCandidates(
+              feature: 'file_find',
+              query: q,
+              candidates: [
+                for (final h in found) '${h.fileName}\n${h.snippet}',
+              ],
+            );
+            if (r.order.length == found.length &&
+                r.order.every((i) => i >= 0 && i < found.length)) {
+              sorted = [for (final i in r.order) found[i]];
+            }
+            absent = r.verdict == 'absent';
+          }
+          if (!mounted) return;
           setD(() {
-            hits = found;
+            hits = sorted;
+            jevAbsent = absent;
             running = false;
           });
         }
@@ -29941,6 +30378,29 @@ class _MindMapScreenState extends State<MindMapScreen>
             Expanded(
               child: Text(provider.t('folderSearch.title'),
                   style: const TextStyle(color: Colors.white, fontSize: 15)),
+            ),
+            // 近い順に並べ替えるかの入切。 探した言葉と抜粋を外へ送るので
+            // 既定は切 (Jev の作法どおり)。
+            IconButton(
+              tooltip: provider.t('jev.fileFind'),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+              iconSize: 17,
+              icon: Icon(
+                provider.jevFileFindEnabled
+                    ? Icons.psychology_rounded
+                    : Icons.psychology_outlined,
+                color: provider.jevFileFindEnabled
+                    ? const Color(0xFF4DB6AC)
+                    : Colors.white30,
+              ),
+              onPressed: running
+                  ? null
+                  : () async {
+                      await provider
+                          .setJevFileFindEnabled(!provider.jevFileFindEnabled);
+                      if (dctx.mounted) setD(() {});
+                    },
             ),
           ]),
           content: SizedBox(
@@ -30016,6 +30476,21 @@ class _MindMapScreenState extends State<MindMapScreen>
                   child: Text(provider.t('folderSearch.none'),
                       style: const TextStyle(
                           color: Colors.white38, fontSize: 12)),
+                ),
+              // 「この中には無さそう」 の注意書き (一覧はそのまま出す)。
+              if (jevAbsent && !running && hits.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Row(children: [
+                    const Icon(Icons.info_outline_rounded,
+                        size: 13, color: Color(0xFFFFB74D)),
+                    const SizedBox(width: 5),
+                    Expanded(
+                      child: Text(provider.t('folderSearch.jevAbsent'),
+                          style: const TextStyle(
+                              color: Color(0xFFFFB74D), fontSize: 10.5)),
+                    ),
+                  ]),
                 ),
               if (hits.isNotEmpty)
                 ConstrainedBox(
@@ -30157,7 +30632,9 @@ class _MindMapScreenState extends State<MindMapScreen>
         _markdownCycleView != null;
     final bool mdAiItem = provider.currentPage.pageType == 'markdown' &&
         _markdownAiWrite != null;
-    final double menuH = 46.0 +
+    // ★ 高さの内訳: ページ切り替え + このページを削除 (どちらも常に出す) +
+    //   マークダウンだけの 3 つ。
+    final double menuH = 46.0 * 2 +
         (mdViewItem ? 46.0 : 0) +
         (mdAiItem ? 46.0 : 0) +
         (mdHeaderItem ? 46.0 : 0);
@@ -30247,6 +30724,31 @@ class _MindMapScreenState extends State<MindMapScreen>
                       toggle?.call();
                     },
                   ),
+                // ── このページを削除 (= ユーザー要望: 自動操作の所でも
+                //    右クリックの項目でページの削除を加えて欲しい) ──
+                //    ★ 自動操作だけでなく、 このメニューを使うページ種別
+                //      (マークダウン / ノート / フリーノート / 動画エディタ /
+                //      自動操作) すべてに出す。 キャンバスの右クリック
+                //      (`_showCanvasContextMenu` の menuId: 'deletePage')
+                //      には前からあるので、 出し分けると口によってできる事が
+                //      変わってしまう。
+                //    ★ 消す前の確認と取り消し (ごみ箱) は
+                //      [_confirmDeletePageAt] が受け持つ。 自動操作や
+                //      フリーノートは中身が別ストレージで
+                //      `_pageHasPlacedContent` が必ず true を返すので、
+                //      確認なしで消える事は無い。
+                _CtxMenuItem(
+                  icon: Icons.delete_outline_rounded,
+                  label: provider.t('page.deleteThis'),
+                  color: const Color(0xFFFF8A80),
+                  onTap: () {
+                    _removeOverlay();
+                    final i = provider.pages.indexOf(provider.currentPage);
+                    if (i >= 0) {
+                      unawaited(_confirmDeletePageAt(context, provider, i));
+                    }
+                  },
+                ),
               ]),
             ),
           ),
@@ -30572,18 +31074,11 @@ class _MindMapScreenState extends State<MindMapScreen>
           _showMapShapePicker();
         },
       ),
-      if (!isGalleryPage)
-      _CtxMenuItem(
-        menuId: 'terminal',
-        icon: Icons.account_tree_outlined,
-        // 多言語対応 (= ユーザー指摘: 端子の文字が日本語のままだった)
-        label: provider.t('flow.terminal'),
-        color: const Color(0xFF4DB6AC),
-        onTap: () {
-          _removeOverlay();
-          _showTerminalBlockPicker(provider);
-        },
-      ),
+      // ── 端子は「図形を挿入」 の札へ纏めた (= ユーザー要望: 端子の挿入は
+      //    図形の挿入に纏めて) ──
+      //    独立した項目は廃止。 図形の挿入パレットの右側に端子の形が並ぶので、
+      //    そこから選んで図形と同じようにドラッグで置ける。 既に置いてある
+      //    端子 (ノードの shape) は読み込みも表示も今までどおり。
       // ── メモ (= ユーザー要望: 右クリックの「メモ一覧」 は「メモ」 に改めて、
       //    押したらこのページのメモ欄が開くように) ──
       //    ヘッダーの「メモ」 ボタンと同じ入口 (_executeHeaderCommand) を
@@ -30731,14 +31226,19 @@ class _MindMapScreenState extends State<MindMapScreen>
           _showRefChooser(globalPos);
         },
       ),
+      // ── クラウドの同期設定 (= ユーザー要望: 右クリックから文字サイズを
+      //    消して、 代わりに同期設定を出す) ──
+      //    設定そのものはここに作らず、 既にある同期のダイアログ
+      //    (_showSyncDialog) を開くだけにする。 Max 限定の門もそちら側が
+      //    持っているので、 ここでは出す / 出さないを分けない。
       _CtxMenuItem(
-        menuId: 'fontSize',
-        icon: Icons.text_fields_rounded,
-        label: provider.t('ctx.fontSizeSettings'),
-        color: const Color(0xFFFFB347),
+        menuId: 'syncSettings',
+        icon: Icons.cloud_sync_rounded,
+        label: provider.t('ctx.syncSettings'),
+        color: const Color(0xFF64B5F6),
         onTap: () {
           _removeOverlay();
-          _showGlobalFontSizeDialog(context, provider);
+          _showSyncDialog(context, provider);
         },
       ),
     ];
@@ -31042,6 +31542,96 @@ class _MindMapScreenState extends State<MindMapScreen>
     ));
   }
 
+  /// 開いているメモ画面の「今の内容を保存する手」。
+  ///
+  /// ★ 浮かぶ窓の × で閉じられると、 窓ごと中の Navigator が捨てられ、
+  ///   [_showMapMemoDialog] の `await showDialog(...)` が**永久に返って
+  ///   こない** ── その後ろに書いてある保存が走らず、 打った物が消える。
+  ///   窓が閉じる時に呼ぶ受け口 ([_openMapMemoPanel] の `onClosed`) から
+  ///   ここを呼んで保存する。 メモ画面が閉じ終わったら自分で外す。
+  Future<void> Function()? _mapMemoFlush;
+
+  /// このページのメモを「押した所に出て、 掴んで動かせる窓」 で開く。
+  ///
+  /// ★ = ユーザー要望「ギャラリーページなどから右クリックした際に出てくる
+  ///   メモ欄が画面中央に表示され、 動かせないから使い辛い。 ボタンを押した
+  ///   位置で、 アプリ内で自由にドラッグで動かせるようにして欲しい」。
+  ///
+  /// ★ = ユーザー要望「メモはアプリ内でもこういう風なスマートな形式で開く
+  ///   ようにして欲しい」。 見た目を真似て 2 つ書くと以後どちらかだけが
+  ///   直されてずれるので、 **アプリの外の窓が出しているのと同じ widget**
+  ///   ([FloatingMemoView] = main.dart の `_MemoWindowApp` を埋め込みで
+  ///   使う物) をそのまま入れる。 細い帯・メモ帳の切替 (「メモ 3」「3/3」)・
+  ///   タブ列 (「メモ1」「メモ2」…「+」)・自由記入欄が丸ごと同じになる。
+  ///
+  /// 保存先も同じ ── どちらも `loadFloatingMemoText` /
+  /// `saveFloatingMemoText` (= 応用データ置き場の `floating_memo.txt`) を
+  /// 読み書きするので、 外と中で別のメモが見える事故にならない。
+  ///
+  /// 入れ物は今までどおり他の道具 (ページ背景・計算機・オートクリッカーの
+  /// パレットなど) と同じ浮かぶ窓 ([_showFloatingPanelWindow])。 掴む板・
+  /// 縁を掴んで大きさを変える所・画面の中へ寄せる処理は、 その窓が既に
+  /// 持っている (掴む板はボタンの**後ろ**に在るので、 2px ぶれても釦が
+  /// 押せる)。
+  ///
+  /// 動かした位置と大きさは、 その窓が prefs (`floatWin_mapMemo`) に覚える
+  /// ので、 次に開いた時も同じ所に出る。 覚えが無い間だけ、 押した所
+  /// (`_lastGlobalPointerPos`) に出す (= 自分で置き場所を決めた人の指定を、
+  /// カーソルの位置で毎回上書きしない)。
+  ///
+  /// 「アプリの外の窓に出す」 道も残す (= b448 で入れた道)。 メモは Web
+  /// ページではないので、 窓の帯の押し出し口 (`popOutCustom`) に
+  /// [openExternalMemoProcess] を挿して、 今までどおり別プロセスのメモ窓を
+  /// 立ち上げる。 掴んで画面の外へ放した時も同じ所を通る。
+  void _openMapMemoPanel(MindMapProvider provider) {
+    // スマホは浮かぶ窓を置いて動かす余地が無いので、 今までどおり画面
+    //   いっぱいのメモ画面で開く (既定の開き方も OS オーバーレイのまま)。
+    // ★ スマホの「外のメモ」 は OS オーバーレイで、 保存先が別 (prefs の
+    //   `floating_memo_text_v1`) なので、 ここを外の窓と同じ画面に
+    //   替えると逆に保存先が増える。 パソコンだけ差し替える。
+    if (!_isDesktop) {
+      unawaited(_showMapMemoDialog(context, provider));
+      return;
+    }
+    // 外の窓の既定 (460x560) に揃えた縦長で出す。
+    const w = 460.0;
+    const h = 620.0;
+    final at = _lastGlobalPointerPos;
+    _showFloatingPanelWindow(
+      (_) => const FloatingMemoView(),
+      width: w,
+      height: h,
+      // 最後に置いた位置・大きさで開く / もう一度押したら前面に出し直す。
+      memoryKey: 'mapMemo',
+      singletonKey: 'mapMemo',
+      // この窓自体がメモなので、 帯の「メモ / ブラウザ AI に切り替え」 は
+      //   出さない。
+      noModeSwitch: true,
+      minWidth: 360,
+      minHeight: 320,
+      // 押した所の少し下に出す (覚えている位置が無い間だけ効く)。
+      //   画面からはみ出す分は窓の側 (_fitOnScreen) が中へ寄せるので、
+      //   画面の外へ出て掴めなくなることはない。
+      initialPos: at == null ? null : Offset(at.dx - w / 2, at.dy + 14),
+      // ── 「アプリの外の窓に出す」 (= b448 で入れた道は残す) ──
+      //    メモは Web ページではないので、 外の Web 窓ではなく今までどおり
+      //    別プロセスのメモ窓を立ち上げる。 中身は同じ floating_memo.txt を
+      //    読むので、 そのまま続きを書ける。 出せたらこちらの窓は
+      //    _popOutSelf が閉じる (= 同じメモが 2 つ開いて保存先を取り合わない)。
+      popOutCustom: (frame, _) => openExternalMemoProcess(at: frame.topLeft),
+      // ★ 窓の × で閉じた時は、 メモ画面の「閉じた後の保存」 が走らない
+      //   (窓ごと消えると showDialog の待ちが返ってこない)。 打った物を
+      //   落とさないよう、 ここで保存する手を呼ぶ。
+      //   ★ [FloatingMemoView] 自身は dispose で書き出すので、 ここが
+      //     受け持つのはスマホの分割ペインに出ている旧メモ画面だけ。
+      onClosed: () {
+        final flush = _mapMemoFlush;
+        _mapMemoFlush = null;
+        if (flush != null) unawaited(flush());
+      },
+    );
+  }
+
   /// [inPane] が true の時は、 渡された [ctx] の Navigator (= 分割ペインの
   /// 中の入れ物) に出す (= ユーザー要望: メモも左右分割で開けるように)。
   Future<void> _showMapMemoDialog(BuildContext ctx, MindMapProvider provider,
@@ -31079,6 +31669,13 @@ class _MindMapScreenState extends State<MindMapScreen>
       await _MapMemoStore.saveItems(pageId, global, items, selected);
       await _MapMemoStore.saveScope(pageId, global);
     }
+
+    // ★ 浮かぶ窓 (_openMapMemoPanel) の × で閉じられると、 窓ごと中の
+    //   Navigator が捨てられ、 下の `await showDialog(...)` は**永久に
+    //   返ってこない** ── その後ろの保存が走らず、 打った物が消える。
+    //   窓が閉じる時に呼ぶ受け口へ「今の内容を保存する手」 を預けておく。
+    final flush = persist;
+    _mapMemoFlush = flush;
 
     await showDialog<void>(
       context: ctx,
@@ -31158,6 +31755,10 @@ class _MindMapScreenState extends State<MindMapScreen>
 
         return AlertDialog(
           backgroundColor: const Color(0xFF1E1E32),
+          // ★ 入り切らない時は巻物にする (= 浮かぶ窓に入れて縁を掴んで
+          //   縮められるようになったので、 縮めた時に縞模様のはみ出しを
+          //   出さないため)。 入り切る時の見た目は今までと変わらない。
+          scrollable: true,
           title: Row(children: [
             const Icon(Icons.sticky_note_2_rounded,
                 color: Color(0xFFFFB347), size: 20),
@@ -31173,26 +31774,44 @@ class _MindMapScreenState extends State<MindMapScreen>
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(color: Colors.white, fontSize: 15)),
             ),
-            // ── フローティングに切り替え (= ユーザー要望) ──
-            //   今の内容を保存してから、 アプリの外／浮遊のメモ窓を開く。
-            IconButton(
-              tooltip: provider.t('split.toFloating'),
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
-              icon: const Icon(Icons.picture_in_picture_alt_rounded,
-                  color: Color(0xFF80CBC4), size: 18),
-              onPressed: () async {
-                await persist();
-                // メモ本文を浮遊メモへ引き継ぐ。
-                try {
-                  final sp = await SharedPreferences.getInstance();
-                  await sp.setString('floating_memo_text_v1', textCtrl.text);
-                } catch (_) {}
-                if (!dctx.mounted) return;
-                Navigator.pop(dctx);
-                unawaited(_openPopOutWindow(provider, kind: 'memo'));
-              },
-            ),
+            // ── アプリの外の窓に出す (= ユーザー要望: メモはアプリ内で開いて、
+            //    ボタンを押したら外部に出せる形に) ──
+            //    今の内容を保存してから、 アプリの外の窓 (パソコン) /
+            //    OS オーバーレイ (スマホ) のメモを開き、 こちらは閉じる。
+            //    同じメモが 2 つ出ていると、 どちらを書いているのか分から
+            //    なくなるため。
+            // ★ 外に出せない所 (iOS / Web) では釦自体を出さない。 前は押すと
+            //   メモを閉じた上で _openPopOutWindow が「デスクトップ版のみ」 と
+            //   出すだけで、 書いた物を見失っていた。 しかもその知らせは本体の
+            //   Scaffold に描かれるので、 メモを閉じない限り裏に隠れて見えない。
+            if (_isDesktop || (!kIsWeb && Platform.isAndroid))
+              IconButton(
+                tooltip: provider.t('memo.toOutsideWindow'),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+                icon: const Icon(Icons.open_in_new_rounded,
+                    color: Color(0xFF80CBC4), size: 18),
+                onPressed: () async {
+                  await persist();
+                  // ★ 未保存の本文を落とさない。 外の窓は**別プロセス**、
+                  //   オーバーレイは別の画面なので、 どちらも同じ保存先
+                  //   (main.dart の kFloatingMemoPrefsKey) から本文を読む。
+                  //   移す前にそこへ書いておくのが引き継ぎの唯一の道。
+                  try {
+                    final sp = await SharedPreferences.getInstance();
+                    await sp.setString('floating_memo_text_v1', textCtrl.text);
+                  } catch (_) {}
+                  if (!dctx.mounted) return;
+                  Navigator.pop(dctx);
+                  if (_isDesktop) {
+                    unawaited(_openPopOutWindow(provider, kind: 'memo'));
+                  } else {
+                    // スマホは他アプリの上に出せる OS オーバーレイへ。
+                    unawaited(
+                        _toggleFloatingMemoOverlay(provider, forceOpen: true));
+                  }
+                },
+              ),
           ]),
           content: SizedBox(
             width: 440,
@@ -31631,6 +32250,10 @@ class _MindMapScreenState extends State<MindMapScreen>
     // キャンセルを押さずに閉じた場合は編集内容を保存 (= ユーザー要望)。
     //   バリアタップ・戻るジェスチャーで閉じても保存される。 「保存」 ボタン
     //   経由の場合は既に保存済みだが、 もう一度書いても同内容で冪等。
+    // ★ 自分で閉じ終わったので、 窓の × 用に預けた受け口は外す
+    //   (自分が預けた物だけ。 別のメモが開いている時に横取りしない)。
+    //   キャンセルの時もここで外すので、 後から書き戻されることはない。
+    if (_mapMemoFlush == flush) _mapMemoFlush = null;
     if (!cancelled) {
       try {
         await persist();
@@ -32482,6 +33105,25 @@ class _MindMapScreenState extends State<MindMapScreen>
                             color: Colors.white38, fontSize: 11)),
                     value: sAvoid,
                     onChanged: (v) => setD(() => sAvoid = v),
+                  ),
+                  // ── 採点を判断専用モデルに任せる (= Jev) ──
+                  //   入れると正誤は判断だけで即答し、 生成 AI は呼ばない。
+                  //   誤答の理由は 「理由を見る」 を押した時だけ生成 AI が
+                  //   作る。 切 / 判断が取れない時は今までどおり AI 採点
+                  //   (解説つき) へ回す。 他の設定と違い、 これは provider の
+                  //   旗を直に切り替える (保存ボタンを待たない)。
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    dense: true,
+                    activeColor: const Color(0xFF26C6DA),
+                    title: Text(provider.t('jev.cardGrade'),
+                        style: const TextStyle(
+                            color: Colors.white, fontSize: 13)),
+                    value: provider.jevCardGradeEnabled,
+                    onChanged: (v) async {
+                      await provider.setJevCardGradeEnabled(v);
+                      if (dctx.mounted) setD(() {});
+                    },
                   ),
                   const Divider(color: Colors.white12, height: 16),
                   Align(
@@ -34422,6 +35064,15 @@ class _MindMapScreenState extends State<MindMapScreen>
     bool judging = false;
     bool? correct;
     String explanation = '';
+    // ── 理由は押した時だけ作る (= ユーザー要望: 正誤は判断専用モデルで
+    //    即答し、 誤答の理由は釦を押した時に生成 AI が作る) ──
+    //    canExplain: 判断だけで正誤を出したので解説がまだ無い (= 釦を出す)。
+    //    reasonCache: 一度作った採点の控え ((表の文, 打った答え) が鍵)。
+    //    正誤も一緒に控える: 控えから出す時も生成 AI が見た正誤に揃える。
+    bool canExplain = false;
+    bool explaining = false;
+    final Map<(String, String), ({bool correct, String explanation})>
+        reasonCache = {};
     // 間違えた問題フォルダーに入れたか (= ユーザー要望)。 カードを移ると戻す。
     bool mistakeFiled = false;
     showDialog<void>(
@@ -34436,6 +35087,8 @@ class _MindMapScreenState extends State<MindMapScreen>
           correct = null;
           explanation = '';
           judging = false;
+          canExplain = false;
+          explaining = false;
           // 次のカードのチェックは外れた状態から (= 表示だけの状態。
           // 既に振り分けた内容はそのまま残る)。
           mistakeFiled = false;
@@ -34516,6 +35169,8 @@ class _MindMapScreenState extends State<MindMapScreen>
               showBack = true;
               correct = true;
               explanation = '';
+              // 裏と同じ文字なので理由は要らない。
+              canExplain = false;
             });
             rootFocus.requestFocus();
             return;
@@ -34530,9 +35185,71 @@ class _MindMapScreenState extends State<MindMapScreen>
             showBack = true;
             correct = r.correct;
             explanation = r.explanation;
+            canExplain = r.canExplain;
           });
           rootFocus.requestFocus();
         }
+
+        // ── 誤答の理由を作る (= ユーザー要望: 正誤の判定と理由を分け、
+        //    理由は釦を押した時だけ生成 AI に作らせる) ──
+        //    今まで採点に使っていた道 (gradeFlashcardAnswerByAi) をそのまま
+        //    呼ぶので、 生成 AI が 「正解」 と見た時は正誤の表示も直る。
+        //    一度作った採点は控えに残し、 二度押しでは作り直さない。
+        Future<void> explainWhy() async {
+          final ua = answerCtrl.text.trim();
+          if (ua.isEmpty || explaining) return;
+          final key = (card.front, ua);
+          final hit = reasonCache[key];
+          if (hit != null && hit.explanation.isNotEmpty) {
+            setS(() {
+              correct = hit.correct;
+              explanation = hit.explanation;
+              canExplain = false;
+            });
+            rootFocus.requestFocus();
+            return;
+          }
+          // 作っている途中に札を移られたら結果は捨てる (別の札に出ないよう)。
+          final at = idx;
+          setS(() => explaining = true);
+          final provider = ctx.read<MindMapProvider>();
+          final r = await provider.gradeFlashcardAnswerByAi(
+              card.front, card.back, ua);
+          if (!dctx.mounted || at != idx) return;
+          reasonCache[key] = r;
+          setS(() {
+            explaining = false;
+            correct = r.correct;
+            explanation = r.explanation;
+            canExplain = false;
+          });
+          rootFocus.requestFocus();
+        }
+
+        // 「理由を見る」 の釦 (判定欄の中は字下げが深いのでここで組む)。
+        Widget reasonButton() => Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: explaining ? null : explainWhy,
+                style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                    minimumSize: Size.zero,
+                    visualDensity: VisualDensity.compact),
+                icon: explaining
+                    ? const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Color(0xFF4FC3F7)))
+                    : const Icon(Icons.help_outline_rounded,
+                        size: 16, color: Color(0xFF4FC3F7)),
+                label: Text(
+                    provider.t(
+                        explaining ? 'flash.reasonMaking' : 'flash.reason'),
+                    style: const TextStyle(
+                        color: Color(0xFF4FC3F7), fontSize: 12.5)),
+              ),
+            );
 
         // ── 左右キーで前/次のカードへ (= ユーザー要望) ──
         //   回答欄にフォーカスがある間は TextField が矢印を消費するため誤作動
@@ -34901,7 +35618,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                                         foregroundColor: Colors.white,
                                         padding: const EdgeInsets.symmetric(
                                             vertical: 12)),
-                                    onPressed: judging ? null : judge,
+                                    onPressed: (judging || explaining)
+                                        ? null
+                                        : judge,
                                     icon: judging
                                         ? const SizedBox(
                                             width: 16,
@@ -34955,6 +35674,15 @@ class _MindMapScreenState extends State<MindMapScreen>
                                                 style: const TextStyle(
                                                     color: Colors.white70,
                                                     fontSize: 13)),
+                                          ],
+                                          // ── 理由は押した時だけ作る。
+                                          //    正解の時は裏が見えているので
+                                          //    釦は出さない ──
+                                          if (canExplain &&
+                                              explanation.isEmpty &&
+                                              !correct!) ...[
+                                            const SizedBox(height: 2),
+                                            reasonButton(),
                                           ],
                                           // ── 間違えた問題を専用フォルダーへ
                                           //    (= ユーザー要望: チェックを
@@ -38639,61 +39367,158 @@ class _MindMapScreenState extends State<MindMapScreen>
     );
   }
 
+  /// 範囲ドラッグ (= 複数選択をまとめて運ぶ) 中の要素が、 今どこに映って
+  /// いるか (ページ座標の左上)。
+  ///
+  /// ★ キャンバスが描く所 (`posOverride`) と、 境界を跨ぐ間だけ最前面へ出す
+  ///   写し ([_buildSplitTransferNodeOverlay]) の**両方**がこれを使う。 式を
+  ///   2 か所に書くと写しと元が食い違い、 同じ要素が 2 つに見える (= 単体
+  ///   ドラッグで一度起きていた不具合と同じ形)。
+  Offset _rangeDragPositionOf(MindMapNode node) {
+    final p = node.position + _rangeDragDelta;
+    // 隣のペインの上に居る間は 0 で丸めない。 丸めると左向きに跨いだ時だけ
+    // 元の要素が端で止まり、 写しと 2 つに見える (単体ドラッグの
+    // _onLongPressNodeMove と同じ理由)。 置き直しは渡した先でやる。
+    if (_splitTransferMode && _mapSplitOpen && _splitTransferTarget >= 0) {
+      return p;
+    }
+    return Offset(
+      p.dx.clamp(0.0, 20000.0),
+      p.dy.clamp(0.0, 20000.0),
+    );
+  }
+
   /// 移送中のノードを画面全体の最前面にも描く。
   ///
   /// 各ペインは ClipRect で切られているため、元の NodeWidget だけでは境界へ
   /// 半分掛かった時点で隣ペインの下へ隠れる。操作中だけ同じノードのゴーストを
   /// ルート Stack に出し、境界線や隣ペインを上から跨いで見えるようにする。
+  ///
+  /// ★ = ユーザー報告「複数要素を選択して分割境界を跨ごうとすると、 配置が
+  ///   確定するまで要素が境界線の下に潜り込んでしまう。 上を跨ぐ形にして
+  ///   欲しい」。 まとめ移動 (範囲選択 = `_rangeDragging`) と付箋グループの
+  ///   連れは写しが 1 つも出ていなかったので、 仕切りの下へ潜っていた。
+  ///   単体・まとめのどちらも同じ写しを出して、 仕切りの**上**を通す。
+  ///   この写しは台の一番外側の Stack (Scaffold ごと包む方) の最後の子なので、
+  ///   2 分割でも 4 分割でも、 どのペイン・どの仕切りよりも手前に出る。
+  ///
+  /// ★ 写しの位置は「キャンバスが今その要素を描いている所」 をそのまま画面
+  ///   座標へ直す。 以前は指の位置から逆算していたため、 吸着 (兄弟スナップ)
+  ///   や端の丸めが掛かると元と写しがずれて 2 つに見えていた。 同じ値を使えば
+  ///   必ず真上に重なるので、 掴んだ位置との相対も自ずと保たれる。
   Widget _buildSplitTransferNodeOverlay() {
-    // ★ 隣のペインの上に居る時だけ描く。 自分のペインの中に居る間まで
-    //   描くと、 吸着 (兄弟スナップ) や端の丸めで元の要素と写しの位置が
-    //   食い違い、 同じ要素が 2 つ見えてしまう (= ユーザー報告)。
-    if (!_splitTransferMode ||
-        !_mapSplitOpen ||
-        _splitTransferTarget < 0 ||
-        _moveModeNodeId == null ||
-        _movingPos == null ||
-        _nodeDragGlobal == null ||
-        _moveDragAnchor == null) {
+    if (!_splitTransferMode || !_mapSplitOpen) {
       return const SizedBox.shrink();
     }
     final provider = context.read<MindMapProvider>();
-    final node = provider.nodes[_moveModeNodeId!];
-    if (node == null) return const SizedBox.shrink();
-    final scale = _ctrlFor(provider.currentPage.id)
-        .value
-        .getMaxScaleOnAxis()
-        .clamp(0.05, 8.0)
-        .toDouble();
-    final anchor = _moveDragAnchor!;
-    final topLeft = _nodeDragGlobal! - Offset(anchor.dx * scale, anchor.dy * scale);
-    return Positioned(
-      left: topLeft.dx,
-      top: topLeft.dy,
+    final ctrl = _ctrlFor(provider.currentPage.id);
+    final scale = ctrl.value.getMaxScaleOnAxis().clamp(0.05, 8.0).toDouble();
+    // 写しを出す相手と、 その**ページ座標**の左上。 キャンバスが描いている式
+    // と同じ物を、 同じ優先順 (範囲 → 単体 → 付箋グループの連れ) で並べる。
+    final placed = <String, Offset>{};
+    if (_rangeDragging) {
+      for (final id in _rangeSelectedIds) {
+        final n = provider.nodes[id];
+        if (n == null) continue;
+        placed[id] = _rangeDragPositionOf(n);
+      }
+    }
+    if (_moveModeNodeId != null && _movingPos != null) {
+      placed[_moveModeNodeId!] = _movingPos!;
+      // 付箋グループのお仲間も一緒に動いているので、 同じだけずらして出す。
+      final start = _groupDragStartPos;
+      if (start != null) {
+        final d = _movingPos! - start;
+        for (final id in _groupDragIds) {
+          if (id == _moveModeNodeId || placed.containsKey(id)) continue;
+          final n = provider.nodes[id];
+          if (n == null) continue;
+          placed[id] = Offset(
+            (n.position.dx + d.dx).clamp(0.0, 20000.0),
+            (n.position.dy + d.dy).clamp(0.0, 20000.0),
+          );
+        }
+      }
+    }
+    if (placed.isEmpty) return const SizedBox.shrink();
+    // 写しを出す紙は分割の枠の中だけ。 仕切りも隣のペインもこの中にあるので
+    // 目的は果たしつつ、 上の帯や下の道具の上まではみ出さない。
+    final body = _mapSplitBodyRect();
+    if (body.width <= 1 || body.height <= 1) return const SizedBox.shrink();
+    // 畳んだ親の子 / 格納の中身は画面に出ていないので、 写しも出さない。
+    final hidden = provider.hiddenNodeIds;
+    final src = _splitCellGlobalRect(_mapSplitEditorSlot);
+    // 掴んでから実際に動かしたか。 動かす前から元のペインの枠に掛かって
+    // いる要素まで拾うと、 触っただけで隣のペインへはみ出して見える。
+    final bool moved = (_rangeDragging && _rangeDragDelta != Offset.zero) ||
+        (_moveModeNodeId != null &&
+            _movingPos != null &&
+            _movingPos != provider.nodes[_moveModeNodeId!]?.position);
+    // 仕切りに掛かっているか。 隣のペインの上に指がある時と、 掴んでいる絵が
+    // 元のペインの枠からはみ出した時だけ出す (枠の中に収まっている間は元の
+    // 要素がそのまま見えているので、 重ねても無駄なだけ)。
+    bool crossing = _splitTransferTarget >= 0;
+    final entries = <(MindMapNode, Rect)>[];
+    for (final e in placed.entries) {
+      if (hidden.contains(e.key)) continue;
+      final n = provider.nodes[e.key];
+      if (n == null) continue;
+      final tl = _canvasToGlobal(e.value, ctrl);
+      final r =
+          Rect.fromLTWH(tl.dx, tl.dy, n.width * scale, n.visualHeight * scale);
+      if (!crossing &&
+          moved &&
+          src.width > 0 &&
+          src.height > 0 &&
+          (r.left < src.left ||
+              r.top < src.top ||
+              r.right > src.right ||
+              r.bottom > src.bottom)) {
+        crossing = true;
+      }
+      // 枠の外へ出た分は描かない (= 何十個もまとめて運んだ時の重さ止め)。
+      if (!r.overlaps(body)) continue;
+      entries.add((n, r));
+    }
+    if (!crossing || entries.isEmpty) return const SizedBox.shrink();
+    final bool isShelf = provider.currentPage.pageType == 'bookshelf';
+    return Positioned.fromRect(
+      rect: body,
       child: IgnorePointer(
-        child: Transform.scale(
-          scale: scale,
-          alignment: Alignment.topLeft,
-          child: SizedBox(
-            width: node.width,
-            height: node.visualHeight,
-            child: Stack(
-              clipBehavior: Clip.none,
-              children: [
-                NodeWidget(
-                  key: ValueKey('split_transfer_${node.id}'),
-                  node: node,
-                  // ★ ギャラリーのタイルは見た目が違うので、 写しにも同じ札を
-                  //   立てる。 立てないと元の要素と別物に見える。
-                  isShelf: provider.currentPage.pageType == 'bookshelf',
-                  positionOverride: Offset.zero,
-                  forceDragging: true,
-                  isSelected: true,
-                  isDarkMode: provider.isDarkMode,
-                  onTap: () {},
+        child: ClipRect(
+          child: Stack(
+            children: [
+              for (final e in entries)
+                Positioned(
+                  left: e.$2.left - body.left,
+                  top: e.$2.top - body.top,
+                  child: Transform.scale(
+                    scale: scale,
+                    alignment: Alignment.topLeft,
+                    child: SizedBox(
+                      width: e.$1.width,
+                      height: e.$1.visualHeight,
+                      child: Stack(
+                        clipBehavior: Clip.none,
+                        children: [
+                          NodeWidget(
+                            key: ValueKey('split_transfer_${e.$1.id}'),
+                            node: e.$1,
+                            // ★ ギャラリーのタイルは見た目が違うので、 写しにも
+                            //   同じ札を立てる。 立てないと元の要素と別物に見える。
+                            isShelf: isShelf,
+                            positionOverride: Offset.zero,
+                            forceDragging: true,
+                            isSelected: true,
+                            isDarkMode: provider.isDarkMode,
+                            onTap: () {},
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
                 ),
-              ],
-            ),
+            ],
           ),
         ),
       ),
@@ -38775,15 +39600,14 @@ class _MindMapScreenState extends State<MindMapScreen>
     // 選んでいる物があればまとめて、 無ければ掴んでいる 1 つ。
     final ids = <String>{nodeId, ..._groupDragIds};
     if (_rangeSelectedIds.contains(nodeId)) ids.addAll(_rangeSelectedIds);
-    // 選んだ数 (= 「余計に付いて来た分」 を数えるための基準)。
-    final int selectedCount = ids.length;
     // ★ = ユーザー要望「接続されている要素は繋がっている要素ごと転送」。
     //   暴発の歯止めは 4 段:
     //     ① 既定は切 (`_splitTransferLinked`)。
     //     ② 子の向き (from→to) だけ辿る (provider 側)。 葉を掴んでも
     //        親側へは広がらないので、 ページ全部を巻き込む道が無い。
     //     ③ 上限 (_kSplitTransferBranchLimit) を超えたら広げない。
-    //     ④ 選んだ数より多く運んだ時は SnackBar に 「戻る」 を出す。
+    //     ④ 運んだ後は Ctrl+Z (provider.undo → undoLastCrossPageMove) で
+    //        2 ページ分まとめて戻せる (知らせに釦は出さない)。
     bool brakeHit = false;
     if (_splitTransferLinked) {
       final branch =
@@ -38858,7 +39682,13 @@ class _MindMapScreenState extends State<MindMapScreen>
       _appSnack(
         context,
         SnackBar(
-          // 「戻る」 を押せるだけの間は出しておく (_appSnack が 4 秒で丸める)。
+          // ★ = ユーザー報告「複数個要素を跨がせた時だけ 「戻る」 の釦が
+          //   現れ、 自動で閉じてくれない」。 原因は Flutter 3.41 で
+          //   SnackBar に入った `persist` で、 **action を付けると既定が
+          //   true** = 時間が来ても閉じない、 に変わった事。 1 つの時と
+          //   同じ知らせ 1 本に戻し、 4 秒で閉じるようにした。
+          //   取り消しは Ctrl+Z (provider.undo → undoLastCrossPageMove) が
+          //   2 ページ分まとめて戻すので、 釦が無くても取り返せる。
           duration: const Duration(seconds: 4),
           backgroundColor: const Color(0xFF2A2A3E),
           content: Text(brakeHit
@@ -38869,17 +39699,6 @@ class _MindMapScreenState extends State<MindMapScreen>
                   .t('split.transferred')
                   .replaceAll('{n}', '${moveIds.length}')
                   .replaceAll('{name}', name)),
-          // ★ 歯止めその 4。 「繋がっている要素ごと」 や隠れた子で、 選んだ
-          //   数より多く運んだ時だけ 「戻る」 を添える。 転送は 2 ページ分の
-          //   控え (undoLastCrossPageMove) を 1 発枠で持っているので、 これ
-          //   1 回で丸ごと戻る。 暴発しても取り返せる保険。
-          action: moveIds.length > selectedCount
-              ? SnackBarAction(
-                  label: provider.t('hdr.undo'),
-                  textColor: const Color(0xFF7CD992),
-                  onPressed: provider.undo,
-                )
-              : null,
         ),
       );
     }
@@ -39511,10 +40330,12 @@ class _MindMapScreenState extends State<MindMapScreen>
   }
 
   /// ページ一覧の「何も無い所」 を右クリックした時のメニュー。
-  /// ★ 「+」 と同じ項目を出す (= ユーザー要望)。 出す場所だけが違う。
+  /// ★ = ユーザー要望「何もない所の右クリックは新規〜だけにして欲しい」。
+  ///   以前は「+」 と丸ごと同じ物を出していたので、 読み込み・フォルダーを
+  ///   開く・一覧の更新まで並んでいた。 それらは「+」 の方に残してある。
   void _showDrawerBlankAreaMenu(MindMapProvider provider, Offset at) {
     if (!mounted) return;
-    _showDrawerAddMenu(context, provider, null, at);
+    _showDrawerAddMenu(context, provider, null, at, true);
   }
 
   /// 種類と名前を聞いてから、 そのフォルダーに空のファイルを作る (開かない)。
@@ -42076,23 +42897,52 @@ class _MindMapScreenState extends State<MindMapScreen>
     provider.updateNodeMemo(node.id, answer);
   }
 
+  /// いま出ている簡易お知らせの文面と、 その窓の route。
+  /// = ユーザー報告「カードが無い時に『AI でカードを修正』 を何度も押すと
+  ///   知らせが積み上がって画面が真っ黒になる」。 showDialog は押した回数
+  ///   ぶん route が積み上がり、 暗幕 (barrier) が重なって画面全体が黒く
+  ///   なるため、 知らせは常に 1 枚だけ出す。
+  String? _simpleInfoMsg;
+  ModalRoute<void>? _simpleInfoRoute;
+
   /// 中央に出る簡易お知らせダイアログ (ビューアの上にも表示される)。
+  /// 同じ文面が出ている間は増やさず、 違う文面なら前の 1 枚を閉じてから出す。
   void _showSimpleInfoDialog(String msg) {
     if (!mounted) return;
+    // 連打しても同じ知らせは重ねない。
+    if (_simpleInfoMsg == msg) return;
+    // 文面が違う時は前の 1 枚を閉じる (画面に 2 枚以上残さない)。
+    // 下の route を巻き込まないよう、 今一番上の窓の時だけ閉じる。
+    final ModalRoute<void>? prevRoute = _simpleInfoRoute;
+    _simpleInfoRoute = null;
+    if (prevRoute != null && prevRoute.isCurrent) {
+      prevRoute.navigator?.pop();
+    }
+    _simpleInfoMsg = msg;
     showDialog<void>(
       context: context,
-      builder: (dctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E32),
-        content: Text(msg,
-            style: const TextStyle(color: Colors.white70, fontSize: 13)),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dctx),
-            child: const Text('OK', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-    );
+      builder: (dctx) {
+        _simpleInfoRoute = ModalRoute.of<void>(dctx);
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1E1E32),
+          content: Text(msg,
+              style: const TextStyle(color: Colors.white70, fontSize: 13)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dctx),
+              child: const Text('OK', style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        );
+      },
+    ).whenComplete(() {
+      // 閉じたら控えを外して次の知らせを出せるようにする。 差し替えで新しい
+      // 物が出ている時は、 そちらの控えを消さない。
+      if (_simpleInfoMsg == msg) {
+        _simpleInfoMsg = null;
+        _simpleInfoRoute = null;
+      }
+    });
   }
 
   /// ギャラリーのタイルに入り切らなかった文字を全部読むための窓
@@ -46870,6 +47720,35 @@ class _MindMapScreenState extends State<MindMapScreen>
     'appLock',
     'inquiry',
     'voiceInput',
+    // ★ = 継続検証 251 を直す時の点検で判明。 電源モードは名前が「1 段
+    //   回す」 でも、 _cyclePowerMode は選び札 (AlertDialog) を出すだけで
+    //   決めるのは利用者。 印が無かったので「電源モードを変えました」 と
+    //   嘘の報告になっていた。 下の「画面を開かない」 方には**入れない**。
+    'powerMode',
+  };
+
+  /// 押すとその場で終わり、 画面を何も開かない機能。
+  ///
+  /// ★ = 継続検証 251「画面を開かない操作コマンドが『画面を開いた』 と返し、
+  ///   閉じ方まで誤案内する」。 run_app_command は一律 screenId / closeable /
+  ///   閉じ方の案内を付けていたので、 取り消しや拡大率のあとに
+  ///   close_app_command が呼ばれ、 必ず空振りしていた。 ここに入れた id
+  ///   には画面の話を一切付けない。
+  /// ★ 入れるのは **_executeHeaderCommand を辿って「route を建てない」 と
+  ///   確かめた物だけ**。 選び札や確認が出る物 (powerMode / addNode /
+  ///   insertMapShape / layerSwitch など) は入れない。
+  static const Set<String> kCommandsWithoutScreen = {
+    'undo',
+    'redo',
+    'zoomIn5',
+    'zoomOut5',
+    'lockScale',
+    'lockH',
+    'lockV',
+    'cutMode',
+    'rangeSelect',
+    'selectAll',
+    'toggleBottomBar',
   };
 
   /// この端末で本当に動く機能か (= MCP と画面で食い違わせない)。
@@ -46890,7 +47769,14 @@ class _MindMapScreenState extends State<MindMapScreen>
     //   (case 'pomodoro' の _isDesktop 分岐) ので、 ボタンの追加候補から
     //   外れているだけ。 追加候補の絞り込みをそのまま持って来ると、
     //   動く機能まで「この端末には無い」 と答えてしまう (= 粗探しで発見)。
-    if (_isDesktop && (id == 'appLock' || id == 'focusLock')) return false;
+    // ★ = 継続検証 251 の裏取りで判明。 下部ボタンバーはモバイル専用で、
+    //   case 'toggleBottomBar' は `if (_isDesktop) break;` で黙って捨てる。
+    //   一覧に出していたので、 パソコンで頼まれると何も起きないのに
+    //   「隠しました」 と答えていた。
+    if (_isDesktop &&
+        (id == 'appLock' || id == 'focusLock' || id == 'toggleBottomBar')) {
+      return false;
+    }
     return true;
   }
 
@@ -49909,7 +50795,9 @@ class _MindMapScreenState extends State<MindMapScreen>
                 provider.t('ai.modeApi'), provider.t('ai.modeApiBody')),
             // ★ = ユーザー要望「PC内AI って表記じゃなくて CodexCLI と
             //   ClaudeCode って表記して欲しい」。 1 つにまとめず、 種類ごとに並べる。
-            for (final k in const [AgentCliKind.claude, AgentCliKind.codex])
+            // ★ 呼び方の表 ([AgentCliSpec.all]) から取る (決め打ちの一覧は
+            //   CLI を足した時に直し忘れる)。
+            for (final k in AgentCliSpec.all.map((e) => e.kind))
               tile('cli:${k.name}', Icons.terminal_rounded,
                   const Color(0xFF9CCC65), AgentCliSpec.of(k).label,
                   provider.t('ai.modeCliBody')),
@@ -50712,10 +51600,14 @@ class _MindMapScreenState extends State<MindMapScreen>
           // 細長い札の列なので、 既定の下限 (360x280) では縮められない。
           minWidth: 140,
           minHeight: 220,
+          // 上の帯に「閉じる」 があるので、 中の枠では出さない
+          //   (= ユーザー要望: × が 2 つあるのを上の 1 つにまとめる)。
+          allowHideHeader: false,
           floating: (_) => AutoClickerView(
             provider: provider,
             onPopOut: _isDesktop ? _openClickerPaletteWindow : null,
             onRequestClose: () => _closeFloatingPanelByKey('autoClicker'),
+            hostHasCloseButton: true,
           ),
         ));
         break;
@@ -51058,8 +51950,14 @@ class _MindMapScreenState extends State<MindMapScreen>
           }
           break;
         }
-        // マップ毎のメモを編集 (= ユーザー要望)。
-        _showMapMemoDialog(context, provider);
+        // ── マップ毎のメモを編集 (= ユーザー要望) ──
+        //    ★ = ユーザー要望「ギャラリーページなどから右クリックした際に
+        //      出てくるメモ欄が画面中央に表示され、 動かせないから使い辛い。
+        //      ボタンを押した位置で、 アプリ内で自由にドラッグで動かせる
+        //      ように」。 中身は今までと同じメモの画面のまま、 入れ物だけ
+        //      画面中央の動かせないダイアログ → 掴んで動かせる浮かぶ窓に
+        //      替える。
+        _openMapMemoPanel(provider);
         break;
       case 'layerSwitch':
         // ページの作業レイヤーを移動する (= ユーザー要望)。
@@ -51189,6 +52087,11 @@ class _MindMapScreenState extends State<MindMapScreen>
   ///   形を押した時点では**何も置かない**。 その後キャンバスをドラッグして、
   ///   引いた四角の位置と大きさで置く。 札は × / Esc まで開いたままなので、
   ///   続けて何個でも置ける。
+  ///
+  /// ★ 現在この入口は UI から呼ばれない (= ユーザー要望「端子の挿入は図形の
+  ///   挿入に纏めて」 で、 端子は図形の挿入パレットの中へ移した)。 端子だけの
+  ///   札に戻したくなった時のために残置。
+  // ignore: unused_element
   void _showTerminalBlockPicker(MindMapProvider provider) {
     setState(() {
       _terminalPaletteOpen = true;
@@ -51396,6 +52299,9 @@ class _MindMapScreenState extends State<MindMapScreen>
       _placingTerminalShape = null;
       _placingTerminalStart = null;
       _placingTerminalEnd = null;
+      // ★ 端子は図形の挿入の札に纏めたので (= ユーザー要望)、 Esc / × は
+      //   図形の時と同じくその札ごと畳む。
+      _shapePaletteOpen = false;
     });
   }
 
@@ -51954,7 +52860,8 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (!_shapePaletteOpen &&
         _drawingDecorationKind == null &&
         _drawingDecorationStart == null &&
-        _drawingDecorationEnd == null) {
+        _drawingDecorationEnd == null &&
+        _placingTerminalShape == null) {
       return;
     }
     setState(() {
@@ -51964,6 +52871,12 @@ class _MindMapScreenState extends State<MindMapScreen>
       _drawingDecorationStart = null;
       _drawingDecorationEnd = null;
       _polylineCursor = null;
+      // ★ 端子は同じ札に纏めたので一緒に畳む (= ユーザー要望: 端子の挿入は
+      //   図形の挿入に纏めて)。 残すとキャンバスのドラッグが端子を置き続ける。
+      _terminalPaletteOpen = false;
+      _placingTerminalShape = null;
+      _placingTerminalStart = null;
+      _placingTerminalEnd = null;
     });
   }
 
@@ -52481,6 +53394,12 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 child: InkWell(
                                   onTap: () => setState(() {
                                     _drawingDecorationKind = k;
+                                    // ★ 図形を選んだら端子の選択は外す
+                                    //   (= 端子を図形の挿入に纏めたので、
+                                    //   同じ札の中で二者択一になる)。
+                                    _placingTerminalShape = null;
+                                    _placingTerminalStart = null;
+                                    _placingTerminalEnd = null;
                                     // 次にボタンを押した時はこの種類で始める。
                                     _lastShapeKind = k;
                                     // 種類を変えたら作りかけの折れ線は捨てる。
@@ -52513,6 +53432,61 @@ class _MindMapScreenState extends State<MindMapScreen>
                                           color: _drawingDecorationKind == k
                                               ? const Color(0xFF7BE0AE)
                                               : Colors.white70),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            // ── 端子 (= フローチャートの箱) ──
+                            //    ★ = ユーザー要望「端子の挿入は図形の挿入に
+                            //    纏めて」。 右クリックの独立項目を廃し、
+                            //    この札の右側から選べるようにした。 選ぶと
+                            //    図形ではなく端子を置くモードに入り、 引いた
+                            //    四角の位置・大きさでそのまま置かれる
+                            //    (色・太さはこの札の指定をそのまま使う)。
+                            Container(
+                              width: 1,
+                              height: 26,
+                              margin: const EdgeInsets.symmetric(
+                                  horizontal: 6, vertical: 5),
+                              color: Colors.white24,
+                            ),
+                            for (final s in _terminalShapeDefs(provider))
+                              Padding(
+                                padding:
+                                    const EdgeInsets.symmetric(horizontal: 2),
+                                child: Tooltip(
+                                  message: '${provider.t('flow.terminal')}: '
+                                      '${s.label}',
+                                  child: InkWell(
+                                    onTap: () => setState(() {
+                                      // 図形ではなく端子を置くモードへ。
+                                      _placingTerminalShape = s.id;
+                                      _placingTerminalStart = null;
+                                      _placingTerminalEnd = null;
+                                      _drawingDecorationKind = null;
+                                      _polylinePoints.clear();
+                                      _polylineCursor = null;
+                                    }),
+                                    borderRadius: BorderRadius.circular(8),
+                                    child: Container(
+                                      width: 36,
+                                      height: 36,
+                                      alignment: Alignment.center,
+                                      decoration: BoxDecoration(
+                                        color: _placingTerminalShape == s.id
+                                            ? const Color(0xFF4DB6AC)
+                                                .withValues(alpha: 0.3)
+                                            : Colors.white
+                                                .withValues(alpha: 0.05),
+                                        borderRadius:
+                                            BorderRadius.circular(8),
+                                        border: Border.all(
+                                            color:
+                                                _placingTerminalShape == s.id
+                                                    ? const Color(0xFF4DB6AC)
+                                                    : Colors.white12),
+                                      ),
+                                      child: s.icon,
                                     ),
                                   ),
                                 ),
@@ -68662,24 +69636,47 @@ class _MindMapScreenState extends State<MindMapScreen>
               //   「やりました」 と報告させない。
               if (kCommandsNeedingUserFinish.contains(c['id']))
                 'needsUser': 'true',
+              // ★ = 継続検証 251。 その場で終わる操作の印。 これが付いて
+              //   いる物には screenId も閉じ方の案内も付けない。
+              if (kCommandsWithoutScreen.contains(c['id']))
+                'noScreen': 'true',
             }
       ],
       (id) {
-        // ★ = 動作検証の機能修正案「MCP から開いた機能画面を閉じる操作」。
-        //   後で閉じられるように、 MCP が開いた物を控えておく。
-        _mcpOpenedCommands.add(id);
-        // ★ = 機能追加案 2026-09-28「アシスタントから全画面の機能画面を
-        //   閉じる」。 これから建つ全画面のダイアログを、 この機能の物として
-        //   控えさせる合図。 開くのは非同期 (_openToolCommandStyled が
-        //   設定の読み込みを待つ) なので、 すぐには下ろさない。
-        _mcpArmedCommandId = id;
-        Future<void>.delayed(const Duration(milliseconds: 1200), () {
-          if (_mcpArmedCommandId == id) _mcpArmedCommandId = null;
-        });
+        // ★ = 継続検証 251。 その場で終わる操作は画面を開かないので、 開いた
+        //   物の控えにも合図にも入れない (入れると「全部閉じて」 の相手に
+        //   なり、 必ず空振りする)。
+        final noScreen = kCommandsWithoutScreen.contains(id);
+        if (!noScreen) {
+          // ★ = 動作検証の機能修正案「MCP から開いた機能画面を閉じる操作」。
+          //   後で閉じられるように、 MCP が開いた物を控えておく。
+          _mcpOpenedCommands.add(id);
+          // ★ = 機能追加案 2026-09-28「アシスタントから全画面の機能画面を
+          //   閉じる」。 これから建つ全画面のダイアログを、 この機能の物と
+          //   して控えさせる合図。 開くのは非同期 (_openToolCommandStyled が
+          //   設定の読み込みを待つ) なので、 すぐには下ろさない。
+          _mcpArmedCommandId = id;
+          Future<void>.delayed(const Duration(milliseconds: 1200), () {
+            if (_mcpArmedCommandId == id) _mcpArmedCommandId = null;
+          });
+        }
+        // ★ = 継続検証 251。 取り消しは「何が戻るか」 が走る前でしか分から
+        //   ないので、 先に見ておく。
+        final restored = (id == 'undo' || id == 'redo')
+            ? _mcpUndoTargetLabel(id, provider)
+            : null;
         _executeHeaderCommand(id, provider);
+        if (!noScreen) return null;
+        return {
+          if (restored != null) 'restored': restored,
+          // 拡大率は変えた**後**の値 (_applyScale は同期で入れ替える)。
+          if (id == 'zoomIn5' || id == 'zoomOut5')
+            'scalePercent': _scalePercent,
+        };
       },
     );
     provider.registerMcpCommandCloser(_closeCommandForMcp);
+    provider.registerMcpScreenState(_screenStateForMcp);
     provider.registerMcpFileBuilder(_buildMcpFile);
     // ★ = ユーザー要望「作成するファイルのパスを明示しない場合等を除き、
     //   今開いているフォルダー外に新規ファイルやフォルダーを作成しない」。
@@ -68726,14 +69723,20 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 当たれば `{'page': MindMapPage}`、 駄目なら `{'error': 理由}`。
   /// ★ 引き方を 1 か所に集める (= 置く時と「全画面で開く時」 で当たり方が
   ///   違うと、 同じ言葉を渡したのに結果が変わる)。
-  Map<String, dynamic> _splitPageFromRef(
-      MindMapProvider provider, String raw) {
+  ///
+  /// ★ = 不具合報告 2026-09-30「set_split_view が automation ページの全画面
+  ///   表示までペイン扱いで拒否する」。 分割のマスに置けない種別
+  ///   (文書 / 動画編集 / 自動操作) でも、 **1 枚で開くのは普通に出来る**。
+  ///   [forPane] が false の時 (= layout:"off" で 1 枚を全画面にする時) は
+  ///   種別の検分を掛けない。
+  Map<String, dynamic> _splitPageFromRef(MindMapProvider provider, String raw,
+      {bool forPane = true}) {
     // id が丸一致 → 名前が丸一致 → 名前が大小文字を無視して一致。
     // ★ 種別の検分は id で当たった時にも掛ける (= 掛けないと、 同じページを
     //   id で指すか名前で指すかで答えが変わる)。
     final byId = provider.pages.where((p) => p.id == raw).firstOrNull;
     if (byId != null) {
-      if (!_splitEligiblePage(byId)) {
+      if (forPane && !_splitEligiblePage(byId)) {
         return {
           'error': '"${byId.name}" is a "${byId.pageType ?? 'normal'}" page, '
               'which cannot be shown in a pane. Nothing was changed.',
@@ -68761,10 +69764,12 @@ class _MindMapScreenState extends State<MindMapScreen>
             'Nothing was changed.',
       };
     }
-    if (!_splitEligiblePage(one)) {
+    if (forPane && !_splitEligiblePage(one)) {
       return {
         'error': '"${one.name}" is a "${one.pageType ?? 'normal'}" page, '
-            'which cannot be shown in a pane. Nothing was changed.',
+            'which cannot be shown in a pane. Nothing was changed. (It CAN be '
+            'opened on its own: set_split_view layout:"off" with just that '
+            'page.)',
       };
     }
     return {'page': one};
@@ -68800,7 +69805,11 @@ class _MindMapScreenState extends State<MindMapScreen>
                     'the page. Nothing was changed - send one of them.',
               };
             }
-            final found = _splitPageFromRef(provider, wantRaw.first);
+            // ★ ここは「分割を閉じて 1 枚で開く」 なので、 マスに置ける
+            //   種別かどうかは関係がない (= 不具合報告。 以前は
+            //   文書 / 動画編集 / 自動操作 を全画面で開く事も出来なかった)。
+            final found =
+                _splitPageFromRef(provider, wantRaw.first, forPane: false);
             if (found['error'] != null) return found;
             final page = found['page'] as MindMapPage;
             if (provider.isPageLockedByPlan(page.id)) {
@@ -68826,6 +69835,9 @@ class _MindMapScreenState extends State<MindMapScreen>
               // 変えた**後**の実際の表示を返す (前もって控えた名前ではなく)。
               'pageId': provider.currentPage.id,
               'page': provider.currentPage.name,
+              'currentPageId': provider.currentPage.id,
+              'pageType': provider.currentPage.pageType ?? 'normal',
+              'foreground': true,
             };
           }
           // ★「右下の画面を全画面にして」 = そのセルのページを残して閉じる
@@ -69043,6 +70055,31 @@ class _MindMapScreenState extends State<MindMapScreen>
           _mapSplitCells[e.key] = e.value.id;
           // はっきり頼まれたセル (= 同じページを重ねてよい印)。
           _mapSplitCellsPinned.add(e.key);
+        }
+        // ★ = 動作検証 継続検証243「4 分割で配置不能が 2 件あると、 後続の
+        //   有効なページまで別のページに置換され、 同じページが 2 セルへ
+        //   重複配置される」。
+        //   `_mapSplitCells` は分割を閉じても消えず、 分割を開き直した時や
+        //   2 分割から 4 分割へ移る間の 1 フレームで `_buildMapSplitPane` が
+        //   空きセルを「未使用のページ」 で**仮埋め**して書き戻す。 配置不能
+        //   (notFound / pageType) のセルはこの後も上書きされないので、 その
+        //   仮埋めが後ろのセルへ頼まれたページを先に掴んでいる事がある。
+        //   すると `_resolveSplitCellPage` はそれを「他のセルで使用中」 と見て、
+        //   マークダウン / フリーノート / 文書は重ねられないので頼まれたページ
+        //   を捨て、 仮埋め側も同じ `used` になるため**両方が同じ代替ページ**
+        //   に落ちていた。 頼まれていないセルが掴んでいる分だけ手放させる。
+        //   空いたセルは次の描画で未使用のページから埋め直される。
+        for (final k in slots) {
+          if (wanted.containsKey(k)) continue;
+          // ★ はっきり頼まれて今も残してあるセル (= 同じページを並べて
+          //   見比べている最中) までは手放させない。 仮埋めのセルは
+          //   _mapSplitCellsPinned に入らないので、 そこだけ空ける。
+          if (_mapSplitCellsPinned.contains(k)) continue;
+          final squatting = _mapSplitCells[k];
+          if (squatting != null && takenIds.contains(squatting)) {
+            _mapSplitCells[k] = null;
+            _mapSplitCellsPinned.remove(k);
+          }
         }
         _mapSplitEditorSlot = editorSlot;
         _syncNarrowPaneRatio();
@@ -69809,6 +70846,12 @@ class _MindMapScreenState extends State<MindMapScreen>
       name = _baseName(file.path); // 逃がした時は名前が変わっている
       // 書く前に見ておく (書いた後だと必ず true になる)。
       final replaced = await file.exists();
+      // ★ = 動作検証 継続検証385「添付ファイルの同名上書きがページの Undo
+      //   対象外」。 ページの取り消しはタイルしか戻さないので、 上書きすると
+      //   前の版へ帰る道が無かった。 書く前に写しを 1 つだけ控えて、 その道筋を
+      //   返す (置き場は削除の控えと同じアプリ専用フォルダー。 7 日で消える)。
+      final prevVersion =
+          replaced ? provider.mcpStagePreviousVersion(file.path) : '';
       await file.writeAsBytes(bytes, flush: true);
       // ★ 同じ名前で書き直すとパスが変わらないので、 タイルに出している
       //   「中身のさわり」 の控えが古いままになる (= ユーザー報告: AI に
@@ -69831,6 +70874,13 @@ class _MindMapScreenState extends State<MindMapScreen>
       //   (同じパスのノードが既にあれば mcpAddFileNode が使い回すので、
       //    タイルは増えない = ユーザー報告の「新規で新しいファイルが
       //    作成されてしまった」 の本体)。
+      // ★ = 動作検証 継続検証245「タイルだけ消して孤立させたファイルを
+      //   同じ名前で作り直すと、 新しいタイルが出来るのに『同じタイルを
+      //   使い回した』 と案内してしまう」。 使い回しか新設かは**貼る前**
+      //   にしか分からないので、 ここで見て返す (判定は mcpAddFileNode の
+      //   使い回しと同じ物差し = mcpSamePath)。
+      final tileExisted = pageId.isNotEmpty &&
+          provider.mcpPagesUsingFile(file.path).contains(pageId);
       final nodeId = provider.mcpAddFileNode(pageId, file.path,
           title: title.isEmpty ? null : title);
       // ★ 同じファイルを他のページでも使っている時は、 それを伝える
@@ -69846,6 +70896,14 @@ class _MindMapScreenState extends State<MindMapScreen>
         'savedIn': dir.path,
         'fileName': name,
         'replaced': replaced,
+        // ★ ファイルの上書きと、 タイルが新しく置かれたかは別の出来事
+        //   (= 継続検証245)。 まとめて返すと「同じタイルのまま」 と
+        //   誤って案内される。
+        'fileReplaced': replaced,
+        'tileCreated': nodeId != null && !tileExisted,
+        // ★ = 継続検証385。 上書きは取り消しでは戻らないので、 控えた前の版の
+        //   道筋を返す (空 = 控えられなかった)。
+        if (prevVersion.isNotEmpty) 'previousVersionPath': prevVersion,
         if (shared.isNotEmpty) 'alsoOnPages': shared,
         if (nodeId != null) 'nodeId': nodeId,
       };
@@ -74885,6 +75943,9 @@ class _MindMapScreenState extends State<MindMapScreen>
       width: 420,
       height: 230,
       inPane: false,
+      // ★ Enter でそのまま消せるようにする (= ユーザー要望: 一覧で
+      //   まとめて選んで Del を押した流れを、 手を動かさず確定したい)。
+      enterValue: true,
       builder: (dctx) => AlertDialog(
         backgroundColor: const Color(0xFF24243A),
         title: Text(
@@ -74915,6 +75976,9 @@ class _MindMapScreenState extends State<MindMapScreen>
       done = r == RecycleResult.recycled;
       if (r == RecycleResult.failed && mounted) {
         // ごみ箱へ入らなかった。 完全に消してよいか、 改めてたずねる。
+        // ★ ここだけは Enter を割り当てない (= 取り返しが付かないため)。
+        //   1 枚目を Enter で通した直後に出る窓なので、 続けて Enter が
+        //   入ると完全削除まで走ってしまう。 押して確かめてもらう。
         final hard = await _showNearDialogMain<bool>(
           width: 420,
           height: 200,
@@ -76497,8 +77561,10 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// RenderBox 位置がメニューのアンカーになる。
   /// 「+」 のメニュー。 [at] を渡すと、 ボタンの隣ではなくその場所に出す
   /// (= ユーザー要望: 一覧の何も無い所を右クリックしたら同じ項目を出す)。
+  /// [newOnly] を true にすると「新規〜」 だけを出す
+  /// (= ユーザー要望: 一覧の何も無い所を右クリックした時)。
   void _showDrawerAddMenu(BuildContext context, MindMapProvider provider,
-      [BuildContext? anchorCtx, Offset? at]) {
+      [BuildContext? anchorCtx, Offset? at, bool newOnly = false]) {
     if (!mounted) return;
     final ctx = this.context;
     // 一覧の中で右クリックした時に、 ここへ作れるフォルダー (無ければ null)。
@@ -76588,6 +77654,11 @@ class _MindMapScreenState extends State<MindMapScreen>
             iconColor: const Color(0xFFFFB347),
             label: provider.t('drawer.newFolder'),
             shortcut: _getCommandShortcut('newFolder')),
+        // ★ = ユーザー要望「ページ一覧の何もない所を右クリックした際に出る
+        //   項目は新規〜だけにして欲しい」。 読み込み・フォルダーを開く・
+        //   一覧の更新などは「+」 のメニューに残す (同じ物を 2 か所で
+        //   出していたので、 何も無い所の方だけ絞る)。
+        if (!newOnly) ...<PopupMenuEntry<_AddMenuAction>>[
         const PopupMenuDivider(),
         _menuItem<_AddMenuAction>(
             value: _AddMenuAction.importBundle,
@@ -76657,6 +77728,7 @@ class _MindMapScreenState extends State<MindMapScreen>
                   ? const Color(0xFF43B97F)
                   : Colors.white38,
               label: provider.t('disk.showAppFiles')),
+        ],
         ],
         // ★ ここに区切り線を置かない (= ユーザー報告: 項目を消した後の線が
         //   いちばん下に残っている)。 下に続く項目が無くなったため。
@@ -77140,6 +78212,9 @@ class _MindMapScreenState extends State<MindMapScreen>
       width: 420,
       height: 200,
       inPane: false,
+      // ★ Enter で確定 (= ユーザー要望)。 ファイルが混ざっている時は
+      //   先にファイルの確認が出るので、 どちらも Enter で通せる。
+      enterValue: true,
       builder: (dctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E1E32),
         title: Row(children: [
@@ -78032,12 +79107,10 @@ class _MindMapScreenState extends State<MindMapScreen>
       for (final id in _rangeSelectedIds) {
         final node = copy[id];
         if (node != null) {
-          copy[id] = node.copyWith(
-            position: Offset(
-              (node.position.dx + _rangeDragDelta.dx).clamp(0.0, 20000.0),
-              (node.position.dy + _rangeDragDelta.dy).clamp(0.0, 20000.0),
-            ),
-          );
+          // ★ 位置の式はキャンバス / 最前面の写しと共用 ([_rangeDragPositionOf])。
+          //   ここだけ 0 で丸めていると、 境界を左へ跨いでいる間だけ接続線が
+          //   端で折れ曲がり、 要素と線が離れて見える。
+          copy[id] = node.copyWith(position: _rangeDragPositionOf(node));
         }
       }
     }
@@ -78855,6 +79928,16 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// (= ユーザー報告: 何度も「初期化中」 に戻る)。
   final GlobalKey _splitWebKeyRight = GlobalKey();
   final GlobalKey _splitWebKeyLeft = GlobalKey();
+
+  /// 分割ペインで最後に押された釦が主ボタン (= 左) だったか。
+  ///
+  /// `PointerUpEvent.buttons` は離した後の状態なので常に 0 で、 up の時点
+  /// では何を押したのか分からない。 押した時に控えて up で見る。
+  /// 右クリックで編集セルが移ると、 触っていない側のペインまで組み直されて
+  /// 勝手に動いて見えた (= ユーザー報告「左側の領域を右クリックすると
+  /// 右画面が変に動く」)。 控えの既定は true なので、 down を取りこぼした
+  /// 時 (タッチ等) は今までどおり切り替える。
+  bool _paneDownPrimary = true;
 
   /// 分割ペインをアクティブ化した時刻 (epoch ms)。
   ///
@@ -79675,7 +80758,8 @@ class _MindMapScreenState extends State<MindMapScreen>
       bool noModeSwitch = false,
       bool allowRestoreFull = true,
       double minWidth = 360,
-      double minHeight = 280}) async {
+      double minHeight = 280,
+      bool allowHideHeader = true}) async {
     // 開き方の読み込みが終わる前に押されると既定に落ちるので待つ。
     try {
       await _commandOpenStylesReady;
@@ -79703,6 +80787,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           noModeSwitch: noModeSwitch,
           minWidth: minWidth,
           minHeight: minHeight,
+          allowHideHeader: allowHideHeader,
           // 全画面を持たない道具には「全画面に戻す」 を出さない
           //   (押しても戻る先が無いため)。
           onRestoreFull:
@@ -80030,6 +81115,15 @@ class _MindMapScreenState extends State<MindMapScreen>
       //   メモの画面はダイアログとして組んであるので、 ペインの中に専用の
       //   入れ物 (Navigator) を立てて、 その中に出す。
       case 'mapMemo':
+        // ★ = ユーザー要望「メモはアプリ内でもスマートな形式で」。 パソコンは
+        //   アプリの外の窓と**同じ widget** をそのまま入れる (帯もタブ列も
+        //   同じ。 保存先も同じ floating_memo.txt なので、 浮かぶ窓・分割・
+        //   外の窓のどこで書いても同じメモに積まれる)。
+        //   スマホの「外のメモ」 は OS オーバーレイで保存先が別なので、
+        //   今までのページのメモ画面のままにする。
+        if (_isDesktop) {
+          return FloatingMemoView(key: ValueKey('pane_tool_${slot}_$id'));
+        }
         return _PaneDialogHost(
           key: ValueKey('pane_tool_${slot}_$id'),
           onClose: close,
@@ -80371,8 +81465,15 @@ class _MindMapScreenState extends State<MindMapScreen>
           for (final p in provider.pages)
             // ★ 鍵の掛かったページは追加先に出さない (= 点検で判明:
             //   開けないページへ要素だけが入ってしまう)。
+            // ★ 一覧に出していないページも出さない (= ユーザー要望: ページ
+            //   一覧に無いページが並ぶと探せない)。 今開いているページは
+            //   「現在」 の目印付きで必ず残す ─ 空の配列は浮遊窓側で
+            //   「本体が起きていない」 の知らせとして使われており
+            //   (main.dart の _addToMapWithPicker)、 空にすると追加せず
+            //   次回起動待ちのキューへ回ってしまう。
             if ((p.pageType == 'normal' || p.pageType == 'bookshelf') &&
-                !provider.isPageLockedByPlan(p.id))
+                !provider.isPageLockedByPlan(p.id) &&
+                (p.id == cur || isPageSendTarget(provider, p)))
               {'id': p.id, 'name': p.name, 'current': p.id == cur},
         ]);
       case 'floatingMemoToNodePage':
@@ -80992,6 +82093,79 @@ class _MindMapScreenState extends State<MindMapScreen>
   ///   開く時に**そのダイアログの BuildContext** から閉じ方を作って預かる。
   final Map<String, Future<bool> Function()> _mcpFullScreenClosers = {};
 
+  /// パソコンで「アプリの外の道具窓」 として開く機能 (機能 id -> 窓の種類)。
+  ///
+  /// ★ = 継続検証 215「浮遊ツールが起動成功でも終了 API から追跡できない」。
+  ///   計算機 / タイマー / ポモドーロはパソコンでは [_openPopOutWindow] の
+  ///   サブ窓で開くので、 浮遊窓の台帳 ([_floatingPanelSingletons]) にも
+  ///   分割の台帳にも載らず、 close_app_command から閉じる道が無かった。
+  ///   窓の id は [_popOutToolWinIds] に**種類ごと**で控えてあるだけなので、
+  ///   機能 id から種類へ橋を渡す。
+  ///   ※ 'memo' は別プロセスで開き窓の id を持っていないため、 ここには
+  ///     入れない (閉じられないまま)。
+  static const Map<String, String> _mcpPopOutKindOf = {
+    'calculator': 'calc',
+    'stopwatch': 'timer',
+    'pomodoro': 'timer',
+  };
+
+  /// 専用フィールドで持っているアプリ内の浮遊ツールを機能 id から引く。
+  ///
+  /// ★ = 継続検証 215 の**双子**(携帯側)。 計算機 / ストップウォッチ /
+  ///   ポモドーロ / 天気は [_floatingPanelSingletons] ではなく専用の
+  ///   OverlayEntry に入っているので、 台帳を探しても見つからなかった。
+  OverlayEntry? _mcpToolOverlayOf(String cid) {
+    switch (cid) {
+      case 'calculator':
+        return _sciCalcOverlay ?? _calculatorOverlay;
+      case 'stopwatch':
+        return _stopwatchOverlay;
+      case 'pomodoro':
+        return _pomodoroOverlay;
+      case 'weather':
+        return _weatherOverlay;
+    }
+    return null;
+  }
+
+  /// 上の浮遊ツールを閉じる (その道具の × を押した時と同じ後始末)。
+  bool _closeMcpToolOverlay(String cid) {
+    final e = _mcpToolOverlayOf(cid);
+    if (e == null) return false;
+    try {
+      e.remove();
+    } catch (_) {}
+    if (identical(_sciCalcOverlay, e)) _sciCalcOverlay = null;
+    if (identical(_calculatorOverlay, e)) _calculatorOverlay = null;
+    if (identical(_stopwatchOverlay, e)) _stopwatchOverlay = null;
+    if (identical(_pomodoroOverlay, e)) _pomodoroOverlay = null;
+    if (identical(_weatherOverlay, e)) _weatherOverlay = null;
+    return true;
+  }
+
+  /// 取り消し / やり直しで**これから何が戻るか** (= 継続検証 251)。
+  ///
+  /// ★ 分岐は [_executeHeaderCommand] の case 'undo' と**必ず同じ順**に
+  ///   しておく (ずれると、 答えと実際が食い違う)。 走らせた後では分から
+  ///   ないので、 押す前に呼ぶ。
+  String _mcpUndoTargetLabel(String id, MindMapProvider p) {
+    final pageName = p.pages.isEmpty ? '' : p.currentPage.name;
+    if (id == 'redo') {
+      return p.canRedo
+          ? 'the step that was last undone on the page "$pageName"'
+          : 'nothing - there is no undone step left to put back';
+    }
+    if (_calendarMode && p.canUndoCalendar) return 'the last calendar change';
+    if (p.canUndoDeletedPage) return 'the page that was just deleted';
+    if (p.aiInProgress && !p.hasUserActionsAfterAiStart) {
+      return 'nothing was undone - the AI run in progress was cancelled '
+          'instead';
+    }
+    return p.canUndo
+        ? 'the last edit on the page "$pageName"'
+        : 'nothing - the page has no edit left to undo';
+  }
+
   /// 今まさに MCP が開こうとしている機能 id (開き終わるまでの短い間だけ)。
   /// これが立っている間に建った全画面のダイアログを、 その機能の物として控える。
   String? _mcpArmedCommandId;
@@ -81057,6 +82231,93 @@ class _MindMapScreenState extends State<MindMapScreen>
   ///       [_closeEmbeddedPaneTool] (× で閉じた時と同じ道) を通す。
   ///   全画面のダイアログ (showDialog) は控えが無いので**閉じられない**。
   ///   そこで嘘を言わず、 理由を付けて返す (= この直しの要点)。
+  /// 今この画面に出ている物を答える (読むだけ。 何も変えない)。
+  ///
+  /// ★ = 機能追加案 継続検証190。 検証する側は「押した結果どうなったか」 を
+  ///   データ層でしか確かめられず、 画面の様子は分からなかった。
+  ///   ここで返すのは**台帳に載っている物だけ**で、 画面の部品の木では
+  ///   ない ── 普通の確認ダイアログや右クリックの一覧は見えない。
+  ///   分からない物は「分からない」 と言わせるため、 その旨も一緒に返す。
+  Map<String, Object?> _screenStateForMcp() {
+    final provider = context.read<MindMapProvider>();
+    final cmdLabel = <String, String>{
+      for (final c in provider.mcpCommands)
+        '${c['id']}': '${c['label'] ?? c['id']}'
+    };
+    final visible = _mapSplitOpen ? _visibleSplitSlots() : const <int>[];
+    return {
+      // 「名前の無い指示は何が相手か」 の唯一の答え。
+      'foreground': provider.mcpForegroundContext(),
+      'currentPage': provider.pages.isEmpty
+          ? null
+          : {
+              'pageId': provider.currentPage.id,
+              'name': provider.currentPage.name,
+              'type': provider.currentPage.pageType ?? 'normal',
+            },
+      'split': {
+        'open': _mapSplitOpen,
+        'layout': !_mapSplitOpen
+            ? 'off'
+            : (_mapSplitQuad
+                ? 'quad'
+                : (_mapSplitStacked ? 'topBottom' : 'leftRight')),
+        'cells': _mapSplitOpen ? visible.length : 1,
+        'editorCell': _mapSplitEditorSlot,
+        'pages': [
+          for (final k in visible)
+            {
+              'cell': k,
+              'page': _pageShownInSplitCell(provider, k)?.name,
+              'tool': _mapSplitCellTool[k],
+            }
+        ],
+      },
+      'pageListDrawerOpen':
+          appMainScaffoldKey?.currentState?.isDrawerOpen == true,
+      'floatingWindows': [
+        for (final k in _floatingPanelSingletons.keys)
+          {'id': k, 'label': cmdLabel[k] ?? k}
+      ],
+      // ★ = 継続検証 215。 専用フィールドの浮遊ツールと、 パソコンの
+      //   「アプリの外の道具窓」 もここに出す (台帳に無いので今までは
+      //   開いているのに「何も開いていない」 と読めてしまっていた)。
+      'toolWindows': [
+        for (final k in const [
+          'calculator',
+          'stopwatch',
+          'pomodoro',
+          'weather'
+        ])
+          if (_mcpToolOverlayOf(k) != null)
+            {'id': k, 'label': cmdLabel[k] ?? k, 'where': 'floating'},
+        for (final e in _popOutToolWinIds.entries)
+          {'kind': e.key, 'windowId': e.value, 'where': 'ownWindow'},
+      ],
+      // ★ = 継続検証 216。 カレンダーは表示の切り替えなので、 出ているかを
+      //   そのまま答える (これも close_app_command で閉じられる)。
+      'calendarView': _calendarMode,
+      'paneTools': [
+        for (final e in _mapSplitCellTool.entries)
+          {'cell': e.key, 'id': e.value, 'label': cmdLabel[e.value] ?? e.value}
+      ],
+      'fullScreenScreens': [
+        for (final k in _mcpFullScreenClosers.keys)
+          {'id': k, 'label': cmdLabel[k] ?? k}
+      ],
+      'openedFromAssistant': _mcpOpenedCommands.toList(),
+      'textEditor': provider.mcpTextFileStatus(),
+      // アプリが最近出した短い知らせ (= 押した結果の文言を確かめるため)。
+      'recentNotices': List<Map<String, Object?>>.from(recentAppNotices),
+      'note': 'This reports the app OWN registries, not a widget tree. '
+          'Ordinary confirmation dialogs, context menus and the contents of '
+          'a screen are NOT visible here, and "fullScreenScreens" lists only '
+          'dialogs that run_app_command opened. If the user asks about '
+          'something this does not cover, say you cannot see it - do not '
+          'report it as "nothing is open". This tool changes nothing.',
+    };
+  }
+
   Future<Map<String, Object?>> _closeCommandForMcp(String id, bool probe) async {
     if (!mounted) return {'error': 'the screen went away'};
     final provider = context.read<MindMapProvider>();
@@ -81069,6 +82330,16 @@ class _MindMapScreenState extends State<MindMapScreen>
     bool openNow(String cid) =>
         _floatingPanelSingletons.containsKey(cid) ||
         _splitSlotOfTool(cid) != null ||
+        // ★ = 継続検証 215。 専用フィールドの浮遊ツール (計算機 / タイマー /
+        //   ポモドーロ / 天気) と、 パソコンの「アプリの外の道具窓」 も
+        //   「開いている」 に数える。 ここが漏れていたので、 id 無しの
+        //   「全部閉じて」 が控え (_mcpOpenedCommands) から消してしまい、
+        //   後から id を渡すと「ここから開いた覚えが無い」 と答えていた。
+        _mcpToolOverlayOf(cid) != null ||
+        _popOutToolWinIds.containsKey(_mcpPopOutKindOf[cid] ?? '') ||
+        // ★ = 継続検証 216。 既定のカレンダーは全画面ダイアログではなく
+        //   キャンバスの表示切り替え ([_calendarMode])。
+        (cid == 'calendar' && _calendarMode) ||
         // ★ = 機能追加案 2026-09-28。 全画面の窓も控えが在れば「開いている」。
         _mcpFullScreenClosers.containsKey(cid);
     if (want.isEmpty) {
@@ -81100,6 +82371,90 @@ class _MindMapScreenState extends State<MindMapScreen>
       if (slot != null) {
         if (!probe) _closeEmbeddedPaneTool(slot, cid);
         closed.add(cid);
+        continue;
+      }
+      // ★ = 継続検証 215 の**双子**(パソコン側)。 計算機 / タイマーは
+      //   desktop_multi_window のサブ窓で開くので、 控えてある窓 id から
+      //   閉じる。 分割で開く設定の時は上の分割の枝が受け持つ。
+      final popKind = (_isDesktop && !_openStyleOf(cid).startsWith('split'))
+          ? _mcpPopOutKindOf[cid]
+          : null;
+      // ★ = 継続検証 215「浮遊ツールが起動成功でも終了 API から追跡
+      //   できない」。 計算機 / ストップウォッチ / ポモドーロ / 天気は
+      //   専用フィールドの OverlayEntry なので、 そこから閉じる (携帯側)。
+      // ★ = 動作検証 appcmd-order「AI が開けた外部窓ではなく、 利用者が
+      //   アプリの中に出した道具の方が閉じる」。 パソコンで
+      //   run_app_command が開くのは下の**サブ窓**なので、 窓の控えが
+      //   在る時はこの枝を飛ばして窓から閉じる (= 利用者が Ctrl+M で
+      //   出した電卓を巻き添えにしない)。 窓の控えが無い時は今までどおり
+      //   アプリ内の道具を閉じる (パソコンでもここから開ける道はある)。
+      if (_mcpToolOverlayOf(cid) != null &&
+          !(popKind != null && _popOutToolWinIds.containsKey(popKind))) {
+        if (!probe) _closeMcpToolOverlay(cid);
+        closed.add(cid);
+        continue;
+      }
+      if (popKind != null) {
+        final popWinId = _popOutToolWinIds[popKind];
+        var alive = false;
+        if (popWinId != null) {
+          try {
+            alive = (await DesktopMultiWindow.getAllSubWindowIds())
+                .contains(popWinId);
+          } catch (_) {}
+          // 利用者が窓の × で閉じていた控えは外す (残すと次に「開いて
+          //   いる」 と答えてしまう)。
+          if (!alive) _popOutToolWinIds.remove(popKind);
+        }
+        if (probe) {
+          // 窓は今まさに建っている途中の事もある (createWindow が返って
+          //   から控えるので、 押した直後は空)。 パソコンでこの道具は必ず
+          //   このサブ窓で開くので、 起動直後の判定は「閉じられる」。
+          closed.add(cid);
+          continue;
+        }
+        if (alive) {
+          try {
+            await WindowController.fromWindowId(popWinId!).close();
+          } catch (_) {}
+          _popOutToolWinIds.remove(popKind);
+          // ストップウォッチとポモドーロは**同じタイマー窓**なので、
+          //   片方を閉じると両方消える。 控えも一緒に下ろしておく。
+          for (final e in _mcpPopOutKindOf.entries) {
+            if (e.value == popKind && e.key != cid) {
+              _mcpOpenedCommands.remove(e.key);
+            }
+          }
+          closed.add(cid);
+        } else {
+          notOpen.add({
+            'id': cid,
+            'reason': 'alreadyClosed',
+            'hint': 'that tool window is already gone (the user closed it), '
+                'so nothing was done.',
+          });
+        }
+        continue;
+      }
+      // ★ = 継続検証 216「カレンダーは opened:true / closeable:false で
+      //   終了案内まで出るのに閉じられない」。 既定のカレンダーは全画面
+      //   ダイアログではなくキャンバスの表示切り替えなので、 印を下ろせば
+      //   閉じられる (= 画面の × と同じ後始末)。
+      if (cid == 'calendar' && _openStyleOf('calendar') == 'full') {
+        if (_calendarMode) {
+          if (!probe && mounted) {
+            setState(() => _calendarMode = false);
+            _refreshFloatingOverlays();
+          }
+          closed.add(cid);
+        } else {
+          notOpen.add({
+            'id': cid,
+            'reason': 'alreadyClosed',
+            'hint': 'the calendar view is not on display right now, so '
+                'nothing was done.',
+          });
+        }
         continue;
       }
       // ★ = 機能追加案 2026-09-28「アシスタントから全画面の機能画面を
@@ -81196,12 +82551,17 @@ class _MindMapScreenState extends State<MindMapScreen>
       Future<bool> Function(Rect frame, bool pinned)? popOutCustom,
       // 最初に出す位置と大きさ (= マップ分割中は分割セルを覆う形で開く)。
       Rect? initialRect,
+      // 覚えている位置が無い時だけ使う出し位置 (= 押した所に出す)。
+      //   initialRect と違い、 覚えている位置の方が強い。
+      Offset? initialPos,
       // 全画面で開き直す入口 (= ユーザー要望: フローティングから
       //   元の全画面に戻せるように)。 null ならボタンを出さない。
       VoidCallback? onRestoreFull,
       // 縮められる下限 (= 細長いパレットの窓は既定の 360x280 より小さい)。
       double minWidth = 360,
       double minHeight = 280,
+      // 上の帯を隠す口を出すか (= 隠した先には閉じるが無い)。
+      bool allowHideHeader = true,
       VoidCallback? onClosed}) {
     // ★ 同じ窓が既に開いていれば、 増やさずに前面へ出し直す。
     //
@@ -81275,6 +82635,7 @@ class _MindMapScreenState extends State<MindMapScreen>
         noModeSwitch: noModeSwitch,
         minWidth: minWidth,
         minHeight: minHeight,
+        allowHideHeader: allowHideHeader,
         onRestoreFull: onRestoreFull == null
             ? null
             : () {
@@ -81283,6 +82644,7 @@ class _MindMapScreenState extends State<MindMapScreen>
               },
         popOutCustom: popOutCustom,
         initialRect: initialRect,
+        initialPos: initialPos,
         onClose: closeSelf,
       ),
     );
@@ -81851,10 +83213,19 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// しないページを選ぶ。 開けるページが無ければ null。
   MindMapPage? _resolveSplitCellPage(MindMapProvider provider, int k) {
     final used = <String>{provider.currentPage.id};
+    final pinnedHere = _mapSplitCellsPinned.contains(k);
     for (final i in _visibleSplitSlots()) {
       if (i == k || i == _mapSplitEditorSlot) continue;
       final id = _mapSplitCells[i];
-      if (id != null) used.add(id);
+      if (id == null) continue;
+      // ★ = 動作検証 継続検証243。 はっきり頼まれたセル
+      //   ([_mapSplitCellsPinned]) は、 頼まれていないセルが**仮埋め**で先に
+      //   掴んだページには譲らない。 譲ると、 頼まれたページが捨てられて
+      //   代替ページに置換される (しかも仮埋め側も同じ代替へ落ちるので、
+      //   同じページが 2 セルに出る)。 仮埋め側は次の描画で空いている
+      //   ページへ退く。
+      if (pinnedHere && !_mapSplitCellsPinned.contains(i)) continue;
+      used.add(id);
     }
     // ★ = ユーザー要望「3 ページ目以降は Pro 以上でないと開けない」。
     //   分割の閲覧セルは currentPage を通らずに中身を出すので、
@@ -82972,6 +84343,16 @@ class _MindMapScreenState extends State<MindMapScreen>
               },
             ),
 
+            // ── 文字の大きさ (= 右クリックから外した分の入口) ──
+            //    背景の右クリックは同期設定に入れ替えたので、 既定の文字の
+            //    大きさはここから開く。
+            _settingsTile(
+              icon: Icons.text_fields_rounded,
+              color: const Color(0xFFFFB347),
+              title: provider.t('ctx.fontSizeSettings'),
+              onTap: () => _showGlobalFontSizeDialog(ctx, provider),
+            ),
+
             // ── 要素を押した時に出るボタンの並び (= ユーザー要望: 動作設定の
             //    所で要素をクリックした際の並びを変えられるように) ──
             _settingsTile(
@@ -82998,117 +84379,44 @@ class _MindMapScreenState extends State<MindMapScreen>
             ),
             // ═══ Jev 判断補助 (ベータ) ═══════════════════════════
             //
-            // = ユーザー要望 4 件 (振り分け / 広告ブロック / 検索の絞り込み
-            //   / 書籍検索) の入口。
+            // 機能ごとの入切は、 それぞれ 「使う所」 へ移した
+            //   (振り分け = AI の送り先、 絞り込みと広告落とし = Google
+            //    検索のヘッダー、 書籍 = 本棚)。 設定の奥に並べると、
+            //   使う場面から遠くて気付けないため。
             //
-            // ★ 既定は全部切。 外へ文章の断片を送るので、 利用者が自分で
-            //   入れるまで通信しない。
-            // ★ 広告ブロックだけは親スイッチの外に置いてある。 1 段目
-            //   (名前で分かる広告を隠す) は判断も通信も要らないので、
-            //   何も送りたくない人でも使えるようにするため。
+            // ★ ここに残すのは非常停止だけ。 入れると、 機能ごとの入切が
+            //   どうなっていても Jev への通信を一切やめる (provider 側が
+            //   !_jevStopAll && _jevXxxEnabled を返す)。
             _behaviorSectionLabel('jev', provider.t('settings.groupJev')),
             _settingsToggleTile(
-              icon: provider.adBlockEnabled
-                  ? Icons.block_rounded
-                  : Icons.block_outlined,
-              color: provider.adBlockEnabled
-                  ? const Color(0xFF7FD8A0)
+              icon: provider.jevStopAll
+                  ? Icons.dangerous_rounded
+                  : Icons.shield_outlined,
+              // 止めている時だけ赤系 (= 普段と違う状態だと一目で分かる)。
+              color: provider.jevStopAll
+                  ? const Color(0xFFEF5350)
                   : Colors.white54,
-              title: provider.t('jev.adBlock'),
-              helpKey: 'jev.adBlockHelp',
-              value: provider.adBlockEnabled,
+              title: provider.t('jev.stopAll'),
+              helpKey: 'jev.stopAllHelp',
+              value: provider.jevStopAll,
               onChanged: (v) async {
-                await provider.setAdBlockEnabled(v);
+                await provider.setJevStopAll(v);
                 setS(() {});
               },
             ),
-            _settingsToggleTile(
-              icon: provider.jevEnabled
-                  ? Icons.psychology_rounded
-                  : Icons.psychology_outlined,
-              color: provider.jevEnabled
-                  ? const Color(0xFFBA68C8)
-                  : Colors.white54,
-              title: provider.t('jev.enabled'),
-              helpKey: 'jev.enabledHelp',
-              value: provider.jevEnabled,
-              onChanged: (v) async {
-                await provider.setJevEnabled(v);
-                setS(() {});
-              },
+            // 使った回数と金額 (判断は入力だけの課金なので極小)。
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 2, 14, 10),
+              child: Text(
+                '${provider.t('jev.usage')}: '
+                '${provider.jevCalls} '
+                '(\$${provider.jevSpentUsd.toStringAsFixed(4)})'
+                '${provider.jevLastModel.isEmpty ? '' : ' / '
+                    '${provider.jevLastModel}'}',
+                style: const TextStyle(
+                    color: Colors.white38, fontSize: 11.5),
+              ),
             ),
-            // ── 親が入っている時だけ、 機能ごとの入切を出す ──
-            //    (切っている時に並べても効かないので、 見出しごと隠す)
-            if (provider.jevEnabled) ...[
-              _settingsToggleTile(
-                icon: Icons.alt_route_rounded,
-                color: provider.jevRouteEnabled
-                    ? const Color(0xFF4FC3F7)
-                    : Colors.white54,
-                title: provider.t('jev.route'),
-                helpKey: 'jev.routeHelp',
-                value: provider.jevRouteEnabled,
-                onChanged: (v) async {
-                  await provider.setJevRouteEnabled(v);
-                  setS(() {});
-                },
-              ),
-              _settingsToggleTile(
-                icon: Icons.search_rounded,
-                color: provider.jevSearchEnabled
-                    ? const Color(0xFF4FC3F7)
-                    : Colors.white54,
-                title: provider.t('jev.search'),
-                helpKey: 'jev.searchHelp',
-                value: provider.jevSearchEnabled,
-                onChanged: (v) async {
-                  await provider.setJevSearchEnabled(v);
-                  setS(() {});
-                },
-              ),
-              _settingsToggleTile(
-                icon: Icons.menu_book_rounded,
-                color: provider.jevBookEnabled
-                    ? const Color(0xFFFFB74D)
-                    : Colors.white54,
-                title: provider.t('jev.book'),
-                helpKey: 'jev.bookHelp',
-                value: provider.jevBookEnabled,
-                onChanged: (v) async {
-                  await provider.setJevBookEnabled(v);
-                  setS(() {});
-                },
-              ),
-              // 広告の 2 段目 (判別が付かない塊を聞く) は、 1 段目が
-              //   入っている時だけ意味があるので条件を重ねる。
-              if (provider.adBlockEnabled)
-                _settingsToggleTile(
-                  icon: Icons.ads_click_rounded,
-                  color: provider.jevAdBlockEnabled
-                      ? const Color(0xFF7FD8A0)
-                      : Colors.white54,
-                  title: provider.t('jev.adBlockDeep'),
-                  helpKey: 'jev.adBlockDeepHelp',
-                  value: provider.jevAdBlockEnabled,
-                  onChanged: (v) async {
-                    await provider.setJevAdBlockEnabled(v);
-                    setS(() {});
-                  },
-                ),
-              // 使った回数と金額 (判断は入力だけの課金なので極小)。
-              Padding(
-                padding: const EdgeInsets.fromLTRB(14, 2, 14, 10),
-                child: Text(
-                  '${provider.t('jev.usage')}: '
-                  '${provider.jevCalls} '
-                  '(\$${provider.jevSpentUsd.toStringAsFixed(4)})'
-                  '${provider.jevLastModel.isEmpty ? '' : ' / '
-                      '${provider.jevLastModel}'}',
-                  style: const TextStyle(
-                      color: Colors.white38, fontSize: 11.5),
-                ),
-              ),
-            ],
     ];
   }
 
@@ -84108,6 +85416,149 @@ class _MindMapScreenState extends State<MindMapScreen>
     );
   }
 
+  /// 分割ペインの中身を**左右 (上下分割の時は上下) まるごと入れ替える**
+  /// (= ユーザー要望「画面分割した際の左右入れ替え」)。
+  ///
+  /// ★ 名前の似た [_swapSplitPanels] は**別の分割** (Web / PDF / Office を
+  ///   出す左右のパネル) の係なので混同しない事。 こちらはマップを並べる
+  ///   セル分割 ([_mapSplitCells]) が相手。
+  ///
+  /// 4 分割は**左右 2 列**をまとめて入れ替える (0⇄1 / 2⇄3)。 上下まで混ぜる
+  /// と「入れ替え」 の意味が人によって変わるので、 列だけにする。
+  ///
+  /// 入れ替えるのは「そのセルに属する物」 すべて:
+  ///   * 出しているページ ([_mapSplitCells]) と固定の印 ([_mapSplitCellsPinned])
+  ///   * 埋め込んだ Web / 道具 / ファイル、 ペインのミニヘッダーボタン
+  ///   * 編集セル ([_mapSplitEditorSlot]) = 編集権も中身と一緒に移る
+  ///   * **拡大率と位置**。 閲覧セルの鍵はセル番号入り
+  ///     ('split_<セル>_<ページ>') なので、 移さないと表示が飛ぶ。 編集セルの
+  ///     分はページ名だけの鍵 ([_ctrlFor]) に入っていて、 編集セルごと移る
+  ///     ので触らなくてよい。 ペイン用の鍵には _onTransformChanged が付いて
+  ///     いない (= _ctrlFor の但し書き) ので、 代入しても編集側は動かない。
+  ///   * 境界の位置。 中身に付いて回るよう反転する (細い道具を入れている
+  ///     時は [_syncNarrowPaneRatio] が最後に正しい値へ直す)。
+  void _swapMapSplitPanes() {
+    if (!_mapSplitOpen) return;
+    final provider = context.read<MindMapProvider>();
+    if (provider.pages.isEmpty) return;
+    final pairs = _mapSplitQuad
+        ? const <List<int>>[
+            [0, 1],
+            [2, 3],
+          ]
+        : const <List<int>>[
+            [0, 1],
+          ];
+    final editorSlot = _mapSplitEditorSlot;
+    // ── 入れ替える前に控える ──
+    //   ページ id は「実際に出ている物」 を使う。 編集セルは _mapSplitCells
+    //   が空のままの事があり (空のまま入れ替えると相手のセルが当てずっぽうで
+    //   埋まる)、 閲覧セルも控えが空なら _resolveSplitCellPage が選んだ物が
+    //   本当の中身だから。
+    final Map<int, String?> pageOf = {};
+    final Map<int, Matrix4> matOf = {};
+    for (final pr in pairs) {
+      for (final s in pr) {
+        final id = s == editorSlot
+            ? provider.currentPage.id
+            : (_pageShownInSplitCell(provider, s)?.id ?? _mapSplitCells[s]);
+        pageOf[s] = id;
+        if (s != editorSlot && id != null) {
+          matOf[s] = _ctrlFor('split_${s}_$id').value.clone();
+        }
+      }
+    }
+    // 閲覧セルの拡大率・位置を、 新しいセル番号の鍵へ移す。 同じページを
+    // 2 枠に出している時 (重ね表示) でも崩れないよう、 控えてから書く。
+    for (final pr in pairs) {
+      for (final s in pr) {
+        final m = matOf[s];
+        final id = pageOf[s];
+        if (m == null || id == null) continue;
+        final t = s == pr[0] ? pr[1] : pr[0];
+        _ctrlFor('split_${t}_$id').value = m;
+      }
+    }
+    void swapMap<T extends Object>(Map<int, T> m, int a, int b) {
+      final T? va = m[a];
+      final T? vb = m[b];
+      if (vb == null) {
+        m.remove(a);
+      } else {
+        m[a] = vb;
+      }
+      if (va == null) {
+        m.remove(b);
+      } else {
+        m[b] = va;
+      }
+    }
+
+    void swapPinned(int a, int b) {
+      final pa = _mapSplitCellsPinned.contains(a);
+      final pb = _mapSplitCellsPinned.contains(b);
+      if (pb) {
+        _mapSplitCellsPinned.add(a);
+      } else {
+        _mapSplitCellsPinned.remove(a);
+      }
+      if (pa) {
+        _mapSplitCellsPinned.add(b);
+      } else {
+        _mapSplitCellsPinned.remove(b);
+      }
+    }
+
+    final beforeX = _mapSplitRatioX;
+    final beforeY = _mapSplitRatioY;
+    setState(() {
+      for (final pr in pairs) {
+        final a = pr[0];
+        final b = pr[1];
+        _mapSplitCells[a] = pageOf[b];
+        _mapSplitCells[b] = pageOf[a];
+        swapPinned(a, b);
+        swapMap(_mapSplitCellWeb, a, b);
+        swapMap(_mapSplitCellWebCur, a, b);
+        swapMap(_mapSplitCellWebTick, a, b);
+        swapMap(_mapSplitCellFile, a, b);
+        swapMap(_mapSplitCellTool, a, b);
+        swapMap(_paneHeaderButtons, a, b);
+      }
+      // 編集権も中身と一緒に移す (= 左で編集していた物がそのまま右へ)。
+      // 代入子が裁断モードを解除してくれる (座標が別のセルの物になるため)。
+      for (final pr in pairs) {
+        if (editorSlot == pr[0]) {
+          _mapSplitEditorSlot = pr[1];
+          break;
+        }
+        if (editorSlot == pr[1]) {
+          _mapSplitEditorSlot = pr[0];
+          break;
+        }
+      }
+      // 境界も反転して、 ペインの広さが中身に付いて回るようにする。
+      if (_mapSplitQuad || !_mapSplitStacked) {
+        _mapSplitRatioX = (1.0 - _mapSplitRatioX).clamp(0.15, 0.85);
+        final keep = _splitRatioBeforeNarrowTool;
+        if (keep != null) {
+          _splitRatioBeforeNarrowTool = (1.0 - keep).clamp(0.15, 0.85);
+        }
+      } else {
+        _mapSplitRatioY = (1.0 - _mapSplitRatioY).clamp(0.15, 0.85);
+      }
+      // 細い道具 (AI アシスタント等) を入れたセルが反対側へ移った分を直す。
+      _syncNarrowPaneRatio();
+    });
+    unawaited(_persistPaneHeaderButtons());
+    // 境界が動いた時だけ寄せ直す。 動いていないのに呼ぶと、 せっかく移した
+    // ギャラリーの位置を真ん中へ戻してしまう。
+    if (_mapSplitRatioX != beforeX || _mapSplitRatioY != beforeY) {
+      unawaited(_persistMapSplitRatios());
+      _afterMapSplitChanged();
+    }
+  }
+
   /// マップ分割のモード切替ボタン (4 分割 / 左右 2 分割 / 上下 2 分割)。
   ///
   /// 分割していない時から 3 つとも並べる (= ユーザー要望: 最初のマップの
@@ -84137,6 +85588,24 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
 
     return Row(mainAxisSize: MainAxisSize.min, children: [
+      // ── 左右 (上下分割なら上下) の入れ替え (= ユーザー要望: 画面分割した
+      //    際の左右入れ替え)。 4 分割は左右 2 列をまとめて入れ替える。 ──
+      //    この列も右端が固定なので、 先頭に足せば分割ボタンは動かない。
+      if (_mapSplitOpen)
+        IconButton(
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+          tooltip: provider.t(_mapSplitStacked && !_mapSplitQuad
+              ? 'split.swapTopBottom'
+              : 'split.swapLeftRight'),
+          icon: Icon(
+              _mapSplitStacked && !_mapSplitQuad
+                  ? Icons.swap_vert_rounded
+                  : Icons.swap_horiz_rounded,
+              size: 16,
+              color: Colors.white70),
+          onPressed: _swapMapSplitPanes,
+        ),
       // ── 各画面のページ名を隠す (= ユーザー要望: 4 分割ボタンの左に置き、
       //    分割ボタンの位置が動かないように) ──
       //    この列は右端が固定なので、 先頭に足すと左へ伸びる = 分割ボタンは
@@ -84238,6 +85707,11 @@ class _MindMapScreenState extends State<MindMapScreen>
     final currentId =
         isEditor ? provider.currentPage.id : _mapSplitCells[slot];
     final hasWeb = !isEditor && _mapSplitCellWeb[slot] != null;
+    // 左右 (上下分割なら上下) の入れ替えの見出し。 右上の分割ボタンの帯は
+    // パソコンにしか出ないので、 モバイルはこのメニューが唯一の入口。
+    final swapLabelKey = _mapSplitStacked && !_mapSplitQuad
+        ? 'split.swapTopBottom'
+        : 'split.swapLeftRight';
     final sel = await showMenu<String>(
       context: context,
       color: const Color(0xFF1E1E32),
@@ -84302,6 +85776,16 @@ class _MindMapScreenState extends State<MindMapScreen>
                 style: const TextStyle(color: Colors.redAccent, fontSize: 13)),
           ),
         ],
+        // ── 左右 (上下分割なら上下) の入れ替え (= ユーザー要望: 画面分割
+        //    した際の左右入れ替え)。 パソコンは右上の分割ボタンの帯にも
+        //    同じ物があるが、 モバイルにはその列が出ないのでここに置く。
+        //    どのセルからでも押せるよう、 埋め込みの有無に関わらず出す。 ──
+        PopupMenuItem(
+          value: '__swapPanes__',
+          child: Text('⇄ ${provider.t(swapLabelKey)}',
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: Color(0xFF4FC3F7), fontSize: 13)),
+        ),
         // ── 分割そのものを閉じる (= ユーザー要望: ページ名をクリックした
         //    時に分割画面を閉じる項目も出るように)。 どのセルからでも
         //    選べるよう、 埋め込みの有無に関わらず常に出す。 ──
@@ -84316,6 +85800,10 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (sel == null || !mounted) return;
     if (sel == '__closeSplit__') {
       _closeMapSplit();
+      return;
+    }
+    if (sel == '__swapPanes__') {
+      _swapMapSplitPanes();
       return;
     }
     if (sel == '__addPage__') {
@@ -84770,7 +86258,21 @@ class _MindMapScreenState extends State<MindMapScreen>
           behavior: HitTestBehavior.translucent,
           // ペイン内の操作でもスクロールバーを出す (編集側と同じ 900ms で
           // 自動フェード)。
-          onPointerDown: (_) => _markMapScrollActivity(owner: slot),
+          // ★ = ユーザー報告「画面を左右に分割している状態で、 左側の領域を
+          //   右クリックすると右画面が変に動く」。 この Listener は押された釦を
+          //   選ばずに pointer-up で編集セルを移していたので、 右クリックだけで
+          //   currentPage と編集セルが入れ替わり、 触っていない反対側のセルが
+          //   閲覧ペインとして組み直されていた (行列の受け渡し +
+          //   provider.switchPage が走るため、 押していない側が動いて見える)。
+          //   主ボタン (左) と指 / ペンの時だけ切り替える。
+          //   PointerUpEvent.buttons は離した後なので常に 0 = up では釦が
+          //   分からない。 押した時点で控えておく。 判定の形は
+          //   [_recoverCanvasInputBeforePointerDown] と同じ。
+          onPointerDown: (e) {
+            _paneDownPrimary = e.kind != PointerDeviceKind.mouse ||
+                e.buttons == kPrimaryMouseButton;
+            _markMapScrollActivity(owner: slot);
+          },
           onPointerMove: (_) => _markMapScrollActivity(owner: slot),
           onPointerSignal: (e) {
             _markMapScrollActivity(owner: slot);
@@ -84778,8 +86280,13 @@ class _MindMapScreenState extends State<MindMapScreen>
             // Ctrl 無しで拡大縮小してしまう問題)。 Ctrl 併用の時だけズーム。
             _handlePaneWheel(e, paneCtrl, page, slot: slot);
           },
-          onPointerUp: (_) =>
-              _mapSplitActivate(provider, page.id, slot: slot),
+          onPointerUp: (_) {
+            // 右クリック / 中クリックでは編集セルを動かさない (= 上の控え)。
+            // 動かすと反対側のセルまで組み直されて「押していない画面が
+            // 勝手に動く」 ことになる。
+            if (!_paneDownPrimary) return;
+            _mapSplitActivate(provider, page.id, slot: slot);
+          },
           child: Stack(children: [
             // ── ページ背景 (壁紙) をペインにも反映 (= ユーザー要望:
             //    右側の背景が上手く反映されていない) ──
@@ -86388,12 +87895,13 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 posOverride = _movingPos;
                                 dragging = true;
                               } else if (_rangeDragging && isRangeSelected) {
-                                posOverride = Offset(
-                                  (node.position.dx + _rangeDragDelta.dx)
-                                      .clamp(0.0, 20000.0),
-                                  (node.position.dy + _rangeDragDelta.dy)
-                                      .clamp(0.0, 20000.0),
-                                );
+                                // ★ = ユーザー報告「複数要素で境界を跨ぐと、
+                                //   配置が確定するまで要素が境界線の下に潜る」。
+                                //   位置の式は最前面の写し
+                                //   (_buildSplitTransferNodeOverlay) と共用する
+                                //   ([_rangeDragPositionOf])。 別々に書くと写しと
+                                //   元がずれ、 同じ要素が 2 つに見える。
+                                posOverride = _rangeDragPositionOf(node);
                                 dragging = true;
                               } else if (_groupDragIds.contains(node.id) &&
                                   _movingPos != null &&
@@ -88946,8 +90454,8 @@ class _MindMapScreenState extends State<MindMapScreen>
         return (provider.t('hdr.cutMode'), Icons.content_cut_rounded);
       case 'insertShape':
         return (provider.t('hdr.insertMapShape'), Icons.draw_rounded);
-      case 'terminal':
-        return (provider.t('flow.terminal'), Icons.account_tree_outlined);
+      // 'terminal' (端子) は「図形を挿入」 に纏めたので、 並べ替えの一覧
+      // からも外した (= ユーザー要望)。
       // ★ 名札 (id) は並べ替えの控えと揃えるため 'memoList' のままだが、
       //   出す名前は「メモ」 (= ユーザー要望: 右クリックの項目はメモ欄を開く)。
       case 'memoList':
@@ -88971,8 +90479,8 @@ class _MindMapScreenState extends State<MindMapScreen>
         return (provider.t('ctx.groupList'), Icons.bookmarks_rounded);
       case 'basePosition':
         return (provider.t('ctx.basePosition'), Icons.gps_fixed_rounded);
-      case 'fontSize':
-        return (provider.t('ctx.fontSizeSettings'), Icons.text_fields_rounded);
+      case 'syncSettings':
+        return (provider.t('ctx.syncSettings'), Icons.cloud_sync_rounded);
       default:
         return (id, Icons.circle_outlined);
     }
@@ -94491,7 +95999,11 @@ class _MindMapScreenState extends State<MindMapScreen>
     String typeOf(MindMapPage p) => p.pageType.isEmpty ? 'normal' : p.pageType;
     final srcType = typeOf(page);
     final others = provider.pages
-        .where((p) => p.id != page.id && typeOf(p) == srcType)
+        .where((p) =>
+            p.id != page.id &&
+            typeOf(p) == srcType &&
+            // 一覧に出していないページは送り先に出さない (= ユーザー要望)。
+            isPageSendTarget(provider, p))
         .toList();
     if (others.isEmpty) {
       _appSnack(ctx, SnackBar(content: Text(provider.t('move.noTarget'))));
@@ -97955,6 +99467,27 @@ class _MindMapScreenState extends State<MindMapScreen>
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
                               color: Colors.white, fontSize: 16)),
+                    ),
+                    // 本文を丸ごと渡さず、 質問に近い所だけ渡すかの入切。
+                    // 切 / 判断が取れない時は今までどおり全文が行く。
+                    IconButton(
+                      tooltip: provider.t('jev.docQa'),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(
+                          minWidth: 30, minHeight: 30),
+                      iconSize: 17,
+                      icon: Icon(
+                        provider.jevDocQaEnabled
+                            ? Icons.psychology_rounded
+                            : Icons.psychology_outlined,
+                        color: provider.jevDocQaEnabled
+                            ? const Color(0xFF4FC3F7)
+                            : Colors.white30,
+                      ),
+                      onPressed: waiting
+                          ? null
+                          : () => unawaited(provider
+                              .setJevDocQaEnabled(!provider.jevDocQaEnabled)),
                     ),
                     IconButton(
                       icon: const Icon(Icons.close_rounded,
@@ -109042,9 +110575,17 @@ class _MindMapScreenState extends State<MindMapScreen>
     //   開けない所へ消えてしまう。 一覧から外す。
     final otherIdx = [
       for (int i = 0; i < pages.length; i++)
-        if (i != currentIdx && !provider.isPageLockedByPlan(pages[i].id)) i
+        if (i != currentIdx &&
+            !provider.isPageLockedByPlan(pages[i].id) &&
+            // ★ 一覧に出していないページは送り先に出さない (= ユーザー要望:
+            //   ページ一覧に無いページが並ぶと探せない)。
+            isPageSendTarget(provider, pages[i]))
+          i
     ];
-    if (otherIdx.isEmpty) {
+    // 送り先が 1 つも無い時。 ただし他にページはあるのに鍵付き/非表示で
+    // 全部外れた時は、 下の「新規ページに送る」 の道を残すため一覧が空でも
+    // ダイアログを出す (ここで返すとその道まで閉じてしまう)。
+    if (otherIdx.isEmpty && pages.length <= 1) {
       _appSnack(
         context,
         SnackBar(content: Text(provider.t('sync.noOtherPages'))),
@@ -109274,6 +110815,13 @@ class _MindMapScreenState extends State<MindMapScreen>
   void _showCopyToPageDialog(BuildContext context, MindMapProvider provider) {
     final pages = provider.pages;
     final currentIdx = provider.currentPageIndex;
+    // ★ 一覧に出していないページは送り先に出さない (= ユーザー要望: ページ
+    //   一覧に無いページが並ぶと探せない)。 今開いているページは「(現在)」
+    //   の目印として必ず残すので、 一覧が空になる事は無い。
+    final shownIdx = [
+      for (int i = 0; i < pages.length; i++)
+        if (i == currentIdx || isPageSendTarget(provider, pages[i])) i
+    ];
 
     showDialog(
       context: context,
@@ -109289,8 +110837,9 @@ class _MindMapScreenState extends State<MindMapScreen>
               Flexible(
                 child: ListView.builder(
                   shrinkWrap: true,
-                  itemCount: pages.length,
-                  itemBuilder: (_, i) {
+                  itemCount: shownIdx.length,
+                  itemBuilder: (_, k) {
+                    final i = shownIdx[k];
                     final isCurrent = i == currentIdx;
                     final label = isCurrent
                         ? '${pages[i].name}${provider.t('copyTo.currentSuffix')}'
@@ -139174,6 +140723,22 @@ const String _kMdEmbeddedMapJs = r"""
     v = Number(v) || 0xff6c63ff;
     return { r: (v >> 16) & 255, g: (v >> 8) & 255, b: v & 255 };
   }
+  /// '#rgb' / '#rrggbb' を 0xFFrrggbb の数へ。 読めなければ null。
+  /// ★ = ユーザー要望「変換すると色が変わる」。 マーメイドが塗る色 (文字列)
+  ///   を、 このアプリのノードの色 (数) に合わせるため。
+  function mmHex(h) {
+    if (!h) return null;
+    var s = String(h).trim().replace('#', '');
+    if (s.length === 3) {
+      s = s[0] + s[0] + s[1] + s[1] + s[2] + s[2];
+    }
+    if (!/^[0-9a-fA-F]{6}$/.test(s)) return null;
+    return (0xff000000 | parseInt(s, 16)) >>> 0;
+  }
+  /// mermaid が塗る色 (ホスト側の ensureMermaid が入れる)。
+  function mmTheme() {
+    return window.__mmMermaidTheme || {};
+  }
   function lum(c) {
     function ch(x) {
       x = x / 255;
@@ -140489,6 +142054,18 @@ const String _kMdEmbeddedMapJs = r"""
     //   後で別の所に出てきても動かさない (マーメイドも最初に囲まれた所へ
     //   描くため)。
     var gStack = [], groups = [], inGroup = {};
+    // ★ = ユーザー要望「元のマーメイドの図のままの色で表示して欲しい」。
+    //   色を書いた行 (classDef / class / style) と `:::名前` を覚えておき、
+    //   組み上げた後で要素へ移す。 以前はこれらの行を全部読み飛ばして
+    //   いたので、 作者が決めた色が 1 つも残らなかった。
+    var classFill = {};   // クラス名 -> 塗り色
+    var keyFill = {};     // 目印 -> 塗り色 (style 行。 クラスより強い)
+    var keyClass = {};    // 目印 -> クラス名 (class 行 / :::名前)
+    /// 'fill:#f9f,stroke:#333' から塗り色だけ取り出す。
+    function mmFillOf(decl) {
+      var m = /(?:^|[,;\s])fill\s*:\s*([^,;]+)/i.exec(String(decl || ''));
+      return m ? m[1].trim() : null;
+    }
     function joinGroups(node) {
       if (!gStack.length || inGroup[node.id]) return;
       for (var gi = 0; gi < gStack.length; gi++) {
@@ -140558,7 +142135,37 @@ const String _kMdEmbeddedMapJs = r"""
       }
       if (/^\s*(?:style|classDef|class|click|linkStyle|direction)\b/i
           .test(L)) {
+        // ★ = ユーザー要望「元のマーメイドの図のままの色で」。 飛ばす前に
+        //   色の指定だけ拾っておく (以前はここで丸ごと捨てていた)。
+        var cdM = /^\s*classDef\s+([^\s]+)\s+(.+)$/i.exec(L);
+        if (cdM) {
+          var cdFill = mmFillOf(cdM[2]);
+          if (cdFill) {
+            var cdNames = cdM[1].split(',');
+            for (var ci = 0; ci < cdNames.length; ci++) {
+              classFill[cdNames[ci].trim()] = cdFill;
+            }
+          }
+        }
+        var clM = /^\s*class\s+([^\s]+)\s+([^\s;]+)/i.exec(L);
+        if (clM) {
+          var clKeys = clM[1].split(',');
+          for (var ki = 0; ki < clKeys.length; ki++) {
+            keyClass[clKeys[ki].trim()] = clM[2].trim();
+          }
+        }
+        var stM = /^\s*style\s+([^\s]+)\s+(.+)$/i.exec(L);
+        if (stM) {
+          var stFill = mmFillOf(stM[2]);
+          if (stFill) keyFill[stM[1].trim()] = stFill;
+        }
         continue;
+      }
+      // `A:::クラス名` の書き方も拾う (labelOf が消してしまう前に)。
+      var tripM = /([A-Za-z0-9_\-.]+)\s*(?:\[[^\]]*\]|\([^)]*\)|\{[^}]*\})?:::([A-Za-z0-9_\-]+)/g;
+      var tripHit;
+      while ((tripHit = tripM.exec(L)) !== null) {
+        keyClass[tripHit[1]] = tripHit[2];
       }
       // 1 行に複数の矢印が書ける (A --> B --> C) ので、 順に分ける。
       var seg = L.split(/(?=(?:--|==|-\.)[->ox=\.\-]*>)/);
@@ -140619,6 +142226,20 @@ const String _kMdEmbeddedMapJs = r"""
     for (var gk = 0; gk < groups.length; gk++) {
       if (groups[gk].ids.length) gOut.push(groups[gk]);
     }
+    // ★ = ユーザー要望「元のマーメイドの図のままの色で」。 拾っておいた色を
+    //   要素へ移す。 強さは style 行 > class / :::名前 > classDef default。
+    for (var fi = 0; fi < nodes.length; fi++) {
+      var fnd = nodes[fi];
+      var fkey = fnd.srcKey;
+      if (!fkey) continue;
+      var pick = keyFill[fkey];
+      if (!pick) {
+        var cname = keyClass[fkey];
+        if (cname && classFill[cname]) pick = classFill[cname];
+      }
+      if (!pick && classFill['default']) pick = classFill['default'];
+      if (pick) fnd.fill = pick;
+    }
     return nodes.length
       ? { nodes: nodes, connections: conns, dir: dir, kind: 'flow',
           groups: gOut }
@@ -140628,6 +142249,9 @@ const String _kMdEmbeddedMapJs = r"""
   /// 位置を決める (mermaid は座標を持たないので、 こちらで並べる)。
   function layout(model) {
     var nodes = model.nodes, conns = model.connections;
+    // マーメイド由来か (= 色の決め方を変える相手。 埋め込みのアプリ地図は
+    //   今までどおりアプリの色で塗る)。
+    var isMermaid = !!model.mermaid;
     var byId = {}, kid = {}, hasIn = {};
     var i;
     for (i = 0; i < nodes.length; i++) byId[nodes[i].id] = nodes[i];
@@ -140714,7 +142338,19 @@ const String _kMdEmbeddedMapJs = r"""
         var nd = arr[t];
         nd.width = W;
         nd.height = H;
-        nd.color = MMAP_COLORS[dnum % MMAP_COLORS.length];
+        // ★ = ユーザー要望「マーメイド記法をアプリの形式に変換すると色が
+        //   変わってしまうから、 元のマーメイドの図のままの色で表示して
+        //   欲しい」。 以前は深さで色を回していた (= 元が 1 色でも虹色に
+        //   なる)。 色の決め方は
+        //     (1) 元の図が色を書いている (classDef / style / :::名前) なら それ
+        //     (2) 無ければ mermaid が塗る色 (テーマの既定 = 全部同じ色)
+        //     (3) それも読めない時だけ、 今までのアプリの色
+        //   マーメイド由来でない埋め込みマップは (3) のまま。
+        var mmFill = nd.fill ? mmHex(nd.fill) : null;
+        if (mmFill == null && isMermaid) mmFill = mmHex(mmTheme().fill);
+        nd.color = (mmFill == null)
+          ? MMAP_COLORS[dnum % MMAP_COLORS.length]
+          : mmFill;
         if (vertical) {
           nd.x = 60 + (off + t) * (W + GX);
           nd.y = 60 + dnum * (H + GY * 2);
@@ -141267,8 +142903,11 @@ const String _kMdEmbeddedMapJs = r"""
       try { model = parseGeneric(src); } catch (e2) { model = null; }
     }
     if (!model || !model.nodes.length) return null;
-    layout(model);
+    // ★ 印は layout の**前**に立てる。 layout は色を決める時にこれを見る
+    //   (= マーメイド由来なら元の図の色を使う)。 後ろに置くと必ず false で
+    //   読まれ、 今までどおりアプリの色で塗ってしまう。
     model.mermaid = true;      // 元がマーメイド = 書き戻す先が無い
+    layout(model);
     model.code = src;
     // 図の呼び名は、 いちばん元になっている要素の見出しを使う
     // (「mindmap」 と出るより分かりやすく、 ページにした時の名前にもなる)。
@@ -142258,7 +143897,10 @@ Future<String?> askAndPutDiagramImageIntoPage(BuildContext context,
     return null;
   }
   final code = '${m['code'] ?? ''}';
-  final pages = provider.pages.where((p) => p.pageType == 'normal').toList();
+  // 一覧に出していないページは送り先に出さない (= ユーザー要望)。
+  final pages = provider.pages
+      .where((p) => p.pageType == 'normal' && isPageSendTarget(provider, p))
+      .toList();
   final chosen = await showDialog<String>(
     context: context,
     builder: (dctx) => AlertDialog(
@@ -142511,8 +144153,11 @@ Future<String?> askAndPutChartIntoPage(BuildContext context,
   }
   // ★ マインドマップに加えてギャラリー (本棚) にも置ける
   //   (= ユーザー要望)。 どちらもノードを並べるページなので同じ物が使える。
+  // 一覧に出していないページは送り先に出さない (= ユーザー要望)。
   final pages = provider.pages
-      .where((p) => p.pageType == 'normal' || p.pageType == 'bookshelf')
+      .where((p) =>
+          (p.pageType == 'normal' || p.pageType == 'bookshelf') &&
+          isPageSendTarget(provider, p))
       .toList();
   final chosen =
       await _pickTargetPageDialog(context, provider, pages, anchorContext);
@@ -142569,9 +144214,11 @@ Future<String?> askAndPutTableIntoPage(BuildContext context,
   //   マインドマップ / ギャラリー / フリーノートに埋め込めるように)。
   final pages = provider.pages
       .where((p) =>
-          p.pageType == 'normal' ||
-          p.pageType == 'bookshelf' ||
-          p.pageType == 'paint')
+          (p.pageType == 'normal' ||
+              p.pageType == 'bookshelf' ||
+              p.pageType == 'paint') &&
+          // 一覧に出していないページは送り先に出さない (= ユーザー要望)。
+          isPageSendTarget(provider, p))
       .toList();
   final chosen =
       await _pickTargetPageDialog(context, provider, pages, anchorContext);
@@ -142615,8 +144262,10 @@ Future<String?> askAndPutTableIntoPage(BuildContext context,
 
 Future<String?> askAndPutMermaidMapIntoPage(BuildContext context,
     MindMapProvider provider, Map<dynamic, dynamic> m) async {
-  final pages =
-      provider.pages.where((p) => p.pageType == 'normal').toList();
+  // 一覧に出していないページは送り先に出さない (= ユーザー要望)。
+  final pages = provider.pages
+      .where((p) => p.pageType == 'normal' && isPageSendTarget(provider, p))
+      .toList();
   final chosen = await showDialog<String>(
     context: context,
     builder: (dctx) => AlertDialog(
@@ -142859,6 +144508,30 @@ const String _kMdPreviewUiJs = r"""
     } catch (e) {}
   });
 
+  // ── 図の右上に出る道具 (.mmctl) を隠す / 出す ──
+  //    (= ユーザー要望: マーメイド記法の図を右クリックしたら、 右上の
+  //     項目を非表示にできるように)。
+  //
+  //    style を 1 枚だけ足し引きする形にしてあるので、 文を打ち直して
+  //    図が作り直されても、 隠したままが続く (目印は window に残る)。
+  window.__mmSetDiagramCtl = function (hidden) {
+    try {
+      var st = document.getElementById('mmCtlHide');
+      if (hidden) {
+        if (!st) {
+          st = document.createElement('style');
+          st.id = 'mmCtlHide';
+          st.textContent = '.mmctl{display:none !important;}';
+          (document.head || document.documentElement).appendChild(st);
+        }
+      } else if (st && st.parentNode) {
+        st.parentNode.removeChild(st);
+      }
+      window.__mmDiagramCtlHidden = !!hidden;
+    } catch (e) {}
+    return true;
+  };
+
   // ── プレビューの上で右クリックしたら、 アプリ側の項目を出す ──
   //    (= ユーザー報告: 本文とプレビューを開いている時、 プレビュー側で
   //     右クリックしても何も出ない事がある)。
@@ -142934,6 +144607,8 @@ const String _kMdPreviewUiJs = r"""
           y: ev.clientY,
           sel: sel,
           diagram: onDiagram,
+          // 図の右上の道具を今 隠しているか (項目の文言を決めるのに使う)。
+          diagramCtlHidden: !!window.__mmDiagramCtlHidden,
           tableIndex: tableIndex,
           tableTitle: tableTitle,
           table: rows
@@ -143078,13 +144753,19 @@ const String _kMdPreviewUiJs = r"""
     function inBtn(t) {
       return !!(btn && t && (t === btn || (btn.contains && btn.contains(t))));
     }
+    // ★ = ユーザー要望「表の上にカーソルが乗ると『この表をページに
+    //   入れる』 が常に出るのが気になるから、 右クリックした時だけに
+    //   して欲しい」。 乗っただけでは**出さない**。 入口は右クリックの
+    //   項目 (「本文の表を他のページへ入れる」) に一本化する。
+    //   ここに残すのは、 ホバーの無い端末 (携帯) で押して出した札を
+    //   別の所へ移った時に引っ込める分だけ。
     document.addEventListener('mouseover', function (ev) {
-      if (!hoverOk) return;
+      if (!cur) return;
       var t = ev.target;
       if (inBtn(t)) return;
       var tbl = (t && t.closest) ? t.closest('table') : null;
-      if (tbl) { show(tbl); return; }
-      if (cur) scheduleHide();
+      if (tbl === cur) return;
+      scheduleHide();
     });
     // 携帯 (ホバーが無い) は、 表を押した時に少しの間だけ出す。
     document.addEventListener('click', function (ev) {
@@ -143681,6 +145362,18 @@ $mapsJs
       flowchart: { htmlLabels: false }
     });
     mermaidInited = true;
+    // ★ = ユーザー要望「マーメイド記法をアプリの形式に変換すると色が変わる
+    //   から、 元のマーメイドの図のままの色で表示して欲しい」。
+    //   変換する側 (別の包み) は mermaid を読み込んでいないので、 mermaid が
+    //   塗る色をここから渡す。 値は mermaid 11 の既定テーマそのまま。
+    //   (getConfig() は v11 で非推奨なので、 決め打ちで渡す)
+    try {
+      window.__mmMermaidTheme = ('$theme' === 'dark')
+        ? { fill: '#1f2020', stroke: '#81B1DB', text: '#cccccc',
+            line: '#d3d3d3', cluster: '#1f2020' }
+        : { fill: '#ECECFF', stroke: '#9370DB', text: '#333333',
+            line: '#333333', cluster: '#ffffde' };
+    } catch (e) {}
   }
   // ── PNG 書き出し (svg → canvas)。 失敗時は null を返す ──
   function exportPng(svgText, w, h, cb) {
@@ -143817,6 +145510,24 @@ $mapsJs
       fit();
     }
     wrap.__mmReset = resetSize;
+    // 図を左右の真ん中へ寄せる (= ユーザー要望: 片方の端だけ伸ばすと偏る)。
+    //   大きさ (幅・高さ) はそのままで、 左右の寄りだけ直す。
+    //   右端を引いた時の決まり marginLeft = -(nw - host) / 2 を、
+    //   両側へ一般化した物 ((枠の幅 - 図の幅) / 2)。
+    function centerSize() {
+      mlPinned = false;
+      var host = wrap.parentElement;
+      var hw = host ? host.clientWidth : 0;
+      var ww = wrap.getBoundingClientRect().width || wrap.clientWidth;
+      if (hw > 0 && ww > 0) {
+        var off = (hw - ww) / 2;
+        wrap.style.marginLeft = (Math.abs(off) < 0.5) ? '' : (off + 'px');
+      } else {
+        wrap.style.marginLeft = '';
+      }
+      fit(true);
+    }
+    wrap.__mmCenter = centerSize;
     function zoomAt(px, py, factor) {
       var ns = Math.min(8, Math.max(0.15, s * factor));
       tx = px - (px - tx) * (ns / s);
@@ -144232,6 +145943,15 @@ $mapsJs
       var e = document.elementFromPoint(x, y);
       var w = (e && e.closest) ? e.closest('.mmwrap') : null;
       if (w && w.__mmReset) { w.__mmReset(); return true; }
+    } catch (err) {}
+    return false;
+  };
+  // 右クリックの項目「中央に寄せる」 から呼ぶ (= ユーザー要望)。
+  window.__mmCenterDiagramAt = function (x, y) {
+    try {
+      var e = document.elementFromPoint(x, y);
+      var w = (e && e.closest) ? e.closest('.mmwrap') : null;
+      if (w && w.__mmCenter) { w.__mmCenter(); return true; }
     } catch (err) {}
     return false;
   };
@@ -146924,11 +148644,12 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
   //    ように」のため、 上と下で頑に違う相手を選べる。
 
   /// 上の「書いてもらう」の相手。 '' = アプリ全体の設定のまま。
-  /// 'api' / 'cli:claude' / 'cli:codex'。
+  /// 'api' / 'cli:<CLI の種類>' ([AgentCliSpec.all] の札。 claude / codex /
+  /// antigravity …)。
   String _sideWriteEngine = '';
 
   /// 下のチャット欄の相手。 '' = アプリ全体の設定のまま (上の欄とは無関係)。
-  /// 'browser' / 'api' / 'cli:claude' / 'cli:codex'。
+  /// 'browser' / 'api' / 'cli:<CLI の種類>' ([AgentCliSpec.all] の札)。
   String _sideChatEngine = '';
 
   /// チャット欄をブラウザ版 (ChatGPT 等の Web) で出しているか。
@@ -147345,8 +149066,8 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
         //   表示の切り替え / ヘッダーの出し入れ を出す
         //   (本文だけの時は画面に余白が無く、 他に入口が無いため)。
         btn(_viewModeLabel(provider), _cycleViewMode),
-        btn(provider.t(_headerHidden ? 'md.showHeader' : 'md.hideHeader'),
-            _toggleHeaderHidden),
+        // ★ = ユーザー要望「上のバーを隠すは ヘッダーの所からやればよい
+        //   から、 右クリックの項目としては消して」。
         // ★ = ユーザー要望「マークダウンページにも右クリックの項目でページ
         //   切り替え項目を追加して」。 本文の欄は TextField 自身が右ボタンを
         //   取ってしまうので、 本体の `_showPageSwitchContextMenu` はここまで
@@ -147401,6 +149122,8 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
     var rows = <List<String>>[];
     var title = '';
     var onDiagram = false;
+    // 図の右上の道具を今 隠しているか (項目の文言を決めるのに使う)。
+    var diagramCtlHidden = false;
     if (box != null && box.hasSize) {
       final p = box.globalToLocal(globalPos);
       // 押した所に何があるかを聞く。 executeScript は戻り値を返すので
@@ -147433,7 +149156,8 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
     var s = '';
     try { s = String(window.getSelection() || ''); } catch (err) {}
     return JSON.stringify(
-        { sel: s, table: rows, tableTitle: title, diagram: dg });
+        { sel: s, table: rows, tableTitle: title, diagram: dg,
+          ctlHidden: !!window.__mmDiagramCtlHidden });
   } catch (err) { return '{}'; }
 })(__X__, __Y__);
 """;
@@ -147446,6 +149170,7 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
           sel = '${decoded['sel'] ?? ''}';
           title = '${decoded['tableTitle'] ?? ''}';
           onDiagram = decoded['diagram'] == true;
+          diagramCtlHidden = decoded['ctlHidden'] == true;
           final t = decoded['table'];
           if (t is List) {
             rows = [
@@ -147468,6 +149193,7 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
       table: rows,
       tableTitle: title,
       onDiagram: onDiagram,
+      diagramCtlHidden: diagramCtlHidden,
     );
   }
 
@@ -147500,6 +149226,7 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
     required List<List<String>> table,
     required String tableTitle,
     bool onDiagram = false,
+    bool diagramCtlHidden = false,
   }) {
     if (!mounted) return;
     final provider = widget.provider;
@@ -147536,17 +149263,37 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
     //   本文のボタンのように選び直す必要が無い。
     // ★ 図の上で押した時は「元の大きさに戻す」 を出す (= ユーザー要望:
     //   広げた図を元に戻せるように)。
+    // ★ 色は付けない (= ユーザー要望「元の大きさに戻すだけ色が付いているから
+    //   周りに合わせて色を消して欲しい」)。 隣の項目と同じ既定色になる。
     if (onDiagram) {
       entries.add(item('diagramReset', Icons.restart_alt_rounded,
-          provider.t('md.diagramReset'), color: const Color(0xFF5FD3B2)));
+          provider.t('md.diagramReset')));
+      // ★ = ユーザー要望「左端や右端だけを伸ばしたらアンバランスになるから、
+      //   右クリックで図を中央に持ってくる項目を作って欲しい」。
+      entries.add(item('diagramCenter',
+          Icons.align_horizontal_center_rounded,
+          provider.t('md.diagramCenter')));
+      // ★ = ユーザー要望「マーメイド記法の図を右クリックしたら、 右上の
+      //   項目を非表示にする項目が出るようにして欲しい」。 隠している時は
+      //   同じ所が「出す」 になるので、 戻せなくならない。
+      entries.add(item(
+          'diagramUi',
+          diagramCtlHidden
+              ? Icons.visibility_rounded
+              : Icons.visibility_off_rounded,
+          provider.t(
+              diagramCtlHidden ? 'md.diagramShowUi' : 'md.diagramHideUi')));
     }
     if (table.length >= 2) {
-      entries.add(item('table', Icons.table_view_rounded,
-          provider.t('md.tableToPage'), color: const Color(0xFF4FC3F7)));
+      // ★ = ユーザー要望「表の 2 つのボタンに色を付けないで欲しい」。
+      //   隣の項目と同じ既定色にする。
+      entries.add(item(
+          'table', Icons.table_view_rounded, provider.t('md.tableToPage')));
       // ★ その場でアプリの表にして埋め込む (= ユーザー要望: md の表を
-      //   自分のアプリの形式に変換して埋め込めるように)。
-      entries.add(item('tableEmbed', Icons.grid_on_rounded,
-          provider.t('md.tableEmbed'), color: const Color(0xFF5FD3B2)));
+      //   自分のアプリの形式に変換して埋め込めるように)。 文言は「編集」
+      //   (= ユーザー要望: 何ができるか分かりやすく)。
+      entries.add(item(
+          'tableEmbed', Icons.grid_on_rounded, provider.t('md.tableEmbed')));
     }
     if (sel.isNotEmpty) {
       entries.add(item('copy', Icons.copy_rounded, provider.t('md.copy')));
@@ -147562,12 +149309,9 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
     entries.add(
         item('ai', Icons.auto_awesome_rounded, provider.t('md.aiTitle')));
     entries.add(item('view', Icons.wysiwyg_rounded, _viewModeLabel(provider)));
-    entries.add(item(
-        'header',
-        _headerHidden
-            ? Icons.keyboard_double_arrow_down_rounded
-            : Icons.keyboard_double_arrow_up_rounded,
-        provider.t(_headerHidden ? 'md.showHeader' : 'md.hideHeader')));
+    // ★ = ユーザー要望「上のバーを隠すはヘッダーの所からやればよいから、
+    //   右クリックの項目としては消して」。 ヘッダーの何も無い所を押す /
+    //   隠れている時は残った帯を押す、 で今までどおり出し入れできる。
     // ★ 「AI に書いてもらう」 は 上の「AI」 に まとめた (= ユーザー要望)。
     // プレビューの上では本体の右クリックを出さないので、 そこにあった
     // 「ページ切り替え」 をこちらへ移す (= 項目を減らさない)。
@@ -147604,6 +149348,16 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
               'window.__mmResetDiagramAt && '
               'window.__mmResetDiagramAt(${x.round()}, ${y.round()});'));
           break;
+        // ★ = ユーザー要望「右クリックで図を中央に持ってくる」。
+        case 'diagramCenter':
+          unawaited(_win?.executeScript('window.__mmCenterDiagramAt && '
+              'window.__mmCenterDiagramAt(${x.round()}, ${y.round()});'));
+          break;
+        // ★ 図の右上の道具を隠す / 出す (= ユーザー要望)。
+        case 'diagramUi':
+          unawaited(_win?.executeScript('window.__mmSetDiagramCtl && '
+              'window.__mmSetDiagramCtl(${!diagramCtlHidden});'));
+          break;
         case 'table':
           unawaited(_putTableIntoPage(table));
           break;
@@ -147622,9 +149376,6 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
           break;
         case 'view':
           _cycleViewMode();
-          break;
-        case 'header':
-          _toggleHeaderHidden();
           break;
         case 'page':
           // ★ = ユーザー報告「マークダウンページ上でページ切り替えボタンを
@@ -147758,6 +149509,14 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
   ///     出していないので、 ここで閉じると入口が消えてしまう)。
   void _openMdAiFor(String selection) {
     final sel = selection.trim();
+    // ★ = ユーザー要望「AI 欄が開いている状況で AI ボタンを再度押すと
+    //   欄が閉じるようにして欲しい」。 渡す文字を選んでいない時だけ
+    //   開閉の切り替えにする (文字を選んでいる時は、 その文字を欄へ
+    //   届けるのが目的なので閉じない)。
+    if (sel.isEmpty && _aiChatOpen) {
+      setState(() => _aiChatOpen = false);
+      return;
+    }
     // ★ 側の欄に行き先 (依頼 / 質問の入力) を出せない時は、 今までどおり
     //   ブラウザ版の AI へ渡す (= 点検で判明: 押しても何も起きない事が
     //   あった)。 出せないのは次の時:
@@ -148117,12 +149876,17 @@ class _MarkdownPageViewState extends State<_MarkdownPageView> {
       final seededKey = 'md_sample_seeded_${widget.pageId}';
       final seeded = sp.getBool(seededKey) ?? false;
       if (_tabs.isEmpty) {
+        // ★ = 継続検証 170 / 171。 見本を出した事にしてある (道具が作った /
+        //   道具が clear:true で空へ戻した) ページには入れない。 この枝だけ
+        //   seeded を見ていなかったので、 prefs に控えがまだ無いページでは
+        //   抑止が効かず見本が復活していた。 タブは必ず 1 枚作る (0 枚に
+        //   すると下の clamp(0, -1) で落ちる)。
         _tabs.add(_MdTab(
             id: 'md${DateTime.now().microsecondsSinceEpoch}',
             name: '1',
-            text: _sample()));
+            text: seeded ? '' : _sample()));
         // ignore: discarded_futures
-        sp.setBool(seededKey, true);
+        if (!seeded) sp.setBool(seededKey, true);
       } else if (!seeded &&
           _tabs.length == 1 &&
           _tabs[0].text.trim().isEmpty) {
@@ -149405,6 +151169,7 @@ graph TD
           table: rows,
           tableTitle: '${m['tableTitle'] ?? ''}',
           onDiagram: m['diagram'] == true,
+          diagramCtlHidden: m['diagramCtlHidden'] == true,
         );
         return;
       }
@@ -152226,7 +153991,9 @@ $body''';
     final targets = p.pages
         .where((pg) =>
             pg.id != widget.pageId &&
-            (pg.pageType == 'normal' || pg.pageType == 'bookshelf'))
+            (pg.pageType == 'normal' || pg.pageType == 'bookshelf') &&
+            // 一覧に出していないページは送り先に出さない (= ユーザー要望)。
+            isPageSendTarget(p, pg))
         .toList();
     if (targets.isEmpty) {
       _appSnackTop(context, p.t('md.noTargetPage'), const Color(0xFFFFB347));
@@ -152606,7 +154373,7 @@ $body''';
   ///
   /// ★ = ユーザー要望「両方 codex とか claudecode で統一するのではなく、
   ///   下のチャット欄だけブラウザ版に渡すとか独立で変えられるように」。
-  ///   選べる物は 'api' / 'cli:claude' / 'cli:codex'、 チャット欄だけ
+  ///   選べる物は 'api' と [AgentCliSpec.all] の 'cli:<種類>'、 チャット欄だけ
   ///   'browser' も選べる。 空 ('') は「アプリ全体の設定のまま」。
   Widget _sideAiEnginePicker(
     MindMapProvider provider, {
@@ -152633,8 +154400,9 @@ $body''';
       if (allowBrowser && _isDesktopPlatform) 'browser',
       'api',
       if (AgentCli.supported && provider.canUseCliAi) ...[
-        'cli:claude',
-        'cli:codex',
+        // ★ 呼び方の表 ([AgentCliSpec.all]) から組む (CLI を足した時の
+        //   直し忘れ防止)。 受け側は名前を見るだけなので種類が増えて通る。
+        for (final s in AgentCliSpec.all) 'cli:${s.kind.name}',
       ],
     ];
     return PopupMenuButton<String>(
@@ -153161,9 +154929,11 @@ $body''';
     // 入れ先のページを選ぶ (マップ / ギャラリー / フリーノート)。
     final targets = p.pages
         .where((pg) =>
-            pg.pageType == 'normal' ||
-            pg.pageType == 'bookshelf' ||
-            pg.pageType == 'paint')
+            (pg.pageType == 'normal' ||
+                pg.pageType == 'bookshelf' ||
+                pg.pageType == 'paint') &&
+            // 一覧に出していないページは送り先に出さない (= ユーザー要望)。
+            isPageSendTarget(p, pg))
         .toList();
     if (targets.isEmpty) {
       _appSnackTop(context, p.t('md.tableNoTarget'), const Color(0xFF37474F));
@@ -174285,7 +176055,7 @@ class _VideoEditorPageViewState extends State<_VideoEditorPageView> {
               Icons.sticky_note_2_rounded,
               widget.provider.t('ve.memoShort'),
               const Color(0xFFFFB347),
-              () => _host?._showMapMemoDialog(context, widget.provider)),
+              () => _host?._openMapMemoPanel(widget.provider)),
           // ── 画面録画 (= ユーザー要望: 撮り終わったらタイムラインに出る) ──
           TextButton.icon(
             style: TextButton.styleFrom(
@@ -205009,8 +206779,17 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
     if (!mounted) return;
     final provider = widget.provider;
     final pages = provider.pages;
-    // ページが 1 つだけなら選ぶ余地がないのでそのまま送る。
-    if (pages.length <= 1) {
+    // ★ 一覧に出していないページは送り先に出さない (= ユーザー要望: ページ
+    //   一覧に無いページが並ぶと探せない)。 今開いているページは「（現在）」
+    //   の目印として必ず残すので、 一覧が空になる事は無い。
+    final shownIdx = [
+      for (int i = 0; i < pages.length; i++)
+        if (i == provider.currentPageIndex ||
+            isPageSendTarget(provider, pages[i]))
+          i
+    ];
+    // 出せるページが 1 つだけなら選ぶ余地がないのでそのまま送る。
+    if (shownIdx.length <= 1) {
       provider.addMemoNodeToCurrentPage(text);
       if (!mounted) return;
       _appSnack(context,
@@ -205018,7 +206797,7 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
       return;
     }
     final currentIdx = provider.currentPageIndex;
-    final listH = (pages.length * 52).clamp(60, 360).toDouble();
+    final listH = (shownIdx.length * 52).clamp(60, 360).toDouble();
     final chosen = await _showLockFrontDialog<int>(
       (dctx, close) => AlertDialog(
         backgroundColor: const Color(0xFF1E1E32),
@@ -205030,8 +206809,9 @@ class _FocusLockOverlayState extends State<_FocusLockOverlay>
           height: listH,
           child: Scrollbar(
             child: ListView.builder(
-              itemCount: pages.length,
-              itemBuilder: (_, i) {
+              itemCount: shownIdx.length,
+              itemBuilder: (_, k) {
+                final i = shownIdx[k];
                 final isCurrent = i == currentIdx;
                 return ListTile(
                   dense: true,
@@ -211945,9 +213725,9 @@ class _WinGoogleSearchViewState extends State<_WinGoogleSearchView> {
   /// しない。 対象サイト以外にも流さない (普通のページの挙動は変えない)。
   /// 広告落としを当てる (モバイル枝)。
   ///
-  /// = ユーザー要望「google 検索に Jev を導入して広告ブロック」。
-  /// 1 段目 (名前で分かる広告を CSS で隠す) を入れてから、 判別が付かな
-  /// かった塊だけを Jev に聞く。 取れなければ 1 段目だけで終わる。
+  /// = ユーザー要望「google 検索の広告ブロック」。
+  /// 名前で分かる広告 (広告用の CSS 選択子 + 「スポンサー」 等の札) を
+  /// 隠す JS を入れるだけ。 外へは何も送らない。
   ///
   /// ★ デスクトップ枝は doc-created で 1 回入れてあるので、 ここは
   ///   モバイル専用。 Linux 枝には JS を入れる口が無いので当たらない。
@@ -211960,35 +213740,15 @@ class _WinGoogleSearchViewState extends State<_WinGoogleSearchView> {
       return;
     }
     final js = prov.adBlockInstallJsOrNull();
-    if (js == null) return;
-    try {
-      await c.evaluateJavascript(source: js);
-    } catch (_) {
+    if (js == null) {
+      // ★ 切っている時は、 前に隠した分を戻す (= 切ったのに戻らない対策)。
+      try {
+        await c.evaluateJavascript(source: googleAdBlockRemoveJs);
+      } catch (_) {}
       return;
     }
-    if (!prov.jevAdBlockEnabled) return;
-    // 聞くのは検索結果のページだけ (無駄に判断を買わない)。
-    final u = _cur.toLowerCase();
-    if (!u.contains('google.') || !u.contains('/search')) return;
     try {
-      final raw = await c.evaluateJavascript(source: googleAdCandidatesJs());
-      if (raw == null) return;
-      final text = raw is String ? raw : '$raw';
-      if (text.trim().isEmpty || text.trim() == '[]') return;
-      final j = jsonDecode(text);
-      if (j is! List) return;
-      final blocks = <Map<String, String>>[];
-      for (final e in j) {
-        if (e is! Map) continue;
-        final id = '${e['id'] ?? ''}';
-        final t = '${e['text'] ?? ''}';
-        if (id.isEmpty || t.isEmpty) continue;
-        blocks.add({'id': id, 'text': t});
-      }
-      if (blocks.isEmpty) return;
-      final ads = await prov.jevPickAdBlocks(blocks);
-      if (ads.isEmpty || !mounted) return;
-      await c.evaluateJavascript(source: googleAdApplyJs(ads));
+      await c.evaluateJavascript(source: js);
     } catch (_) {}
   }
 
@@ -212914,11 +214674,15 @@ Future<bool> Function(String path)? isFileEmbeddedFromAnywhere;
 /// (= 今のページへそのまま貼る)。 取り消しなら null。
 Future<String?> showEmbedPagePicker(BuildContext btnCtx) async {
   final provider = btnCtx.read<MindMapProvider>();
+  final curId = provider.currentPage.id;
+  // 一覧に出していないページは送り先に出さない (= ユーザー要望)。 ただし
+  // 今開いているページは「ここに入れる」 の的なので、 隠していても必ず残す。
   final targets = provider.pages
-      .where((p) => p.pageType == 'normal' || p.pageType == 'bookshelf')
+      .where((p) =>
+          (p.pageType == 'normal' || p.pageType == 'bookshelf') &&
+          (p.id == curId || isPageSendTarget(provider, p)))
       .toList();
   if (targets.length <= 1) return '';
-  final curId = provider.currentPage.id;
   final box = btnCtx.findRenderObject() as RenderBox?;
   final pos =
       box == null ? const Offset(80, 80) : box.localToGlobal(Offset.zero);
@@ -213283,6 +215047,7 @@ ScaffoldFeatureController<SnackBar, SnackBarClosedReason>? _appSnack(
   MindMapProvider? provider;
   messenger.hideCurrentSnackBar();
   final patched = _patchSnackBarDuration(ctx, bar, processing: processing);
+  noteAppNotice(patched);
   // ── ドロワーが開いている間は、 手前の写しだけを出す (= ユーザー報告:
   //    上下に二重で表示される)。 本物の SnackBar はドロワーの後ろに
   //    隠れる位置に出るので、 この間は出さない。 ──
@@ -213326,6 +215091,28 @@ Widget _readableSnackContent(Widget content) {
   );
 }
 
+/// 最近アプリが出した短い知らせ (= 画面下の帯) の控え。
+///
+/// ★ = 機能追加案 継続検証190「MCP から今の画面の様子を読めるように」。
+///   検証する側は「押した結果アプリが何と言ったか」 を確かめられなかった。
+///   最後の 10 件だけ覚えておく (中身は文字だけ。 画面には何も足さない)。
+final List<Map<String, Object?>> recentAppNotices = <Map<String, Object?>>[];
+
+void noteAppNotice(SnackBar bar) {
+  try {
+    final c = bar.content;
+    final t = c is Text ? c.data : null;
+    if (t == null || t.trim().isEmpty) return;
+    recentAppNotices.add({
+      'text': t,
+      'atMs': DateTime.now().millisecondsSinceEpoch,
+    });
+    while (recentAppNotices.length > 10) {
+      recentAppNotices.removeAt(0);
+    }
+  } catch (_) {}
+}
+
 SnackBar _patchSnackBarDuration(BuildContext context, SnackBar bar,
     {required bool processing}) {
   final original = bar.duration;
@@ -213356,6 +215143,14 @@ SnackBar _patchSnackBarDuration(BuildContext context, SnackBar bar,
     behavior: behavior,
     action: bar.action,
     duration: finalDuration,
+    // ★ Flutter 3.41 から SnackBar に `persist` が入り、 **action を付けると
+    //   既定で true** (= 時間が来ても閉じない) に変わった。 これが
+    //   ユーザー報告「知らせが自動で閉じてくれない」 の根っこ。
+    //   上の説明どおり、 普段の知らせは釦が有っても duration で
+    //   閉じる。 進行中 (processing) と 30 秒以上を明示した物
+    //   (= AI 生成の 「止める」 等) だけは、 作業が終わるまで
+    //   残る今の振る舞いをそのまま保つ。
+    persist: (processing || isLongRunning) ? bar.persist : false,
     animation: bar.animation,
     onVisible: bar.onVisible,
     dismissDirection: bar.dismissDirection,
@@ -213381,6 +215176,7 @@ ScaffoldFeatureController<SnackBar, SnackBarClosedReason>? _appSnackM(
   messenger.hideCurrentSnackBar();
   final patched =
       _patchSnackBarDuration(messenger.context, bar, processing: processing);
+  noteAppNotice(patched);
   // ドロワーが開いている間は手前の写しだけ (= 二重表示させない)。
   if (appMainScaffoldKey?.currentState?.isDrawerOpen == true) {
     _showSnackAboveDrawer(messenger.context, patched);
@@ -214498,11 +216294,15 @@ class _InAppViewerDialogState extends State<_InAppViewerDialog>
     final cur = _nodeId;
     if (cur != null) return cur;
     final provider = context.read<MindMapProvider>();
+    final curId = provider.currentPage.id;
+    // 一覧に出していないページは送り先に出さない (= ユーザー要望)。 ただし
+    // 今開いているページは「このページに追加」 の的なので必ず残す。
     final targets = provider.pages
-        .where((p) => p.pageType == 'normal' || p.pageType == 'bookshelf')
+        .where((p) =>
+            (p.pageType == 'normal' || p.pageType == 'bookshelf') &&
+            (p.id == curId || isPageSendTarget(provider, p)))
         .toList();
     if (targets.length <= 1) return _ensureNode();
-    final curId = provider.currentPage.id;
     final box = btnCtx.findRenderObject() as RenderBox?;
     final pos =
         box == null ? const Offset(80, 80) : box.localToGlobal(Offset.zero);
@@ -231345,10 +233145,30 @@ class _SpreadsheetEditorDialogState extends State<_SpreadsheetEditorDialog> {
     // いちばん上に開いている物として登録 (= ユーザー要望)。
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      // ★ = 継続検証 412「前面のファイル閲覧画面を MCP から閉じられない」。
+      //   閉じ方も一緒に預ける (_noteMcpFullScreen と同じ、 掴んだ route を
+      //   消す形)。 分割ペインや地図の分割セルに埋めてある時は自分の route が
+      //   無いので預けない (= ここからは閉じられないと正直に答える)。
+      final frontRoute = ModalRoute.of(context);
       context.read<MindMapProvider>().setFrontDocument(
           path: _currentFilePath,
           name: _currentFileName,
-          kind: 'sheet');
+          kind: 'sheet',
+          closer: (frontRoute == null || frontRoute.isFirst)
+              ? null
+              : () async {
+                  if (!mounted || !frontRoute.isActive) return false;
+                  // 未保存なら利用者に訊く。 断られたら閉じない。
+                  if (!await _confirmDiscard()) return false;
+                  final nav = frontRoute.navigator;
+                  if (nav == null || !frontRoute.isActive) return false;
+                  if (frontRoute.isCurrent) {
+                    nav.pop();
+                  } else {
+                    nav.removeRoute(frontRoute);
+                  }
+                  return true;
+                });
     });
     _detectKind();
     _loadFile();
@@ -245276,10 +247096,26 @@ class _PptxViewerDialogState extends State<_PptxViewerDialog>
     // いちばん上に開いている物として登録 (= ユーザー要望)。
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      // ★ = 継続検証 412 (双子。 上の xlsx 側と同じ形)。
+      final frontRoute = ModalRoute.of(context);
       context.read<MindMapProvider>().setFrontDocument(
           path: _currentFilePath,
           name: _currentFileName,
-          kind: 'pptx');
+          kind: 'pptx',
+          closer: (frontRoute == null || frontRoute.isFirst)
+              ? null
+              : () async {
+                  if (!mounted || !frontRoute.isActive) return false;
+                  if (!await _confirmPptxDiscard()) return false;
+                  final nav = frontRoute.navigator;
+                  if (nav == null || !frontRoute.isActive) return false;
+                  if (frontRoute.isCurrent) {
+                    nav.pop();
+                  } else {
+                    nav.removeRoute(frontRoute);
+                  }
+                  return true;
+                });
     });
     _loadFile();
     // スライドマスターの登録状態を復元 (= ユーザー要望)。
@@ -259775,7 +261611,7 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
   /// ここへ座標を渡している (マークダウンのページと同じ仕組み)。
   void _showMdPreviewContextMenu(Offset at, String selection,
       List<List<String>> table, String tableTitle,
-      {bool onDiagram = false}) {
+      {bool onDiagram = false, bool diagramCtlHidden = false}) {
     if (!mounted) return;
     final provider = _providerRef ?? context.read<MindMapProvider>();
     final box =
@@ -259803,6 +261639,20 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
     if (onDiagram) {
       entries.add(item('diagramReset', Icons.restart_alt_rounded,
           provider.t('md.diagramReset')));
+      // 双子 (_showPreviewContextMenu) と同じく「中央に寄せる」 も出す。
+      entries.add(item(
+          'diagramCenter',
+          Icons.align_horizontal_center_rounded,
+          provider.t('md.diagramCenter')));
+      // ★ = ユーザー要望「マーメイド記法の図を右クリックしたら、 右上の
+      //   項目を非表示にする項目が出るようにして欲しい」 (双子と同じ)。
+      entries.add(item(
+          'diagramUi',
+          diagramCtlHidden
+              ? Icons.visibility_rounded
+              : Icons.visibility_off_rounded,
+          provider.t(
+              diagramCtlHidden ? 'md.diagramShowUi' : 'md.diagramHideUi')));
     }
     if (table.length >= 2) {
       entries.add(item(
@@ -259848,6 +261698,15 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
         unawaited(_mdWin?.executeScript(
             'window.__mmResetDiagramAt && '
             'window.__mmResetDiagramAt(${at.dx.round()}, ${at.dy.round()});'));
+      } else if (v == 'diagramCenter') {
+        // 双子 (_showPreviewContextMenu) と同じく、 押した図を中央へ寄せる。
+        unawaited(_mdWin?.executeScript(
+            'window.__mmCenterDiagramAt && '
+            'window.__mmCenterDiagramAt(${at.dx.round()}, ${at.dy.round()});'));
+      } else if (v == 'diagramUi') {
+        // ★ 図の右上の道具を隠す / 出す (= ユーザー要望)。
+        unawaited(_mdWin?.executeScript('window.__mmSetDiagramCtl && '
+            'window.__mmSetDiagramCtl(${!diagramCtlHidden});'));
       } else if (v == 'copy') {
         unawaited(Clipboard.setData(ClipboardData(text: sel)));
       } else if (v == 'table') {
@@ -259917,6 +261776,7 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
           rows,
           '${m['tableTitle'] ?? ''}',
           onDiagram: m['diagram'] == true,
+          diagramCtlHidden: m['diagramCtlHidden'] == true,
         );
         return;
       }
@@ -260619,10 +262479,26 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
     // いちばん上に開いている物として登録 (= ユーザー要望)。
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      // ★ = 継続検証 412 (双子。 上の xlsx 側と同じ形)。
+      final frontRoute = ModalRoute.of(context);
       context.read<MindMapProvider>().setFrontDocument(
           path: _currentFilePath,
           name: _currentFileName,
-          kind: 'text');
+          kind: 'text',
+          closer: (frontRoute == null || frontRoute.isFirst)
+              ? null
+              : () async {
+                  if (!mounted || !frontRoute.isActive) return false;
+                  if (!await _confirmDiscard()) return false;
+                  final nav = frontRoute.navigator;
+                  if (nav == null || !frontRoute.isActive) return false;
+                  if (frontRoute.isCurrent) {
+                    nav.pop();
+                  } else {
+                    nav.removeRoute(frontRoute);
+                  }
+                  return true;
+                });
     });
     _language = _detectLanguage(_currentFileName);
     _nodeId = widget.nodeId;
@@ -263170,11 +265046,15 @@ $currentText
     final cur = _nodeId;
     if (cur != null) return cur;
     final provider = context.read<MindMapProvider>();
+    final curId = provider.currentPage.id;
+    // 一覧に出していないページは送り先に出さない (= ユーザー要望)。 ただし
+    // 今開いているページは「このページに追加」 の的なので必ず残す。
     final targets = provider.pages
-        .where((p) => p.pageType == 'normal' || p.pageType == 'bookshelf')
+        .where((p) =>
+            (p.pageType == 'normal' || p.pageType == 'bookshelf') &&
+            (p.id == curId || isPageSendTarget(provider, p)))
         .toList();
     if (targets.length <= 1) return _ensureTextNode();
-    final curId = provider.currentPage.id;
     final box = btnCtx.findRenderObject() as RenderBox?;
     final pos =
         box == null ? const Offset(80, 80) : box.localToGlobal(Offset.zero);
@@ -263999,7 +265879,8 @@ $currentText
           if (provider.useCliAi)
             // ★ いま使う相手の候補を出す (= ユーザー報告: 相手が違うのに
             //   別の CLI のモデル名が並んでいた)。
-            for (final c in AgentCli.modelChoices(provider.cliAiKindEnum))
+            for (final c in AgentCli.modelChoices(provider.cliAiKindEnum,
+                selected: provider.cliAiModelChoice))
               PopupMenuItem<String>(
                 value: 'climodel:${c.id}',
                 child: Padding(
@@ -270696,10 +272577,26 @@ class _DocxViewerDialogState extends State<_DocxViewerDialog> {
     // いちばん上に開いている物として登録 (= ユーザー要望)。
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      // ★ = 継続検証 412 (双子。 上の xlsx 側と同じ形)。
+      final frontRoute = ModalRoute.of(context);
       context.read<MindMapProvider>().setFrontDocument(
           path: _currentFilePath,
           name: _currentFileName,
-          kind: 'docx');
+          kind: 'docx',
+          closer: (frontRoute == null || frontRoute.isFirst)
+              ? null
+              : () async {
+                  if (!mounted || !frontRoute.isActive) return false;
+                  if (!await _confirmDiscard()) return false;
+                  final nav = frontRoute.navigator;
+                  if (nav == null || !frontRoute.isActive) return false;
+                  if (frontRoute.isCurrent) {
+                    nav.pop();
+                  } else {
+                    nav.removeRoute(frontRoute);
+                  }
+                  return true;
+                });
     });
     _loadFile();
     // ── アプリ本体の × でも未保存確認が出るよう登録 (= ユーザー要望) ──
@@ -283417,11 +285314,22 @@ class _FloatingPanelWindow extends StatefulWidget {
     this.popOutCustom,
     this.onRestoreFull,
     this.initialRect,
+    this.initialPos,
     this.slimChrome = false,
     this.noModeSwitch = false,
     this.minWidth = 360,
     this.minHeight = 280,
+    this.allowHideHeader = true,
   });
+
+  /// 上の帯を隠すボタンを出すか。
+  ///
+  /// ★ = ユーザー要望「(閉じるを上にまとめた上で) ヘッダーを隠すボタンは
+  ///   必要ないから消して欲しい」。 帯を隠すと 20px の細い線になり、
+  ///   そこには閉じるが無い ── 中の枠の閉じるも消した窓では、 閉じる手が
+  ///   1 つも無くなる。 false の時は隠す口を出さず、 他の窓で隠した設定
+  ///   (鍵は全窓で共通) も効かせない。
+  final bool allowHideHeader;
 
   /// この窓を縮められる下限。
   ///
@@ -283445,6 +285353,13 @@ class _FloatingPanelWindow extends StatefulWidget {
   /// 「分割セルを覆う形」 で開くために使う (= ユーザー要望)。
   /// memoryKey の保存値よりもこちらを優先する。
   final Rect? initialRect;
+
+  /// 覚えている位置が無い時だけ使う「最初に出す位置」 (画面グローバル座標)。
+  ///
+  /// ★ = ユーザー要望「ボタンを押した位置に出して欲しい」。 [initialRect] と
+  ///   違って**保存値の方が強い** ── 一度動かした窓は次もその場所に出す
+  ///   (置き場所を決めた人の指定を、 カーソルの位置で毎回上書きしない)。
+  final Offset? initialPos;
   @override
   State<_FloatingPanelWindow> createState() => _FloatingPanelWindowState();
 }
@@ -283452,7 +285367,11 @@ class _FloatingPanelWindow extends StatefulWidget {
 class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
   final GlobalKey<NavigatorState> _navKey = GlobalKey<NavigatorState>();
   bool _pushed = false;
-  late Offset _pos = widget.initialRect?.topLeft ?? const Offset(100, 70);
+  late Offset _pos = widget.initialRect?.topLeft ??
+      // ★ 覚えている位置は _restoreGeometry が後から上書きする。 ここは
+      //   覚えが無い時に使う出し位置 (= 押した所)。
+      widget.initialPos ??
+      const Offset(100, 70);
   late double _w = widget.initialRect?.width ?? widget.initialWidth;
 
   /// 窓を少なくとも [want] の幅まで広げる (狭い時だけ。 広い時は触らない)。
@@ -284135,7 +286054,10 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
       //    ボタンや閉じるボタンも含めて、 全部消えるように) ──
       //    元の画面を出している時だけ出す。 AI やメモを開いている最中に
       //    畳めてしまうと、 戻る道が無くなるため。
-      if (_floatMode == 'main')
+      //    ★ 帯を隠す口を持たない窓もある (= ユーザー要望: オートクリッカー)。
+      //      隠した先の細い線には閉じるが無いので、 中の枠の閉じるも
+      //      まとめた窓では、 閉じる手が 1 つも無くなる。
+      if (_floatMode == 'main' && widget.allowHideHeader)
         btn(Icons.keyboard_double_arrow_up_rounded,
             provider.t('float.hideHeaderBar'),
             () => unawaited(_setHideHeader(true))),
@@ -284344,7 +286266,11 @@ class _FloatingPanelWindowState extends State<_FloatingPanelWindow> {
               //   高さ分の空白だけが残っていた。
               if (widget.slimChrome)
                 const SizedBox.shrink()
-              else if (_hideHeader)
+              // ★ 帯を隠す設定は**全ての浮遊窓で共通の鍵**なので、 別の窓で
+              //   隠した事があると、 この窓も細い線で開いてしまう。 隠す口を
+              //   持たない窓 (= 中の枠の閉じるもまとめた窓) では効かせない
+              //   ── 効かせると閉じる手が 1 つも無くなる。
+              else if (_hideHeader && widget.allowHideHeader)
                 // ── 畳んでいる時 (= ユーザー要望: 全部消す) ──
                 //   丸ごと消すと窓を動かす所も閉じる所も無くなるので、
                 //   細い帯だけ残す。 そこは掴んで動かす板を兼ね、 カーソルを
@@ -285706,7 +287632,8 @@ class _McpChatSession extends ChangeNotifier {
       'list_folders': 2000,
       // ★ 本文を読み返す道具 (= 切り詰めると読み返す意味が無い)。
       'read_markdown': 8000,
-      'read_document': 8000,
+      // ★ = 継続検証 239。 フリーノートは全バインダーぶん返るので枠を広げる。
+      'read_document': 16000,
       'read_paint_items': 4000,
       'list_video_editor_items': 4000,
       'list_orphan_files': 4000,
@@ -288355,6 +290282,18 @@ class _McpChatDialogState extends State<_McpChatDialog>
                     await provider.setAiEditDir('');
                     if (mounted) setState(() {});
                   }
+                  // ★ Jev の入切 (= ユーザー要望「切り替えは使う所に置く」)。
+                  //   ここは watch していないので、 押した後に自分で塗り直す。
+                  if (v == 'jevSearch') {
+                    await provider
+                        .setJevSearchEnabled(!provider.jevSearchEnabled);
+                    if (mounted) setState(() {});
+                  }
+                  if (v == 'jevWebRank') {
+                    await provider
+                        .setJevWebRankEnabled(!provider.jevWebRankEnabled);
+                    if (mounted) setState(() {});
+                  }
                 },
                 itemBuilder: (_) => [
                   PopupMenuItem<String>(
@@ -288441,6 +290380,50 @@ class _McpChatDialogState extends State<_McpChatDialog>
                         Text(provider.t('mcp.editDirClear'),
                             style: const TextStyle(
                                 color: Colors.white60, fontSize: 11.5)),
+                      ]),
+                    ),
+                  // ── Jev 判断補助 ──
+                  //    ★ = ユーザー要望「切り替えは使う所に置く」。 フォルダー
+                  //    内検索も Web 検索も人が押す入口は無く、 **この中の AI が
+                  //    呼ぶ道具**なので、 アシスタントの設定がその使う所になる。
+                  const PopupMenuDivider(),
+                  PopupMenuItem<String>(
+                    enabled: false,
+                    height: 30,
+                    child: Text(provider.t('settings.groupJev'),
+                        style: const TextStyle(
+                            color: Colors.white38, fontSize: 11)),
+                  ),
+                  for (final e in [
+                    ('jevSearch', 'jev.search', Icons.search_rounded,
+                        provider.jevSearchEnabled),
+                    ('jevWebRank', 'jev.webRank', Icons.travel_explore_rounded,
+                        provider.jevWebRankEnabled),
+                  ])
+                    PopupMenuItem<String>(
+                      value: e.$1,
+                      height: 38,
+                      child: Row(children: [
+                        Icon(e.$3,
+                            size: 15,
+                            color: e.$4
+                                ? const Color(0xFF4FC3F7)
+                                : Colors.white38),
+                        const SizedBox(width: 8),
+                        Flexible(
+                          child: Text(provider.t(e.$2),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                  color: e.$4 ? Colors.white : Colors.white70,
+                                  fontSize: 12.5)),
+                        ),
+                        if (e.$4)
+                          const Padding(
+                            padding: EdgeInsets.only(left: 6),
+                            child: Icon(Icons.check_rounded,
+                                size: 14, color: Color(0xFF4FC3F7)),
+                          ),
                       ]),
                     ),
                 ],
@@ -289515,6 +291498,11 @@ class _McpChatDialogState extends State<_McpChatDialog>
     // 右に並べていた相手は、 外す前に控える ([_activeSplitSession] は
     // 並びに居る事も見ているので、 外した後では null になる)。
     final mate = _activeSplitSession;
+    // ★ 今どの枠に何を出していたかも、 外す前に控える (下の「別の枠を
+    //   引き継ぐ」 で使う)。 分割ビュー ([_cliGridActive]) と 3 枚目以降は
+    //   [_splitCliSession] を使わないので、 [mate] だけでは並べていた相手を
+    //   取りこぼす。
+    final panes = _splitPaneSessions();
     if (idx >= 0) _cliTabs.remove(s);
     if (identical(_lastCliSession, s)) _lastCliSession = null;
     // 右側に出していた物なら、 抱えている端末もここで手放す (= 左右分割。
@@ -289547,6 +291535,24 @@ class _McpChatDialogState extends State<_McpChatDialog>
       _splitTerminal = null;
       _showRunningCliTerminal(provider, mate);
       _focusCliPane(mate);
+      return;
+    }
+    // ★ = ユーザー報告「AI のタブが左右分割されている状態から『このタブを
+    //   閉じる』 を押すと、 1 タブ残るはずなのに最初の画面に戻される」。
+    //   分割ビューと 3 枚目以降は [mate] が null なので下の
+    //   [_nextCliTabAfterClose] へ落ちるが、 あちらは**走っている札だけ**を
+    //   行き先にする決まりなので、 隣の枠が終わった端末だと「行き先なし」
+    //   と判じられ、 札が残っているのに会話 (= 最初の画面) へ戻されていた。
+    //   並べていた相手が札に残っているなら、 走っていなくてもそちらを
+    //   引き継ぐ (= 片方を閉じたら残りは全幅の 1 枚、 という決まりどおり)。
+    // ★ 札が 1 枚も残らない時はここを素通りするので、 最後の 1 枚を閉じた
+    //   時の動き (会話へ戻る / 一覧へ戻る) は今までのまま。
+    for (final p in panes) {
+      if (p == null) continue;
+      if (identical(p, s)) continue;
+      if (!_cliTabs.contains(p)) continue;
+      _showRunningCliTerminal(provider, p);
+      _focusCliPane(p);
       return;
     }
     final next = _nextCliTabAfterClose(idx);
@@ -290241,6 +292247,11 @@ class _McpChatDialogState extends State<_McpChatDialog>
   /// ★ 札の × と Ctrl+W の両方から呼ぶので、 中身をここへ 1 つにまとめる。
   Future<void> _closeChatTab(MindMapProvider provider, String id) async {
     _openChatTabIds.remove(id);
+    // ★ 右に並べていた会話の札を閉じた時は、 並びも畳む。 外していなかった
+    //   ので、 札は消えたのにその会話が右の枠に出たまま残っていた
+    //   (左を閉じた時は [switchMcpSession] で今の会話と一致して
+    //   [_activeSideChatId] が null を返すため、 右だけが取りこぼしだった)。
+    if (_sideChatSessionId == id) _sideChatSessionId = null;
     if (provider.mcpCurrentSessionId == id && _openChatTabIds.isNotEmpty) {
       await provider.switchMcpSession(_openChatTabIds.last);
       if (!mounted) return;
@@ -291065,6 +293076,16 @@ class _McpChatDialogState extends State<_McpChatDialog>
   Widget _buildAgentCliSection(MindMapProvider provider) {
     // ★ CLI の機能は Pro 以上 (= ユーザー要望)。 探しにも行かない。
     if (!provider.canUseCliAi) return _buildCliProRequired(provider);
+    // ★ 裏でモデルの一覧を取り直せた時に、 この段だけ組み直す
+    //   (= ユーザー要望「自動的に最新になるようにして欲しい」)。
+    //   取り直し自体は [AgentCli.findAll] が始めている。
+    return ValueListenableBuilder<int>(
+      valueListenable: AgentCli.modelsRevision,
+      builder: (_, __, ___) => _buildAgentCliSectionBody(provider),
+    );
+  }
+
+  Widget _buildAgentCliSectionBody(MindMapProvider provider) {
     return FutureBuilder<List<AgentCliFound>>(
       future: _cliFind,
       builder: (ctx, snap) {
@@ -291340,6 +293361,11 @@ class _McpChatDialogState extends State<_McpChatDialog>
   ///
   /// ★ 宛名が分からない時は今までどおりの文言に戻すだけ (黙って諦める)。
   String _cliReadyLine(MindMapProvider provider, AgentCliFound f) {
+    // ★ 目安が取れない時 (null) は「開いてログインしてください」 と
+    //   言い切らない。 Antigravity CLI のように控えの置き場が公表されて
+    //   いない相手では、 実際に入っていてもそう出てしまう
+    //   ([AgentCli._loggedInHint] は分からない時 null を返す)。
+    if (f.loggedInHint == null) return provider.t('cli.loginUnknown');
     if (f.loggedInHint != true) return provider.t('cli.needLogin');
     final acc = (f.account ?? '').trim();
     if (acc.isEmpty) return provider.t('cli.ready');
@@ -291402,7 +293428,16 @@ class _McpChatDialogState extends State<_McpChatDialog>
       final d = AgentCli.accountNameFor(kind, a.id).trim();
       if (d.isNotEmpty) return d;
     }
-    if (a.id.isEmpty) return provider.t('cli.accountDefault');
+    // ★ = ユーザー指摘「Antigravity CLI の所の『アカウント既定』 という
+    //   表記は辞めて欲しい。 何のアカウントでログインしているのか
+    //   分からないから」。 宛名が読めない置き場で『既定』 と出すと、
+    //   そういう名前のアカウントが有るかのように読めてしまう。 分からない
+    //   事をそのまま書く。
+    // ★ どの CLI もこの 1 行に当たる (= 宛名が取れないのは Antigravity
+    //   だけではない) ので、 ここだけで全部の顔ぶれが揃う。
+    // ★「ログインしていない」 とは言い切らない。 入っているのに控えの
+    //   置き場が分からないだけ、 という事が有る ([AgentCli._accountHint])。
+    if (a.id.isEmpty) return provider.t('cli.accountUnknown');
     final n = a.name.trim();
     return n.isEmpty ? a.id : n;
   }
@@ -291849,21 +293884,25 @@ class _McpChatDialogState extends State<_McpChatDialog>
                       else
                         ElevatedButton.icon(
                           style: ElevatedButton.styleFrom(
-                            backgroundColor: AgentCli.npmAvailable == false
+                            backgroundColor: _cliNeedsNode(f.spec)
                                 ? const Color(0xFF8D6E63)
                                 : const Color(0xFF546E7A),
                             visualDensity: VisualDensity.compact,
                           ),
                           icon: Icon(
-                              AgentCli.npmAvailable == false
+                              _cliNeedsNode(f.spec)
                                   ? Icons.open_in_new_rounded
                                   : Icons.download_rounded,
                               size: 15,
                               color: Colors.white),
                           // ★ npm は Node.js に付いてくる物なので、 入って
                           //   いなければ先にそちらを案内する (= ユーザー指摘)。
+                          // ★ ただし npm で入らない相手 (= Antigravity CLI は
+                          //   公式の導入スクリプトで入る) に Node.js は関係が
+                          //   無い。 そこで「先に Node.js を」 と出すと、
+                          //   入れても何も変わらない案内になる ([_cliNeedsNode])。
                           label: Text(
-                              provider.t(AgentCli.npmAvailable == false
+                              provider.t(_cliNeedsNode(f.spec)
                                   ? 'cli.getNode'
                                   : 'cli.install'),
                               style: const TextStyle(
@@ -291877,7 +293916,13 @@ class _McpChatDialogState extends State<_McpChatDialog>
                     //    3221226528 で終わってインストールが完了しない) ──
                     //    アプリが書庫を落として自分で開くだけなので、
                     //    外のプログラムは 1 つも走らない。
-                    if (!f.installed && AgentCli.canInstallWithoutNpm(f.spec.kind))
+                    //    ★ ここは **npm の包を落として開く**道なので、 包名を
+                    //      持たない相手 (= Antigravity CLI は公式の導入
+                    //      スクリプトで入る) には出さない。 出すと押しても
+                    //      必ず失敗し、 断りの知らせだけが出る。
+                    if (!f.installed &&
+                        f.spec.npmPackage.isNotEmpty &&
+                        AgentCli.canInstallWithoutNpm(f.spec.kind))
                       Align(
                         alignment: Alignment.centerRight,
                         child: TextButton.icon(
@@ -291974,7 +294019,8 @@ class _McpChatDialogState extends State<_McpChatDialog>
                             style: const TextStyle(
                                 color: Colors.white38, fontSize: 10.5)),
                         const SizedBox(width: 8),
-                        for (final c in AgentCli.modelChoices(f.spec.kind))
+                        for (final c in AgentCli.modelChoices(f.spec.kind,
+                            selected: provider.cliModelFor(f.spec.kind.name)))
                           Builder(builder: (_) {
                             // ★ 選択は**この CLI の物**として覚える
                             //   (= ユーザー報告: luna を選んでも sol)。
@@ -292410,6 +294456,15 @@ class _McpChatDialogState extends State<_McpChatDialog>
     // ★ CLI の機能は Pro 以上 (= ユーザー要望)。 どの入口からでも
     //   通さないよう、 実行する側でも止める。
     if (!provider.canUseCliAi) return;
+    // ── npm では入らない相手 (= Antigravity CLI は公式の導入スクリプト) ──
+    //    見分けは npm の包名 ([AgentCliSpec.npmPackage]) が空かどうか。
+    //    先に分けないと npm を探しに行き、 「先に Node.js を入れてください」
+    //    という見当違いの案内が出る。 npm があった時も、 下の `pkg.isEmpty`
+    //    で黙って終わるので**ボタンが無反応**になる。
+    if (found.spec.npmPackage.isEmpty) {
+      await _installAgentCliByHint(provider, found);
+      return;
+    }
     final npm = await AgentCli.findNpm();
     if (!mounted) return;
     if (npm == null || npm.isEmpty) {
@@ -292511,6 +294566,72 @@ class _McpChatDialogState extends State<_McpChatDialog>
     unawaited(installSession.finished.then((code) {
       if (!mounted || code != 0 || installSession.stoppedByUser) return;
       unawaited(_reopenCliAfterUpdate(provider, installSession, kind: kind));
+    }));
+  }
+
+  /// その相手を入れるのに Node.js (npm) が要るか。
+  ///
+  /// ★ npm の包名 ([AgentCliSpec.npmPackage]) を持つ物だけが npm 経路。
+  ///   持たない相手 (= Antigravity CLI は公式の導入スクリプトで入る) に
+  ///   「先に Node.js を入れてください」 と出すと、 入れても何も変わらない
+  ///   案内になる。
+  bool _cliNeedsNode(AgentCliSpec spec) =>
+      spec.npmPackage.isNotEmpty && AgentCli.npmAvailable == false;
+
+  /// npm を使わない導入 (公式の導入コマンドを、 この画面の**見える端末**で
+  /// 走らせる)。
+  ///
+  /// ★ = Antigravity CLI (`agy`) は npm ではなく公式の導入スクリプトで入る。
+  ///   走らせる文は [AgentCliSpec.installHint] そのもの (呼び方は
+  ///   agent_cli.dart の表に 1 か所だけ持つ決まり)。 ここで文を組まない。
+  /// ★ 隠した PowerShell は撃たれる。 npm の導入と同じく端末の札として出して、
+  ///   何が起きているかを利用者に見せる。 それでも止められた時は、 下の
+  ///   「写すだけ」 と同じで利用者が自分の端末で打てば入る。
+  /// ★ Windows 以外は導入の文が合わないので、 走らせずに写すだけにする。
+  Future<void> _installAgentCliByHint(
+      MindMapProvider provider, AgentCliFound found) async {
+    if (!provider.canUseCliAi || !mounted) return;
+    final cmd = found.spec.installHint.trim();
+    if (cmd.isEmpty) return;
+    final ps = !Platform.isWindows
+        ? ''
+        : (AgentCli.shellExeFor('pwsh') ??
+            AgentCli.shellExeFor('powershell') ??
+            '');
+    if (ps.isEmpty) {
+      await Clipboard.setData(ClipboardData(text: cmd));
+      if (mounted) {
+        showTopToast(
+            context, provider.t('md.copied'), const Color(0xFF43B97F));
+      }
+      return;
+    }
+    String workDir;
+    try {
+      final sup = await getApplicationSupportDirectory();
+      workDir = await AgentCli.workingDirectory(sup.path);
+    } catch (_) {
+      return;
+    }
+    if (!mounted) return;
+    final session = AgentCliSession(
+      title: '${found.spec.label} — ${provider.t('cli.install')}',
+      exePath: ps,
+      // ★ `-NoProfile` は AutoRun の類を通さないため (端末側の `/d` と同じ
+      //   理由)。 `-ExecutionPolicy Bypass` は**付けない** — 落とした
+      //   ファイルを走らせるのではなく文を渡すだけなので要らず、 付けると
+      //   セキュリティソフトに咎められやすくなるだけ。
+      arguments: <String>['-NoLogo', '-NoProfile', '-Command', cmd],
+      workingDirectory: workDir,
+      hint: provider.t('cli.installHint'),
+      isInstall: true,
+    );
+    final kind = found.spec.kind;
+    _runAgentCliSession(provider, session);
+    // 入れ終わったら探し直してそのまま開く (npm の導入と同じ)。
+    unawaited(session.finished.then((code) {
+      if (!mounted || code != 0 || session.stoppedByUser) return;
+      unawaited(_reopenCliAfterUpdate(provider, session, kind: kind));
     }));
   }
 
@@ -295921,6 +298042,15 @@ class _FlashcardStudyDialogState extends State<_FlashcardStudyDialog> {
   bool _judging = false;
   bool? _correct;
   String _explanation = '';
+  // ── 理由は押した時だけ作る (= ユーザー要望: 正誤は判断専用モデルで即答し、
+  //    誤答の理由は釦を押した時に生成 AI が作る) ──
+  //    _canExplain: 判断だけで正誤を出したので解説がまだ無い (= 釦を出す)。
+  //    _reasonCache: 一度作った採点の控え ((札の id, 打った答え) が鍵)。
+  //    正誤も一緒に控える: 控えから出す時も生成 AI が見た正誤に揃える。
+  bool _canExplain = false;
+  bool _explaining = false;
+  final Map<(String, String), ({bool correct, String explanation})>
+      _reasonCache = {};
   // ── 音声入力 (= ユーザー要望: フラッシュカードの回答を音声でも入力) ──
   final stt.SpeechToText _speech = stt.SpeechToText();
   bool _speechInit = false;
@@ -295979,6 +298109,8 @@ class _FlashcardStudyDialogState extends State<_FlashcardStudyDialog> {
     _correct = null;
     _explanation = '';
     _judging = false;
+    _canExplain = false;
+    _explaining = false;
   }
 
   /// 回答欄の音声入力をトグルする (= ユーザー要望)。 認識結果を _answer に流す。
@@ -296053,6 +298185,8 @@ class _FlashcardStudyDialogState extends State<_FlashcardStudyDialog> {
         _revealed = true;
         _correct = true;
         _explanation = '';
+        // 裏と同じ文字なので理由は要らない。
+        _canExplain = false;
       });
       _rootFocus.requestFocus(); // 採点後は矢印でめくれるようにする
       return;
@@ -296065,8 +298199,46 @@ class _FlashcardStudyDialogState extends State<_FlashcardStudyDialog> {
       _revealed = true;
       _correct = r.correct;
       _explanation = r.explanation;
+      _canExplain = r.canExplain;
     });
     _rootFocus.requestFocus(); // 採点後は矢印でめくれるようにする
+  }
+
+  /// 誤答の理由を作る (= ユーザー要望: 正誤は判断専用モデルで即答し、 理由は
+  /// 「理由を見る」 を押した時だけ生成 AI に作らせる)。
+  ///
+  /// 今まで採点に使っていた道をそのまま呼ぶので、 生成 AI が 「正解」 と見た
+  /// 時は正誤の表示も直る。 一度作った採点は控えておき、 同じ札 + 同じ答えで
+  /// 二度押しても作り直さない。
+  Future<void> _explainWhy() async {
+    final ua = _answer.text.trim();
+    if (ua.isEmpty || _explaining) return;
+    final c = widget.cards[_i];
+    final key = (c.id, ua);
+    final hit = _reasonCache[key];
+    if (hit != null && hit.explanation.isNotEmpty) {
+      setState(() {
+        _correct = hit.correct;
+        _explanation = hit.explanation;
+        _canExplain = false;
+      });
+      _rootFocus.requestFocus();
+      return;
+    }
+    // 作っている途中に札を移られたら結果は捨てる (別の札に出ないよう)。
+    final at = _i;
+    setState(() => _explaining = true);
+    final provider = context.read<MindMapProvider>();
+    final r = await provider.gradeFlashcardAnswerByAi(c.front, c.back, ua);
+    if (!mounted || at != _i) return;
+    _reasonCache[key] = r;
+    setState(() {
+      _explaining = false;
+      _correct = r.correct;
+      _explanation = r.explanation;
+      _canExplain = false;
+    });
+    _rootFocus.requestFocus();
   }
 
   @override
@@ -296175,6 +298347,41 @@ class _FlashcardStudyDialogState extends State<_FlashcardStudyDialog> {
                                   style: const TextStyle(
                                       color: Colors.white70, fontSize: 13)),
                             ],
+                            // ── 理由は押した時だけ作る。 正解の時は裏が
+                            //    見えているので釦は出さない ──
+                            if (_canExplain &&
+                                _explanation.isEmpty &&
+                                _correct == false) ...[
+                              const SizedBox(height: 2),
+                              Align(
+                                alignment: Alignment.centerLeft,
+                                child: TextButton.icon(
+                                  onPressed: _explaining ? null : _explainWhy,
+                                  style: TextButton.styleFrom(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 6),
+                                      minimumSize: Size.zero,
+                                      visualDensity: VisualDensity.compact),
+                                  icon: _explaining
+                                      ? const SizedBox(
+                                          width: 14,
+                                          height: 14,
+                                          child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                              color: Color(0xFF4FC3F7)))
+                                      : const Icon(Icons.help_outline_rounded,
+                                          size: 16, color: Color(0xFF4FC3F7)),
+                                  label: Text(
+                                      context.read<MindMapProvider>().t(
+                                          _explaining
+                                              ? 'flash.reasonMaking'
+                                              : 'flash.reason'),
+                                      style: const TextStyle(
+                                          color: Color(0xFF4FC3F7),
+                                          fontSize: 12.5)),
+                                ),
+                              ),
+                            ],
                           ],
                         ]),
                   ),
@@ -296212,7 +298419,7 @@ class _FlashcardStudyDialogState extends State<_FlashcardStudyDialog> {
                       style: ElevatedButton.styleFrom(
                           backgroundColor: const Color(0xFF26C6DA),
                           foregroundColor: Colors.black87),
-                      onPressed: _judging ? null : _judge,
+                      onPressed: (_judging || _explaining) ? null : _judge,
                       child: _judging
                           ? const SizedBox(
                               width: 16,

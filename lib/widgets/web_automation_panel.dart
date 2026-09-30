@@ -38,6 +38,7 @@ import '../main.dart'
         automationRequestFromAssistant,
         automationRunForAssistant,
         automationCancelRequest,
+        automationForceResetRequest,
         AutomationRunState;
 import '../providers/mind_map_provider.dart';
 // パソコンそのものを操作する (= ユーザー要望: PC 内のアプリを操作)。
@@ -402,6 +403,14 @@ class WebAutoStep {
   ///   変えない。 古い版で開いても知らない鍵として無視される)。
   bool breakpoint;
 
+  /// この手が作るはずのファイル (= 不具合報告 2026-09-30「成果物未作成でも
+  /// コマンド手順を done にする」)。 空でなければ、 手が終わった後に
+  /// **本当に出来たか**を確かめ、 無ければその走りを失敗として返す。
+  ///
+  /// ★ 控えには書いてある時だけ書く (古い版で開いても知らない鍵として
+  ///   無視される)。
+  String expectFile;
+
   WebAutoStep({
     required this.kind,
     this.x = 0,
@@ -418,6 +427,7 @@ class WebAutoStep {
     this.selector = '',
     this.submit = false,
     this.breakpoint = false,
+    this.expectFile = '',
     List<WebAutoStep>? children,
   }) : children = children ?? <WebAutoStep>[];
 
@@ -437,6 +447,7 @@ class WebAutoStep {
         'selector': selector,
         'submit': submit,
         if (breakpoint) 'bp': true,
+        if (expectFile.isNotEmpty) 'expectFile': expectFile,
         if (kind == WebAutoKind.loop)
           'children': children.map((e) => e.toJson()).toList(),
       };
@@ -454,8 +465,8 @@ class WebAutoStep {
   ///
   /// 言い換え (navigate → open など) を吸収し、 それでも分からない種類は
   /// null を返して [unknown] に控える (黙って捨てない)。
-  static WebAutoStep? fromAiJson(
-      Map<String, dynamic> j, List<String> unknown) {
+  static WebAutoStep? fromAiJson(Map<String, dynamic> j, List<String> unknown,
+      {List<String>? problems}) {
     final raw = (j['kind'] as String? ?? '').trim();
     final key = raw.toLowerCase().replaceAll(RegExp(r'[-_\s]'), '');
     const alias = <String, WebAutoKind>{
@@ -514,7 +525,74 @@ class WebAutoStep {
         }
       }
     }
-    return fromJson(m);
+    // ★ = 不具合報告 2026-09-30「待機の繰り返しを空ループ 2 件へ誤生成
+    //   する」。 原因は 2 つあった。
+    //   ・繰り返しの中身の鍵名が揺れる (children / steps / body / do)。
+    //     children しか見ていなかったので、 中身がまるごと落ちていた。
+    //   ・中身は [fromJson] が読んでいたので、 言い換え (navigate など) が
+    //     中だけ効かず、 知らない種類が黙って「待つ」 に化けていた。
+    //   中身も**同じ読み方**で読み、 それでも空なら手順として受け取らない
+    //   (空の繰り返しを走らせて「やりました」 と答えないため)。
+    List<WebAutoStep>? kids;
+    if (kind == WebAutoKind.loop) {
+      final rawKids =
+          j['children'] ?? j['steps'] ?? j['body'] ?? j['do'] ?? j['loopSteps'];
+      kids = <WebAutoStep>[];
+      if (rawKids is List) {
+        for (final c in rawKids) {
+          if (c is! Map) continue;
+          final cs = fromAiJson(Map<String, dynamic>.from(c), unknown,
+              problems: problems);
+          if (cs != null) kids.add(cs);
+        }
+      }
+      m['children'] = const <Map<String, dynamic>>[];
+      if (kids.isEmpty) {
+        problems?.add('loop の中身が空でした');
+        return null;
+      }
+    }
+    final made = fromJson(m);
+    if (kids != null && kids.isNotEmpty) {
+      made.children
+        ..clear()
+        ..addAll(kids);
+    }
+    return made;
+  }
+
+  /// AI が書いた手順を、 画面の入力欄と**同じ範囲**へ丸める。
+  ///
+  /// ★ = 不具合報告 2026-09-30「run_automation が待機時間の上限を適用せず
+  ///   保存する」。 画面から入れた時は 10〜600000ms に丸められるのに、 AI が
+  ///   書いた値はそのまま保存・実行されていた (99999999ms = 約 27.8 時間の
+  ///   待機が作られ、 実行枠を占有していた)。 入口が 2 本あるなら、
+  ///   丸める所も 2 本に要る。
+  static void normalizeAiSteps(List<WebAutoStep> steps) {
+    for (final s in steps) {
+      switch (s.kind) {
+        case WebAutoKind.wait:
+        case WebAutoKind.hold:
+        case WebAutoKind.swipe:
+          s.durationMs = s.durationMs.clamp(10, 600000);
+          break;
+        case WebAutoKind.scroll:
+          // 送る量 (px)。 0 = 1 画面分なので上限を掛けない。
+          break;
+        case WebAutoKind.command:
+        case WebAutoKind.download:
+        case WebAutoKind.ask:
+          // 打ち切り時間。 0 以下は「既定のまま」 の意味なので触らない。
+          if (s.durationMs > 0) s.durationMs = s.durationMs.clamp(1000, 600000);
+          break;
+        default:
+          s.durationMs = s.durationMs.clamp(0, 60000);
+      }
+      s.count = s.count.clamp(0, 9999);
+      s.intervalMs = s.intervalMs.clamp(0, 600000);
+      s.intervalMaxMs = s.intervalMaxMs.clamp(0, 600000);
+      if (s.children.isNotEmpty) normalizeAiSteps(s.children);
+    }
   }
 
   static WebAutoStep fromJson(Map<String, dynamic> j) => WebAutoStep(
@@ -540,6 +618,7 @@ class WebAutoStep {
         selector: (j['selector'] as String?) ?? '',
         submit: (j['submit'] as bool?) ?? false,
         breakpoint: (j['bp'] as bool?) ?? false,
+        expectFile: (j['expectFile'] as String?) ?? '',
         children: ((j['children'] as List?) ?? const [])
             .map((e) => WebAutoStep.fromJson(Map<String, dynamic>.from(e)))
             .toList(),
@@ -807,6 +886,8 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
     // ★ = 動作検証の機能修正案「自動操作の完了状態を MCP から確認・中止
     //   できるようにする」。 止め方は画面の「停止」と**同じ道**を使う。
     automationCancelRequest.addListener(_onAssistantAutomationCancel);
+    // ★ = 不具合報告「実行枠を占有したまま再停止もできない」 の最後の手段。
+    automationForceResetRequest.addListener(_onAssistantForceReset);
   }
 
   @override
@@ -817,6 +898,7 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
     HardwareKeyboard.instance.removeHandler(_handleStopKey);
     automationRequestFromAssistant.removeListener(_onAssistantAutomation);
     automationCancelRequest.removeListener(_onAssistantAutomationCancel);
+    automationForceResetRequest.removeListener(_onAssistantForceReset);
     // 外のブラウザとのつながり (WebSocket) を残さない。
     unawaited(_releaseCdp());
     _schedTimer?.cancel();
@@ -892,17 +974,61 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
   }
 
   /// MCP から「この走りを止めて」 と言われた。
+  ///
+  /// ★ = 不具合報告 2026-09-30「cancel 済みの長時間待機が実行枠を占有し
+  ///   続けて再停止もできない」。 以前はここで即 `cancelled` +
+  ///   `finished:true` を出していたので、 実際には待機が続いていても
+  ///   「止まった」 と見え、 次の依頼は全部断られていた。
+  ///   ここでは `cancelling` までにして、 **枠が空いた所**で走り側
+  ///   ([_runAgent] の後始末) が `cancelled` を出す。
   void _onAssistantAutomationCancel() {
     final want = automationCancelRequest.value;
     if (want == null || !mounted) return;
     automationCancelRequest.value = null;
     final cur = automationRunForAssistant.value;
     if (cur == null || cur.runId != want) return;
-    if (!_running && !_agentBusy) return;
+    if (!_running && !_agentBusy) {
+      // 何も走っていない = 枠は空いている。 その場で終わりにする
+      //   (受け取ったのに動き出せなかった走りが残らないように)。
+      _publishAutomationPhase('cancelled',
+          status: 'nothing was running any more - the run slot is free.',
+          finished: true);
+      return;
+    }
     // 画面の「停止」 と同じ道 (止め方を 2 本にしない)。
     _requestStop();
     _stopAgent();
-    _publishAutomationPhase('cancelled', finished: true);
+    _publishAutomationPhase('cancelling',
+        status: 'stopping - waiting for the current step to let go of the '
+            'run slot.');
+  }
+
+  /// MCP から「実行枠だけ初期化して」 と言われた。
+  ///
+  /// ★ 捨てるのは**走っている物だけ**。 保存済みの手順・録画設定・
+  ///   開いている窓には触らない (= 不具合報告: アプリの再起動を要求する
+  ///   状態でも、 未保存の編集を失わずに枠を空けられるように)。
+  void _onAssistantForceReset() {
+    final want = automationForceResetRequest.value;
+    if (want == null || !mounted) return;
+    automationForceResetRequest.value = null;
+    _stopRequested = true;
+    _cancel = true;
+    _agentStop = true;
+    _releaseGate();
+    unawaited(_releaseCdp());
+    _schedTimer?.cancel();
+    setState(() {
+      _running = false;
+      _agentBusy = false;
+      _aiBusy = false;
+      _status = 'reset';
+    });
+    _log('停止', 'MCP から実行枠を初期化しました');
+    _publishAutomationPhase('cancelled',
+        status: 'the run slot was reset from the assistant - anything still '
+            'waiting was dropped. Saved steps were not touched.',
+        finished: true);
   }
 
   Future<void> _load() async {
@@ -1408,7 +1534,7 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
                     ]),
               ]),
             ),
-            for (final c in AgentCli.modelChoices(k))
+            for (final c in AgentCli.modelChoices(k, selected: provider.cliModelFor(k.name)))
               PopupMenuItem<String>(
                 // ★ 種類とモデルを 1 回で決める (= ユーザー要望)。
                 value: 'clipick:${k.name}:${c.id}',
@@ -1680,6 +1806,13 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
 - command は「パソコンのコマンドを実行」。 **ユーザーがコマンドの実行を
   はっきり頼んだ時だけ** 使う。 消す・初期化する・電源を切るなどの
   取り返しの付かない操作は書かないこと。
+  ★ **ファイルを作るコマンドには "expectFile" にそのファイルの道筋を
+    書くこと** (例: {"kind":"command","text":"powershell …","expectFile":
+    "C:/Users/me/Desktop/shot.png"})。 終わった後に本当に出来たかを
+    確かめ、 無ければその実行は失敗として報告される。 download や
+    makeFile でも同じように書ける。
+  ★ コマンドの終了コードは見られている。 0 でなければ失敗として扱われる
+    ので、 失敗しても構わないコマンド (grep で見付からない等) は書かない。
 - **押す操作は必ず click を使い、 text に画面に見えている文字をそのまま
   書く** (例: {"kind":"click","text":"Windows 版"})。 tap は座標が要るので
   基本的に使わない。 下の「今の画面」 に出ている文字から選ぶこと。
@@ -1706,6 +1839,12 @@ class WebAutomationPanelState extends State<WebAutomationPanel> {
 - ★ 「開いてスクショ」 と頼まれたら open → wait → shot の順に並べる
   (ページ全体が要る時は shot の代わりに fullShot)。
 - scrollDir は down / up / right / left (scrollTo では bottom / top)。
+- **繰り返し (loop) は必ず "children" に中身を入れる**。 鍵の名前は
+  "children" のみ ("steps" や "body" ではない)。 中身が空の loop は
+  実行されず、 作り直しを求められる。
+    {"kind":"loop","count":3,"children":[{"kind":"wait","durationMs":1000}]}
+- 待ち時間 (durationMs) は 10〜600000ms (最大 10 分) の範囲で書く。
+  それより長い待機は丸められる。 何時間も待つ手順は作らない。
 - steps は 30 個以内。''';
 
   /// 今どちらで開くか (シークレット / ○○でログイン) の目印。
@@ -2343,6 +2482,8 @@ $snap'''}
           if (j is Map) WebAutoStep.fromJson(Map<String, dynamic>.from(j)),
       ]);
       if (steps.isEmpty) throw Exception(provider.t('aiflow.failed'));
+      // 画面の入力欄と同じ範囲へ丸める (= AI が書いた値をそのまま保存しない)。
+      WebAutoStep.normalizeAiSteps(steps);
       if (!mounted) return;
       setState(() {
         _steps
@@ -2415,6 +2556,45 @@ $snap'''}
   //    がら自動化を進められないか) ────────────────────────────────────
   /// エージェントで動かしているか。
   bool _agentBusy = false;
+
+  /// 人 (または MCP) が**止めてと言った**か。
+  ///
+  /// ★ = 不具合報告 2026-09-30「PC アプリを起動する自動操作が全手順実行後も
+  ///   cancelled になる」。 原因は、 手順の失敗も「止められた」 と同じ旗
+  ///   (`_cancel`) で表していた事。 止めたのが人なのか、 手順が転んだのか、
+  ///   何事も無く終わったのかを**別々に**持つ。 中止は cancelled、 転んだ時は
+  ///   failed + 理由、 どちらでもなければ done。
+  bool _stopRequested = false;
+
+  /// 手順が転んだ理由 (空 = 転んでいない)。
+  String? _stepError;
+
+  /// 実際に走り出した手順を書き留める先 (アシスタントへ返す ranSteps)。
+  ///
+  /// ★ 以前は**走らせる前**に積んでいたので、 途中で止まっても「全部
+  ///   走った」 ように見えていた。 走り出した所で 1 行ずつ足す。
+  List<String>? _ranSink;
+
+  /// 走り出した手順を 1 行控える。
+  void _noteRanStep(WebAutoStep s) {
+    final sink = _ranSink;
+    if (sink == null) return;
+    // 繰り返しの中は何十回も走るので、 控えが膨れ上がらないように頭打ちにする。
+    if (sink.length >= 200) {
+      if (sink.length == 200) sink.add('- (further steps are not listed)');
+      return;
+    }
+    sink.add('- ${s.kind.name}'
+        '${s.text.isEmpty ? '' : ' "${s.text}"'}'
+        '${s.scrollDir.isEmpty ? '' : ' ${s.scrollDir}'}');
+  }
+
+  /// 直前に控えた手順の行へ、 結果 (終了コードや検証) を書き足す。
+  void _noteRanStepResult(String suffix) {
+    final sink = _ranSink;
+    if (sink == null || sink.isEmpty) return;
+    sink[sink.length - 1] = '${sink.last}  $suffix';
+  }
 
   /// 途中で止めるための合図。
   bool _agentStop = false;
@@ -2492,6 +2672,11 @@ $snap'''}
   void _agentFail(MindMapProvider provider, String key, String detail) {
     if (!mounted) return;
     final d = detail.trim();
+    // ★ = 不具合報告「転んだのに done / cancelled になる」。 失敗の funnel は
+    //   ここなので、 理由を必ず控える (控えないと、 最後の報告が「全部
+    //   やりました」 になってしまう)。
+    _stepError ??= provider.t(key) +
+        (d.isEmpty ? '' : ' / ${d.length > 200 ? '${d.substring(d.length - 200)}' : d}');
     // ★ 出すのは**終わりの方**。 頭を出すと、 CLI の飾りの帯や
     //   「頼んだ文の写し」 しか見えず、 何が悪かったのか分からなかった
     //   (= ユーザー報告: 何も作られないまま終わる)。
@@ -2549,6 +2734,9 @@ $snap'''}
     setState(() {
       _agentBusy = true;
       _agentStop = false;
+      // 前の走りの結末を持ち越さない。
+      _stopRequested = false;
+      _stepError = null;
       // ★ 前に止めた印を持ち越さない (= 一度止めると、 次からは 12 回
       //   AI に聞くだけで何も実行されなくなっていた)。
       _cancel = false;
@@ -2577,6 +2765,18 @@ $snap'''}
     // ★ = ユーザー要望: E2E テストの動画。 AI に任せた実行も録画する。
     await _startRunRecording();
     final done = <String>[];
+    _ranSink = done;
+    // ★ = 不具合報告「完了済みの空手順プランを失敗扱いにする」。 AI が
+    //   「操作は要らない」 と名乗って終えた時の印。 手順 0 でも done。
+    //   ★ 後始末 (finally) でも見るので、 try の外で持つ。
+    var noActionDone = false;
+    // この走りで組み上げた手数 (「その場かぎり」 では走り終わりに _steps が
+    //   元へ戻るので、 残りの数はこちらで数える)。
+    var plannedThisRun = 0;
+    // ★ = 不具合報告 2026-09-30「route 入時に AI 依頼 1 件で Jev 判断が
+    //   2 回計上される」。 1 つの依頼を何回かに分けて AI へ聞くので、 聞いた
+    //   回数だけ振り分けの判断が走っていた。 依頼の間は最初の判断を使い回す。
+    provider.beginJevRouteScope();
     try {
       // ★ 「同じ画面で、 同じ手順」 を出し続けていないかを見張る
       //   (= ユーザー報告: 止まらずに同じフローをひたすら作り続ける)。
@@ -2615,6 +2815,10 @@ $snap'''}
 出力の形:
 {"done":false,"steps":[ …手順… ]}
 - 依頼が済んだと判断したら {"done":true,"steps":[]} を返してください。
+- **そもそも外の操作が要らない依頼** (「受け取った事だけ記録して終わって」
+  など) の時は、 1 手も作らずに
+  {"done":true,"steps":[],"noAction":true,"why":"理由"} を返してください。
+  noAction が無い空の完了は「手順を作れなかった」 として失敗になります。
 - steps の書き方は下と同じです。
 
 $_kFlowFormatRules
@@ -2681,6 +2885,24 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
           break;
         }
         if (m['done'] == true) {
+          // ★ = 不具合報告 2026-09-30「完了済みの空手順プランを失敗扱いに
+          //   する」。 「何も操作しなくてよい」 と AI が判断した時と、
+          //   手順を作れなかった時を**分ける**。 前者は noAction を添えて
+          //   もらう約束 (書き方の説明にも入れてある) なので、 それが
+          //   あれば 0 手でも正常な完了として畳む。
+          final noAction = m['noAction'] == true ||
+              '${m['noAction'] ?? ''}'.toLowerCase() == 'true';
+          if (_steps.isEmpty && noAction) {
+            noActionDone = true;
+            final why = '${m['why'] ?? ''}'.trim();
+            _log('AI', '操作は不要と判断しました${why.isEmpty ? '' : ': $why'}');
+            if (mounted) {
+              setState(() => _status = why.isEmpty
+                  ? provider.t('agent.done')
+                  : '${provider.t('agent.done')} ($why)');
+            }
+            break;
+          }
           // ★ 1 手も動かないうちに「終わりました」 は受け付けない
           //   (= ユーザー報告: どこのページにも切り替わらず終了する)。
           //   頼まれた事をやらずに終えたのだから、 成功として畳まない。
@@ -2702,30 +2924,55 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
         //   待機に化けていた)。 言い換えは吸収し、 それでも分からない物は
         //   控えて AI に言い直させる。
         final unknown = <String>[];
+        // ★ = 不具合報告「空ループ 2 件を成功扱いする」。 種類が分からない
+        //   のとは別に、 「形が組み立てられなかった」 も控える。
+        final problems = <String>[];
         final parsed = <WebAutoStep>[];
         for (final j in list) {
           if (j is! Map) continue;
-          final s =
-              WebAutoStep.fromAiJson(Map<String, dynamic>.from(j), unknown);
+          final s = WebAutoStep.fromAiJson(
+              Map<String, dynamic>.from(j), unknown,
+              problems: problems);
           if (s != null) parsed.add(s);
         }
         final steps = _coercePcIntent(req, parsed);
+        // ★ 画面の入力欄と同じ範囲へ丸めてから積む (= 待機 99999999ms の
+        //   ような値を保存・実行しないため)。
+        WebAutoStep.normalizeAiSteps(steps);
         if (unknown.isNotEmpty) {
           _log('失敗', '知らない種類の手順: ${unknown.toSet().join(' / ')}');
         }
+        if (problems.isNotEmpty) {
+          _log('失敗', '組み立てられなかった手順: ${problems.toSet().join(' / ')}');
+        }
+        // 種類の書き方が違うだけ / 繰り返しの中身が空なら、 正しい書き方を
+        //   教えてもう一度だけ考えてもらう (中身の無い繰り返しは走らせない)。
+        if ((steps.isEmpty || problems.isNotEmpty) && !retriedKinds &&
+            (unknown.isNotEmpty || problems.isNotEmpty)) {
+          retriedKinds = true;
+          kindHint = [
+            if (unknown.isNotEmpty)
+              '※ ${unknown.toSet().join(' / ')} という kind は'
+                  'ありません。 ページを開くのは "open" (text に URL)、'
+                  ' 画面を撮るのは "shot"、 全面を撮るのは "fullShot" です。'
+                  ' 上の一覧にある kind だけを使ってください。',
+            if (problems.isNotEmpty)
+              '※ 繰り返し (loop) は必ず "children" に中身を入れてください。'
+                  ' 例: {"kind":"loop","count":3,"children":'
+                  '[{"kind":"wait","durationMs":1000}]}。'
+                  ' 中身の無い loop は実行しません。',
+          ].join('\n');
+          continue;
+        }
         if (steps.isEmpty) {
-          // 読めた手順が 1 つも無い。 種類の書き方が違うだけなら、
-          //   正しい名前を教えてもう一度だけ考えてもらう。
-          if (unknown.isNotEmpty && !retriedKinds) {
-            retriedKinds = true;
-            kindHint = '※ ${unknown.toSet().join(' / ')} という kind は'
-                'ありません。 ページを開くのは "open" (text に URL)、'
-                ' 画面を撮るのは "shot"、 全面を撮るのは "fullShot" です。'
-                ' 上の一覧にある kind だけを使ってください。';
-            continue;
-          }
           _agentFail(provider, 'agent.errNoSteps', out);
           break;
+        }
+        if (problems.isNotEmpty) {
+          // 言い直してもらっても直らなかった。 走らせる分は走らせるが、
+          //   「全部やった」 とは答えさせない。
+          _stepError = '組み立てられなかった手順があります: '
+              '${problems.toSet().join(' / ')}';
         }
         kindHint = '';
         // ★ 画面が変わっていないのに、 次の一手も同じ = 進んでいない。
@@ -2760,6 +3007,7 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
         }
         if (!mounted) return;
         // 実行した手順はフローに積んでいく (後で使い回せるように)。
+        plannedThisRun += steps.length;
         setState(() {
           _steps.addAll(steps);
           _status = provider
@@ -2769,12 +3017,8 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
         // ★ 実行する前に控える。 後回しにすると、 スクショ等で画面が
         //   作り直された時にここまでの手順が消えてしまう。
         await _save();
-        for (final st in steps) {
-          if (_agentStop) break;
-          done.add('- ${st.kind.name}'
-              '${st.text.isEmpty ? '' : ' "${st.text}"'}'
-              '${st.scrollDir.isEmpty ? '' : ' ${st.scrollDir}'}');
-        }
+        // ★ 走った手順は [_runSteps] が 1 手ずつ控える (= 走らせる前に
+        //   積むと、 途中で止まっても「全部走った」 ように見えていた)。
         await _runSteps(steps, provider.t('agent.label'));
         await _save();
         // ★ 手順の中で止まった時は、 次の回へ進まない (= これが無いと、
@@ -2789,6 +3033,7 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
         setState(() => _status = '$e'.replaceFirst('Exception: ', ''));
       }
     } finally {
+      provider.endJevRouteScope();
       await _stopRunRecording();
       // ★ 外のブラウザを使ったなら、 終わったらつながりを手放す。
       //   つないだままだと、 次にアプリの中のページを操作するふつうの
@@ -2807,7 +3052,12 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
       //   出していない時は戻す必要も無い。
       if (showBrowser) widget.onRunningChanged?.call(false, _requestStop);
       // ★ setState が _agentStop を false に戻す前に、 止められたかを覚える。
-      final wasStopped = _agentStop || _cancel;
+      //   ★ = 不具合報告「全手順実行後も cancelled になる」。 「止められた」
+      //     のは**人が止めてと言った時だけ**。 手順が転んだ時は failed、
+      //     どちらでもなければ done にする (以前は手順の失敗も `_cancel` で
+      //     表していたので、 全部走り切った走りまで中止に見えていた)。
+      final wasStopped = _stopRequested;
+      final failedWhy = _stepError;
       if (mounted) {
         setState(() {
           _agentBusy = false;
@@ -2828,18 +3078,32 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
       //   「手順を N 件残しました」 (= 保存のすすめ) に書き換えるため、
       //   止まった理由が消えていた。 止まった時は何が走ったかを答える。
       final ranList = List<String>.from(done);
+      _ranSink = null;
+      final phase = wasStopped
+          ? 'cancelled'
+          : ((failedWhy != null || (_steps.isEmpty && !noActionDone))
+              ? 'failed'
+              : 'done');
       _publishAutomationPhase(
-        wasStopped ? 'cancelled' : (_steps.isEmpty ? 'failed' : 'done'),
+        phase,
         status: wasStopped
             ? 'stopped after ${ranList.length} step(s) - the rest of the '
                 'instruction was NOT carried out.'
-            : _status,
-        error: _steps.isEmpty && !wasStopped ? _status : null,
+            : (phase == 'failed' && failedWhy != null
+                ? 'ran ${ranList.length} step(s), but the run did not do what '
+                    'was asked: $failedWhy'
+                : _status),
+        // ★ 成功した走りに error を付けない (= 操作の要らない依頼を
+        //   「失敗した」 と読ませない)。
+        error: phase == 'failed' ? (failedWhy ?? _status) : null,
         doneSteps: ranList,
-        remainingSteps:
-            _steps.length > ranList.length ? _steps.length - ranList.length : 0,
+        remainingSteps: plannedThisRun > ranList.length
+            ? plannedThisRun - ranList.length
+            : 0,
         finished: true,
       );
+      _stepError = null;
+      _stopRequested = false;
     }
   }
 
@@ -3357,6 +3621,7 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
   }
 
   void _bpAbort() {
+    _stopRequested = true;
     _cancel = true;
     _agentStop = true;
     setState(_releaseGate);
@@ -3380,6 +3645,56 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
     await g.future;
     if (!_cancel) _publishAutomationPhase('running');
     return !_cancel;
+  }
+
+  /// 手順が転んだ (= 人が止めたのではない)。 理由は最初の 1 件だけ残す。
+  void _failStep(String label, String what) {
+    _stepError ??= 'step $label ($what) could not be carried out';
+    _noteRanStepResult('failed');
+    _log('失敗', '$label $what を実行できませんでした');
+    _cancel = true;
+  }
+
+  /// 待つ。 ただし**細かく刻んで**待ち、 止められたらすぐ抜ける。
+  ///
+  /// ★ = 不具合報告 2026-09-30「cancel 済みの長時間待機が実行枠を占有し
+  ///   続けて再停止もできない」。 `Future.delayed` 1 回で待っていたので、
+  ///   停止しても待ち終わるまで枠が空かなかった (99999999ms = 約 27.8 時間)。
+  Future<void> _waitCancelable(int ms) async {
+    var left = ms;
+    while (left > 0) {
+      if (_cancel || !mounted) return;
+      final slice = left > 200 ? 200 : left;
+      await Future.delayed(Duration(milliseconds: slice));
+      left -= slice;
+    }
+  }
+
+  /// この手が作るはずのファイルが出来たかを確かめる。
+  ///
+  /// ★ = 不具合報告 2026-09-30「成果物未作成でもコマンド手順を done に
+  ///   する」。 「送り出した」 と「目的を果たした」 は別なので、 作るはず
+  ///   だった物が無ければ走りを失敗として返す。
+  void _verifyExpectedFile(WebAutoStep s, String label) {
+    final want = s.expectFile.trim();
+    if (want.isEmpty) return;
+    var exists = false;
+    var size = 0;
+    try {
+      final f = File(want);
+      exists = f.existsSync();
+      if (exists) size = f.lengthSync();
+    } catch (_) {}
+    if (!exists || size <= 0) {
+      _stepError ??= exists
+          ? 'the file this step had to make is empty: $want'
+          : 'the file this step had to make was not created: $want';
+      _noteRanStepResult('verified=no');
+      _log('失敗', '$label 出来るはずのファイルがありません: $want');
+      return;
+    }
+    _noteRanStepResult('verified=yes ($size bytes)');
+    _log('確認', '$label ファイルを確かめました: $want ($size bytes)');
   }
 
   Future<void> _runSteps(List<WebAutoStep> steps, String path) async {
@@ -3436,6 +3751,8 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
       //   位置が要る種類で未設定のままなら、 押さずに飛ばして理由を残す。
       if (_needsPosition(s)) {
         _log('飛ばす', '$label 位置が決まっていないので飛ばしました');
+        _noteRanStep(s);
+        _noteRanStepResult('skipped (no position)');
         if (mounted) {
           setState(() => _status = context
               .read<MindMapProvider>()
@@ -3444,6 +3761,9 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
         }
         continue;
       }
+      // ★ ここから本当に走り出す (= アシスタントへ返す ranSteps は、
+      //   予定ではなく**走った手**にする)。
+      _noteRanStep(s);
       switch (s.kind) {
         case WebAutoKind.loop:
           // 回数 0 = 停止するまで無限に回す (= while)。
@@ -3680,13 +4000,16 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
           {
             final ok = await _runCommandStep(s);
             if (!ok) {
-              _cancel = true;
+              // ★ 転んだのは「止められた」 とは別 (= 不具合報告: 全部
+              //   走ったのに cancelled になる / 転んだのに done になる)。
+              _failStep(label, s.kind.name);
               return;
             }
           }
           break;
         case WebAutoKind.wait:
-          await Future.delayed(Duration(milliseconds: s.durationMs));
+          // ★ 刻んで待つ (止められたらすぐ枠を空ける)。
+          await _waitCancelable(s.durationMs);
           break;
         case WebAutoKind.shot:
           // 同じ場所を続けて撮らない (= ユーザー報告: 一番下で同じ絵が並ぶ)。
@@ -3738,7 +4061,9 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
           {
             final ok = await _openExternalBrowser(s);
             if (!ok) {
-              _cancel = true;
+              // ★ 転んだのは「止められた」 とは別 (= 不具合報告: 全部
+              //   走ったのに cancelled になる / 転んだのに done になる)。
+              _failStep(label, s.kind.name);
               return;
             }
             await Future.delayed(_intervalOf(s));
@@ -3748,7 +4073,9 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
           {
             final ok = await _runAskStep(s);
             if (!ok) {
-              _cancel = true;
+              // ★ 転んだのは「止められた」 とは別 (= 不具合報告: 全部
+              //   走ったのに cancelled になる / 転んだのに done になる)。
+              _failStep(label, s.kind.name);
               return;
             }
           }
@@ -3768,7 +4095,9 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
             //   中身を走っていた。
             final ok = await _runOsStep(s);
             if (!ok) {
-              _cancel = true;
+              // ★ 転んだのは「止められた」 とは別 (= 不具合報告: 全部
+              //   走ったのに cancelled になる / 転んだのに done になる)。
+              _failStep(label, s.kind.name);
               return;
             }
             await Future.delayed(_intervalOf(s));
@@ -3779,7 +4108,9 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
           {
             final ok = await _runDownloadStep(s);
             if (!ok) {
-              _cancel = true;
+              // ★ 転んだのは「止められた」 とは別 (= 不具合報告: 全部
+              //   走ったのに cancelled になる / 転んだのに done になる)。
+              _failStep(label, s.kind.name);
               return;
             }
             await Future.delayed(_intervalOf(s));
@@ -3799,13 +4130,17 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
           {
             final ok = await _runOsStep(s);
             if (!ok) {
-              _cancel = true;
+              // ★ 転んだのは「止められた」 とは別 (= 不具合報告: 全部
+              //   走ったのに cancelled になる / 転んだのに done になる)。
+              _failStep(label, s.kind.name);
               return;
             }
             await Future.delayed(_intervalOf(s));
           }
           break;
       }
+      // この手が作るはずだった物を確かめる (書かれている時だけ)。
+      _verifyExpectedFile(s, label);
     }
   }
 
@@ -4459,12 +4794,28 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
                 .replaceFirst('{code}', '${r.exitCode}')
                 .replaceFirst('{msg}', err.isEmpty ? out : err));
       }
+      // ★ = 不具合報告 2026-09-30「成果物未作成でもコマンド手順を done に
+      //   する」。 終了コードを見ずに「送り出したから成功」 としていたので、
+      //   PowerShell がエラーで落ちていても走りは done だった。 実行記録へ
+      //   終了コードを残し、 0 でなければ**走り全体を失敗**として返す
+      //   (残りの手順は今までどおり走らせる: 途中で打ち切ると、 既に
+      //    動いているフローの意味が変わってしまう)。
+      _noteRanStepResult('exit=${r.exitCode}');
+      if (r.exitCode != 0) {
+        var why = (err.isEmpty ? out : err).replaceAll(RegExp(r'\s+'), ' ');
+        if (why.length > 200) why = '${why.substring(0, 200)}…';
+        _stepError ??= 'the command "$cmd" exited with ${r.exitCode}'
+            '${why.isEmpty ? '' : ': $why'}';
+        _log('失敗', 'コマンドが ${r.exitCode} で終わりました: $cmd');
+      }
       return true;
     } catch (e) {
       if (mounted) {
         setState(() => _status =
             provider.t('auto.cmdFailed').replaceFirst('{msg}', '$e'));
       }
+      _stepError ??= 'the command "$cmd" could not be run: '
+          '${'$e'.replaceFirst('Exception: ', '')}';
       return false;
     }
   }
@@ -5240,6 +5591,8 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
     // ★ 止まっている最中だったら、 その待ちも解く (= 解かないと、
     //   「停止」 を押しても待ち続けて永遠に終わらない)。
     setState(() {
+      // 人が止めてと言った (= 手順が転んだ時と区別する)。
+      _stopRequested = true;
       _cancel = true;
       _releaseGate();
     });
@@ -5248,6 +5601,7 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
   /// AI に任せている途中の動きを止める。
   void _stopAgent() {
     if (!_agentBusy) return;
+    _stopRequested = true;
     _agentStop = true;
   }
 
@@ -8095,12 +8449,17 @@ ${kindHint.isEmpty ? '' : '$kindHint\n'}依頼: $req''';
                             fontSize: 11, fontWeight: FontWeight.w700)),
                     onPressed: () {
                       setState(() {
+                        _stopRequested = true;
                         _agentStop = true;
                         _cancel = true;
                       });
                       // ★ 手で止めた時も MCP へ伝える (= 動作検証の機能修正案。
                       //   伝えないと get_automation_status が running のままになる)。
-                      _publishAutomationPhase('cancelled', finished: true);
+                      //   ★ 終わったと言うのは**枠が空いてから** (走り側の
+                      //     後始末が出す)。 ここは「止めている」 まで。
+                      _publishAutomationPhase('cancelling',
+                          status: 'stopping - waiting for the current step to '
+                              'let go of the run slot.');
                     },
                   ),
                 ),
