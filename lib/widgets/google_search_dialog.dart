@@ -2694,8 +2694,13 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     }
     // ── Esc: メモの選択を解除 (= ユーザー要望)。 選択が無ければ
     //    従来どおり画面側の Esc (全画面の解除 / 閉じる) に任せる。 ──
-    if (key == LogicalKeyboardKey.escape && _selectedMemoIds.isNotEmpty) {
+    //    座標を指している間は、 画面側の Esc (指すのをやめる) を先にする。
+    final picking = _pickPointCompleter != null || _pickRectCompleter != null;
+    if (key == LogicalKeyboardKey.escape &&
+        !picking &&
+        _selectedMemoIds.isNotEmpty) {
       _clearMemoSelection();
+      _markEscTakenByGlobal();
       return true;
     }
     // ── F2: 選んでいるメモを編集 (= ユーザー要望) ──
@@ -2710,8 +2715,9 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       return true;
     }
     // ── Esc: 全画面 (ヘッダーとタブを閉じた状態) を戻す ──
-    if (key == LogicalKeyboardKey.escape && _gsHeaderHidden) {
+    if (key == LogicalKeyboardKey.escape && !picking && _gsHeaderHidden) {
       setState(() => _gsHeaderHidden = false);
+      _markEscTakenByGlobal();
       return true;
     }
     // ── Ctrl+Z: 削除取り消し (Undo) ──
@@ -3433,6 +3439,19 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         .where((m) => _selectedMemoIds.contains(m.id))
         .toList();
     _deleteMemos(memos);
+  }
+
+  /// この Esc はアプリ全体の受け口 ([_globalKeyHandler]) で済ませた印。
+  ///
+  /// ★ Flutter は全体の受け口が true を返しても、 同じ打鍵を**続けて**
+  ///   フォーカスの木 (画面の CallbackShortcuts) にも配る。 印が無いと、
+  ///   選択を外した直後に画面側の Esc が「選択なし → 閉じる」 と読んで
+  ///   検索画面ごと閉じてしまう。 配り終わった後 (= マイクロタスク) に下ろす。
+  bool _escTakenByGlobal = false;
+
+  void _markEscTakenByGlobal() {
+    _escTakenByGlobal = true;
+    scheduleMicrotask(() => _escTakenByGlobal = false);
   }
 
   void _clearMemoSelection() {
@@ -8922,6 +8941,9 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       child: CallbackShortcuts(
         bindings: {
           const SingleActivator(LogicalKeyboardKey.escape): () {
+            // 全体の受け口で済ませた Esc (選択の解除 / 全画面を戻す) は、
+            // ここで重ねて閉じない ([_markEscTakenByGlobal])。
+            if (_escTakenByGlobal) return;
             // ── 座標ピック中は「選択モードの解除」 だけを行う
             //    (= ユーザー報告: Esc で検索画面ごと閉じてしまう) ──
             if (_pickPointCompleter != null || _pickRectCompleter != null) {
