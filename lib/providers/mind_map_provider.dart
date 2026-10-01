@@ -28312,6 +28312,19 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Definir uma tecla para recolher / expandir',
       'ru': 'Назначить клавишу для сворачивания',
     },
+    // ★ = ユーザー要望「google 検索のメモ欄の内容で youtube 検索を掛けられる
+    //   ボタンを実装して欲しい」。
+    'gs.searchYoutube': {
+      'ja': 'このメモで YouTube を探す',
+      'en': 'Search YouTube with this note',
+      'zh': '用这条备忘录搜索 YouTube',
+      'ko': '이 메모로 YouTube 검색',
+      'es': 'Buscar en YouTube con esta nota',
+      'fr': 'Rechercher sur YouTube avec cette note',
+      'de': 'Mit dieser Notiz auf YouTube suchen',
+      'pt': 'Pesquisar no YouTube com esta nota',
+      'ru': 'Искать на YouTube по этой заметке',
+    },
     // ★ = ユーザー要望「google 検索でタブを複製する機能を右クリックの項目に」。
     'gs.duplicateTab': {
       'ja': 'タブを複製',
@@ -88736,6 +88749,24 @@ class MindMapProvider extends ChangeNotifier {
     } catch (_) {}
   }
 
+  /// Google 検索のメモ欄を右に出すか (false = 左)。
+  ///
+  /// ★ = ユーザー要望「メモはデフォルトでは右側に表示されるようにして、
+  ///   以後は最後に開いた側に出るように」。 既定は右 (true)。 左右を
+  ///   入れ替えたら、 その向きを覚えて次からもそちらに出す。
+  bool _gsMemoOnRight = true;
+  bool get gsMemoOnRight => _gsMemoOnRight;
+
+  Future<void> setGsMemoOnRight(bool v) async {
+    if (_gsMemoOnRight == v) return;
+    _gsMemoOnRight = v;
+    notifyListeners();
+    try {
+      final p = await _prefsWithRetry();
+      await p.setBool('gsMemoOnRight', v);
+    } catch (_) {}
+  }
+
   // ═══ エージェント向けの検索 (トークンを抑える) ═════════════════
   //
   // = ユーザー要望「AI エージェントのフォルダー内検索に Jev を実装して
@@ -89562,6 +89593,8 @@ class MindMapProvider extends ChangeNotifier {
     _adBlockEnabled = prefs.getBool('adBlockEnabled') ?? false;
     // 既定は「含める」 (= 今までの動き)。
     _gsMemoEmbedLink = prefs.getBool('gsMemoEmbedLink') ?? true;
+    // 既定はメモ欄を右へ (= ユーザー要望)。
+    _gsMemoOnRight = prefs.getBool('gsMemoOnRight') ?? true;
     _jevCalls = prefs.getInt('jevCalls') ?? 0;
     _jevSpentUsd = prefs.getDouble('jevSpentUsd') ?? 0.0;
   }

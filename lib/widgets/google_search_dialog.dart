@@ -1904,7 +1904,19 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   int _aiInjectDoneToken = -1;
 
   /// メモ欄と AI 欄の左右位置を入れ替えているか (横分割時のみ意味を持つ)。
-  bool _panelsSwapped = false;
+  ///
+  /// ★ = ユーザー要望「メモはデフォルトでは右側に表示されるようにして、
+  ///   以後は最後に開いた側に出るように」。 true = メモが右 / AI が左。
+  ///   初期値は設定 (`provider.gsMemoOnRight`、 既定は右) から入れ、
+  ///   入れ替えるたびに覚える ([_togglePanelsSwapped])。
+  bool _panelsSwapped = true;
+
+  /// メモ欄と AI 欄の左右を入れ替えて、 その向きを覚える。
+  void _togglePanelsSwapped() {
+    final next = !_panelsSwapped;
+    setState(() => _panelsSwapped = next);
+    unawaited(context.read<MindMapProvider>().setGsMemoOnRight(next));
+  }
 
   /// AI 欄用 Windows WebView コントローラ (検索用 _winCtrl とは独立)。
   final wv_win.WebviewController _aiWinCtrl = wv_win.WebviewController();
@@ -2511,6 +2523,9 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   void initState() {
     super.initState();
     _searchCtrl.text = widget.initialQuery;
+    // ★ メモ欄は最後に出していた側へ (= ユーザー要望: 既定は右、 以後は
+    //   最後に開いた側)。 読み込みが間に合っていない時は既定 (右) のまま。
+    _panelsSwapped = context.read<MindMapProvider>().gsMemoOnRight;
     // 自動操作パネルを開いた状態で出す (= ユーザー要望: 「自動化」 の
     // カスタムボタンから直接開けるように)。
     if (widget.openAutomation) _autoPanelOpen = true;
@@ -2699,7 +2714,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     //    ショートカット) ──
     if (key == LogicalKeyboardKey.f6) {
       if (!widget.minimalMode) {
-        setState(() => _panelsSwapped = !_panelsSwapped);
+        _togglePanelsSwapped();
       }
       return true;
     }
@@ -3993,8 +4008,9 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       // ★ = ユーザー要望「リンクとして埋め込みのボタンがタブ追加と似ている
       //   から別のものに」。 四角に＋の絵柄は右の「＋」 (新しいタブ) と
       //   見分けが付かないので、 「ページへ貼る」 絵柄にする。
+      // ★ 押すだけのボタンは白 (= ユーザー要望: 周りに合わせて)。
       icon: const Icon(Icons.note_add_outlined,
-          color: Color(0xFF4FC3F7), size: 22),
+          color: Colors.white70, size: 22),
       tooltip: p.t('gs.embedAsLink'),
       visualDensity: VisualDensity.compact,
       padding: const EdgeInsets.all(6),
@@ -4009,15 +4025,35 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   /// お気に入りボタンになる ([_addCurrentPageToBookmarks])。
   Widget _buildBookmarkAddButton() {
     final p = context.read<MindMapProvider>();
+    // ★ = ユーザー要望「お気に入りボタンとして登録の項目は押しやすいように
+    //   押したボタンの近くに表示して欲しい」。 登録の窓は本体 (マップの
+    //   画面) 側が出すので、 押した所をここで控えて渡す。
+    final key = GlobalKey();
     return IconButton(
-      icon: const Icon(Icons.star_rounded,
-          color: Color(0xFFFFB347), size: 22),
+      key: key,
+      // ★ 押すだけのボタンは白 (= ユーザー要望: 周りに合わせて)。
+      icon: const Icon(Icons.star_rounded, color: Colors.white70, size: 22),
       tooltip: p.t('gs.addBookmarkBtn'),
       visualDensity: VisualDensity.compact,
       padding: const EdgeInsets.all(6),
       constraints: const BoxConstraints(),
-      onPressed: _addCurrentPageToBookmarks,
+      onPressed: () {
+        _rememberFavButtonPos(key);
+        _addCurrentPageToBookmarks();
+      },
     );
+  }
+
+  /// お気に入り登録を押した所を控える (窓をその近くに出してもらうため)。
+  void _rememberFavButtonPos(GlobalKey key) {
+    try {
+      final box = key.currentContext?.findRenderObject() as RenderBox?;
+      if (box != null && box.hasSize) {
+        gsLastFavButtonPos = box.localToGlobal(box.size.center(Offset.zero));
+        return;
+      }
+    } catch (_) {}
+    gsLastFavButtonPos = null;
   }
 
   /// 再生速度のボタン (押すとスライドバーが出る)。
@@ -4161,27 +4197,65 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   /// - コールバック未設定 (= 旧互換) の場合:
   ///   従来通り SharedPreferences (`mokumoku_gs_bookmarks_v1`) に追加して、
   ///   検索ダイアログ内のお気に入り一覧に表示するだけ。
+  /// いま出している中身の `document.title` を聞く (取れなければ空)。
+  ///
+  /// ★ 窓の題名の控え (`_pageTitle`) と違い、 ページを読み直さずに中身だけ
+  ///   差し替える作り (YouTube など) でも今の題名が取れる。
+  Future<String> _readLiveDocumentTitle() async {
+    const js = "(function(){try{return document.title||'';}"
+        "catch(e){return '';}})()";
+    try {
+      if (_isDesktop) {
+        final r = await _winCtrl?.executeScript(js);
+        return (r is String) ? r : (r?.toString() ?? '');
+      }
+      final r = await _iawCtrl?.evaluateJavascript(source: js);
+      return (r is String) ? r : (r?.toString() ?? '');
+    } catch (_) {
+      return '';
+    }
+  }
+
+  /// お気に入りの名前を整える。
+  ///
+  /// ★ = ユーザー要望「youtube 見ている時はその動画名が名前に入るように」。
+  ///   YouTube の題名は「動画名 - YouTube」 なので、 後ろの札を落として
+  ///   動画名だけにする (他のサイトはそのまま)。 落とした結果が空になる時
+  ///   (= ホーム画面のように題名が「YouTube」 だけの時) は落とさない。
+  String _tidyBookmarkTitle(String raw, String url) {
+    var t = raw.trim();
+    if (t.isEmpty) return url;
+    const suffixes = <String>[' - YouTube', ' – YouTube', ' — YouTube'];
+    for (final s in suffixes) {
+      if (t.length > s.length && t.endsWith(s)) {
+        final head = t.substring(0, t.length - s.length).trim();
+        if (head.isNotEmpty) t = head;
+        break;
+      }
+    }
+    // 見ている最中の「(3) 動画名」 のような未読の数は邪魔なので落とす。
+    t = t.replaceFirst(RegExp(r'^\(\d+\)\s*'), '');
+    return t.isEmpty ? url : t;
+  }
+
   Future<void> _addCurrentPageToBookmarks() async {
     final url = _currentUrl;
     if (url.isEmpty) {
       _showCaptureSnack(context.read<MindMapProvider>().t('gs.noUrl'), const Color(0xFFE57373));
       return;
     }
-    String title;
-    // Windows なら _pageTitle、 iaw なら JS で document.title を取得
-    if (_pageTitle.isNotEmpty) {
-      title = _pageTitle;
-    } else if (_iawCtrl != null) {
-      try {
-        final raw =
-            await _iawCtrl!.evaluateJavascript(source: 'document.title');
-        title = (raw is String && raw.trim().isNotEmpty) ? raw.trim() : url;
-      } catch (_) {
-        title = url;
-      }
-    } else {
-      title = url;
-    }
+    // ★ = ユーザー要望「youtube 見ている時は youtube ではなく、 その動画名が
+    //   名前に入るようにして欲しい」。
+    //   以前は控えてある `_pageTitle` を**先に**使っていた。 これは窓の題名を
+    //   見張って入れている値で、 YouTube のようにページを読み直さずに中身だけ
+    //   差し替える作り (SPA) では「YouTube」 のまま更新されない事がある。
+    //   いま開いている中身の `document.title` を毎回聞きに行き、 取れなかった
+    //   時だけ控えへ落とす。
+    final live = (await _readLiveDocumentTitle()).trim();
+    String title = live.isNotEmpty
+        ? live
+        : (_pageTitle.isNotEmpty ? _pageTitle : url);
+    title = _tidyBookmarkTitle(title, url);
     // ── 新仕組み: 動的ボタン作成コールバックがあればそちらに委譲 ──
     final cb = widget.onCreateBookmarkButton;
     if (cb != null) {
@@ -7863,6 +7937,15 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                       onTap: () => _sendTextToAi(memo.text),
                     ),
                     const SizedBox(width: 2),
+                    // ── メモの中身で YouTube を探す (= ユーザー要望:
+                    //    「メモ欄の内容で youtube 検索を掛けられるボタン」) ──
+                    _miniIconButton(
+                      icon: Icons.smart_display_rounded,
+                      color: const Color(0xFFE57373),
+                      tooltip: provider.t('gs.searchYoutube'),
+                      onTap: () => _searchYoutubeWithText(memo.text),
+                    ),
+                    const SizedBox(width: 2),
                     // ── メモを DeepL に送る (= ユーザー要望: メモ内容を翻訳) ──
                     _miniIconButton(
                       icon: Icons.translate_rounded,
@@ -7892,6 +7975,35 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         ),
       ),
     );
+  }
+
+  /// メモの中身で YouTube を探す (= ユーザー要望: 「google 検索のメモ欄の
+  /// 内容で youtube 検索を掛けられるボタンを実装して欲しい」)。
+  ///
+  /// ★ 新しいタブで開く (= 今見ているページを潰さない)。 メモは何行にも
+  ///   なるので、 探す語は**1 行目**にして、 長すぎる時は切る
+  ///   (YouTube の検索欄は長い文を入れても結果が返らない)。
+  void _searchYoutubeWithText(String raw) {
+    var q = raw.trim();
+    if (q.isEmpty) return;
+    final nl = q.indexOf('\n');
+    if (nl > 0) q = q.substring(0, nl).trim();
+    if (q.runes.length > 80) {
+      q = String.fromCharCodes(q.runes.take(80));
+    }
+    if (q.isEmpty) return;
+    final url =
+        'https://www.youtube.com/results?search_query=${Uri.encodeQueryComponent(q)}';
+    if (_gsTabs.length < _kGsMaxTabs) {
+      _gsTabs[_gsActiveTab].url = _currentUrl;
+      setState(() {
+        _gsTabs.add(_GsTab(url: url, title: 'YouTube'));
+        _gsActiveTab = _gsTabs.length - 1;
+        _currentUrl = url;
+        _pageTitle = 'YouTube';
+      });
+    }
+    _openUrl(url);
   }
 
   /// 小さなアクションボタン (カード内用)。
@@ -7997,7 +8109,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                   constraints:
                       const BoxConstraints(minWidth: 28, minHeight: 28),
                   onPressed: () =>
-                      setState(() => _panelsSwapped = !_panelsSwapped),
+                      _togglePanelsSwapped(),
                 ),
               IconButton(
                 tooltip: context.read<MindMapProvider>().t('gs.closeAi'),
@@ -8233,7 +8345,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                     padding: const EdgeInsets.all(4),
                     constraints: const BoxConstraints(),
                     onPressed: () =>
-                        setState(() => _panelsSwapped = !_panelsSwapped),
+                        _togglePanelsSwapped(),
                   ),
                   // × 閉じる
                   IconButton(
@@ -9018,7 +9130,9 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                           IconButton(
                             icon: _gSearchSplitIcon(
                               _GSearchSplitIconFill.left,
-                              color: const Color(0xFF43B97F),
+                              // 押すだけのボタンは白 (= ユーザー要望)。
+                              //   左右の見分けは絵柄の塗り分けが持つ。
+                              color: Colors.white70,
                               size: 22,
                             ),
                             tooltip: provider.t('gsearch.splitLeft'),
@@ -9034,7 +9148,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                           IconButton(
                             icon: _gSearchSplitIcon(
                               _GSearchSplitIconFill.right,
-                              color: const Color(0xFF6C63FF),
+                              color: Colors.white70,
                               size: 22,
                             ),
                             tooltip: provider.t('gsearch.splitRight'),
@@ -9053,7 +9167,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                               _isDesktop
                                   ? _GSearchSplitIconFill.left
                                   : _GSearchSplitIconFill.top,
-                              color: const Color(0xFF43B97F),
+                              color: Colors.white70,
                               size: 22,
                             ),
                             tooltip: _isDesktop
@@ -9633,6 +9747,14 @@ class _GsTab {
       : lastSafeServiceUrl =
             isSafeExternalServiceUrl(url) ? url : 'https://www.google.com/';
 }
+
+/// お気に入り登録 (★) を押した所 (画面座標)。
+///
+/// ★ = ユーザー要望「お気に入りボタンとして登録の項目は押しやすいように
+///   押したボタンの近くに表示して欲しい」。 登録の窓を出すのは本体
+///   (`_MindMapScreenState._showCreateBookmarkButtonDialog`) なので、
+///   押した場所をここへ置いて拾ってもらう。 使ったら本体側が null に戻す。
+Offset? gsLastFavButtonPos;
 
 /// 検索 WebView のホイール感度を下げる (= ユーザー要望: ノードから開いた
 /// Google 検索のマウスホイールが速すぎるので、 もう少し小さくする)。

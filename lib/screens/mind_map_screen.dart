@@ -15204,12 +15204,20 @@ class _MindMapScreenState extends State<MindMapScreen>
     IconData selectedIcon = _availableBookmarkIcons.first;
     Color selectedColor = _availableBookmarkColors.first;
 
+    // ★ = ユーザー要望「お気に入りボタンとして登録の項目は押しやすいように
+    //   押したボタンの近くに表示して欲しい」。 Google 検索の ★ を押した時は
+    //   そのボタンの所を控えてあるので ([gsLastFavButtonPos])、 そこを錨に
+    //   する。 他の入口 (設定など) から来た時は今までどおり画面の中央。
+    //   ★ 控えは 1 回だけ使う (次に別の所から開いた時に前の場所へ出さない)。
+    final favAt = gsLastFavButtonPos ?? _lastCustomButtonPointerPos;
+    gsLastFavButtonPos = null;
+    final favAnchor = _customButtonAnchor(favAt);
     final result = await showDialog<_BookmarkButton>(
       context: context,
       barrierDismissible: true,
       builder: (dctx) {
         return StatefulBuilder(builder: (sctx, setS) {
-          return AlertDialog(
+          final dialog = AlertDialog(
             backgroundColor: const Color(0xFF22222E),
             shape:
                 RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
@@ -15403,6 +15411,10 @@ class _MindMapScreenState extends State<MindMapScreen>
               ),
             ],
           );
+          // 押した所の近くへ寄せる (錨が無ければ中央のまま)。
+          return _positionNearAnchor(
+              sctx, favAnchor, dialog, const Size(520, 560),
+              useLastBar: false);
         });
       },
     );
@@ -51055,6 +51067,15 @@ class _MindMapScreenState extends State<MindMapScreen>
     if (mode == 'cli') {
       // パソコンに入れた AI を使う画面から始める。
       _McpChatDialogState.openCliListOnStart = true;
+    } else if (mode == 'api') {
+      // ★ = ユーザー要望「AI(API) の項目は API 経由で呼び出せるものだけに
+      //   したいから ClaudeCode CLI も選択肢から消して欲しい」。
+      //   「AI (API)」 を選んで開いたのに、 アプリ全体の相手が CLI のままだと
+      //   題は API なのに中身は CLI が答える (下の帯も「Claude Code」 /
+      //   「CLI は契約している分を使います」 のまま) という食い違いが
+      //   起きていた。 この画面を開く時に相手を API へ戻す。
+      await _setAiEngineMode(provider, 'api');
+      if (!mounted) return;
     }
     await _openMcpChat(provider, floatingPanel: true);
   }
@@ -296272,32 +296293,37 @@ class _McpChatDialogState extends State<_McpChatDialog>
       onExit: (_) {
         if (_modelBarHover) setState(() => _modelBarHover = false);
       },
+      // ★ = ユーザー要望「モデル名を隠すボタンは消して、 モデル名の所付近の
+      //   何もない所をクリックすると表示と非表示が切り替わる形に」。
+      //   目のボタンをやめ、 この帯の**空いた所**を押すと畳む / 戻す。
+      //   モデル名そのものは自前の受け口を持つので、 押すと今までどおり
+      //   モデル選びが出る (内側が勝つ)。
+      child: GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => provider.setMcpModelBarHidden(!hidden),
       child: Padding(
       // ★ 全画面の時は会話や入力欄と同じだけ左右を空ける (= ユーザー要望:
       //   中身を真ん中へ寄せる)。 空けないと、 この行だけ画面の端に残って
       //   下の入力欄と段が揃わない。
       padding: EdgeInsets.fromLTRB(
           8 + _readingSidePad, 4, 10 + _readingSidePad, 0),
+      child: SizedBox(
+      // 畳んでいる間も押せる高さを残す (= 戻す口がここしか無いため)。
+      height: 26,
       child: Row(children: [
-        // ★ 隠している間はこのボタンも消す。 カーソルを乗せた時だけ
-        //   浮かび上がる (= ユーザー要望: 他の非表示ボタンと同じ動き)。
-        AnimatedOpacity(
-          duration: const Duration(milliseconds: 120),
-          opacity: (!hidden || _modelBarHover) ? 1 : 0,
-          child: IconButton(
-          tooltip:
-              provider.t(hidden ? 'mcp.showModelBar' : 'mcp.hideModelBar'),
-          padding: EdgeInsets.zero,
-          constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
-          icon: Icon(
-              hidden
-                  ? Icons.visibility_off_outlined
-                  : Icons.visibility_outlined,
-              size: 15,
-              color: Colors.white38),
-          onPressed: () => provider.setMcpModelBarHidden(!hidden),
-        ),
-        ),
+        if (hidden)
+          // 畳んでいる時は、 カーソルを乗せた時だけ戻し方を薄く案内する。
+          Expanded(
+            child: AnimatedOpacity(
+              duration: const Duration(milliseconds: 120),
+              opacity: _modelBarHover ? 1 : 0,
+              child: Text(provider.t('mcp.showModelBar'),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      color: Colors.white24, fontSize: 10.5)),
+            ),
+          ),
         if (!hidden) ...[
           const SizedBox(width: 2),
           const Icon(Icons.memory_rounded, size: 13, color: Colors.white38),
@@ -296319,6 +296345,8 @@ class _McpChatDialogState extends State<_McpChatDialog>
           ),
         ],
       ]),
+      ),
+      ),
       ),
     );
   }
@@ -296354,7 +296382,9 @@ class _McpChatDialogState extends State<_McpChatDialog>
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
         child: Row(mainAxisSize: MainAxisSize.min, children: [
-          Text(_modelLabel(cur),
+          // ★ ここは AI (API) の画面なので、 CLI の名前ではなく API の
+          //   モデル名を出す (= ユーザー要望: ClaudeCode CLI を出さない)。
+          Text(provider.relayModelRawLabel(cur),
               style: const TextStyle(color: Colors.white70, fontSize: 11)),
           const Icon(Icons.arrow_drop_down_rounded,
               color: Colors.white38, size: 18),
