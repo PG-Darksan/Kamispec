@@ -1470,6 +1470,13 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   /// 目のボタンで戻せる。
   bool _gsHeaderHidden = false;
 
+  /// ヘッダーの項目 (ボタンと検索欄) を隠しているか。 帯は残したまま、
+  /// 何もない所のクリックで出し入れする (= ユーザー要望)。
+  bool _gsHeaderItemsHidden = false;
+
+  /// タブの帯のボタン (フォルダー / ＋) を隠しているか (= ユーザー要望)。
+  bool _gsTabButtonsHidden = false;
+
   /// ブラウザ側を見せない状態か (= 自動操作だけを出していて、 まだページを
   /// 開いていない間)。 ページを開いたら false になり、 普通に表示される。
   bool get _browserHidden =>
@@ -2680,9 +2687,31 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       _reopenClosedGsTab();
       return true;
     }
-    // ── Ctrl+A: 保存済みメモを全選択 ──
+    // ── Ctrl+A: 保存済みメモを全選択 (もう一度押すと解除) ──
     if (key == LogicalKeyboardKey.keyA && ctrl) {
       _selectAllSavedMemos();
+      return true;
+    }
+    // ── Esc: メモの選択を解除 (= ユーザー要望)。 選択が無ければ
+    //    従来どおり画面側の Esc (全画面の解除 / 閉じる) に任せる。 ──
+    if (key == LogicalKeyboardKey.escape && _selectedMemoIds.isNotEmpty) {
+      _clearMemoSelection();
+      return true;
+    }
+    // ── F2: 選んでいるメモを編集 (= ユーザー要望) ──
+    if (key == LogicalKeyboardKey.f2 && _selectedMemoIds.isNotEmpty) {
+      final memos = context.read<MindMapProvider>().googleSearchMemos;
+      final id = (_lastClickedMemoId != null &&
+              _selectedMemoIds.contains(_lastClickedMemoId))
+          ? _lastClickedMemoId
+          : _selectedMemoIds.first;
+      final memo = memos.where((m) => m.id == id).firstOrNull;
+      if (memo != null) _editSavedMemo(memo);
+      return true;
+    }
+    // ── Esc: 全画面 (ヘッダーとタブを閉じた状態) を戻す ──
+    if (key == LogicalKeyboardKey.escape && _gsHeaderHidden) {
+      setState(() => _gsHeaderHidden = false);
       return true;
     }
     // ── Ctrl+Z: 削除取り消し (Undo) ──
@@ -2729,7 +2758,29 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     });
   }
 
+  /// 入力が URL (= `https://youtube.com` / `youtube.com` など) なら、
+  /// 検索ではなくそのまま開く先を返す (= ユーザー要望: 検索ボックスに
+  /// URL を入れたらサイトへ直接飛ぶように)。 URL でなければ null。
+  static String? _directUrlOf(String raw) {
+    var s = raw.trim();
+    if (s.isEmpty || RegExp(r'\s').hasMatch(s)) return null;
+    // 打ち間違い (https;// / https:/ ) も直す。
+    s = s.replaceFirstMapped(
+        RegExp(r'^(https?)[;:]/{1,2}', caseSensitive: false),
+        (m) => '${m[1]!.toLowerCase()}://');
+    if (RegExp(r'^(https?|file)://\S+$', caseSensitive: false).hasMatch(s)) {
+      return s;
+    }
+    final hostLike = RegExp(
+        r'^(localhost|(\d{1,3}\.){3}\d{1,3}|([a-z0-9-]+\.)+[a-z]{2,})(:\d+)?([/?#]\S*)?$',
+        caseSensitive: false);
+    if (hostLike.hasMatch(s)) return 'https://$s';
+    return null;
+  }
+
   String _buildSearchUrl(String query) {
+    final direct = _directUrlOf(query);
+    if (direct != null) return direct;
     final q = Uri.encodeQueryComponent(query.trim());
     // hl (表示言語) を付ける (= ユーザー報告: モバイルで Google 検索が結果を
     //   返さない)。 言語指定 + 同意 Cookie で同意ウォールを避け結果を確実にする。
@@ -3173,13 +3224,26 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         HardwareKeyboard.instance.isMetaPressed; // macOS の Cmd 対応
     final isShift = HardwareKeyboard.instance.isShiftPressed;
 
-    // 通常タップ (modifier 無し) は何もしない (ユーザー要望)
-    if (!isCtrl && !isShift) return;
-
     // 選択操作開始 → TextField からフォーカスを外す (= 上位 Focus の
-    // onKeyEvent が Del/Backspace を捕捉できるようにする)
+    // onKeyEvent が Del/Backspace / F2 を捕捉できるようにする)
     _searchFocus.unfocus();
     _memoFocus.unfocus();
+
+    // ★ = ユーザー要望「メモをクリックで個別選択して、 F2 で編集」。
+    //   通常クリックはそのメモ 1 つだけを選ぶ (もう一度押すと外れる)。
+    if (!isCtrl && !isShift) {
+      setState(() {
+        if (_selectedMemoIds.length == 1 &&
+            _selectedMemoIds.contains(memo.id)) {
+          _selectedMemoIds.clear();
+          _lastClickedMemoId = null;
+        } else {
+          _selectedMemoIds = {memo.id};
+          _lastClickedMemoId = memo.id;
+        }
+      });
+      return;
+    }
 
     if (isCtrl) {
       setState(() {
@@ -3212,19 +3276,74 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     }
   }
 
-  /// メモに紐づく URL のページを WebView で開く。
-  /// snapshotUrl がない場合は呼ばれない (UI でボタンが非表示になる)。
-  void _navigateToMemoPage(GoogleSearchMemo memo) {
-    final url = memo.snapshotUrl;
-    if (url == null || url.isEmpty) return;
-    if (_isDesktop) {
-      if (_winInitialized) _winCtrl?.loadUrl(url);
-    } else {
-      _iawCtrl?.loadUrl(
-        urlRequest: iaw.URLRequest(url: iaw.WebUri(url)),
-      );
-    }
-    setState(() => _currentUrl = url);
+  /// 選んでいるメモ (一覧の並び順) を返す。
+  List<GoogleSearchMemo> _selectedMemosInOrder() => context
+      .read<MindMapProvider>()
+      .googleSearchMemos
+      .where((m) => _selectedMemoIds.contains(m.id))
+      .toList();
+
+  /// 選んだメモをまとめてブラウザ版 AI に渡す (= ユーザー要望: Ctrl+A で
+  /// 全選択した後に AI へ送るボタン)。
+  void _sendSelectedMemosToAi() {
+    final memos = _selectedMemosInOrder();
+    if (memos.isEmpty) return;
+    final text = memos
+        .map((m) => m.text.trim())
+        .where((t) => t.isNotEmpty)
+        .join('\n\n');
+    if (text.isEmpty) return;
+    _sendTextToAi(text);
+  }
+
+  /// 選んだメモを 1 つのメモに統合する (= ユーザー要望)。 本文は一覧の
+  /// 並び順で空行を挟んで繋ぎ、 貼った画像 / PDF もまとめて引き継ぐ。
+  /// 元のメモは消す (Ctrl+Z で戻せる)。
+  Future<void> _mergeSelectedMemos() async {
+    final memos = _selectedMemosInOrder();
+    if (memos.length < 2) return;
+    final provider = context.read<MindMapProvider>();
+    final text = memos
+        .map((m) => m.text.trim())
+        .where((t) => t.isNotEmpty)
+        .join('\n\n');
+    final attachments = <String>[
+      for (final m in memos) ...m.attachments,
+    ].toSet().toList();
+    final url = memos
+        .map((m) => m.snapshotUrl)
+        .firstWhere((u) => u != null && u.isNotEmpty, orElse: () => null);
+    final firstIdx =
+        provider.googleSearchMemos.indexWhere((m) => m.id == memos.first.id);
+    final merged = GoogleSearchMemo(
+      id: 'gs-${DateTime.now().millisecondsSinceEpoch}-${text.hashCode}',
+      text: text,
+      snapshotUrl: url,
+      attachments: attachments,
+    );
+    await _deleteMemos(memos);
+    await provider.addGoogleSearchMemo(merged);
+    // 統合したメモは元の先頭メモの位置に置く。
+    final ids = provider.googleSearchMemos.map((m) => m.id).toList()
+      ..remove(merged.id);
+    ids.insert(firstIdx.clamp(0, ids.length), merged.id);
+    await provider.reorderGoogleSearchMemos(ids);
+    if (!mounted) return;
+    setState(() {
+      _selectedMemoIds = {merged.id};
+      _lastClickedMemoId = merged.id;
+    });
+  }
+
+  /// ドラッグでメモの順番を入れ替える (= ユーザー要望)。
+  void _reorderMemo(int oldIndex, int newIndex) {
+    final provider = context.read<MindMapProvider>();
+    final ids = provider.googleSearchMemos.map((m) => m.id).toList();
+    if (oldIndex < 0 || oldIndex >= ids.length) return;
+    if (newIndex > oldIndex) newIndex -= 1;
+    final id = ids.removeAt(oldIndex);
+    ids.insert(newIndex.clamp(0, ids.length), id);
+    unawaited(provider.reorderGoogleSearchMemos(ids));
   }
 
   /// 指定のメモを一括削除。
@@ -3316,13 +3435,24 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     _deleteMemos(memos);
   }
 
-  /// Ctrl+A: 保存済みメモを全選択。 既に全選択状態の場合は無効化はせず、
-  /// 同じ Set を再構築する (= 副作用なし)。
+  void _clearMemoSelection() {
+    setState(() {
+      _selectedMemoIds.clear();
+      _lastClickedMemoId = null;
+    });
+  }
+
+  /// Ctrl+A: 保存済みメモを全選択。 既に全部選んでいる時は解除する
+  /// (= ユーザー要望: もう一度 Ctrl+A で選択が外れるように)。
   void _selectAllSavedMemos() {
     final memos = context.read<MindMapProvider>().googleSearchMemos;
     if (memos.isEmpty) return;
     _searchFocus.unfocus();
     _memoFocus.unfocus();
+    if (memos.every((m) => _selectedMemoIds.contains(m.id))) {
+      _clearMemoSelection();
+      return;
+    }
     setState(() {
       _selectedMemoIds = memos.map((m) => m.id).toSet();
       _lastClickedMemoId = memos.first.id;
@@ -3467,7 +3597,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         //   ボタンを設置 (PC 版にも無かったので両方に追加)。
         IconButton(
           icon: const Icon(Icons.arrow_back_rounded,
-              color: Colors.white, size: 20),
+              color: Color(0xFF90CAF9), size: 20),
           tooltip: context.read<MindMapProvider>().t('btn.back'),
           visualDensity: VisualDensity.compact,
           padding: const EdgeInsets.all(4),
@@ -3479,7 +3609,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         //   詰めた余白で、 狭いモバイルでも重ならず収まるようにする。
         IconButton(
           icon: const Icon(Icons.arrow_forward_rounded,
-              color: Colors.white, size: 20),
+              color: Color(0xFF90CAF9), size: 20),
           tooltip: context.read<MindMapProvider>().t('split.forward'),
           visualDensity: VisualDensity.compact,
           padding: const EdgeInsets.all(4),
@@ -3488,7 +3618,8 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         ),
         IconButton(
           icon:
-              const Icon(Icons.refresh_rounded, color: Colors.white, size: 20),
+              const Icon(Icons.refresh_rounded,
+              color: Color(0xFFA5D6A7), size: 20),
           tooltip: context.read<MindMapProvider>().t('player.reload'),
           visualDensity: VisualDensity.compact,
           padding: const EdgeInsets.all(4),
@@ -3514,7 +3645,8 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
           ),
         ),
         IconButton(
-          icon: const Icon(Icons.search, color: Colors.white, size: 22),
+          icon: const Icon(Icons.search,
+              color: Color(0xFF81D4FA), size: 22),
           tooltip: provider.t('googleSearch.searchOnly'),
           visualDensity: VisualDensity.compact,
           padding: const EdgeInsets.all(6),
@@ -3557,7 +3689,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
               icon: Icon(Icons.ads_click_rounded,
                   color: _autoClickerOpen
                       ? const Color(0xFF80CBC4)
-                      : Colors.white,
+                      : const Color(0xFF80CBC4).withValues(alpha: 0.55),
                   size: 20),
               tooltip: provider.t('hdr.autoClicker'),
               visualDensity: VisualDensity.compact,
@@ -4010,7 +4142,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       //   見分けが付かないので、 「ページへ貼る」 絵柄にする。
       // ★ 押すだけのボタンは白 (= ユーザー要望: 周りに合わせて)。
       icon: const Icon(Icons.note_add_outlined,
-          color: Colors.white70, size: 22),
+          color: Color(0xFFA5D6A7), size: 22),
       tooltip: p.t('gs.embedAsLink'),
       visualDensity: VisualDensity.compact,
       padding: const EdgeInsets.all(6),
@@ -4032,7 +4164,8 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     return IconButton(
       key: key,
       // ★ 押すだけのボタンは白 (= ユーザー要望: 周りに合わせて)。
-      icon: const Icon(Icons.star_rounded, color: Colors.white70, size: 22),
+      icon: const Icon(Icons.star_rounded,
+          color: Color(0xFFFFD54F), size: 22),
       tooltip: p.t('gs.addBookmarkBtn'),
       visualDensity: VisualDensity.compact,
       padding: const EdgeInsets.all(6),
@@ -4069,7 +4202,9 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       builder: (btnCtx) => IconButton(
         icon: Icon(
           on ? Icons.slow_motion_video_rounded : Icons.speed_rounded,
-          color: on ? const Color(0xFF4FC3F7) : Colors.white70,
+          color: on
+              ? const Color(0xFFF48FB1)
+              : const Color(0xFFF48FB1).withValues(alpha: 0.55),
           size: 22,
         ),
         tooltip: '${context.read<MindMapProvider>().t('gs.videoRate')}'
@@ -5684,6 +5819,10 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
     // ★ 包みは `Row` の**外側**に置く (中に挟むと帯の高さが崩れる)。
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
+      // ★ = ユーザー要望: タブの帯の何もない所をクリックすると、 帯の
+      //   ボタン (フォルダー / ＋) の表示 / 非表示が切り替わる。
+      onTap: () =>
+          setState(() => _gsTabButtonsHidden = !_gsTabButtonsHidden),
       onSecondaryTapDown: (d) =>
           _showGsTabMenu(d.globalPosition, _gsActiveTab),
       onLongPressStart: _isDesktop
@@ -5808,6 +5947,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
           ),
           ),
         ),
+        if (!_gsTabButtonsHidden)
         GestureDetector(
           onTap: _showGsFoldersMenu,
           behavior: HitTestBehavior.opaque,
@@ -5822,7 +5962,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         ),
         // ── 新しいタブ「＋」 (= ユーザー要望: 地球ボタンと統合。 押すと、
         //    どのサイトのタブを作るかを選べるメニューを出す) ──
-        if (_gsTabs.length < _kGsMaxTabs)
+        if (_gsTabs.length < _kGsMaxTabs && !_gsTabButtonsHidden)
           GestureDetector(
             onTapDown: (d) => _showGsNewTabSiteMenu(d.globalPosition),
             behavior: HitTestBehavior.opaque,
@@ -7008,35 +7148,10 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   /// ★ 帯の左端にヘッダーを戻す山形を置く (隠している間の入口)。
   PreferredSizeWidget? _buildHeaderHiddenAppBar(
       MindMapProvider provider, bool isMobileHeader) {
-    final showTabs =
-        !widget.minimalMode && !isMobileHeader && _gsTabBarExpanded;
-    if (!showTabs) {
-      // タブも出していない時は今までどおり (指で使う端末だけ、 戻す帯を出す)。
-      return _gsHoverCapable ? null : _buildHiddenHeaderStrip(provider);
-    }
-    final top = MediaQuery.paddingOf(context).top;
-    return PreferredSize(
-      preferredSize: Size.fromHeight(34 + top),
-      child: Container(
-        height: 34 + top,
-        padding: EdgeInsets.only(top: top),
-        color: const Color(0xFF0E0E1A),
-        child: Row(children: [
-          Tooltip(
-            message: provider.t('gs.showHeader'),
-            child: InkWell(
-              onTap: () => setState(() => _gsHeaderHidden = false),
-              child: const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 8),
-                child: Icon(Icons.keyboard_arrow_down_rounded,
-                    color: Colors.white70, size: 18),
-              ),
-            ),
-          ),
-          Expanded(child: _buildGsTabBar()),
-        ]),
-      ),
-    );
+    // ★ = ユーザー要望: 全画面はヘッダーとタブの両方を閉じる
+    //   (前はタブを出していると帯が残っていた)。 指で使う端末だけ、
+    //   戻す細い帯を出す。
+    return _gsHoverCapable ? null : _buildHiddenHeaderStrip(provider);
   }
 
   Widget _buildWebView() {
@@ -7750,6 +7865,21 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
             ),
           ),
           const SizedBox(width: 4),
+          // ── 選んだメモをまとめてブラウザ版 AI へ (= ユーザー要望) ──
+          _selectionBarIconBtn(
+            icon: Icons.smart_toy_rounded,
+            color: const Color(0xFF4FC3F7),
+            tooltip: provider.t('gs.sendSelectedToAi'),
+            onTap: _sendSelectedMemosToAi,
+          ),
+          // ── 選んだメモを 1 つに統合 (= ユーザー要望) ──
+          if (count >= 2)
+            _selectionBarIconBtn(
+              icon: Icons.merge_rounded,
+              color: const Color(0xFFCE93D8),
+              tooltip: provider.t('gs.mergeMemos'),
+              onTap: () => unawaited(_mergeSelectedMemos()),
+            ),
           _selectionBarIconBtn(
             icon: Icons.add_circle_outline_rounded,
             color: const Color(0xFF66BB6A),
@@ -7766,12 +7896,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
             icon: Icons.close_rounded,
             color: Colors.white54,
             tooltip: provider.t('googleSearch.deselectAll'),
-            onTap: () {
-              setState(() {
-                _selectedMemoIds.clear();
-                _lastClickedMemoId = null;
-              });
-            },
+            onTap: _clearMemoSelection,
           ),
         ],
       ),
@@ -7809,7 +7934,8 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   ///
   /// onTap で複数選択ロジック (`_onMemoCardTap`) を発火。 単純なタップは
   /// 単独選択になり、 他のメモ選択は解除される。
-  Widget _buildMemoCard(MindMapProvider provider, GoogleSearchMemo memo) {
+  Widget _buildMemoCard(
+      MindMapProvider provider, GoogleSearchMemo memo, int index) {
     final isEditing = _editingMemoId == memo.id;
     final isSelected = _selectedMemoIds.contains(memo.id);
     final Color borderColor;
@@ -7824,7 +7950,13 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       borderColor = Colors.white12;
       bgColor = const Color(0xFF252525);
     }
-    return Container(
+    // ★ = ユーザー要望「メモをドラッグで順番を入れ替え」。 左の掴み (⠿) は
+    //   すぐ掴める。 カードのどこでも、 少し押さえてから動かせば掴める
+    //   (すぐ掴む形だとマウスのわずかなぶれでクリックが効かなくなる)。
+    return _QuickDelayedDragStartListener(
+      key: ValueKey('gsmemo-${memo.id}'),
+      index: index,
+      child: Container(
       margin: const EdgeInsets.only(bottom: 6),
       child: Material(
         color: Colors.transparent,
@@ -7858,6 +7990,17 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                 // タイトル行 (1 行目相当) + 選択チェック ✓
                 Row(
                   children: [
+                    ReorderableDragStartListener(
+                      index: index,
+                      child: const MouseRegion(
+                        cursor: SystemMouseCursors.grab,
+                        child: Padding(
+                          padding: EdgeInsets.only(right: 4),
+                          child: Icon(Icons.drag_indicator_rounded,
+                              color: Colors.white30, size: 16),
+                        ),
+                      ),
+                    ),
                     if (isSelected)
                       const Padding(
                         padding: EdgeInsets.only(right: 4),
@@ -7907,21 +8050,11 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                 ),
                 const SizedBox(height: 6),
                 // アクションボタン (横並び、 アイコンのみ)
-                // 順序: 🌐 ページを開く / ✏ 編集 / ➕ マップへ / 🗑 削除
-                // 🌐 は snapshotUrl があるメモにだけ表示。
+                // 順序: ✏ 編集 / ➕ マップへ / 🗑 削除
+                // ★「このメモのページを開く」 は使わないので外した (= ユーザー要望)。
                 Row(
                   mainAxisAlignment: MainAxisAlignment.end,
                   children: [
-                    if (memo.snapshotUrl != null &&
-                        memo.snapshotUrl!.isNotEmpty) ...[
-                      _miniIconButton(
-                        icon: Icons.open_in_browser_rounded,
-                        color: const Color(0xFFFFB74D),
-                        tooltip: provider.t('googleSearch.openMemoPage'),
-                        onTap: () => _navigateToMemoPage(memo),
-                      ),
-                      const SizedBox(width: 2),
-                    ],
                     _miniIconButton(
                       icon: Icons.edit_rounded,
                       color: const Color(0xFF4FC3F7),
@@ -7974,6 +8107,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
           ),
         ),
       ),
+    ),
     );
   }
 
@@ -8306,6 +8440,79 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
   }
 
   /// メモパネル全体 (エディタ + 仕切り + 保存済みリスト)。
+  /// メモ欄の見出しの帯。 「メモ (件数)」 + リンクを含めるか + 新規メモ +
+  /// 位置の移動 / 入れ替え + × 閉じる を 1 行に並べる。
+  Widget _buildMemoPanelHeaderRow(
+      MindMapProvider provider, int count, bool isNodeEdit) {
+    Widget btn(IconData icon, Color color, String tip, VoidCallback onTap) =>
+        IconButton(
+          icon: Icon(icon, color: color, size: 18),
+          tooltip: tip,
+          visualDensity: VisualDensity.compact,
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+          onPressed: onTap,
+        );
+    return Row(
+      children: [
+        const Icon(Icons.sticky_note_2_rounded,
+            color: Color(0xFFFFB347), size: 16),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            isNodeEdit
+                ? provider.t('gs.memo')
+                : '${provider.t('gs.memo')} ($count)',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+                color: Colors.white,
+                fontSize: 13,
+                fontWeight: FontWeight.w700),
+          ),
+        ),
+        if (!isNodeEdit) ...[
+          // ── ページに埋め込む時にリンクも含めるか (既定は含めない) ──
+          btn(
+            provider.gsMemoEmbedLink
+                ? Icons.link_rounded
+                : Icons.link_off_rounded,
+            provider.gsMemoEmbedLink
+                ? const Color(0xFF4FC3F7)
+                : Colors.white38,
+            provider.t(provider.gsMemoEmbedLink
+                ? 'gs.embedLinkTip'
+                : 'gs.embedLinkOffTip'),
+            () => unawaited(
+                provider.setGsMemoEmbedLink(!provider.gsMemoEmbedLink)),
+          ),
+          // ＋新規メモ
+          btn(Icons.note_add_rounded, const Color(0xFFFFB347),
+              provider.t('gs.newMemo'), _openNewMemoEditor),
+        ],
+        if (_isHorizontalLayout && !widget.minimalMode) ...[
+          // メモと AI を左右入れ替え
+          btn(Icons.swap_horiz_rounded, const Color(0xFF90CAF9),
+              provider.t('gs.swapAiMemo'), _togglePanelsSwapped),
+          btn(Icons.close_rounded, Colors.white70,
+              provider.t('gs.closeMemoKey'), _closeMemoPanel),
+        ] else if (!_isHorizontalLayout) ...[
+          // ── メモ欄を上 / 下へ移動 ──
+          btn(
+            _memoPanelOnTop
+                ? Icons.vertical_align_bottom_rounded
+                : Icons.vertical_align_top_rounded,
+            const Color(0xFFFFB347),
+            _memoPanelOnTop ? 'メモ欄を下に移動' : 'メモ欄を上に移動',
+            () => setState(() => _memoPanelOnTop = !_memoPanelOnTop),
+          ),
+          btn(Icons.close_rounded, Colors.white70, provider.t('gs.closeMemo'),
+              () => setState(() => _memoPanelExpanded = false)),
+        ],
+      ],
+    );
+  }
+
   Widget _buildMemoPanel(MindMapProvider provider) {
     final memos = provider.googleSearchMemos;
     // ノードからの編集モード (initialMemo 指定) では複数メモ機能を非表示
@@ -8318,109 +8525,17 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // ── パネルヘッダー (入れ替え + × 閉じる) ──
-          // ユーザー要望: メモ欄を左右入れ替えできるように + 閉じるボタン。
-          //   横分割時のみ表示 (縦分割は _buildCollapsibleMemoPanel の
-          //   ヘッダーが開閉を担うため)。
-          if (_isHorizontalLayout && !widget.minimalMode)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 6),
-              child: Row(
-                children: [
-                  const Icon(Icons.sticky_note_2_rounded,
-                      color: Color(0xFFFFB347), size: 16),
-                  const SizedBox(width: 6),
-                  Text(context.read<MindMapProvider>().t('gs.memo'),
-                      style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w700)),
-                  const Spacer(),
-                  // メモと AI を左右入れ替え (= AI 側ボタンと色を揃えて白に)
-                  IconButton(
-                    icon: const Icon(Icons.swap_horiz_rounded,
-                        color: Colors.white70, size: 20),
-                    tooltip: context.read<MindMapProvider>().t('gs.swapAiMemo'),
-                    visualDensity: VisualDensity.compact,
-                    padding: const EdgeInsets.all(4),
-                    constraints: const BoxConstraints(),
-                    onPressed: () =>
-                        _togglePanelsSwapped(),
-                  ),
-                  // × 閉じる
-                  IconButton(
-                    icon: const Icon(Icons.close_rounded,
-                        color: Colors.white70, size: 20),
-                    tooltip: context.read<MindMapProvider>().t('gs.closeMemoKey'),
-                    visualDensity: VisualDensity.compact,
-                    padding: const EdgeInsets.all(4),
-                    constraints: const BoxConstraints(),
-                    onPressed: _closeMemoPanel,
-                  ),
-                ],
-              ),
-            ),
+          // ── 見出しの帯 (= ユーザー要望: 「メモ」 と「新規メモ」 の 2 行を
+          //    1 行にまとめ、 ボタンも 1 行に並べる)。 ──
+          _buildMemoPanelHeaderRow(provider, memos.length, isNodeEdit),
           // ── 入力エディタ ──
           // PDF ビューアのメモ欄と同じく、 普段は隠して「＋新規メモ」 ボタンや
           //   既存メモの編集時だけ表示する (= ユーザー要望: 形式を揃える)。
-          if (isNodeEdit || _memoEditorOpen || _editingMemoId != null)
+          if (isNodeEdit || _memoEditorOpen || _editingMemoId != null) ...[
+            const SizedBox(height: 6),
             _buildEditor(provider),
+          ],
           if (!isNodeEdit) ...[
-            const SizedBox(height: 10),
-            // ── 仕切り ──
-            const Divider(color: Colors.white12, height: 1),
-            const SizedBox(height: 10),
-            // ── 保存済みメモ見出し (＋ 新規メモ ボタン) ──
-            Row(
-              children: [
-                const Icon(Icons.bookmarks_rounded,
-                    color: Color(0xFFFFB347), size: 16),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    '${provider.t('googleSearch.savedMemos')} (${memos.length})',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w600,
-                      fontSize: 13,
-                    ),
-                  ),
-                ),
-                // ── ページに埋め込む時にリンクも含めるか (= ユーザー要望:
-                //    「リンクまで含めるかどうかは設定で変えられるように」) ──
-                //    覚える設定なので、 次に開いた時もこのままになる。
-                IconButton(
-                  icon: Icon(
-                      provider.gsMemoEmbedLink
-                          ? Icons.link_rounded
-                          : Icons.link_off_rounded,
-                      color: provider.gsMemoEmbedLink
-                          ? const Color(0xFF4FC3F7)
-                          : Colors.white38,
-                      size: 18),
-                  tooltip: provider.t(provider.gsMemoEmbedLink
-                      ? 'gs.embedLinkTip'
-                      : 'gs.embedLinkOffTip'),
-                  visualDensity: VisualDensity.compact,
-                  padding: EdgeInsets.zero,
-                  constraints:
-                      const BoxConstraints(minWidth: 28, minHeight: 28),
-                  onPressed: () => unawaited(
-                      provider.setGsMemoEmbedLink(!provider.gsMemoEmbedLink)),
-                ),
-                // ＋新規メモ (= PDF ビューアの「フリーメモ」 ボタンに相当)
-                IconButton(
-                  icon: const Icon(Icons.note_add_rounded,
-                      color: Color(0xFFFFB347), size: 18),
-                  tooltip: context.read<MindMapProvider>().t('gs.newMemo'),
-                  visualDensity: VisualDensity.compact,
-                  padding: EdgeInsets.zero,
-                  constraints:
-                      const BoxConstraints(minWidth: 28, minHeight: 28),
-                  onPressed: _openNewMemoEditor,
-                ),
-              ],
-            ),
             const SizedBox(height: 6),
             // ── 選択中アクションバー ──
             // 1 個以上選択している時のみ表示。 「N 件 選択中」 と一緒に
@@ -8451,10 +8566,13 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                         ),
                       ),
                     )
-                  : ListView.builder(
+                  : ReorderableListView.builder(
                       padding: EdgeInsets.zero,
+                      buildDefaultDragHandles: false,
                       itemCount: memos.length,
-                      itemBuilder: (_, i) => _buildMemoCard(provider, memos[i]),
+                      onReorder: _reorderMemo,
+                      itemBuilder: (_, i) =>
+                          _buildMemoCard(provider, memos[i], i),
                     ),
             ),
           ],
@@ -8819,10 +8937,10 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
               return;
             }
             if (_selectedMemoIds.isNotEmpty) {
-              setState(() {
-                _selectedMemoIds.clear();
-                _lastClickedMemoId = null;
-              });
+              _clearMemoSelection();
+            } else if (_gsHeaderHidden) {
+              // 全画面を戻す (= 閉じない)。
+              setState(() => _gsHeaderHidden = false);
             } else {
               _closeSelf();
             }
@@ -8863,14 +8981,18 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                     //   タブの帯は自前の受け口 (opaque) が押しを吸うので、
                     //   そこを押しても畳まない。
                     //   戻せる口を持たない触る端末では畳ませない。
-                    flexibleSpace: _gsHoverCapable
-                        ? GestureDetector(
-                            behavior: HitTestBehavior.opaque,
-                            onTap: () =>
-                                setState(() => _gsHeaderHidden = true),
-                          )
-                        : null,
-                    title: _buildSearchBar(provider),
+                    // ★ = ユーザー要望「ヘッダーは閉じるのではなく、 何もない所を
+                    //   クリックしたら項目の表示 / 非表示が切り替わるだけに」。
+                    //   帯の高さはそのままで、 中の項目だけを出し入れする。
+                    //   ヘッダーとタブをまとめて閉じるのは「全画面」 ボタン。
+                    flexibleSpace: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () => setState(
+                          () => _gsHeaderItemsHidden = !_gsHeaderItemsHidden),
+                    ),
+                    title: _gsHeaderItemsHidden
+                        ? null
+                        : _buildSearchBar(provider),
                     titleSpacing: 12,
                     toolbarHeight: 56,
                     // 上部のタブバー（= ユーザー要望: Google 検索も複数タブ + フォルダー）
@@ -8891,14 +9013,16 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                                     preferredSize: const Size.fromHeight(34),
                                     child: _buildGsTabBar(),
                                   ),
-                    actions: [
+                    actions: _gsHeaderItemsHidden
+                        ? const <Widget>[]
+                        : [
                       if (isMobileHeader)
                         IconButton(
                           icon: Icon(
                             _gsMobileToolsExpanded
                                 ? Icons.keyboard_arrow_up_rounded
                                 : Icons.apps_rounded,
-                            color: Colors.white70,
+                            color: const Color(0xFFB0BEC5),
                             size: 22,
                           ),
                           tooltip: _gsMobileToolsExpanded ? '操作を隠す' : '操作を表示',
@@ -8916,7 +9040,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                                 : Icons.view_week_outlined,
                             color: _gsTabBarExpanded
                                 ? const Color(0xFF4FC3F7)
-                                : Colors.white70,
+                                : const Color(0xFF4FC3F7).withValues(alpha: 0.55),
                             size: 22,
                           ),
                           tooltip: context.read<MindMapProvider>().t(
@@ -8941,7 +9065,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                             // ★ 開いている時だけ色を付ける (= ユーザー要望)。
                             color: _memoSideExpanded
                                 ? const Color(0xFFFFB347)
-                                : Colors.white70,
+                                : const Color(0xFFFFB347).withValues(alpha: 0.55),
                             size: 22,
                           ),
                           tooltip: (_memoSideExpanded
@@ -8987,8 +9111,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                                 _gsSplitDown
                                     ? _GSearchSplitIconFill.bottom
                                     : _GSearchSplitIconFill.top,
-                                // 押すだけのボタンは白 (= ユーザー要望)。
-                                color: Colors.white70,
+                                color: const Color(0xFFB39DDB),
                                 size: 22,
                               ),
                             ),
@@ -9014,7 +9137,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                               // ★ 開いている時だけ色を付ける (= ユーザー要望)。
                               color: _aiPanelOpen
                                   ? const Color(0xFF4FC3F7)
-                                  : Colors.white70,
+                                  : const Color(0xFF4FC3F7).withValues(alpha: 0.55),
                               size: 22,
                             ),
                             tooltip: () {
@@ -9043,7 +9166,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                       if (!widget.minimalMode && !isMobileHeader)
                         IconButton(
                           icon: const Icon(Icons.ios_share_rounded,
-                              color: Colors.white70, size: 20),
+                              color: Color(0xFFFFAB91), size: 20),
                           tooltip: context.read<MindMapProvider>().t('gs.sharePageAi'),
                           visualDensity: VisualDensity.compact,
                           padding: const EdgeInsets.all(6),
@@ -9068,7 +9191,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                                 : Icons.block_outlined,
                             color: provider.adBlockEnabled
                                 ? const Color(0xFF7FD8A0)
-                                : Colors.white70,
+                                : const Color(0xFF7FD8A0).withValues(alpha: 0.55),
                             size: 20,
                           ),
                           color: const Color(0xFF1E1E32),
@@ -9091,8 +9214,8 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                           //   (= ユーザー要望: オフの時は色を消す)。
                           icon: Icon(Icons.translate_rounded,
                               color: (_aiPanelOpen && _aiPanelIsDeepL)
-                                  ? const Color(0xFF0F73B8)
-                                  : Colors.white70,
+                                  ? const Color(0xFF64B5F6)
+                                  : const Color(0xFF64B5F6).withValues(alpha: 0.55),
                               size: 22),
                           tooltip: context.read<MindMapProvider>().t('gs.openDeepl'),
                           visualDensity: VisualDensity.compact,
@@ -9107,7 +9230,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                         IconButton(
                           icon: const Icon(
                               Icons.picture_in_picture_alt_rounded,
-                              color: Colors.white70,
+                              color: Color(0xFFCE93D8),
                               size: 20),
                           tooltip: context
                               .read<MindMapProvider>()
@@ -9130,9 +9253,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                           IconButton(
                             icon: _gSearchSplitIcon(
                               _GSearchSplitIconFill.left,
-                              // 押すだけのボタンは白 (= ユーザー要望)。
-                              //   左右の見分けは絵柄の塗り分けが持つ。
-                              color: Colors.white70,
+                              color: const Color(0xFFB39DDB),
                               size: 22,
                             ),
                             tooltip: provider.t('gsearch.splitLeft'),
@@ -9148,7 +9269,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                           IconButton(
                             icon: _gSearchSplitIcon(
                               _GSearchSplitIconFill.right,
-                              color: Colors.white70,
+                              color: const Color(0xFFB39DDB),
                               size: 22,
                             ),
                             tooltip: provider.t('gsearch.splitRight'),
@@ -9167,7 +9288,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                               _isDesktop
                                   ? _GSearchSplitIconFill.left
                                   : _GSearchSplitIconFill.top,
-                              color: Colors.white70,
+                              color: const Color(0xFFB39DDB),
                               size: 22,
                             ),
                             tooltip: _isDesktop
@@ -9192,7 +9313,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                           tooltip:
                               context.read<MindMapProvider>().t('gs.other'),
                           icon: const Icon(Icons.more_vert_rounded,
-                              color: Colors.white, size: 22),
+                              color: Color(0xFFB0BEC5), size: 22),
                           color: const Color(0xFF1E1E32),
                           padding: const EdgeInsets.all(6),
                           onSelected: (v) {
@@ -9259,7 +9380,7 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                           widget.onExpandToCompact != null)
                         IconButton(
                           icon: const Icon(Icons.fullscreen_rounded,
-                              color: Colors.white, size: 22),
+                              color: Color(0xFF80DEEA), size: 22),
                           tooltip: provider.t('gsearch.fullscreen'),
                           visualDensity: VisualDensity.compact,
                           padding: const EdgeInsets.all(6),
@@ -9281,9 +9402,22 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
                       // ── 閉じるボタン (右上) ──
                       // ユーザー要望により、 左上ではなく右上に配置 (= マウスカーソルで
                       // 右上の X ボタンが反射的にクリックできる位置)。
+                      // ── 全画面 (= ユーザー要望: ヘッダーとタブを閉じて、
+                      //    表示領域だけにする)。 戻すのは上端の山形 / Esc。 ──
+                      if (!widget.minimalMode)
+                        IconButton(
+                          icon: const Icon(Icons.fit_screen_rounded,
+                              color: Color(0xFF80DEEA), size: 22),
+                          tooltip: '${provider.t('gs.fullscreenView')} (Esc)',
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.all(6),
+                          constraints: const BoxConstraints(),
+                          onPressed: () =>
+                              setState(() => _gsHeaderHidden = true),
+                        ),
                       IconButton(
                         icon: const Icon(Icons.close_rounded,
-                            color: Colors.white, size: 22),
+                            color: Color(0xFFEF9A9A), size: 22),
                         tooltip: provider.t('btn.close'),
                         visualDensity: VisualDensity.compact,
                         padding: const EdgeInsets.all(6),
@@ -9472,76 +9606,6 @@ class _GoogleSearchPageState extends State<_GoogleSearchPage> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // ── ヘッダー (タップで開閉) ──
-            InkWell(
-              onTap: () =>
-                  setState(() => _memoPanelExpanded = !_memoPanelExpanded),
-              child: Container(
-                height: 42,
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1A1A24),
-                  border: Border(
-                    top:
-                        BorderSide(color: Colors.white.withValues(alpha: 0.08)),
-                  ),
-                ),
-                child: Row(
-                  children: [
-                    Icon(
-                      _memoPanelExpanded
-                          ? Icons.keyboard_arrow_down_rounded
-                          : Icons.keyboard_arrow_up_rounded,
-                      color: const Color(0xFFFFB347),
-                      size: 22,
-                    ),
-                    const SizedBox(width: 6),
-                    const Icon(Icons.sticky_note_2_rounded,
-                        color: Color(0xFFFFB347), size: 18),
-                    const SizedBox(width: 8),
-                    Text(
-                      _memoPanelExpanded ? 'メモ' : 'メモを開く',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    const Spacer(),
-                    // ── メモ欄を上 / 下へ移動 (= ユーザー要望: 邪魔なときに
-                    //    別の場所に移動できるように) ──
-                    IconButton(
-                      icon: Icon(
-                        _memoPanelOnTop
-                            ? Icons.vertical_align_bottom_rounded
-                            : Icons.vertical_align_top_rounded,
-                        color: const Color(0xFFFFB347),
-                        size: 20,
-                      ),
-                      tooltip: _memoPanelOnTop ? 'メモ欄を下に移動' : 'メモ欄を上に移動',
-                      visualDensity: VisualDensity.compact,
-                      padding: const EdgeInsets.all(6),
-                      constraints: const BoxConstraints(),
-                      onPressed: () =>
-                          setState(() => _memoPanelOnTop = !_memoPanelOnTop),
-                    ),
-                    // ── × 閉じる (= ユーザー要望: 「メモを閉じる」 は分かり
-                    //    にくいので × ボタンにする) ──
-                    if (_memoPanelExpanded)
-                      IconButton(
-                        icon: const Icon(Icons.close_rounded,
-                            color: Colors.white70, size: 20),
-                        tooltip: context.read<MindMapProvider>().t('gs.closeMemo'),
-                        visualDensity: VisualDensity.compact,
-                        padding: const EdgeInsets.all(6),
-                        constraints: const BoxConstraints(),
-                        onPressed: () =>
-                            setState(() => _memoPanelExpanded = false),
-                      ),
-                  ],
-                ),
-              ),
-            ),
             // ── 中身 (= 開いてる時のみ) ──
             if (_memoPanelExpanded) Expanded(child: _buildMemoPanel(provider)),
           ],
@@ -10071,4 +10135,20 @@ class _GoogleSearchBookmarks {
       await sp.remove(_kKey);
     } catch (_) {}
   }
+}
+
+/// 少し押さえてから動かすと掴める並べ替えの受け口 (= メモの順番入れ替え)。
+/// 標準の長押し (0.5 秒) より短くし、 すぐ掴む形だとマウスのわずかなぶれで
+/// クリックが効かなくなるのを避ける。
+class _QuickDelayedDragStartListener extends ReorderableDragStartListener {
+  const _QuickDelayedDragStartListener({
+    super.key,
+    required super.child,
+    required super.index,
+  });
+
+  @override
+  MultiDragGestureRecognizer createRecognizer() =>
+      DelayedMultiDragGestureRecognizer(
+          debugOwner: this, delay: const Duration(milliseconds: 200));
 }

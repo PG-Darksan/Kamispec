@@ -28757,6 +28757,39 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Nova nota',
       'ru': 'Новая заметка',
     },
+    'gs.sendSelectedToAi': {
+      'ja': '選んだメモをまとめて AI に渡す',
+      'en': 'Send selected memos to AI',
+      'zh': '将所选备忘录发送给 AI',
+      'ko': '선택한 메모를 AI에 보내기',
+      'es': 'Enviar las notas seleccionadas a la IA',
+      'fr': 'Envoyer les notes sélectionnées à l’IA',
+      'de': 'Ausgewählte Notizen an die KI senden',
+      'pt': 'Enviar notas selecionadas à IA',
+      'ru': 'Отправить выбранные заметки ИИ',
+    },
+    'gs.mergeMemos': {
+      'ja': '選んだメモを 1 つに統合',
+      'en': 'Merge selected memos into one',
+      'zh': '将所选备忘录合并为一个',
+      'ko': '선택한 메모를 하나로 합치기',
+      'es': 'Combinar las notas seleccionadas en una',
+      'fr': 'Fusionner les notes sélectionnées',
+      'de': 'Ausgewählte Notizen zusammenführen',
+      'pt': 'Mesclar notas selecionadas em uma',
+      'ru': 'Объединить выбранные заметки в одну',
+    },
+    'gs.fullscreenView': {
+      'ja': '全画面 (ヘッダーとタブを閉じる)',
+      'en': 'Full screen (hide header and tabs)',
+      'zh': '全屏（隐藏标题栏和标签）',
+      'ko': '전체 화면 (헤더와 탭 숨기기)',
+      'es': 'Pantalla completa (ocultar cabecera y pestañas)',
+      'fr': 'Plein écran (masquer l’en-tête et les onglets)',
+      'de': 'Vollbild (Kopfzeile und Tabs ausblenden)',
+      'pt': 'Tela cheia (ocultar cabeçalho e abas)',
+      'ru': 'Полный экран (скрыть заголовок и вкладки)',
+    },
     'gs.videoRate': {
       'ja': '動画の再生速度',
       'en': 'Video playback speed',
@@ -88736,7 +88769,10 @@ class MindMapProvider extends ChangeNotifier {
   ///   含めるかどうかは設定で変えられるようにして欲しい」。 以前は保存済みメモ
   ///   に URL が付いていれば**必ず**リンク付きの要素になっていた。
   ///   切っておくと、 本文だけの要素として貼る。
-  bool _gsMemoEmbedLink = true;
+  /// ★ = ユーザー要望「メモをページに埋め込んだ時に、 開いているページの
+  ///   リンクまで入らないように」。 既定を切り (false) にした。 前の版で
+  ///   入りのまま残っている設定を引き継がないよう、 鍵も変えてある。
+  bool _gsMemoEmbedLink = false;
   bool get gsMemoEmbedLink => _gsMemoEmbedLink;
 
   Future<void> setGsMemoEmbedLink(bool v) async {
@@ -88745,7 +88781,7 @@ class MindMapProvider extends ChangeNotifier {
     notifyListeners();
     try {
       final p = await _prefsWithRetry();
-      await p.setBool('gsMemoEmbedLink', v);
+      await p.setBool('gsMemoEmbedLink2', v);
     } catch (_) {}
   }
 
@@ -89592,7 +89628,7 @@ class MindMapProvider extends ChangeNotifier {
     _jevDocQaEnabled = prefs.getBool('jevDocQa') ?? false;
     _adBlockEnabled = prefs.getBool('adBlockEnabled') ?? false;
     // 既定は「含める」 (= 今までの動き)。
-    _gsMemoEmbedLink = prefs.getBool('gsMemoEmbedLink') ?? true;
+    _gsMemoEmbedLink = prefs.getBool('gsMemoEmbedLink2') ?? false;
     // 既定はメモ欄を右へ (= ユーザー要望)。
     _gsMemoOnRight = prefs.getBool('gsMemoOnRight') ?? true;
     _jevCalls = prefs.getInt('jevCalls') ?? 0;
@@ -126615,15 +126651,44 @@ $example
 
   final List<GoogleSearchMemo> _googleSearchMemos = [];
   List<GoogleSearchMemo> get googleSearchMemos {
+    // ★ ドラッグで並べ替えた後 (= ユーザー要望) は、 その並びをそのまま返す。
+    if (_gsMemoManualOrder) return List.unmodifiable(_googleSearchMemos);
     // 新しいもの順で返す (= リスト上部に最新が来る)
     final sorted = List<GoogleSearchMemo>.from(_googleSearchMemos)
       ..sort((a, b) => b.updatedAtMs.compareTo(a.updatedAtMs));
     return List.unmodifiable(sorted);
   }
 
+  /// メモを手で並べ替えたか。 並べ替えた後は保存してある順 (= リストの順)
+  /// で出し、 新しいメモは先頭に入れる。
+  bool _gsMemoManualOrder = false;
+
+  /// メモの並び順を [ids] の順にする (= ユーザー要望: ドラッグで入れ替え)。
+  Future<void> reorderGoogleSearchMemos(List<String> ids) async {
+    final byId = {for (final m in _googleSearchMemos) m.id: m};
+    final next = <GoogleSearchMemo>[
+      for (final id in ids)
+        if (byId.containsKey(id)) byId.remove(id)!,
+    ];
+    // 渡されなかったメモは先頭へ (= 新しい順)。
+    final rest = byId.values.toList()
+      ..sort((a, b) => b.updatedAtMs.compareTo(a.updatedAtMs));
+    _googleSearchMemos
+      ..clear()
+      ..addAll(rest)
+      ..addAll(next);
+    _gsMemoManualOrder = true;
+    await _saveGoogleSearchMemos();
+    notifyListeners();
+  }
+
   /// 新規メモを追加。
   Future<void> addGoogleSearchMemo(GoogleSearchMemo memo) async {
-    _googleSearchMemos.add(memo);
+    if (_gsMemoManualOrder) {
+      _googleSearchMemos.insert(0, memo);
+    } else {
+      _googleSearchMemos.add(memo);
+    }
     await _saveGoogleSearchMemos();
     notifyListeners();
   }
@@ -126682,6 +126747,7 @@ $example
     final prefs = await _prefsWithRetry();
     final raw = jsonEncode(_googleSearchMemos.map((m) => m.toJson()).toList());
     await prefs.setString('googleSearchMemos', raw);
+    await prefs.setBool('googleSearchMemosManualOrder', _gsMemoManualOrder);
   }
 
   /// updateGoogleSearchMemo で「null 明示」 と「省略」 を区別するセンチネル。
@@ -126692,6 +126758,8 @@ $example
   Future<void> loadGoogleSearchMemoState() async {
     final prefs = await _prefsWithRetry();
     _googleSearchMemoDraft = prefs.getString('googleSearchMemoDraft') ?? '';
+    _gsMemoManualOrder =
+        prefs.getBool('googleSearchMemosManualOrder') ?? false;
     final memosRaw = prefs.getString('googleSearchMemos');
     if (memosRaw != null && memosRaw.isNotEmpty) {
       try {
