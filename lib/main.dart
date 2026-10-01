@@ -10517,6 +10517,96 @@ class _CalcWindowAppState extends State<_CalcWindowApp> {
 // 電卓窓と同じ作法: 常に手前 (ピンで切替)、 自前ヘッダーでドラッグ移動、
 // 控えは自分で書かず本体へ頼む (入れ物が違うので、 こちらから書くと本体の
 // 控えを丸ごと上書きしてしまう ── [[two-instances-clobber-prefs]])。
+// ─── オートクリッカーの窓を自分で動かすための win32 の手 ───────────────
+//
+// ★ = ユーザー要望「Android のオートクリッカーの様に、 画面上に操作の始点と
+//   終点のアイコンが配置されるように」。 位置を決める間だけ、 この窓を画面
+//   いっぱいに広げて、 画面の写しの上に印を並べる (画面録画の範囲選びと同じ
+//   考え方)。 window_manager はサブ窓から呼ぶと本体の窓を掴むことがある
+//   (録画窓の注記) ので、 窓は題名 + このプロセスで探して win32 を直に叩く。
+
+/// 本体が付ける題名 (mind_map_screen.dart の _openClickerPaletteWindow)。
+const String _kClickerWindowTitle = 'HisatorNotebook Clicker';
+
+/// このプロセスの窓のうち、 題名が [title] の物のハンドル (無ければ 0)。
+int _findOwnWindowByTitle(String title) {
+  if (kIsWeb || !Platform.isWindows) return 0;
+  try {
+    final user32 = ffi.DynamicLibrary.open('user32.dll');
+    final findWindowEx = user32.lookupFunction<
+        ffi.IntPtr Function(ffi.IntPtr, ffi.IntPtr, ffi.Pointer<pkgffi.Utf16>,
+            ffi.Pointer<pkgffi.Utf16>),
+        int Function(int, int, ffi.Pointer<pkgffi.Utf16>,
+            ffi.Pointer<pkgffi.Utf16>)>('FindWindowExW');
+    final getWindowThreadProcessId = user32.lookupFunction<
+        ffi.Uint32 Function(ffi.IntPtr, ffi.Pointer<ffi.Uint32>),
+        int Function(int, ffi.Pointer<ffi.Uint32>)>('GetWindowThreadProcessId');
+    final t = title.toNativeUtf16(allocator: pkgffi.malloc);
+    final pidOut = pkgffi.calloc<ffi.Uint32>();
+    try {
+      var h = 0;
+      // 同じ題名の窓が別のプロセス (2 つ目のアプリ) にも有り得るので、
+      // このプロセスの物だけを拾う。
+      for (var i = 0; i < 16; i++) {
+        h = findWindowEx(0, h, ffi.nullptr, t);
+        if (h == 0) return 0;
+        getWindowThreadProcessId(h, pidOut);
+        if (pidOut.value == pid) return h;
+      }
+    } finally {
+      pkgffi.malloc.free(t);
+      pkgffi.calloc.free(pidOut);
+    }
+  } catch (_) {}
+  return 0;
+}
+
+/// 窓の位置と大きさ (物理ピクセル)。 取れなければ null。
+(int, int, int, int)? _winRectOf(int hwnd) {
+  if (hwnd == 0) return null;
+  try {
+    final user32 = ffi.DynamicLibrary.open('user32.dll');
+    final getWindowRect = user32.lookupFunction<
+        ffi.Int32 Function(ffi.IntPtr, ffi.Pointer<ffi.Int32>),
+        int Function(int, ffi.Pointer<ffi.Int32>)>('GetWindowRect');
+    final p = pkgffi.calloc<ffi.Int32>(4);
+    try {
+      if (getWindowRect(hwnd, p) == 0) return null;
+      return (p[0], p[1], p[2] - p[0], p[3] - p[1]);
+    } finally {
+      pkgffi.calloc.free(p);
+    }
+  } catch (_) {
+    return null;
+  }
+}
+
+/// 窓を動かす / 大きさを変える (物理ピクセル)。
+void _moveWinTo(int hwnd, int x, int y, int w, int h) {
+  if (hwnd == 0) return;
+  try {
+    final user32 = ffi.DynamicLibrary.open('user32.dll');
+    final moveWindow = user32.lookupFunction<
+        ffi.Int32 Function(ffi.IntPtr, ffi.Int32, ffi.Int32, ffi.Int32,
+            ffi.Int32, ffi.Int32),
+        int Function(int, int, int, int, int, int)>('MoveWindow');
+    moveWindow(hwnd, x, y, w, h, 1);
+  } catch (_) {}
+}
+
+/// 窓を画面キャプチャから外す (Windows 10 2004 以降。 古い物では何もしない)。
+void _setWinExcludeFromCapture(int hwnd) {
+  if (hwnd == 0) return;
+  try {
+    final user32 = ffi.DynamicLibrary.open('user32.dll');
+    final setAffinity = user32.lookupFunction<
+        ffi.Int32 Function(ffi.IntPtr, ffi.Uint32),
+        int Function(int, int)>('SetWindowDisplayAffinity');
+    const wdaExcludeFromCapture = 0x00000011;
+    setAffinity(hwnd, wdaExcludeFromCapture);
+  } catch (_) {}
+}
+
 class _ClickerWindowApp extends StatefulWidget {
   final int windowId;
   const _ClickerWindowApp({required this.windowId});
@@ -10535,6 +10625,12 @@ class _ClickerWindowAppState extends State<_ClickerWindowApp> {
   /// 言葉は本体の表から静的に引く (入れ物は作らない)。
   String _lang = 'en';
 
+  /// この窓のハンドル (位置決めの間だけ画面いっぱいに広げるのに使う)。
+  int _hwnd = 0;
+
+  /// 広げる前の帯の位置と大きさ (物理ピクセル)。
+  (int, int, int, int)? _barRect;
+
   @override
   void initState() {
     super.initState();
@@ -10542,6 +10638,11 @@ class _ClickerWindowAppState extends State<_ClickerWindowApp> {
     _loadLang();
     // ignore: discarded_futures
     _applyTop(true);
+    // ★ パレットで撮るスクショにこの帯が写り込まないようにする (録画の
+    //   操作窓と同じ)。 題名は本体が createWindow の後に付けるので、
+    //   見つかるまで少し待って何度か探す。
+    // ignore: discarded_futures
+    _excludeSelfFromCapture();
     // ★ = ユーザー指摘「オートクリッカーがバー形式の画面録画の様なものが
     //   出てきてない」。 OS のタイトル帯が乗っていると「窓」 にしか見えない
     //   ので、 外して中身だけの**帯**にする。 描かれてから外す (それまで
@@ -10559,6 +10660,42 @@ class _ClickerWindowAppState extends State<_ClickerWindowApp> {
       // ignore: discarded_futures
       if (_pinned) _applyTop(true);
     });
+  }
+
+  int _ownHwnd() {
+    if (_hwnd != 0) return _hwnd;
+    _hwnd = _findOwnWindowByTitle(_kClickerWindowTitle);
+    return _hwnd;
+  }
+
+  Future<void> _excludeSelfFromCapture() async {
+    for (final ms in const [300, 1000, 2500, 6000]) {
+      await Future<void>.delayed(Duration(milliseconds: ms));
+      if (!mounted) return;
+      final h = _ownHwnd();
+      if (h != 0) {
+        _setWinExcludeFromCapture(h);
+        return;
+      }
+    }
+  }
+
+  /// 位置を決める間だけ、 この窓を画面いっぱいに広げる (= ユーザー要望:
+  /// 画面上に始点 / 終点の印を置く)。 false で元の帯へ戻す。
+  Future<void> _pickerFullScreen(bool on) async {
+    final h = _ownHwnd();
+    if (h == 0) return;
+    if (on) {
+      _barRect = _winRectOf(h);
+      final v = scap.virtualScreenRect();
+      if (v != null) _moveWinTo(h, v.x, v.y, v.width, v.height);
+    } else {
+      final r = _barRect;
+      _barRect = null;
+      if (r != null) _moveWinTo(h, r.$1, r.$2, r.$3, r.$4);
+    }
+    // 大きさが変わって描き直されるのを少し待つ。
+    await Future<void>.delayed(const Duration(milliseconds: 120));
   }
 
   Future<void> _makeFrameless() async {
@@ -10701,6 +10838,7 @@ class _ClickerWindowAppState extends State<_ClickerWindowApp> {
                 // ★ = ユーザー指摘「画面録画バーみたいなのが画面外にも
                 //   出る形で」。 縦長の窓ではなく横一列の帯にする。
                 bar: true,
+                onPickerFullScreen: _pickerFullScreen,
               ),
             ),
           ),

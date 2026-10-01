@@ -42820,6 +42820,118 @@ class MindMapProvider extends ChangeNotifier {
       'pt': 'Fim',
       'ru': 'Konets',
     },
+    // ★ = ユーザー要望「スクショ位置は左上 / 右下の座標ベースに」
+    //   「Android のオートクリッカーの様に、 画面上に始点と終点の印を」。
+    'palette.topLeft': {
+      'ja': '左上',
+      'en': 'Top-left',
+      'zh': '左上',
+      'ko': '왼쪽 위',
+      'es': 'Arriba izq.',
+      'fr': 'Haut gauche',
+      'de': 'Oben links',
+      'pt': 'Sup. esq.',
+      'ru': 'Sverkhu sleva',
+    },
+    'palette.bottomRight': {
+      'ja': '右下',
+      'en': 'Bottom-right',
+      'zh': '右下',
+      'ko': '오른쪽 아래',
+      'es': 'Abajo der.',
+      'fr': 'Bas droite',
+      'de': 'Unten rechts',
+      'pt': 'Inf. dir.',
+      'ru': 'Snizu sprava',
+    },
+    'palette.pickerHintPoint': {
+      'ja': '印をドラッグして、 押す場所に合わせます。 何もない所をクリックすると、 印がそこへ移ります。',
+      'en': 'Drag the marker onto the spot to click. Clicking an empty spot moves the marker there.',
+      'zh': '拖动标记到要点击的位置。点击空白处，标记会移到那里。',
+      'ko': '표식을 드래그해 누를 위치에 맞춥니다. 빈 곳을 클릭하면 표식이 그곳으로 이동합니다.',
+      'es': 'Arrastra el marcador al punto donde hacer clic. Al hacer clic en un lugar vacío, el marcador se mueve allí.',
+      'fr': 'Faites glisser le repère sur l’endroit à cliquer. Un clic sur une zone vide y déplace le repère.',
+      'de': 'Ziehen Sie die Markierung auf die Klickstelle. Ein Klick auf eine leere Stelle verschiebt sie dorthin.',
+      'pt': 'Arraste o marcador até o ponto a clicar. Clicar num espaço vazio move o marcador para lá.',
+      'ru': 'Peretashchite metku na mesto klika. Klik po pustomu mestu peremeshchaet metku tuda.',
+    },
+    'palette.pickerHintLine': {
+      'ja': '1 (始点) と 2 (終点) の印をドラッグして合わせます。 何もない所をクリックすると、 近い方の印がそこへ移ります。',
+      'en': 'Drag markers 1 (start) and 2 (end) into place. Clicking an empty spot moves the nearer marker there.',
+      'zh': '拖动 1（起点）和 2（终点）标记。点击空白处，较近的标记会移到那里。',
+      'ko': '1(시작점)과 2(끝점) 표식을 드래그해 맞춥니다. 빈 곳을 클릭하면 가까운 표식이 그곳으로 이동합니다.',
+      'es': 'Arrastra los marcadores 1 (inicio) y 2 (fin). Al hacer clic en un lugar vacío, se mueve el más cercano.',
+      'fr': 'Faites glisser les repères 1 (début) et 2 (fin). Un clic sur une zone vide y déplace le plus proche.',
+      'de': 'Ziehen Sie die Markierungen 1 (Start) und 2 (Ende). Ein Klick auf eine leere Stelle verschiebt die nähere.',
+      'pt': 'Arraste os marcadores 1 (início) e 2 (fim). Clicar num espaço vazio move o mais próximo.',
+      'ru': 'Peretashchite metki 1 (nachalo) i 2 (konets). Klik po pustomu mestu peremeshchaet blizhayshuyu.',
+    },
+    'palette.pickerHintRect': {
+      'ja': '左上と右下の印をドラッグするか、 何もない所をなぞって範囲を描きます。',
+      'en': 'Drag the top-left and bottom-right handles, or drag across an empty spot to draw the area.',
+      'zh': '拖动左上和右下的手柄，或在空白处拖动来画出范围。',
+      'ko': '왼쪽 위와 오른쪽 아래 핸들을 드래그하거나, 빈 곳을 드래그해 범위를 그립니다.',
+      'es': 'Arrastra las esquinas superior izquierda e inferior derecha, o arrastra en un lugar vacío para dibujar el área.',
+      'fr': 'Faites glisser les poignées haut gauche et bas droite, ou tracez la zone sur un espace vide.',
+      'de': 'Ziehen Sie die Griffe oben links und unten rechts oder ziehen Sie über eine leere Stelle, um den Bereich zu zeichnen.',
+      'pt': 'Arraste as alças sup. esq. e inf. dir., ou arraste num espaço vazio para desenhar a área.',
+      'ru': 'Peretashchite ugly sverkhu sleva i snizu sprava ili obvedite oblast po pustomu mestu.',
+    },
+    'palette.pickerOk': {
+      'ja': '決定',
+      'en': 'OK',
+      'zh': '确定',
+      'ko': '확인',
+      'es': 'Aceptar',
+      'fr': 'OK',
+      'de': 'OK',
+      'pt': 'OK',
+      'ru': 'OK',
+    },
+    'palette.placeOnScreen': {
+      'ja': '画面で位置を決める',
+      'en': 'Place on screen',
+      'zh': '在屏幕上确定位置',
+      'ko': '화면에서 위치 정하기',
+      'es': 'Colocar en pantalla',
+      'fr': 'Placer à l’écran',
+      'de': 'Auf dem Bildschirm platzieren',
+      'pt': 'Posicionar na tela',
+      'ru': 'Ukazat na ekrane',
+    },
+    'palette.placing': {
+      'ja': '画面の上で位置を決めています…',
+      'en': 'Placing on screen…',
+      'zh': '正在屏幕上确定位置…',
+      'ko': '화면에서 위치를 정하는 중…',
+      'es': 'Colocando en pantalla…',
+      'fr': 'Placement à l’écran…',
+      'de': 'Wird auf dem Bildschirm platziert…',
+      'pt': 'Posicionando na tela…',
+      'ru': 'Ukazanie na ekrane…',
+    },
+    'palette.placed': {
+      'ja': '位置を決めました: {p}',
+      'en': 'Position set: {p}',
+      'zh': '已确定位置：{p}',
+      'ko': '위치를 정했습니다: {p}',
+      'es': 'Posición fijada: {p}',
+      'fr': 'Position définie : {p}',
+      'de': 'Position gesetzt: {p}',
+      'pt': 'Posição definida: {p}',
+      'ru': 'Polozhenie zadano: {p}',
+    },
+    'palette.placeCanceled': {
+      'ja': '位置決めをやめました',
+      'en': 'Placement canceled',
+      'zh': '已取消确定位置',
+      'ko': '위치 정하기를 취소했습니다',
+      'es': 'Colocación cancelada',
+      'fr': 'Placement annulé',
+      'de': 'Platzierung abgebrochen',
+      'pt': 'Posicionamento cancelado',
+      'ru': 'Ukazanie otmeneno',
+    },
     // ★ = ユーザー要望「スワイプの開始点、 終了点は画面の上に乗せた
     //   ポインタを基準にするように」。
     'palette.pickBoth': {
@@ -79305,7 +79417,6 @@ class MindMapProvider extends ChangeNotifier {
         for (final id in const <String>[
           'shortcuts',
           'qrReader',
-          'refMenu',
           'openGoogleDrive',
           'openGoogleEarth',
           'openGoogleMaps',
@@ -79583,6 +79694,9 @@ class MindMapProvider extends ChangeNotifier {
   ///     (時計+天気) をタップして天気を設定/取得する。
   ///   - 'ocrSearch': APIキー必須のAI OCR実装だったため廃止。
   static const Set<String> _removedButtonIds = {
+    // ★ = ユーザー要望「基準位置設定は使わないから機能として消して」。
+    //   既に道具棚 / ヘッダーへ置いている人の分も、 ここで出なくする。
+    'refMenu',
     // ★ = ユーザー要望「自動操作のページが存在するから、 クリック手順の
     //   ボタン項目は消して」。 手順を組む所はページ (pageType 'automation')
     //   が本拠地になったので、 同じ物を呼ぶボタンは置かない。 既に道具棚へ
@@ -79915,7 +80029,6 @@ class MindMapProvider extends ChangeNotifier {
     'googleSearch',
     'shortcuts',
     'qrReader',
-    'refMenu',
     'openGoogleDrive',
     'openGoogleEarth',
     'openGoogleMaps',
@@ -80433,6 +80546,9 @@ class MindMapProvider extends ChangeNotifier {
     'rangeSelect',
     'addNode',
     'switchPage',
+    // ★ = ユーザー要望「右クリックに AI ってボタンを搭載して、 高速で
+    //   Codex CLI や AI (API) を出せるように」。
+    'ai',
     // ★ = ユーザー要望「モバイル版でも長押ししたら…PC 版の右クリックの項目が
     //   出るように」。 長押しの貼り付けをメニューの項目に移したので、
     //   並べ替えの対象にも載せる (モバイルだけに出る項目)。
@@ -80453,7 +80569,6 @@ class MindMapProvider extends ChangeNotifier {
     'bookshelf',
     'deleteSelected',
     'groupList',
-    'basePosition',
     // ★ = ユーザー要望「右クリックの文字サイズ設定を消して同期設定を出す」。
     //   やめた名札 ('fontSize') は _menuOrderResolved が「既定に無い名札」
     //   として読み飛ばすので、 保存済みの控えに残っていても落ちない。
@@ -80476,8 +80591,20 @@ class MindMapProvider extends ChangeNotifier {
     for (final id in saved) {
       if (defaults.contains(id) && !out.contains(id)) out.add(id);
     }
-    for (final id in defaults) {
-      if (!out.contains(id)) out.add(id);
+    // ★ 新しく足した名札は、 既定の並びで直前に居る名札の後ろへ差し込む
+    //   (末尾に回すと、 並べ替えた事のある人には見つけにくい所に出る)。
+    for (var i = 0; i < defaults.length; i++) {
+      final id = defaults[i];
+      if (out.contains(id)) continue;
+      var at = 0;
+      for (var j = i - 1; j >= 0; j--) {
+        final k = out.indexOf(defaults[j]);
+        if (k >= 0) {
+          at = k + 1;
+          break;
+        }
+      }
+      out.insert(at, id);
     }
     return out;
   }

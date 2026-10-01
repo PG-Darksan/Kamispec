@@ -10,8 +10,10 @@
 //
 //   ・札を押す = その動作を 1 回流す (連打の札なら、 押すたび入 / 切)。
 //   ・札を長押し (または⚙) = 中身を決め直す。
-//   ・位置は「今のカーソルの所を 3 つ数えて控える」 形で決める
-//     (アプリの窓の外は触れないので、 覆って選ばせる事は出来ない)。
+//   ・位置は画面の写しの上に印 (始点 / 終点、 範囲は左上 / 右下) を置いて
+//     決める (= ユーザー要望: Android のオートクリッカーのように。 前の
+//     「3 秒後にカーソルがある所を控える」 形はやめた)。
+//     → auto_click_point_picker.dart
 //
 // 中身は [DesktopInput] (SendInput) をそのまま使う。 走っている間だけ
 // `DesktopInput.enabled` を立て、 終わったら必ず戻す。
@@ -24,6 +26,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/desktop_input.dart';
 import '../services/screen_capture.dart';
+import 'auto_click_point_picker.dart';
 import 'shot_manager_dialog.dart';
 
 /// 札に割り当てられる動作。
@@ -176,6 +179,7 @@ class AutoClickPalette extends StatefulWidget {
     this.compact = false,
     this.bar = false,
     this.axis,
+    this.onPickerFullScreen,
   });
 
   /// 言葉を引く手 (本体なら `provider.t`)。
@@ -202,6 +206,11 @@ class AutoClickPalette extends StatefulWidget {
   ///   縦長の所では縦一列にする。
   final Axis? axis;
 
+  /// 位置を決める時に、 この部品が居る窓を画面いっぱいに広げる (true) /
+  /// 元へ戻す (false) 手。 別窓のパレット用 (広げると、 画面の写しが
+  /// ほぼ等倍で重なり、 本物の画面の上に印を置いている見た目になる)。
+  final Future<void> Function(bool on)? onPickerFullScreen;
+
   /// 控えの鍵 (別窓から本体へ書き戻してもらう時に使う)。
   static const String prefsKey = 'autoClickPalette_v1';
 
@@ -219,20 +228,8 @@ class _AutoClickPaletteState extends State<AutoClickPalette> {
   int _repeatIndex = -1;
   Timer? _repeatTimer;
 
-  /// 位置を控えている最中の札と残り秒数。
-  int _pickIndex = -1;
-
-  /// 控える先 (1 = 始点 / 2 = 終点)。
-  int _pickWhich = 1;
-  int _pickLeft = 0;
-
-  /// 場所を決め終わったら、 そのまま流すか。
-  bool _pickFire = false;
-  Timer? _pickTimer;
-
-  /// 始点を控えた後、 続けて終点も控えるか
-  /// (= ユーザー要望: スワイプの開始点・終了点は画面に乗せたポインタを基準に)。
-  bool _pickChain = false;
+  /// 画面の上で位置を決めている最中の札 (無ければ -1)。
+  int _placingIndex = -1;
 
   String _status = '';
 
@@ -248,7 +245,6 @@ class _AutoClickPaletteState extends State<AutoClickPalette> {
   void dispose() {
     // ★ 押しっぱなしで放置しないこと。 ここが最後の砦。
     _repeatTimer?.cancel();
-    _pickTimer?.cancel();
     DesktopInput.enabled = false;
     super.dispose();
   }
@@ -316,70 +312,68 @@ class _AutoClickPaletteState extends State<AutoClickPalette> {
     }
   }
 
-  // ─── 位置を控える ───────────────────────────────────────────────────
+  // ─── 位置を決める (画面の上に印を置く) ─────────────────────────────────
   //
-  // アプリの窓の外は覆えないので、 数えている間に置きたい所へカーソルを
-  // 動かしてもらう (自動操作・これまでのオートクリッカーと同じ考え方)。
-  /// [fireWhenDone] true = 場所を決め終わったら、 そのまま流す
-  /// (= ユーザー要望: パレットから動作を選んだら、 選ぶ → 決める → 動く)。
-  void _pickPoint(int index, int which,
-      {bool chain = false, bool fireWhenDone = false}) {
-    _pickTimer?.cancel();
-    _pickFire = fireWhenDone;
+  // ★ = ユーザー要望「スクショ位置はカーソルが 3 秒後に乗っている位置では
+  //   なく、 ユーザーが指定した左上、 右下の座標ベースに」 「Android アプリの
+  //   オートクリッカーの様に、 画面上に操作の始点と終点のアイコンが配置
+  //   されるように」。 画面の写しの上に印を並べ、 引きずって合わせる。
+
+  /// 札の位置を画面の上で決める。 決めたら true。
+  /// [fireWhenDone] true = 決めたらそのまま流す (パレットから動作を選んだ時)。
+  Future<bool> _placeOnScreen(int index, {bool fireWhenDone = false}) async {
+    if (index < 0 || index >= _slots.length || _placingIndex >= 0) {
+      return false;
+    }
+    final s = _slots[index];
+    final mode = s.kind == AutoClickKind.swipe
+        ? AutoClickPickMode.line
+        : s.kind == AutoClickKind.screenshotRect
+            ? AutoClickPickMode.rect
+            : AutoClickPickMode.point;
+    var unavailable = false;
     setState(() {
-      _pickIndex = index;
-      _pickWhich = which;
-      _pickChain = chain;
-      _pickLeft = 3;
-      _status = _t('palette.pickHint').replaceFirst('{n}', '$_pickLeft');
+      _placingIndex = index;
+      _status = _t('palette.placing');
     });
-    _pickTimer = Timer.periodic(const Duration(seconds: 1), (t) {
-      if (!mounted) {
-        t.cancel();
-        return;
-      }
-      setState(() {
-        _pickLeft--;
-        if (_pickLeft > 0) {
-          _status = _t('palette.pickHint').replaceFirst('{n}', '$_pickLeft');
-          return;
-        }
-        t.cancel();
-        _pickTimer = null;
-        final p = DesktopInput.cursorPos();
-        final i = _pickIndex;
-        _pickIndex = -1;
-        if (p == null || i < 0 || i >= _slots.length) {
-          _status = _t('palette.pickFailed');
-          return;
-        }
-        if (_pickWhich == 2) {
-          _slots[i].x2 = p.x;
-          _slots[i].y2 = p.y;
-        } else {
-          _slots[i].x1 = p.x;
-          _slots[i].y1 = p.y;
-        }
-        _status = _t('palette.picked')
-            .replaceFirst('{x}', '${p.x}')
-            .replaceFirst('{y}', '${p.y}');
-        unawaited(_save());
-        // ★ 始点を控えたら、 そのまま終点も控える (= ユーザー要望:
-        //   スワイプの 2 点をポインタで決める)。 窓を開き直さずに続ける。
-        if (_pickChain && _pickWhich == 1) {
-          _pickChain = false;
-          final fire = _pickFire;
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) _pickPoint(i, 2, fireWhenDone: fire);
-          });
-        } else if (_pickFire) {
-          _pickFire = false;
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) unawaited(_fire(i));
-          });
-        }
-      });
-    });
+    AutoClickPick? r;
+    try {
+      r = await showAutoClickPointPicker(
+        context: context,
+        t: _t,
+        mode: mode,
+        title: _titleOf(s),
+        icon: autoClickKindIcon(s.kind),
+        x1: s.x1,
+        y1: s.y1,
+        x2: s.x2,
+        y2: s.y2,
+        onFullScreen: widget.onPickerFullScreen,
+        onUnavailable: () => unavailable = true,
+      );
+    } finally {
+      if (mounted) setState(() => _placingIndex = -1);
+    }
+    if (!mounted) return false;
+    if (r == null) {
+      setState(() => _status =
+          _t(unavailable ? 'palette.pickFailed' : 'palette.placeCanceled'));
+      return false;
+    }
+    if (index >= _slots.length || !identical(_slots[index], s)) return false;
+    s.x1 = r.x1;
+    s.y1 = r.y1;
+    s.x2 = r.x2;
+    s.y2 = r.y2;
+    setState(() =>
+        _status = _t('palette.placed').replaceFirst('{p}', _subtitleOf(s)));
+    await _save();
+    if (fireWhenDone && mounted) {
+      // 印の層 (と広げた窓) が引っ込んで、 下の画面が描き直されるのを待つ。
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      if (mounted) await _fire(index);
+    }
+    return true;
   }
 
   // ─── 動作を選んですぐ流す (= ユーザー要望: パレットから操作を選ぶ形) ───
@@ -388,7 +382,7 @@ class _AutoClickPaletteState extends State<AutoClickPalette> {
   //     1 つも押せなかった。 動作そのものを並べて、 押したらその場で
   //     場所を決めて流す。 流した物は札として残るので、 次からは 1 押し。
 
-  /// 押した動作をその場で流す。 場所が要る物は 3 つ数えてから今の位置を使う。
+  /// 押した動作をその場で流す。 場所が要る物は、 画面の上で印を置いてから。
   Future<void> _runKind(AutoClickKind k) async {
     if (_repeatIndex >= 0) {
       // 連打の最中は、 まず止める (同じ押し方で止められるように)。
@@ -406,12 +400,14 @@ class _AutoClickPaletteState extends State<AutoClickPalette> {
       if (i < _slots.length && _slots[i].text.isNotEmpty) await _fire(i);
       return;
     }
-    if (autoClickNeedsEnd(k)) {
-      _pickPoint(i, 1, chain: true, fireWhenDone: true);
-      return;
-    }
     if (autoClickNeedsPoint(k)) {
-      _pickPoint(i, 1, fireWhenDone: true);
+      final ok = await _placeOnScreen(i, fireWhenDone: true);
+      // 決めずにやめたら、 いま足したばかりの札は残さない (位置が 0,0 の
+      // 使えない札が溜まっていくため)。
+      if (!ok && mounted && i < _slots.length && identical(_slots[i], slot)) {
+        setState(() => _slots.removeAt(i));
+        await _save();
+      }
       return;
     }
     await _fire(i);
@@ -623,37 +619,32 @@ class _AutoClickPaletteState extends State<AutoClickPalette> {
               child: Column(mainAxisSize: MainAxisSize.min, children: [
                 _field(nameCtrl, _t('palette.name')),
                 // ★ = ユーザー指摘「座標指定する形にする」。 位置は数で
-                //   書く。 「今そこにある物の座標」 を人が読む術は無いので、
-                //   カーソルから取り込む口だけは残してある (欄を埋めるだけ)。
-                if (autoClickNeedsPoint(s.kind)) ...[
+                //   書ける。 範囲のスクショは 左上 / 右下 で書く (= ユーザー
+                //   要望)。 画面を見ながら決めたい時は下の「画面で位置を
+                //   決める」 (印を引きずって合わせる)。
+                if (autoClickNeedsPoint(s.kind) ||
+                    s.kind == AutoClickKind.scroll) ...[
                   const SizedBox(height: 10),
                   _pointLine(
-                    _t(autoClickNeedsEnd(s.kind)
-                        ? 'palette.startPoint'
-                        : 'palette.point'),
-                    x1Ctrl,
-                    y1Ctrl,
-                    () {
-                      _commit(s, nameCtrl, textCtrl, intervalCtrl, notchCtrl,
-                          x1Ctrl, y1Ctrl, x2Ctrl, y2Ctrl);
-                      Navigator.pop(dctx);
-                      _pickPoint(index, 1);
-                    },
-                  ),
+                      _t(s.kind == AutoClickKind.screenshotRect
+                          ? 'palette.topLeft'
+                          : autoClickNeedsEnd(s.kind)
+                              ? 'palette.startPoint'
+                              : 'palette.point'),
+                      x1Ctrl,
+                      y1Ctrl),
                 ],
                 if (autoClickNeedsEnd(s.kind)) ...[
                   const SizedBox(height: 6),
                   _pointLine(
-                    _t('palette.endPoint'),
-                    x2Ctrl,
-                    y2Ctrl,
-                    () {
-                      _commit(s, nameCtrl, textCtrl, intervalCtrl, notchCtrl,
-                          x1Ctrl, y1Ctrl, x2Ctrl, y2Ctrl);
-                      Navigator.pop(dctx);
-                      _pickPoint(index, 2);
-                    },
-                  ),
+                      _t(s.kind == AutoClickKind.screenshotRect
+                          ? 'palette.bottomRight'
+                          : 'palette.endPoint'),
+                      x2Ctrl,
+                      y2Ctrl),
+                ],
+                if (autoClickNeedsPoint(s.kind) ||
+                    s.kind == AutoClickKind.scroll) ...[
                   const SizedBox(height: 8),
                   Align(
                     alignment: Alignment.centerRight,
@@ -664,31 +655,21 @@ class _AutoClickPaletteState extends State<AutoClickPalette> {
                         padding: const EdgeInsets.symmetric(horizontal: 10),
                         minimumSize: const Size(0, 30),
                       ),
-                      icon: const Icon(Icons.timeline_rounded, size: 15),
-                      label: Text(_t('palette.pickBoth'),
+                      icon: const Icon(Icons.my_location_rounded, size: 15),
+                      label: Text(_t('palette.placeOnScreen'),
                           style: const TextStyle(fontSize: 11)),
                       onPressed: () {
                         _commit(s, nameCtrl, textCtrl, intervalCtrl, notchCtrl,
                             x1Ctrl, y1Ctrl, x2Ctrl, y2Ctrl);
                         Navigator.pop(dctx);
-                        _pickPoint(index, 1, chain: true);
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          if (mounted) unawaited(_placeOnScreen(index));
+                        });
                       },
                     ),
                   ),
                 ],
                 if (s.kind == AutoClickKind.scroll) ...[
-                  const SizedBox(height: 6),
-                  _pointLine(
-                    _t('palette.point'),
-                    x1Ctrl,
-                    y1Ctrl,
-                    () {
-                      _commit(s, nameCtrl, textCtrl, intervalCtrl, notchCtrl,
-                          x1Ctrl, y1Ctrl, x2Ctrl, y2Ctrl);
-                      Navigator.pop(dctx);
-                      _pickPoint(index, 1);
-                    },
-                  ),
                   const SizedBox(height: 10),
                   _field(notchCtrl, _t('palette.notches')),
                 ],
@@ -784,7 +765,7 @@ class _AutoClickPaletteState extends State<AutoClickPalette> {
       );
 
   Widget _pointLine(String label, TextEditingController xc,
-          TextEditingController yc, VoidCallback onPick) =>
+          TextEditingController yc) =>
       // ★ 点検で判明 (試験環境で描いて発見): 決め打ちの幅を足し合わせると
       //   360dp の端末では 8px 足りずにはみ出していた。 欄は残り幅を
       //   分け合う形にして、 どの幅でも収まるようにする。
@@ -799,15 +780,6 @@ class _AutoClickPaletteState extends State<AutoClickPalette> {
         Expanded(flex: 3, child: _numField(xc, 'X')),
         const SizedBox(width: 6),
         Expanded(flex: 3, child: _numField(yc, 'Y')),
-        IconButton(
-          tooltip: _t('palette.readCursor'),
-          visualDensity: VisualDensity.compact,
-          padding: EdgeInsets.zero,
-          constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-          icon: const Icon(Icons.my_location_rounded,
-              size: 16, color: Color(0xFF4DD0E1)),
-          onPressed: onPick,
-        ),
       ]);
 
   Widget _numField(TextEditingController c, String label) => TextField(
@@ -962,7 +934,7 @@ class _AutoClickPaletteState extends State<AutoClickPalette> {
   Widget _chip(int i) {
     final s = _slots[i];
     final on = _repeatIndex == i;
-    final picking = _pickIndex == i;
+    final picking = _placingIndex == i;
     return Material(
       color: on
           ? const Color(0xFF9CCC65).withValues(alpha: 0.20)
@@ -1014,17 +986,16 @@ class _AutoClickPaletteState extends State<AutoClickPalette> {
                   ]),
             ),
             const SizedBox(width: 4),
-            // ★ = ユーザー要望「スワイプの開始点、 終了点は画面の上に乗せた
-            //   ポインタを基準にするように」。 札から直に 2 点を続けて
-            //   控えられるようにする (窓を開き直さなくてよい)。
-            if (autoClickNeedsEnd(s.kind))
+            // ★ 札から直に、 画面の上で印を置き直せる (= ユーザー要望:
+            //   Android のオートクリッカーのように始点 / 終点を画面に置く)。
+            if (autoClickNeedsPoint(s.kind) || s.kind == AutoClickKind.scroll)
               IconButton(
-                tooltip: _t('palette.pickBoth'),
+                tooltip: _t('palette.placeOnScreen'),
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
                 icon: const Icon(Icons.my_location_rounded,
                     size: 14, color: Color(0xFF4DD0E1)),
-                onPressed: () => _pickPoint(i, 1, chain: true),
+                onPressed: () => unawaited(_placeOnScreen(i)),
               ),
             IconButton(
               tooltip: _t('palette.edit'),

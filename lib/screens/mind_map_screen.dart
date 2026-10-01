@@ -3717,15 +3717,15 @@ class _MindMapScreenState extends State<MindMapScreen>
   // 中央表示の基準ノードID
   String? _centerTargetNodeId;
 
-  // 基準位置
-  Offset _referencePos = const Offset(900, 900);
+  // 基準位置 (ページごとの控えが無い時の既定)。
+  // ★ = ユーザー要望「基準位置設定は使わないから機能として消して」。
+  //   手で決める入口は全部外した。 ページごとの控え
+  //   (_pageReferencePositions) は残す: AI が作ったページを開いた時の
+  //   中央寄せと、 MCP の置き場所 (_syncReferencesToProvider) が使うため。
+  final Offset _referencePos = const Offset(900, 900);
 
   /// ページIDごとの基準位置
   final Map<String, Offset> _pageReferencePositions = {};
-  // 基準位置マーカーの一時表示
-  bool _showRefMarker = false;
-  // 基準位置設定モード（次のタップで基準位置を設定）
-  bool _settingRefMode = false;
 
   // 裁断モード（cut mode）
   // 最初のクリックで始点、次のクリックで終点を指定し、
@@ -7443,6 +7443,25 @@ class _MindMapScreenState extends State<MindMapScreen>
     }
     // マップ領域外 (= 上部 AppBar) なら無視。
     if (globalPos.dy < 60) return;
+    // ★ = ユーザー要望「画面を左右に分割してページ一覧からページを
+    //   ドラッグしてくると、 右側の画面だけ切り替わって左画面に判定が
+    //   ない。 ドロップした場所が切り替わるように」。 前は落とした位置を
+    //   見ずに「編集セル以外」 へ詰めていたので、 編集セル (既定は左) は
+    //   一度も切り替わらなかった。 分割中は落とした位置のセルへ出す。
+    if (_mapSplitOpen) {
+      final slot = _splitSlotAtGlobal(globalPos);
+      if (slot != null) {
+        final pages = _droppablePages(provider, data.pageIds);
+        if (pages.isEmpty) return;
+        _dropPagesIntoSplitSlot(provider, pages, slot);
+        if (drawerOpen) {
+          try {
+            _scaffoldKey.currentState?.closeDrawer();
+          } catch (_) {}
+        }
+        return;
+      }
+    }
     // ── サブマップノード化は廃止 (= ユーザー要望)。 ドロップされたページを
     //    分割ビューで開く。 2 件以上なら自動で 4 分割にする。 ──
     final dropped = <MindMapPage>[];
@@ -9962,162 +9981,6 @@ class _MindMapScreenState extends State<MindMapScreen>
       if (!mounted || v == null) return;
       _executeHeaderCommand(v, provider); // 'lockH' / 'lockV'
     });
-  }
-
-  /// 基準位置のボタンを右クリック / 長押しした時のメニュー
-  /// (= ユーザー要望: 押しただけの時は設定モードに入り、 移動や説明は
-  /// こちらへ)。
-  Future<void> _showRefMenuAt(
-      MindMapProvider provider, Offset globalPos) async {
-    if (!mounted) return;
-    final box = Overlay.of(context).context.findRenderObject() as RenderBox?;
-    if (box == null) return;
-    final picked = await showMenu<String>(
-      context: context,
-      color: const Color(0xFF1E1E32),
-      position: RelativeRect.fromRect(
-          globalPos & const Size(1, 1), Offset.zero & box.size),
-      items: [
-        PopupMenuItem<String>(
-          value: 'setRef',
-          height: 38,
-          child: Row(children: [
-            const Icon(Icons.add_location_alt_rounded,
-                color: Color(0xFF43B97F), size: 18),
-            const SizedBox(width: 8),
-            Text(provider.t('menu.setRef'),
-                style: const TextStyle(color: Colors.white, fontSize: 13)),
-          ]),
-        ),
-        PopupMenuItem<String>(
-          value: 'goRef',
-          height: 38,
-          child: Row(children: [
-            const Icon(Icons.my_location_rounded,
-                color: Colors.white54, size: 18),
-            const SizedBox(width: 8),
-            Text(provider.t('menu.goRef'),
-                style: const TextStyle(color: Colors.white, fontSize: 13)),
-          ]),
-        ),
-        const PopupMenuDivider(height: 8),
-        PopupMenuItem<String>(
-          value: 'refHelp',
-          height: 38,
-          child: Row(children: [
-            const Icon(Icons.help_outline_rounded,
-                color: Color(0xFF4FC3F7), size: 18),
-            const SizedBox(width: 8),
-            Text(provider.t('common.help'),
-                style: const TextStyle(color: Colors.white, fontSize: 13)),
-          ]),
-        ),
-      ],
-    );
-    if (picked == null || !mounted) return;
-    if (picked == 'goRef') {
-      _centerOnRoot();
-    } else if (picked == 'setRef') {
-      setState(() => _settingRefMode = true);
-      _showLockToast(provider.t('toast.refSet'));
-    } else if (picked == 'refHelp') {
-      _showReferencePositionHelp(provider);
-    }
-  }
-
-  /// 基準位置の「設定」 と「移動」 を、 右クリック位置に出す 2 択メニュー
-  /// (= ユーザー要望: 項目の所に出す)。
-  void _showRefChooser(Offset position) {
-    if (!mounted) return;
-    final provider = context.read<MindMapProvider>();
-    showMenu<String>(
-      context: context,
-      color: const Color(0xFF2A2A3E),
-      position: RelativeRect.fromLTRB(
-          position.dx, position.dy, position.dx, position.dy),
-      items: [
-        PopupMenuItem<String>(
-          value: 'setRef',
-          child: Row(children: [
-            const Icon(Icons.add_location_alt_rounded,
-                color: Color(0xFF43B97F), size: 18),
-            const SizedBox(width: 8),
-            Text(provider.t('menu.setRef'),
-                style: const TextStyle(color: Colors.white)),
-          ]),
-        ),
-        PopupMenuItem<String>(
-          value: 'goRef',
-          child: Row(children: [
-            const Icon(Icons.my_location_rounded,
-                color: Colors.white70, size: 18),
-            const SizedBox(width: 8),
-            Text(provider.t('menu.goRef'),
-                style: const TextStyle(color: Colors.white)),
-          ]),
-        ),
-        const PopupMenuDivider(height: 8),
-        PopupMenuItem<String>(
-          value: 'refHelp',
-          child: Row(children: [
-            const Icon(Icons.help_outline_rounded,
-                color: Color(0xFF4FC3F7), size: 18),
-            const SizedBox(width: 8),
-            Text(provider.t('common.help'),
-                style: const TextStyle(color: Colors.white)),
-          ]),
-        ),
-      ],
-    ).then((v) {
-      if (!mounted || v == null) return;
-      if (v == 'setRef') {
-        setState(() => _settingRefMode = true);
-        _showLockToast(provider.t('toast.refSet'));
-      } else if (v == 'goRef') {
-        _centerOnRoot();
-      } else if (v == 'refHelp') {
-        _showReferencePositionHelp(provider);
-      }
-    });
-  }
-
-  void _showReferencePositionHelp(MindMapProvider provider) {
-    final isJa = provider.appLanguage == 'ja';
-    showDialog<void>(
-      context: context,
-      builder: (dctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E32),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-        title: Row(children: [
-          const Icon(Icons.help_outline_rounded,
-              color: Color(0xFF4FC3F7), size: 22),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              provider.t('ref.posTitle'),
-              style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 15,
-                  fontWeight: FontWeight.w700),
-            ),
-          ),
-        ]),
-        content: Text(
-          isJa
-              ? '基準位置は、このマップを開いた時や「基準位置に移動」を押した時に中央へ戻るための目印です。\n\n「基準位置を設定」を押した後、基準にしたい場所をタップすると、その位置をページごとに保存します。'
-              : 'The reference position is the saved point this map returns to when it opens or when you choose "go to reference position".\n\nChoose "set reference position", then tap the place you want to save. The position is stored per page.',
-          style:
-              const TextStyle(color: Colors.white70, fontSize: 13, height: 1.5),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dctx),
-            child: Text(provider.t('btn.close'),
-                style: const TextStyle(color: Colors.white54)),
-          ),
-        ],
-      ),
-    );
   }
 
   /// 格納ノードをタップした時に表示される「展開」ポップアップ。
@@ -13814,7 +13677,7 @@ class _MindMapScreenState extends State<MindMapScreen>
       const notForShortcut = {
         'undo', 'redo', 'language',
         'zoomIn5', 'zoomOut5', 'lockScale',
-        'refMenu', 'lockH', 'lockV', 'moveLockMenu',
+        'lockH', 'lockV', 'moveLockMenu',
         // ── 追加で除外 (= ユーザー要望: この選択肢は要らない) ──
         // どれも「アプリを開いている最中に、 今見ているマップに対して使う」
         // 操作なので、 デスクトップ / ホーム画面から呼び出す意味が無い。
@@ -31060,6 +30923,10 @@ class _MindMapScreenState extends State<MindMapScreen>
     // 4 分割) を差し込むか (= ユーザー要望: 右クリックではなく左クリックで、
     // 元の項目を出したまま 2〜4 分割の設定が出てくるように)。
     bool splitExpanded = false;
+    // 「AI」 を押した時に、 右に Codex CLI / AI (API) を出しているか
+    // (= ユーザー要望: 右クリックから高速で AI を出せるように)。
+    bool aiExpanded = false;
+    final GlobalKey aiItemKey = GlobalKey();
     // ★ ギャラリーのページでは、 使えない項目を出さない
     //   (= ユーザー要望: 裁断モードや図形 / 端子の挿入はできないのに
     //   右クリックに並んでいる)。
@@ -31076,7 +30943,9 @@ class _MindMapScreenState extends State<MindMapScreen>
     //   から解除が出ないのを直す)。
     final bool panelSplitOpen = _splitOpen || _splitLeftOpen;
     final bool anySplitOpen = _mapSplitOpen || panelSplitOpen;
-    List<Widget> buildItems(bool splitExpanded, VoidCallback toggleSplit) => [
+    List<Widget> buildItems(bool splitExpanded, VoidCallback toggleSplit,
+            [VoidCallback? toggleAi]) =>
+        [
       // ── 上から 範囲選択 / ノードを追加 / ページ切り替え の順 ──
       //    (= ユーザー要望)。 マインドマップでもギャラリーでも同じ並びに
       //    なるように、 この 3 つを先頭で固める。 2 行目 (範囲選択) が
@@ -31129,6 +30998,20 @@ class _MindMapScreenState extends State<MindMapScreen>
           _removeOverlay();
           unawaited(_showQuickPageSwitcher(provider, nearAnchor: at));
         },
+      ),
+      // ── AI (= ユーザー要望「右クリックに AI ってボタンを搭載して、
+      //    高速で Codex CLI や AI (API) を出せるようにして欲しい」) ──
+      //    押すと右隣に Codex CLI / AI (API) / ほかの CLI が出る
+      //    (画面分割の割り方と同じ出し方)。
+      _CtxMenuItem(
+        key: aiItemKey,
+        menuId: 'ai',
+        icon: Icons.smart_toy_rounded,
+        label: provider.t('act.ai'),
+        color: const Color(0xFF80CBC4),
+        expanded: aiExpanded,
+        expandRight: true,
+        onTap: toggleAi ?? () {},
       ),
       // ── このページを削除 (= ユーザー要望: 右クリックやタップ長押しに
       //    ページ削除の項目を加えて欲しい) ──
@@ -31438,19 +31321,6 @@ class _MindMapScreenState extends State<MindMapScreen>
             _showGroupListDialog(context, provider);
           },
         ),
-      // ── 基準位置の「設定」 と「移動」 を 1 項目に統合 (= ユーザー要望) ──
-      // クリックで 2 択ダイアログ (基準位置を設定 / 基準位置へ移動) を出す。
-      // ※ 上下の区切り線は「変な線が入る」 との指摘で撤去 (= ユーザー要望)。
-      _CtxMenuItem(
-        menuId: 'basePosition',
-        icon: Icons.gps_fixed_rounded,
-        label: provider.t('ctx.basePosition'),
-        color: const Color(0xFF43B97F),
-        onTap: () {
-          _removeOverlay();
-          _showRefChooser(globalPos);
-        },
-      ),
       // ── クラウドの同期設定 (= ユーザー要望: 右クリックから文字サイズを
       //    消して、 代わりに同期設定を出す) ──
       //    設定そのものはここに作らず、 既にある同期のダイアログ
@@ -31520,8 +31390,16 @@ class _MindMapScreenState extends State<MindMapScreen>
       builder: (_) => StatefulBuilder(builder: (_, setMenuState) {
         final list = _applyCanvasMenuOrder(
             provider,
-            buildItems(splitExpanded,
-                () => setMenuState(() => splitExpanded = !splitExpanded)));
+            buildItems(
+                splitExpanded,
+                () => setMenuState(() {
+                      splitExpanded = !splitExpanded;
+                      if (splitExpanded) aiExpanded = false;
+                    }),
+                () => setMenuState(() {
+                      aiExpanded = !aiExpanded;
+                      if (aiExpanded) splitExpanded = false;
+                    })));
         return Stack(children: [
           Positioned.fill(
             child: GestureDetector(
@@ -31567,6 +31445,7 @@ class _MindMapScreenState extends State<MindMapScreen>
           //    項目そのものの位置を測って、 その右隣に並べる。
           if (splitExpanded && !anySplitOpen)
             _buildSplitLayoutFlyout(provider, splitItemKey, sw, sh),
+          if (aiExpanded) _buildAiQuickFlyout(provider, aiItemKey, sw, sh),
         ]);
       }),
     );
@@ -31627,8 +31506,14 @@ class _MindMapScreenState extends State<MindMapScreen>
           },
         ),
     ];
+    return _ctxFlyoutBeside(box, at, rows, w, sw, sh);
+  }
+
+  /// 右クリックメニューの項目の右隣に出す小さな板 (割り方 / AI の共通)。
+  /// 右に置けなければ左へ回す (= 画面の端でも見えるように)。
+  Widget _ctxFlyoutBeside(RenderBox box, Offset at, List<Widget> rows,
+      double w, double sw, double sh) {
     final double h = rows.length * 36.0 + 10;
-    // 右に置けなければ左へ回す (= 画面の端でも見えるように)。
     double left = at.dx + box.size.width + 6;
     if (left + w > sw - 8) left = at.dx - w - 6;
     left = left.clamp(8.0, (sw - w - 8).clamp(8.0, sw));
@@ -31657,6 +31542,77 @@ class _MindMapScreenState extends State<MindMapScreen>
         ),
       ),
     );
+  }
+
+  /// 右クリックの「AI」 の右隣に出す板 (= ユーザー要望: 高速で Codex CLI や
+  /// AI (API) を出せるように)。 Codex CLI を一番上に置き、 次に AI (API)、
+  /// その下にほかの CLI を並べる。 CLI はパソコン版だけ。
+  Widget _buildAiQuickFlyout(
+      MindMapProvider provider, GlobalKey itemKey, double sw, double sh) {
+    final box = itemKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return const SizedBox.shrink();
+    final Offset at;
+    try {
+      at = box.localToGlobal(Offset.zero);
+    } catch (_) {
+      return const SizedBox.shrink();
+    }
+    final cliOk = AgentCli.supported && provider.canUseCliAi;
+    _CtxSplitOption cliRow(AgentCliKind k) => _CtxSplitOption(
+          icon: Icons.terminal_rounded,
+          label: AgentCliSpec.of(k).label,
+          checked: false,
+          onTap: () {
+            _removeOverlay();
+            unawaited(_quickOpenAi(provider, cliKind: k));
+          },
+        );
+    final rows = <Widget>[
+      if (cliOk) cliRow(AgentCliKind.codex),
+      _CtxSplitOption(
+        icon: Icons.auto_awesome_rounded,
+        label: provider.t('ai.modeApi'),
+        checked: false,
+        onTap: () {
+          _removeOverlay();
+          unawaited(_quickOpenAi(provider));
+        },
+      ),
+      if (cliOk)
+        for (final k in AgentCliSpec.all
+            .map((e) => e.kind)
+            .where((k) => k != AgentCliKind.codex))
+          cliRow(k),
+    ];
+    return _ctxFlyoutBeside(box, at, rows, 210, sw, sh);
+  }
+
+  /// AI アシスタントを、 指定した相手ですぐ開く (右クリックの「AI」 から)。
+  ///
+  /// [cliKind] を渡すとその CLI の端末を直に開く (一覧を挟まない。 既に
+  /// 走っている端末があればそれを前に出す)。 null なら AI (API) の会話。
+  /// ★ 出ている欄は先に閉じてから開き直す (2 枚重なると 1 つの端末を
+  ///   取り合って CLI の画面が壊れる = ヘッダーの右クリックと同じ作法)。
+  Future<void> _quickOpenAi(MindMapProvider provider,
+      {AgentCliKind? cliKind}) async {
+    if (cliKind != null) {
+      if (!AgentCli.supported || !provider.canUseCliAi) return;
+      await provider.setCliAiKind(cliKind.name);
+      await _saveAiAssistantMode('cli');
+      _McpChatDialogState.openCliKindOnStart = cliKind;
+    } else {
+      await _setAiEngineMode(provider, 'api');
+      await _saveAiAssistantMode('api');
+      // 前に CLI を見ていても、 会話の画面から始める。
+      _McpChatDialogState._lastViewWasCli = false;
+      _McpChatDialogState._lastViewWasCliList = false;
+    }
+    if (!mounted) return;
+    setState(() {});
+    _McpChatSession.instance.requestClosePanel();
+    await Future<void>.delayed(Duration.zero);
+    if (!mounted) return;
+    unawaited(_openMcpChat(provider));
   }
 
   /// ─── マップの背景画像設定ダイアログ ─────────────────────────────────
@@ -48069,13 +48025,6 @@ class _MindMapScreenState extends State<MindMapScreen>
       'icon': Icons.open_with_rounded,
       'color': Color(0xFF4FC3F7),
     },
-    // ── 基準位置の統合ボタン (設定/移動を 1 ボタン → 2 項目メニュー) ──
-    {
-      'id': 'refMenu',
-      'labelKey': 'hdr.refMenu',
-      'icon': Icons.my_location_rounded,
-      'color': Color(0xFF43B97F),
-    },
     {
       'id': 'lockScale',
       'labelKey': 'hdr.lockScale',
@@ -48996,41 +48945,6 @@ class _MindMapScreenState extends State<MindMapScreen>
                 style: const TextStyle(color: Colors.white)),
           ),
         ],
-      );
-    }
-    // 基準位置の設定 / 移動 を 1 ボタンに纏める。
-    //
-    // ── 押したらすぐ「基準位置を決めるモード」 に入る (= ユーザー要望:
-    //    説明まで出るメニューは右クリック / 長押しの方へ)。 ──
-    if (commandId == 'refMenu') {
-      // ※ IconButton の tooltip は、 触る端末では自分で長押しを持って
-      //    行ってしまい、 こちらの長押しが動かなくなる。 そのため吹き出しは
-      //    外側で手動 (カーソルを乗せた時だけ) にする。
-      return Tooltip(
-        message: '${provider.t('hdr.refMenu')} ${provider.t('tip.refMenu')}',
-        triggerMode: TooltipTriggerMode.manual,
-        child: GestureDetector(
-          onSecondaryTapDown: (d) =>
-              unawaited(_showRefMenuAt(provider, d.globalPosition)),
-          onLongPressStart: (d) =>
-              unawaited(_showRefMenuAt(provider, d.globalPosition)),
-          child: IconButton(
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints.tightFor(
-                width: _kHeaderCustomButtonExtent - 4,
-                height: _kHeaderCustomButtonExtent - 4),
-            iconSize: 20,
-            icon: Icon(icon,
-                color: _settingRefMode
-                    ? const Color(0xFF43B97F)
-                    : defaultOnColor,
-                size: 20),
-            onPressed: () {
-              setState(() => _settingRefMode = true);
-              _showLockToast(provider.t('toast.refSet'));
-            },
-          ),
-        ),
       );
     }
     final labelKey = cmd['labelKey'] as String?;
@@ -64046,6 +63960,20 @@ class _MindMapScreenState extends State<MindMapScreen>
             return;
           }
 
+          // ★ 分割に埋め込んだ画像編集の上では、 Ctrl + / - / 0 は画像の
+          //   拡大率に使う (= ユーザー要望)。 マップまで一緒に動かさない。
+          if (isCtrl &&
+              _ImageEditorDialogState.embeddedHovered > 0 &&
+              (event.logicalKey == LogicalKeyboardKey.equal ||
+                  event.logicalKey == LogicalKeyboardKey.add ||
+                  event.logicalKey == LogicalKeyboardKey.numpadAdd ||
+                  event.logicalKey == LogicalKeyboardKey.semicolon ||
+                  event.logicalKey == LogicalKeyboardKey.minus ||
+                  event.logicalKey == LogicalKeyboardKey.numpadSubtract ||
+                  event.logicalKey == LogicalKeyboardKey.digit0 ||
+                  event.logicalKey == LogicalKeyboardKey.numpad0)) {
+            return;
+          }
           // Ctrl + "+"（または「=」キー） → 拡大
           // ユーザー要望: 「PDFビューワー上で Ctrl+/- を押してもマップの方の
           // 拡大率が変わってしまう、 ちゃんと PDF 側の拡大率が変わるように」。
@@ -64295,10 +64223,6 @@ class _MindMapScreenState extends State<MindMapScreen>
               });
               _cutFadeTimer?.cancel();
               _showLockToast(provider.t('toast.cutModeOff'));
-              return;
-            }
-            if (_settingRefMode) {
-              setState(() => _settingRefMode = false);
               return;
             }
             if (_rangeSelectMode) {
@@ -64649,8 +64573,6 @@ class _MindMapScreenState extends State<MindMapScreen>
               });
               _cutFadeTimer?.cancel();
               _showLockToast(provider.t('toast.cutModeOff'));
-            } else if (_settingRefMode) {
-              setState(() => _settingRefMode = false);
             } else if (_rangeSelectMode) {
               setState(() {
                 _rangeSelectMode = false;
@@ -64698,14 +64620,6 @@ class _MindMapScreenState extends State<MindMapScreen>
           } else if (commandId == 'openBehaviorSettings') {
             // Ctrl+J: 動作設定セクションを開いた状態で設定シートを表示。
             _openBehaviorSettings();
-          } else if (commandId == 'setRef') {
-            // Ctrl+B: 基準位置の設定モードに入る
-            setState(() => _settingRefMode = true);
-            _showLockToast(provider.t('toast.refSet'));
-          } else if (commandId == 'goRef') {
-            // Ctrl+Shift+B: 基準位置に移動（未設定ならルートに移動）
-            _centerOnRoot();
-            _showLockToast(provider.t('toast.refGo'));
           } else if (commandId == 'customizeHeader') {
             // Ctrl+H: ヘッダーカスタマイズ画面を開く
             _showHeaderCustomizeSheet(context, provider);
@@ -66197,69 +66111,6 @@ class _MindMapScreenState extends State<MindMapScreen>
                               if (!_shapePaletteOpen &&
                                   _selectedDecorationId != null)
                                 _buildShapeSelectionToolbar(provider),
-                              // 基準位置設定モード中のバナー
-                              if (_settingRefMode)
-                                Positioned(
-                                  top: 0,
-                                  left: 0,
-                                  right: 0,
-                                  child: SafeArea(
-                                    child: Center(
-                                      child: Container(
-                                        margin: const EdgeInsets.only(top: 8),
-                                        padding: const EdgeInsets.symmetric(
-                                            horizontal: 20, vertical: 10),
-                                        decoration: BoxDecoration(
-                                          color: const Color(0xFF43B97F)
-                                              .withValues(alpha: 0.9),
-                                          borderRadius:
-                                              BorderRadius.circular(12),
-                                          boxShadow: [
-                                            BoxShadow(
-                                              color: Colors.black
-                                                  .withValues(alpha: 0.4),
-                                              blurRadius: 12,
-                                            ),
-                                          ],
-                                        ),
-                                        child: Row(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              const Icon(
-                                                  Icons.touch_app_rounded,
-                                                  color: Colors.white,
-                                                  size: 18),
-                                              const SizedBox(width: 8),
-                                              Text(
-                                                  provider
-                                                      .t('banner.tapToSetRef'),
-                                                  style: const TextStyle(
-                                                      color: Colors.white,
-                                                      fontSize: 13,
-                                                      fontWeight:
-                                                          FontWeight.w600)),
-                                              const SizedBox(width: 12),
-                                              GestureDetector(
-                                                onTap: () => setState(() =>
-                                                    _settingRefMode = false),
-                                                child: Container(
-                                                  padding:
-                                                      const EdgeInsets.all(4),
-                                                  decoration: BoxDecoration(
-                                                    color: Colors.white
-                                                        .withValues(alpha: 0.2),
-                                                    shape: BoxShape.circle,
-                                                  ),
-                                                  child: const Icon(Icons.close,
-                                                      color: Colors.white,
-                                                      size: 14),
-                                                ),
-                                              ),
-                                            ]),
-                                      ),
-                                    ),
-                                  ),
-                                ),
                               // 裁断モード中のバナー + 外周の赤いボーダー
                               // (分割中はアクティブ側ペインの中だけに出す)。
                               if (_cutMode && _cutGuardPage(provider))
@@ -71983,10 +71834,6 @@ class _MindMapScreenState extends State<MindMapScreen>
                       _applyScale((_scalePercent + 10).clamp(50, 150));
                     if (v == 'zoomOut')
                       _applyScale((_scalePercent - 10).clamp(50, 150));
-                    if (v == 'goRef') _centerOnRoot();
-                    if (v == 'setRef') {
-                      setState(() => _settingRefMode = true);
-                    }
                     if (v == 'snapToggle') {
                       provider.setSnapEnabled(!provider.snapEnabled);
                     }
@@ -72083,27 +71930,6 @@ class _MindMapScreenState extends State<MindMapScreen>
                         ])),
                     // AI チャット (MCP) はヘッダー右上 (画面分割の隣) に
                     //   常設したので、 メニューからは外した (= ユーザー要望)。
-                    if (!_isDesktop) ...[
-                      const PopupMenuDivider(),
-                      PopupMenuItem(
-                          value: 'goRef',
-                          child: Row(children: [
-                            const Icon(Icons.my_location_rounded,
-                                color: Colors.white54, size: 18),
-                            const SizedBox(width: 8),
-                            Text(provider.t('menu.goRef'),
-                                style: const TextStyle(color: Colors.white)),
-                          ])),
-                      PopupMenuItem(
-                          value: 'setRef',
-                          child: Row(children: [
-                            const Icon(Icons.add_location_alt_rounded,
-                                color: Color(0xFF43B97F), size: 18),
-                            const SizedBox(width: 8),
-                            Text(provider.t('menu.setRef'),
-                                style: const TextStyle(color: Colors.white)),
-                          ])),
-                    ],
                     // ボタンの配置設定はヘッダー右上に常設しているので、
                     //   メニューからは外した (= ユーザー要望)。 併せて、
                     //   項目が無くなって二重になっていた区切り線も 1 本に。
@@ -80952,6 +80778,47 @@ class _MindMapScreenState extends State<MindMapScreen>
     setState(() => _mapSplitCells[slot] = page.id);
   }
 
+  /// ページ一覧から落としたページ (分割に出せる物だけ、 落とした順)。
+  List<MindMapPage> _droppablePages(
+      MindMapProvider provider, List<String> ids) {
+    final out = <MindMapPage>[];
+    for (final id in ids) {
+      for (final p in provider.pages) {
+        if (p.id == id) {
+          if (_splitEligiblePage(p) && !provider.isPageLockedByPlan(p.id)) {
+            out.add(p);
+          }
+          break;
+        }
+      }
+    }
+    return out;
+  }
+
+  /// 分割中に落としたページを、 落とした位置のセル [slot] から順に出す
+  /// (2 枚目以降は残りの閲覧セルへ)。 編集セルへ落とした時は、 その
+  /// ページを開いて真ん中へ寄せる (一覧から押して開いた時と同じ)。
+  void _dropPagesIntoSplitSlot(
+      MindMapProvider provider, List<MindMapPage> pages, int slot) {
+    if (pages.isEmpty || !_mapSplitOpen) return;
+    _openPageInSplitSlot(provider, pages.first, slot);
+    final toEditor = slot == _mapSplitEditorSlot;
+    if (pages.length > 1) {
+      final used = <int>{slot};
+      var di = 1;
+      for (final k in _visibleSplitSlots()) {
+        if (di >= pages.length) break;
+        if (used.contains(k) || k == _mapSplitEditorSlot) continue;
+        _openPageInSplitSlot(provider, pages[di++], k);
+        used.add(k);
+      }
+    }
+    _recenterBookshelfIfNeeded();
+    if (toEditor) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _centerOnRoot());
+    }
+  }
+
   void _embedViewerIntoMapSplitCell(WidgetBuilder builder, {int? slot}) {
     // 呼び出し側がセルを指定していなければ、 直前に選ばれたセルを使う。
     final requested = slot ?? _pendingEmbedSlot;
@@ -86593,10 +86460,8 @@ class _MindMapScreenState extends State<MindMapScreen>
                 // 空き領域のタップでもこのページを編集側にする
                 // (= ユーザー要望: 右側も左と同じように操作)。
                 behavior: HitTestBehavior.translucent,
-                // タップのキャンバス座標も渡す (= ユーザー要望: 基準位置の
-                // 設定などが 1 クリック目でそのまま効くように)。
-                onTapUp: (d) => _mapSplitActivate(provider, page.id,
-                    slot: slot, tapCanvasPos: d.localPosition),
+                onTapUp: (_) =>
+                    _mapSplitActivate(provider, page.id, slot: slot),
                 child: Stack(clipBehavior: Clip.none, children: [
                     // ── 背景 (通常 = グリッド / ギャラリー = 木目 + 棚板)
                     //    (= ユーザー要望: ギャラリーの見た目も揃える) ──
@@ -86865,11 +86730,7 @@ class _MindMapScreenState extends State<MindMapScreen>
   /// 表示位置も引き継ぐので画面の見た目は変わらない。 [nodeId] を渡すと
   /// 切替後にそのノードを選択してアクションボタンを出す。
   void _mapSplitActivate(MindMapProvider provider, String pageId,
-      {String? nodeId, int? slot, Offset? tapCanvasPos}) {
-    // ── 1 クリック目でモード操作をそのまま実行 (= ユーザー要望: 基準位置の
-    //    設定などで「アクティブにするための 1 クリック」 を余計にしない)。
-    //    現状は基準位置設定モードを転送対象にする。 ──
-    final forwardSetRef = _settingRefMode && tapCanvasPos != null;
+      {String? nodeId, int? slot}) {
     final oldId = provider.currentPage.id;
     // 既にアクティブなら何もしない (パン終了とタップの両方から呼ばれても
     // 二重に切り替わらないように冪等にする)。 nodeId の選択処理だけは行う。
@@ -86936,23 +86797,6 @@ class _MindMapScreenState extends State<MindMapScreen>
         _mapSplitCellWebCur.remove(tappedSlot);
         _syncNarrowPaneRatio();
       });
-    }
-    // ── 基準位置設定モードなら、 アクティブ化と同時にそのタップ位置を
-    //    基準位置として適用する (= ユーザー要望: 1 クリック目でいきなり
-    //    別の分割画面の基準位置を設定できるように)。 ──
-    if (forwardSetRef) {
-      final canvasPos = tapCanvasPos!;
-      setState(() {
-        _referencePos = canvasPos;
-        _pageReferencePositions[pageId] = canvasPos;
-        _showRefMarker = true;
-        _settingRefMode = false;
-      });
-      _saveReferencePositions();
-      Future.delayed(const Duration(seconds: 3), () {
-        if (mounted) setState(() => _showRefMarker = false);
-      });
-      return;
     }
     if (nodeId != null) {
       // アクティブ化のためのクリックだったか (= このクリックで切り替わった、
@@ -87284,6 +87128,12 @@ class _MindMapScreenState extends State<MindMapScreen>
             .where((p) => !provider.isPageLockedByPlan(p.id))
             .toList();
         if (dropped.isEmpty) return;
+        // ★ 分割中にこのセル (= 編集セル) へ落とした時は、 このセルを
+        //   切り替える (= ユーザー要望: 落とした場所が切り替わるように)。
+        if (_mapSplitOpen) {
+          _dropPagesIntoSplitSlot(provider, dropped, _mapSplitEditorSlot);
+          return;
+        }
         setState(() {
           _mapSplitOpen = true;
           // 2 枚以上落としたら 4 分割にして順に割り当てる。
@@ -88858,24 +88708,6 @@ class _MindMapScreenState extends State<MindMapScreen>
                                 _exitHeaderReorderMode();
                                 return;
                               }
-                              // 基準位置設定モード
-                              if (_settingRefMode) {
-                                final canvasPos = _globalToCanvas(
-                                    details.globalPosition, ctrl);
-                                final pageId = provider.currentPage.id;
-                                setState(() {
-                                  _referencePos = canvasPos;
-                                  _pageReferencePositions[pageId] = canvasPos;
-                                  _showRefMarker = true;
-                                  _settingRefMode = false;
-                                });
-                                _saveReferencePositions();
-                                Future.delayed(const Duration(seconds: 3), () {
-                                  if (mounted)
-                                    setState(() => _showRefMarker = false);
-                                });
-                                return;
-                              }
                               // ── 図形 (装飾) の選択を最優先で判定 ──
                               // この接続線タップ判定レイヤーは装飾レイヤーより上に
                               //   重なっており、 タップを先取りしてしまうため、 図形の
@@ -89149,45 +88981,6 @@ class _MindMapScreenState extends State<MindMapScreen>
                           ),
                         ),
 
-                      // 基準位置マーカー（設定直後の一時表示）
-                      if (_showRefMarker)
-                        Builder(builder: (_) {
-                          final pid = provider.currentPage.id;
-                          final pos =
-                              _pageReferencePositions[pid] ?? _referencePos;
-                          return Positioned(
-                            left: pos.dx - 18,
-                            top: pos.dy - 18,
-                            child: IgnorePointer(
-                              child: AnimatedOpacity(
-                                opacity: 1.0,
-                                duration: const Duration(milliseconds: 300),
-                                child: Container(
-                                  width: 36,
-                                  height: 36,
-                                  decoration: BoxDecoration(
-                                    shape: BoxShape.circle,
-                                    color: const Color(0xFF43B97F)
-                                        .withValues(alpha: 0.2),
-                                    border: Border.all(
-                                        color: const Color(0xFF43B97F),
-                                        width: 2.5),
-                                    boxShadow: [
-                                      BoxShadow(
-                                        color: const Color(0xFF43B97F)
-                                            .withValues(alpha: 0.4),
-                                        blurRadius: 16,
-                                        spreadRadius: 4,
-                                      ),
-                                    ],
-                                  ),
-                                  child: const Icon(Icons.close_rounded,
-                                      color: Color(0xFF43B97F), size: 22),
-                                ),
-                              ),
-                            ),
-                          );
-                        }),
                     ],
                   ),
                 );
@@ -90741,10 +90534,10 @@ class _MindMapScreenState extends State<MindMapScreen>
         );
       case 'groupList':
         return (provider.t('ctx.groupList'), Icons.bookmarks_rounded);
-      case 'basePosition':
-        return (provider.t('ctx.basePosition'), Icons.gps_fixed_rounded);
       case 'syncSettings':
         return (provider.t('ctx.syncSettings'), Icons.cloud_sync_rounded);
+      case 'ai':
+        return (provider.t('act.ai'), Icons.smart_toy_rounded);
       default:
         return (id, Icons.circle_outlined);
     }
@@ -111427,7 +111220,6 @@ class _MindMapScreenState extends State<MindMapScreen>
       'defaultKey': 'Esc',
       'fixedSuffix': true
     },
-    // ── 追加: 基準位置の設定/移動 ──
     // 旧: Ctrl+J は配置候補 (snap) のトグルだったが、 ユーザー要望により
     // 「動作設定」 を開くショートカットに差し替えた。 配置候補のトグルは
     // 設定シート (動作設定セクション) のスイッチで操作できる。
@@ -111436,8 +111228,6 @@ class _MindMapScreenState extends State<MindMapScreen>
       'labelKey': 'cmd.openBehaviorSettings',
       'defaultKey': 'Ctrl+J'
     },
-    {'id': 'setRef', 'labelKey': 'cmd.setRef', 'defaultKey': 'Ctrl+B'},
-    {'id': 'goRef', 'labelKey': 'cmd.goRef', 'defaultKey': 'Ctrl+Shift+B'},
     // ── 追加: ヘッダーカスタマイズ ──
     {
       'id': 'customizeHeader',
@@ -277511,6 +277301,18 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
   Offset? _swipeStartFocal;
   Offset? _swipeLastFocal;
 
+  /// 画像を出している枠の大きさ (拡大の中心と、 はみ出しの抑えに使う)。
+  Size _viewSize = Size.zero;
+
+  /// 分割の中に埋め込んだ編集画面のうち、 カーソルが乗っている数。
+  /// ★ 埋め込みでは同じ画面にマップも居るので、 Ctrl + / - がマップの
+  ///   拡大まで動かさないよう、 マップ側がこれを見て譲る。
+  static int embeddedHovered = 0;
+  bool _hoverCounted = false;
+
+  /// 中ボタンで掴んで動かしている最中か (注釈 / トリミング / 切り抜き)。
+  bool _midPanning = false;
+
   @override
   void initState() {
     super.initState();
@@ -277531,11 +277333,22 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
   /// 流れない (= 裏のマップを巻き添えで戻してしまわないため)。
   bool _imgEditorKey(KeyEvent e) {
     if (!mounted) return false;
-    if (e is! KeyDownEvent) return false;
+    // 拡大 / 縮小だけは押しっぱなし (repeat) でも続けて効かせる。
+    final isRepeat = e is KeyRepeatEvent;
+    if (e is! KeyDownEvent && !isRepeat) return false;
     // 自分の画面を持っている時は、 一番手前に居る時だけ受ける。
     if (_ownsRoute) {
       final route = ModalRoute.of(context);
       if (route == null || !route.isCurrent) return false;
+    }
+    if (isRepeat) {
+      final fc = FocusManager.instance.primaryFocus?.context;
+      if (fc != null &&
+          (fc.widget is EditableText ||
+              fc.findAncestorWidgetOfExactType<EditableText>() != null)) {
+        return false;
+      }
+      return _imgZoomKey(e, repeat: true);
     }
     // ── Ctrl+Shift+E: ページ一覧 (= ユーザー報告: ファイルを開いて
     //    いる間も効くように) ──
@@ -277549,6 +277362,8 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
             fc.findAncestorWidgetOfExactType<EditableText>() != null)) {
       return false;
     }
+    // ── Ctrl + / - / 0: 画像の拡大率 (= ユーザー要望) ──
+    if (_imgZoomKey(e)) return true;
     final k = e.logicalKey;
     // 選んでいる図形を消す。
     if (_annotSel.isNotEmpty &&
@@ -277578,6 +277393,7 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
   @override
   void dispose() {
     HardwareKeyboard.instance.removeHandler(_imgEditorKey);
+    _setEmbeddedHover(false);
     _viewCtrl.dispose();
     super.dispose();
   }
@@ -277597,6 +277413,119 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
       widget.onSwipeNext?.call();
     } else {
       widget.onSwipePrev?.call();
+    }
+  }
+
+  // ── 拡大率 (= ユーザー要望「画像編集の際に、 Ctrl + や - で画像の拡大率を
+  //    変えられるように」) ──
+  //    通常表示の InteractiveViewer と同じ行列 (_viewCtrl) を、 注釈 /
+  //    トリミング / 切り抜きでも使う。 だから表示で拡大してから描き込みへ
+  //    移っても、 拡大したまま続けられる。 行列は拡大とずらしだけ。
+  static const double _kViewMinZoom = 0.5;
+  static const double _kViewMaxZoom = 5.0;
+
+  double get _viewZoom => _viewCtrl.value.getMaxScaleOnAxis();
+
+  /// Ctrl + / - / 0 を受ける。 受けたら true。
+  ///
+  /// ★ 日本語配列 (JIS) には「=」 の盤面が無い。 「+」 は「;」 の盤面
+  ///   (Shift 付きでも無しでも = Chrome と同じ) として、 「=」 は
+  ///   Shift+「-」 として届く (表計算の Ctrl + / - と同じ扱い)。
+  /// ★ 分割に埋め込んだ時は、 カーソルが乗っている時だけ受ける
+  ///   (マップの上で押した Ctrl + / - はマップの物)。
+  bool _imgZoomKey(KeyEvent e, {bool repeat = false}) {
+    if (!_ownsRoute && !_hoverCounted) return false;
+    final hk = HardwareKeyboard.instance;
+    if (!(hk.isControlPressed || hk.isMetaPressed)) return false;
+    final k = e.logicalKey;
+    final zoomIn = k == LogicalKeyboardKey.equal ||
+        k == LogicalKeyboardKey.add ||
+        k == LogicalKeyboardKey.numpadAdd ||
+        k == LogicalKeyboardKey.semicolon ||
+        (k == LogicalKeyboardKey.minus && hk.isShiftPressed);
+    if (zoomIn) {
+      _zoomViewBy(1.2);
+      return true;
+    }
+    if (k == LogicalKeyboardKey.minus ||
+        k == LogicalKeyboardKey.numpadSubtract) {
+      _zoomViewBy(1 / 1.2);
+      return true;
+    }
+    if (!repeat &&
+        (k == LogicalKeyboardKey.digit0 || k == LogicalKeyboardKey.numpad0)) {
+      _resetViewZoom();
+      return true;
+    }
+    return false;
+  }
+
+  /// [focal] (枠の中の位置) を中心に [factor] 倍する。 null なら枠の真ん中。
+  void _zoomViewBy(double factor, {Offset? focal}) {
+    if (_viewSize.isEmpty) return;
+    final cur = _viewZoom;
+    final next = (cur * factor).clamp(_kViewMinZoom, _kViewMaxZoom);
+    if ((next - cur).abs() < 1e-6) return;
+    final c = focal ?? _viewSize.center(Offset.zero);
+    final t = _viewCtrl.value.getTranslation();
+    // 画面上の c の下にある画像の点を、 拡大の後も c の下に残す。
+    final f = next / cur;
+    _setView(next, c.dx - (c.dx - t.x) * f, c.dy - (c.dy - t.y) * f);
+  }
+
+  void _resetViewZoom() => _viewCtrl.value = Matrix4.identity();
+
+  void _panViewBy(Offset d) {
+    final t = _viewCtrl.value.getTranslation();
+    _setView(_viewZoom, t.x + d.dx, t.y + d.dy);
+  }
+
+  /// 拡大率 [s] とずらし (tx, ty) を当てる。 拡大した画像が枠から外れきら
+  /// ないよう抑え、 等倍より小さい時は真ん中に置く。
+  void _setView(double s, double tx, double ty) {
+    final w = _viewSize.width;
+    final h = _viewSize.height;
+    if (s >= 1.0) {
+      tx = tx.clamp(w - w * s, 0.0).toDouble();
+      ty = ty.clamp(h - h * s, 0.0).toDouble();
+    } else {
+      tx = (w - w * s) / 2;
+      ty = (h - h * s) / 2;
+    }
+    _viewCtrl.value = Matrix4.identity()
+      ..setEntry(0, 0, s)
+      ..setEntry(1, 1, s)
+      ..setEntry(0, 3, tx)
+      ..setEntry(1, 3, ty);
+  }
+
+  /// 注釈 / トリミング / 切り抜きの時のホイール: Ctrl 付きで拡大縮小
+  /// (カーソルの所を中心に)、 拡大中は素のホイールで上下 (Shift で左右)。
+  void _onEditorWheel(PointerSignalEvent e) {
+    if (e is! PointerScrollEvent) return;
+    final hk = HardwareKeyboard.instance;
+    final ctrl = hk.isControlPressed || hk.isMetaPressed;
+    if (!ctrl && _viewZoom <= 1.0) return;
+    GestureBinding.instance.pointerSignalResolver.register(e, (ev) {
+      final se = ev as PointerScrollEvent;
+      if (ctrl) {
+        _zoomViewBy(se.scrollDelta.dy < 0 ? 1.1 : 1 / 1.1,
+            focal: se.localPosition);
+        return;
+      }
+      _panViewBy(hk.isShiftPressed
+          ? Offset(-se.scrollDelta.dy, 0)
+          : Offset(-se.scrollDelta.dx, -se.scrollDelta.dy));
+    });
+  }
+
+  void _setEmbeddedHover(bool on) {
+    if (on && !_hoverCounted) {
+      _hoverCounted = true;
+      embeddedHovered++;
+    } else if (!on && _hoverCounted) {
+      _hoverCounted = false;
+      embeddedHovered = math.max(0, embeddedHovered - 1);
     }
   }
 
@@ -280160,6 +280089,7 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
         // ── 画像本体 ──
         Expanded(
           child: LayoutBuilder(builder: (ctx, constraints) {
+            _viewSize = constraints.biggest;
             // 通常モードは InteractiveViewer で囲んでズーム可能、
             // crop / annotate モードでは囲まない (= 操作と競合するため)。
             // ── 表示に必要な画素数だけ展開する (= ユーザー要望: 画像を開く時の
@@ -280377,6 +280307,82 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
                     ),
                 ]);
               }
+            }
+            // ── 注釈 / トリミング / 切り抜きでも拡大を効かせる (= ユーザー
+            //    要望: 画像編集の際に Ctrl + / - で拡大率を変える) ──
+            //    InteractiveViewer で囲むと描く指と取り合うので、 同じ行列を
+            //    Transform で当てるだけにする。 描く側の座標は Transform を
+            //    逆に通って届くので、 拡大しても描く位置はずれない。 保存の
+            //    書き出し (RepaintBoundary) は外側の拡大を写さない。
+            //    動かすのは中ボタンのドラッグか、 ホイール (Shift で左右)。
+            if (_mode != 'view') {
+              final inner = body;
+              body = Listener(
+                onPointerSignal: _onEditorWheel,
+                onPointerDown: (e) {
+                  if ((e.buttons & kMiddleMouseButton) != 0) {
+                    _midPanning = true;
+                  }
+                },
+                onPointerMove: (e) {
+                  if (_midPanning) _panViewBy(e.localDelta);
+                },
+                onPointerUp: (_) => _midPanning = false,
+                onPointerCancel: (_) => _midPanning = false,
+                child: ClipRect(
+                  child: AnimatedBuilder(
+                    animation: _viewCtrl,
+                    builder: (_, child) =>
+                        Transform(transform: _viewCtrl.value, child: child),
+                    child: inner,
+                  ),
+                ),
+              );
+            }
+            // 拡大している間は右下に拡大率を出す (押すと 100% に戻す)。
+            final zoomed = body;
+            body = Stack(children: [
+              Positioned.fill(child: zoomed),
+              Positioned(
+                right: 10,
+                bottom: 10,
+                child: AnimatedBuilder(
+                  animation: _viewCtrl,
+                  builder: (_, __) {
+                    final z = _viewZoom;
+                    if ((z - 1.0).abs() < 0.01) return const SizedBox.shrink();
+                    return Tooltip(
+                      message: 'Ctrl+0',
+                      child: Material(
+                        color: Colors.black.withValues(alpha: 0.6),
+                        borderRadius: BorderRadius.circular(12),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(12),
+                          onTap: _resetViewZoom,
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 4),
+                            child: Text('${(z * 100).round()}%',
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700)),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ]);
+            // 分割に埋め込んだ時は、 カーソルが乗っているかを控える
+            // (Ctrl + / - をマップと分け合うため)。
+            if (!_ownsRoute) {
+              body = MouseRegion(
+                onEnter: (_) => _setEmbeddedHover(true),
+                onExit: (_) => _setEmbeddedHover(false),
+                child: body,
+              );
             }
             return body;
           }),
@@ -291089,6 +291095,10 @@ class _McpChatDialogState extends State<_McpChatDialog>
   /// (= ユーザー要望: API から呼ぶのと項目を分ける)。
   static bool openCliListOnStart = false;
 
+  /// 開いた直後に、 この種類の CLI の端末を直に開く (= ユーザー要望:
+  /// 右クリックの「AI」 から Codex CLI を高速で出す)。 使ったら null に戻す。
+  static AgentCliKind? openCliKindOnStart;
+
   /// 開いた直後に、 ここのフォルダーで殻のタブを 1 枚足す
   /// (= ユーザー要望: カスタムボタンのターミナルを AI アシスタントの
   ///  タブとして開く)。 使ったら null に戻す。
@@ -293501,6 +293511,36 @@ class _McpChatDialogState extends State<_McpChatDialog>
       // ★ ここでは return しない。 上 (会話 / CLI) は前に見ていた画面のまま
       //   続けるので、「CLI の画面の下にターミナル」 という形になる。
       unawaited(_openShellBand(provider, shellDir));
+    }
+    // ★ 種類を指定して開いた時は、 その CLI の端末を直に開く (= ユーザー
+    //   要望: 右クリックの「AI」 から高速で)。 入っていなければ一覧を出す
+    //   (入れ方の案内はそこにある)。
+    final cliKind = openCliKindOnStart;
+    if (cliKind != null) {
+      openCliKindOnStart = null;
+      openCliListOnStart = false;
+      unawaited(() async {
+        List<AgentCliFound> all = const <AgentCliFound>[];
+        try {
+          all = await _cliFind;
+        } catch (_) {}
+        if (!mounted) return;
+        AgentCliFound? hit;
+        for (final f in all) {
+          if (f.spec.kind == cliKind && f.installed) {
+            hit = f;
+            break;
+          }
+        }
+        if (hit != null) {
+          await _openAgentCliTerminal(provider, hit);
+        } else {
+          _showInlineTerminal(
+              _buildAgentCliList(provider), provider.t('cli.title'),
+              isTerminal: false);
+        }
+      }());
+      return;
     }
     // ★ 「パソコンに入れた AI」 を選んで開いた時は、 その一覧から始める。
     if (openCliListOnStart) {
